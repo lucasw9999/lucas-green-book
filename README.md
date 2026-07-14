@@ -65,8 +65,12 @@ books are **designed** to fall within Rule 4.3 limits, but conformance is a Comm
 per‑competition decision — confirm before playing in an event.
 
 ## License
-Code in this repository is released under the [MIT License](LICENSE). Data used to build the
-books carries its own licenses (OpenStreetMap ODbL; USGS public domain) — see [`legal/`](legal/).
+**Free for personal, non‑commercial use — not for commercial use.** The code in this repository
+is released under the [PolyForm Noncommercial License 1.0.0](LICENSE): you may use, modify, and
+share it for personal and other non‑commercial purposes, **but not commercially**. If you use or
+share it, please keep the credit — **"Lucas Green Book" by Lucas Wu** — and preserve the open‑data
+attributions (© OpenStreetMap contributors / ODbL; USGS public domain). The underlying data keeps
+its own licenses — see [`legal/`](legal/).
 
 ---
 *Crafted by Lucas · a free contribution to junior golf · not for sale.*
