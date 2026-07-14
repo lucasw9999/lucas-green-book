@@ -38,35 +38,57 @@ def covering_tiles(bbox, pad_ft=300):
     n0 = int((min(ns) - pad_ft) // 3000 * 3); n1 = int((max(ns) + pad_ft) // 3000 * 3)
     return [f"w{e}n{n}" for e in range(e0, e1 + 1, 3) for n in range(n0, n1 + 1, 3)]
 
-def head_ok(url):
+def head_size(url):
+    """Content-Length of a tile, or -1 if it doesn't exist in this sub-project."""
     try:
-        urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30)
-        return True
+        r = urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30)
+        return int(r.headers.get("Content-Length", 0))
     except Exception:
-        return False
+        return -1
+
+def head_size(url):
+    """Content-Length of a tile, or -1 if it doesn't exist in this sub-project."""
+    try:
+        r = urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30)
+        return int(r.headers.get("Content-Length", 0))
+    except Exception:
+        return -1
+
+def tile_copies(t):
+    """All sub-project copies of a geographic tile. The 3 Alameda sub-projects were
+    flown separately, so a tile straddling a project boundary appears in MORE THAN
+    ONE sub-project, each holding only the points collected in its own footprint —
+    the copies are COMPLEMENTARY, not duplicates. Download them all (distinct names)
+    and let the downstream glob+merge combine coverage. Taking just the biggest copy
+    silently leaves the other strip's greens with almost no ground points."""
+    out = []
+    for sub in SUBS:
+        u = f"{BASE}/{sub}/LAZ/{PREFIX}_{t}.laz"
+        sz = head_size(u)
+        if sz > 0:
+            out.append((sub, u, sz))
+    return out
 
 def main():
     tiles = covering_tiles(config.COURSE["osm_bbox"])
     print(f"{len(tiles)} candidate tiles for {config.SLUG}")
     got = 0
     for t in tiles:
-        fn = f"{DIR}/laz/{PREFIX}_{t}.laz"
-        if os.path.exists(fn) and os.path.getsize(fn) > 1e6:
-            print("  cached", t); got += 1; continue
-        url = None
-        for sub in SUBS:
-            u = f"{BASE}/{sub}/LAZ/{PREFIX}_{t}.laz"
-            if head_ok(u):
-                url = u; break
-        if not url:
+        copies = tile_copies(t)
+        if not copies:
             print(f"  {t}: no tile on server (edge of coverage) -- skip"); continue
-        for a in range(4):
-            try:
-                urllib.request.urlretrieve(url, fn)
-                print(f"  downloaded {t} ({round(os.path.getsize(fn)/1e6)} MB)"); got += 1; break
-            except Exception as e:
-                print(f"  {t} try {a+1} failed: {type(e).__name__}; retry"); time.sleep(3)
-    print(f"done -> {DIR}/laz  ({got} tiles)")
+        for i, (sub, url, sz) in enumerate(copies):
+            # first copy keeps the plain name; extra sub-project copies get a suffix
+            fn = f"{DIR}/laz/{PREFIX}_{t}.laz" if i == 0 else f"{DIR}/laz/{PREFIX}_{t}__{sub[-9:]}.laz"
+            if os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024:
+                print(f"  cached {t} [{sub[-9:]}]"); got += 1; continue
+            for a in range(4):
+                try:
+                    urllib.request.urlretrieve(url, fn)
+                    print(f"  downloaded {t} [{sub[-9:]}] ({round(os.path.getsize(fn)/1e6)} MB)"); got += 1; break
+                except Exception as e:
+                    print(f"  {t} [{sub[-9:]}] try {a+1} failed: {type(e).__name__}; retry"); time.sleep(3)
+    print(f"done -> {DIR}/laz  ({got} tile copies)")
     if got == 0:
         raise SystemExit("no tiles downloaded")
 
