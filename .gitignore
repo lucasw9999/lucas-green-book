@@ -1,0 +1,29 @@
+# Per-course data & generated books are kept LOCAL, not in version control.
+courses/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated / large / binary artifacts (should only ever live under courses/, but belt-and-suspenders)
+*.pdf
+*.laz
+*.npy
+*.tif
+*.tiff
+dem_hd/
+laz/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local scratch
+/tmp/
+*.log
