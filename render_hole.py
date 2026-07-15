@@ -49,7 +49,7 @@ def dist_pt_seg(px,py,ax,ay,bx,by):
     t=max(0,min(1,((px-ax)*dx+(py-ay)*dy)/L2))
     return math.hypot(px-(ax+t*dx), py-(ay+t*dy))
 
-def render_hole(hnum, HOLES):
+def render_hole(hnum, HOLES, font_scale=1.0):
     course, geom = load()
     greens=[e for e in geom if e.get('tags',{}).get('golf')=='green' and e.get('geometry')]
     holes =[e for e in geom if e.get('tags',{}).get('golf')=='hole'  and e.get('geometry')]
@@ -135,8 +135,8 @@ def render_hole(hnum, HOLES):
     LAY_W_IN=(config.CARD_W_IN-2*0.07)*(1.6/4.0)      # map column width (see .lay flex)
     LAY_H_IN=config.CARD_H_IN-2*0.07-0.50-0.18        # minus header + foot
     fit=min(LAY_W_IN/VBW, LAY_H_IN/VBH)               # in per view-unit after meet-fit
-    FS=round(0.100/fit,1)        # GRN / BLA  (~7.2 pt printed, consistent)
-    FSN=round(0.092/fit,1)       # distance numbers (~6.6 pt printed, consistent)
+    FS=round(0.100/fit*font_scale,1)        # GRN / BLA  (~7.2 pt printed, consistent; scaled up for enlarged editions)
+    FSN=round(0.092/fit*font_scale,1)       # distance numbers (~6.6 pt printed, consistent)
     def path(g,close=True):
         d="M "+" L ".join(f"{TX(x):.1f},{TY(y):.1f}" for x,y in poly_pts(g))
         return d+(" Z" if close else "")

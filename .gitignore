@@ -27,3 +27,7 @@ Thumbs.db
 # Local scratch
 /tmp/
 *.log
+
+# Local tooling / personal assets (kept out of the repo)
+.claude/
+lucaswu.golf_qr*.png
