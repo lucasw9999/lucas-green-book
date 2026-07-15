@@ -21,6 +21,16 @@ from config import HOLES, NAME as COURSE, ADDRESS as ADDR, COURSE_DIR
 GREENS = {}    # hole -> (svg, summary)
 LAYOUTS = {}   # hole -> (svg, info)
 
+# Young players (juniors, and men especially) play the BACK tee, so show the
+# LONGER of the two configured tees as the big main yardage and the shorter as
+# the small one, with FULL tee names (e.g. "Black", not "BLA").
+_ftot = sum(HOLES[h][config.FI] for h in HOLES)
+_stot = sum(HOLES[h][config.SI] for h in HOLES)
+if _stot >= _ftot:
+    BACK_I, BACK_NAME, FRONT_I, FRONT_NAME = config.SI, config.SECONDARY, config.FI, config.FEATURED
+else:
+    BACK_I, BACK_NAME, FRONT_I, FRONT_NAME = config.FI, config.FEATURED, config.SI, config.SECONDARY
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 def _data_uri(path):
@@ -36,6 +46,21 @@ IG_QR = _data_uri(os.path.join(ROOT, "lucaswu.golf_qr_small.png"))
 
 def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def tee_color(name):
+    """Print-legible ink color matching the tee NAME (a "Black" tee prints in black,
+    not gold). White/yellow get a readable dark substitute since they'd vanish on paper."""
+    return {
+        "black":  "#111111",
+        "blue":   "#1c4e8a",
+        "white":  "#555555",
+        "red":    "#b02418",
+        "gold":   "#b8860b",
+        "green":  "#2b6a2b",
+        "orange": "#c8641e",
+        "silver": "#6b7683",
+        "yellow": "#a98600",
+    }.get((name or "").strip().lower(), "#b8860b")   # default: the house gold
 
 # ---------------------------------------------------------------------------
 # BLANK GREEN TEMPLATE (no invented data -- a canvas to record real reads)
@@ -114,7 +139,7 @@ def yardage_hole_panel(hole, sheet_label):
     available yet (e.g. a course rebuilt after the latest public LiDAR)."""
     row = HOLES[hole]
     par, hcp = row[0], row[1]
-    feat = row[config.FI]
+    feat = row[BACK_I]
     trows = "".join(f'<tr><td>{esc(t)}</td><td>{row[2+i]}</td></tr>' for i, t in enumerate(config.TEES))
     lines = "".join('<div class="nl"></div>' for _ in range(5))
     return f'''<div class="panel hole ycard">
@@ -122,7 +147,7 @@ def yardage_hole_panel(hole, sheet_label):
   <div class="hhead">
     <div class="hnum">{hole}</div>
     <div class="hmeta"><div class="par">PAR {par}</div><div class="si">HCP {hcp}</div></div>
-    <div class="hyd"><span class="ymain">{feat}</span><span class="ylab">{esc(config.FEATURED)}</span></div>
+    <div class="hyd"><span class="ymain" style="color:{tee_color(BACK_NAME)}">{feat}</span><span class="ylab" style="color:{tee_color(BACK_NAME)}">{esc(BACK_NAME)}</span></div>
   </div>
   <table class="ytab"><tr class="th"><td>Tee</td><td>Yards to green</td></tr>{trows}</table>
   <div class="ynotehd">Read &amp; notes</div>
@@ -159,7 +184,6 @@ def yardage_guide_panel():
 def hole_panel(hole, sheet_label):
     row = HOLES[hole]
     par, hcp = row[0], row[1]
-    feat, sec = row[config.FI], row[config.SI]
     gsvg, s = GREENS[hole]
     lsvg, i = LAYOUTS[hole]
     others = " / ".join(f"{lbl[:3]}{row[idx]}" for lbl, idx in config.OTHERS)
@@ -168,8 +192,8 @@ def hole_panel(hole, sheet_label):
   <div class="hhead">
     <div class="hnum">{hole}</div>
     <div class="hmeta"><div class="par">PAR {par}</div><div class="si">HCP {hcp}</div></div>
-    <div class="hyd"><span class="ymain">{feat}</span><span class="ylab">{esc(config.FEATURED)}</span>
-      <span class="yalt">{sec} {esc(config.SECONDARY[:3])}</span></div>
+    <div class="hyd"><span class="ymain" style="color:{tee_color(BACK_NAME)}">{row[BACK_I]}</span><span class="ylab" style="color:{tee_color(BACK_NAME)}">{esc(BACK_NAME)}</span>
+      <span class="yalt">{row[FRONT_I]} {esc(FRONT_NAME)}</span></div>
   </div>
   <div class="body">
     <div class="lay"><div class="minilab">HOLE</div>{lsvg}</div>
@@ -426,7 +450,7 @@ def main():
   .hyd {{ margin-left: auto; text-align: right; line-height: 1.05; }}
   .ymain {{ font-size: 17pt; font-weight: 800; color: #b8860b; }}
   .ylab {{ font-size: 7pt; color: #b8860b; }}
-  .yalt {{ display: block; font-size: 7.5pt; color: #444; }}
+  .yalt {{ display: block; font-size: 7.5pt; color: #9a9a9a; }}   /* front tee: light gray like the footer, secondary to the back tee */
   .greenbox {{ flex: 1; min-height: 0; margin: 1px 0; }}
   .body {{ flex: 1; min-height: 0; display: flex; gap: 1px; margin: 1px 0 0; }}
   .lay {{ flex: 1.6; min-width: 0; position: relative; }}
@@ -561,5 +585,241 @@ def main():
     print(f"Wrote {out} (single conforming build) "
           f"-> cards {config.CARD_W_IN}x{config.CARD_H_IN}in, {config.PER}/sheet duplex")
 
+# ===========================================================================
+# COACH EDITION (ENLARGED) -- a special one-off. Each hole is split across TWO
+# full-size cards on ONE page: course map on top, green map on bottom (same
+# hole). Top-bound flip book: flip up to advance holes; both maps always
+# visible. Maps fill a whole card, so they're ~3x larger than the standard
+# side-by-side book. Intentionally enlarged PAST the tournament scale -> this
+# is a PRACTICE / COACHING aid, not a Rule 4.3 conforming competition book.
+# Guarded by env COACH=1 so it never affects the normal build of any course.
+# ===========================================================================
+def coach_cover_panel(coach_name):
+    parts = config.BRAND.split()
+    btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
+    raw = COURSE.split("—")[0].strip()        # club name only ("Monarch Bay Golf Club"), drop course sub-name
+    tlines = [raw]
+    maxch = max(len(l) for l in tlines)
+    fst = max(13.0, min(19.0, 274.0 / (maxch * 0.52)))
+    dyt = fst * 1.22
+    cy0 = 300 - (len(tlines) - 1) * dyt / 2
+    tspans = "".join(f'<tspan x="175" dy="{0 if k == 0 else dyt:.1f}">{esc(ln)}</tspan>'
+                     for k, ln in enumerate(tlines))
+    addr_y = cy0 + (len(tlines) - 1) * dyt + 20
+    motif = "".join(
+        f'<path d="M-20 {30+i*40} C 90 {30+i*40-26}, 200 {30+i*40+30}, 370 {30+i*40-14}" '
+        f'fill="none" stroke="#c8a24a" stroke-width="1.1" opacity="0.06"/>' for i in range(13))
+    G = "#c8a24a"
+    return f'''<div class="panel cover"><svg viewBox="0 0 350 500" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
+  <defs><linearGradient id="cg" x1="0" y1="0" x2="0.35" y2="1">
+    <stop offset="0" stop-color="#12492f"/><stop offset="0.55" stop-color="#0a3a24"/><stop offset="1" stop-color="#04170f"/>
+  </linearGradient></defs>
+  <rect x="0" y="0" width="350" height="500" fill="#0a3521"/>
+  <rect x="0" y="0" width="350" height="500" fill="url(#cg)"/>
+  {motif}
+  <rect x="17" y="17" width="316" height="466" fill="none" stroke="{G}" stroke-width="1.4"/>
+  <rect x="21" y="21" width="308" height="458" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.55"/>
+  <text x="175" y="66" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10" letter-spacing="8" font-weight="700" fill="#d7b45c">ENLARGED</text>
+  <circle cx="175" cy="120" r="26" fill="none" stroke="{G}" stroke-width="1.4"/>
+  <circle cx="175" cy="120" r="21" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.6"/>
+  <line x1="171" y1="108" x2="171" y2="134" stroke="{G}" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M171 108 L186 113 L171 119 Z" fill="{G}"/>
+  <text x="179" y="184" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="17" letter-spacing="8" font-weight="600" fill="#d7b45c">{btop}</text>
+  <text x="175" y="226" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="35" letter-spacing="1.5" font-weight="800" fill="#fbf6ea">{bmain}</text>
+  <line x1="118" y1="252" x2="232" y2="252" stroke="{G}" stroke-width="0.9"/>
+  <rect x="171" y="248.5" width="7" height="7" fill="{G}" transform="rotate(45 175 252)"/>
+  <text x="175" y="{cy0:.1f}" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="{fst:.1f}" fill="#f5eddd">{tspans}</text>
+  <text x="175" y="{addr_y:.1f}" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" letter-spacing="1" fill="#9fb4a3">{esc(ADDR).upper()}</text>
+  <text x="175" y="400" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-size="8.5" letter-spacing="2" fill="#9fb4a3">PREPARED FOR</text>
+  <text x="175" y="422" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="18" fill="#fbf6ea">Coach {esc(coach_name)}</text>
+  <rect x="60" y="446" width="230" height="18" rx="9" fill="none" stroke="#b9973f" stroke-width="0.8"/>
+  <text x="175" y="458" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.6" letter-spacing="1.0" fill="#dcc27f">ENLARGED PRACTICE EDITION</text>
+</svg></div>'''
+
+def coach_map_card(hole):
+    row = HOLES[hole]; par, hcp = row[0], row[1]
+    lsvg, i = LAYOUTS[hole]
+    return f'''<div class="panel hole">
+  <div class="etag">ENLARGED</div>
+  <div class="hhead">
+    <div class="hnum">{hole}</div>
+    <div class="hmeta"><div class="par">PAR {par}</div><div class="si">HCP {hcp}</div></div>
+    <div class="hyd"><span class="ymain" style="color:{tee_color(BACK_NAME)}">{row[BACK_I]}</span><span class="ylab" style="color:{tee_color(BACK_NAME)}">{esc(BACK_NAME)}</span>
+      <span class="yalt">{row[FRONT_I]} {esc(FRONT_NAME)}</span></div>
+  </div>
+  <div class="cmap"><div class="minilab">HOLE &middot; tee &rarr; green</div>{lsvg}</div>
+  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water</span><span>course layout</span></div>
+</div>'''
+
+def coach_green_card(hole):
+    row = HOLES[hole]; par, hcp = row[0], row[1]
+    gsvg, s = GREENS[hole]
+    return f'''<div class="panel hole">
+  <div class="etag">ENLARGED</div>
+  <div class="hhead">
+    <div class="hnum">{hole}</div>
+    <div class="hmeta"><div class="par">PAR {par}</div><div class="si">HCP {hcp}</div></div>
+    <div class="hyd"><span class="ymain" style="color:{tee_color(BACK_NAME)}">{row[BACK_I]}</span><span class="ylab" style="color:{tee_color(BACK_NAME)}">{esc(BACK_NAME)}</span></div>
+  </div>
+  <div class="cmap"><div class="minilab">GREEN &middot; approach at bottom</div>{gsvg}</div>
+  <div class="foot"><span>feeds <b>{esc(s['feeds'])}</b> ({esc(s['conf'])}) &middot; {s['tilt_pct']}%</span>
+    <span>{s['depth_yd']}yd deep</span></div>
+</div>'''
+
+def coach_about_card():
+    return '''<div class="panel guide">
+  <div class="gtitle">Enlarged edition</div>
+  <div class="legrow"><span>This is an <b>enlarged</b> copy: each hole is split onto two big cards &mdash;
+    the <b>course map on top</b>, the <b>green on the bottom</b> &mdash; so the greens read easily at a
+    glance. Flip up one more page for the green; flip again for the next hole.</span></div>
+  <div class="legrow"><span><b>Arrows</b> point downhill (the way the ball rolls; longer = steeper).
+    <b>Contours</b> join equal height. <b>Colour</b>: green flat &rarr; yellow &rarr; red (steep).
+    "feeds" = the low side putts run toward.</span></div>
+  <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
+    this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
+    Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
+  <div class="abt">
+    <div class="abthead">About &amp; legal</div>
+    <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes are a
+      Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>);
+      slope, contours &amp; arrows are computed by the maker from <b>public-domain USGS&nbsp;3DEP</b> LiDAR; par,
+      yardage &amp; handicap are <b>facts</b> from the published scorecard. <b>No proprietary data, image, symbol
+      set, layout or trade dress of any commercial green-reading product was used, copied or referenced.</b>
+      Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
+      trademarks belong to their owners and identify the course only &mdash; contact the maker for removal.
+      Provided <b>as-is, no warranty</b>; maps show general tilt, not exact break &mdash; trust your own read.
+      Contact: <b>lucasruomingwu@gmail.com</b>. &copy;&nbsp;2026 Lucas.</div>
+  </div>
+</div>'''
+
+def coach_dedic_card(coach_name):
+    flag = ('<svg width="26" height="26" viewBox="0 0 26 26">'
+            '<line x1="9" y1="4" x2="9" y2="22" stroke="#b8860b" stroke-width="1.6" stroke-linecap="round"/>'
+            '<path d="M9 4 L20 8 L9 12 Z" fill="#b8860b"/></svg>')
+    return f'''<div class="panel dedic">
+  <div class="dcrest">{flag}</div>
+  <div class="dtitle">For Coach {esc(coach_name)}</div>
+  <div class="dtext">
+    <p>Thank you for the time, the patience, and the lessons that go past the golf.</p>
+    <p>This enlarged green book is a small thank-you &mdash; every green on the course, big and
+      clear, so the reads are easy to see.</p>
+    <p>With gratitude,</p>
+  </div>
+  <div class="drule"></div>
+  <div class="dsign">from <b>Lucas Wu</b></div>
+</div>'''
+
+def build_coach(coach_name="Eric Stone"):
+    # ENLARGED edition: SAME print imposition as the normal book (4-up, duplex,
+    # top-flip, last card upright like the cover) -- to save paper. The ONLY
+    # difference vs. normal: each hole is TWO cards (course map = leaf FRONT,
+    # green = leaf BACK), so you "flip up one more page" to the green. Map
+    # wording/numbers are rendered ~2x bigger (font_scale) for older eyes.
+    for h in range(1, 19):
+        GREENS[h] = render_green.render(h, HOLES[h][3], tournament=True)
+        LAYOUTS[h] = render_hole.render_hole(h, HOLES, font_scale=2.0)
+    # deck: leaf0 = [cover, enlarged-about]; leaf h = [hole h map, hole h green];
+    # then back matter. Holes land one-per-leaf (map front / green back).
+    cards = [coach_cover_panel(coach_name), coach_about_card()]
+    for h in range(1, 19):
+        cards.append(coach_map_card(h))
+        cards.append(coach_green_card(h))
+    # scorecard = front of the LAST leaf, dedication = its back (upright via is_last).
+    # Drop the separate tee rating/slope card so there is NO trailing blank page:
+    # 40 cards -> 20 leaves -> exactly 5 duplex sheets, all full.
+    cards += [scorecard_panel(), coach_dedic_card(coach_name)]
+
+    # ---- identical imposition to main()'s build_pages ----
+    if len(cards) % 2:
+        cards = cards + ['<div class="panel"></div>']
+    nleaves = len(cards) // 2
+    lps = config.PER
+    gx0 = (config.PAGE_W_IN - (config.COLS*config.CARD_W_IN + (config.COLS-1)*config.GUTTER_IN)) / 2
+    gy0 = (config.PAGE_H_IN - (config.ROWS*config.CARD_H_IN + (config.ROWS-1)*config.GUTTER_IN)) / 2
+    def slot(j):
+        r, c = divmod(j, config.COLS)
+        return gx0 + c*(config.CARD_W_IN+config.GUTTER_IN), gy0 + r*(config.CARD_H_IN+config.GUTTER_IN), r, c
+    def card_div(x, y, num, html, flip):
+        cls = "card flip" if flip else "card"
+        return (f'<div class="{cls}" style="left:{x:.3f}in;top:{y:.3f}in">'
+                f'<div class="pageno">{num}</div>{html}</div>'
+                + crop_ticks(x, y, config.CARD_W_IN, config.CARD_H_IN))
+    pages = []
+    nsheets = -(-nleaves // lps)
+    for s in range(nsheets):
+        fronts, backs = [], []
+        for j in range(lps):
+            L = s*lps + j
+            if L >= nleaves:
+                continue
+            x, y, r, c = slot(j)
+            fronts.append(card_div(x, y, 2*L+1, cards[2*L], False))
+            xb, yb, _, _ = slot(r*config.COLS + (config.COLS-1-c))
+            is_last = (2*L+1 == len(cards)-1)   # last card prints UPRIGHT like the front cover
+            backs.append(card_div(xb, yb, 2*L+2, cards[2*L+1], not is_last))
+        pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT</div>{"".join(fronts)}</div>')
+        pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; BACK (duplex, flip on LONG edge)</div>{"".join(backs)}</div>')
+
+    CW, CH = config.CARD_W_IN, config.CARD_H_IN
+    css = f'''
+  @page {{ size: {config.PAGE_W_IN}in {config.PAGE_H_IN}in; margin: 0; }}
+  * {{ box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  html, body {{ margin: 0; padding: 0; font-family: "Helvetica Neue", Arial, sans-serif; color: #1a1a1a; }}
+  .sheet {{ width: {config.PAGE_W_IN}in; height: {config.PAGE_H_IN}in; position: relative; page-break-after: always; }}
+  .card {{ position: absolute; width: {CW}in; height: {CH}in; overflow: hidden; outline: 0.4pt solid #e2e2e2; }}
+  .card.flip {{ transform: rotate(180deg); }}   /* duplex back: reads upright after a TOP flip */
+  .crop {{ position: absolute; background: #444; }}
+  .pageno {{ position: absolute; top: 2px; left: 4px; font-size: 8pt; color: #ccc; z-index: 3; }}
+  .sheetnote {{ position: absolute; top: 0.07in; left: 0.12in; font-size: 6pt; color: #a0a0a0; letter-spacing: .3px; }}
+  .panel {{ position: absolute; inset: 0; padding: 0.08in; display: flex; flex-direction: column; }}
+  .etag {{ position: absolute; top: 3px; right: 6px; font-size: 6.5pt; letter-spacing: 1.5px; font-weight: 700; color: #b8860b; }}
+  /* hole header -- a touch larger than the pocket book for older eyes */
+  .hole .hhead {{ display: flex; align-items: center; gap: 5px; border-bottom: 2px solid #2b6a2b; padding-bottom: 2px; }}
+  .hnum {{ font-size: 23pt; font-weight: 800; line-height: 1; color: #2b6a2b; }}
+  .hmeta {{ line-height: 1; }}
+  .par {{ font-size: 12pt; font-weight: 700; }}
+  .si {{ font-size: 8pt; color: #666; }}
+  .hyd {{ margin-left: auto; text-align: right; line-height: 1.05; }}
+  .ymain {{ font-size: 19pt; font-weight: 800; color: #b8860b; }}
+  .ylab {{ font-size: 8pt; color: #b8860b; }}
+  .yalt {{ display: block; font-size: 8.5pt; color: #9a9a9a; }}   /* front tee: light gray */
+  .cmap {{ flex: 1; min-height: 0; position: relative; margin: 2px 0; }}
+  .cmap svg {{ width: 100%; height: 100%; }}
+  .minilab {{ position: absolute; top: 0; left: 1px; font-size: 7pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
+  .foot {{ display: flex; justify-content: space-between; font-size: 8pt; color: #999; margin-top: 1px; }}
+  .cover {{ position: relative; overflow: hidden; padding: 0; }}
+  .gtitle, .cardtitle {{ font-size: 12pt; font-weight: 800; color: #2b6a2b; border-bottom: 2px solid #2b6a2b; padding-bottom: 2px; margin-bottom: 4px; }}
+  .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 8pt; line-height: 1.3; margin-bottom: 5px; }}
+  .abt {{ margin-top: 4px; border-top: 1.2px solid #cdb96a; padding-top: 3px; }}
+  .abthead {{ font-size: 8pt; font-weight: 800; color: #2b6a2b; margin-bottom: 1px; }}
+  .abtxt {{ font-size: 6.6pt; line-height: 1.28; color: #6b6b6b; text-align: justify; }}   /* legal, slightly bigger for older eyes */
+  .dedic {{ align-items: center; text-align: center; justify-content: center; padding: 0.28in 0.3in; }}
+  .dcrest {{ margin-bottom: 6px; line-height: 0; }}
+  .dtitle {{ font-family: Georgia,"Times New Roman",serif; font-style: italic; font-size: 16pt; color: #2b6a2b; margin-bottom: 9px; }}
+  .dtext {{ font-size: 10pt; line-height: 1.42; color: #333; }}
+  .dtext p {{ margin: 0 0 7px; }}
+  .drule {{ width: 40%; border-top: 1.4px solid #d9b23a; margin: 11px auto 7px; }}
+  .dsign {{ font-size: 12pt; color: #1a1a1a; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 9pt; }}
+  td {{ border: 1px solid #ddd; padding: 1px 3px; text-align: center; }}
+  .th td {{ background: #2b6a2b; color: #fff; font-weight: 700; }}
+  .sum td {{ background: #eef4ee; font-weight: 700; }}
+  .tot td {{ background: #dcebdc; }}
+  .tt td {{ font-size: 8.5pt; }}
+  .gsmall {{ font-size: 7pt; color: #777; margin-top: auto; padding-top: 3px; }}
+  @media screen {{ body {{ background: #666; padding: 16px; }}
+    .sheet {{ background: #fff; margin: 0 auto 20px; box-shadow: 0 2px 12px rgba(0,0,0,.4); }} }}'''
+    html = (f'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+            f'<title>Enlarged Edition &mdash; {esc(COURSE)}</title><style>{css}</style>'
+            f'</head><body>{"".join(pages)}</body></html>')
+    out = os.path.join(COURSE_DIR, "greenbook_coach.html")
+    open(out, "w").write(html)
+    print(f"Wrote {out} (ENLARGED edition for {coach_name}) "
+          f"-> {len(cards)} cards, {len(pages)} PDF pages, {config.PER}/sheet duplex "
+          f"(same layout as pocket book; each hole = 2 cards: map front / green back)")
+
 if __name__ == "__main__":
-    main()
+    if os.environ.get("COACH"):
+        build_coach(os.environ.get("COACH_NAME", "Eric Stone"))
+    else:
+        main()
