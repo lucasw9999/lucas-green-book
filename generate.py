@@ -486,6 +486,13 @@ def coach_cover_panel(coach_name):
     tspans = "".join(f'<tspan x="175" dy="{0 if k == 0 else dyt:.1f}">{esc(ln)}</tspan>'
                      for k, ln in enumerate(tlines))
     addr_y = cy0 + (len(tlines) - 1) * dyt + 20
+    # Recipient (e.g. a coach's name) is a PRIVATE, per-gift detail supplied at build time
+    # via COACH_NAME -- never hard-coded, so nothing personal ships in the public repo.
+    recipient = ""
+    if (coach_name or "").strip():
+        recipient = (
+          '<text x="175" y="400" text-anchor="middle" font-family="Georgia,\'Times New Roman\',serif" font-size="8.5" letter-spacing="2" fill="#9fb4a3">PREPARED FOR</text>'
+          '<text x="175" y="422" text-anchor="middle" font-family="Georgia,\'Times New Roman\',serif" font-style="italic" font-size="18" fill="#fbf6ea">Coach ' + esc(coach_name) + '</text>')
     motif = "".join(
         f'<path d="M-20 {30+i*40} C 90 {30+i*40-26}, 200 {30+i*40+30}, 370 {30+i*40-14}" '
         f'fill="none" stroke="#c8a24a" stroke-width="1.1" opacity="0.06"/>' for i in range(13))
@@ -510,8 +517,7 @@ def coach_cover_panel(coach_name):
   <rect x="171" y="248.5" width="7" height="7" fill="{G}" transform="rotate(45 175 252)"/>
   <text x="175" y="{cy0:.1f}" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="{fst:.1f}" fill="#f5eddd">{tspans}</text>
   <text x="175" y="{addr_y:.1f}" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" letter-spacing="1" fill="#9fb4a3">{esc(ADDR).upper()}</text>
-  <text x="175" y="400" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-size="8.5" letter-spacing="2" fill="#9fb4a3">PREPARED FOR</text>
-  <text x="175" y="422" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="18" fill="#fbf6ea">Coach {esc(coach_name)}</text>
+  {recipient}
   <rect x="60" y="446" width="230" height="18" rx="9" fill="none" stroke="#b9973f" stroke-width="0.8"/>
   <text x="175" y="458" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.6" letter-spacing="1.0" fill="#dcc27f">ENLARGED PRACTICE EDITION</text>
 </svg></div>'''
@@ -576,9 +582,10 @@ def coach_dedic_card(coach_name):
     flag = ('<svg width="26" height="26" viewBox="0 0 26 26">'
             '<line x1="9" y1="4" x2="9" y2="22" stroke="#b8860b" stroke-width="1.6" stroke-linecap="round"/>'
             '<path d="M9 4 L20 8 L9 12 Z" fill="#b8860b"/></svg>')
+    title = f"For Coach {esc(coach_name)}" if (coach_name or "").strip() else "For your coach"
     return f'''<div class="panel dedic">
   <div class="dcrest">{flag}</div>
-  <div class="dtitle">For Coach {esc(coach_name)}</div>
+  <div class="dtitle">{title}</div>
   <div class="dtext">
     <p>Thank you for the time, the patience, and the lessons that go past the golf.</p>
     <p>This enlarged green book is a small thank-you &mdash; every green on the course, big and
@@ -589,7 +596,9 @@ def coach_dedic_card(coach_name):
   <div class="dsign">from <b>Lucas Wu</b></div>
 </div>'''
 
-def build_coach(coach_name="Eric Stone"):
+def build_coach(coach_name=""):
+    # coach_name is PRIVATE (a specific person) -> default empty; pass it at build time via
+    # COACH_NAME so no real name is ever committed. Empty -> generic "your coach" wording.
     # ENLARGED edition: SAME print imposition as the normal book (4-up, duplex,
     # top-flip, last card upright like the cover) -- to save paper. The ONLY
     # difference vs. normal: each hole is TWO cards (course map = leaf FRONT,
@@ -700,6 +709,6 @@ def build_coach(coach_name="Eric Stone"):
 
 if __name__ == "__main__":
     if os.environ.get("COACH"):
-        build_coach(os.environ.get("COACH_NAME", "Eric Stone"))
+        build_coach(os.environ.get("COACH_NAME", ""))
     else:
         main()
