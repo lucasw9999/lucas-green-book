@@ -589,7 +589,7 @@ def coach_dedic_card(coach_name):
   <div class="dsign">from <b>Lucas Wu</b></div>
 </div>'''
 
-def build_coach(coach_name="Eric Stone"):
+def build_coach(coach_name="Erik Stone"):
     # ENLARGED edition: SAME print imposition as the normal book (4-up, duplex,
     # top-flip, last card upright like the cover) -- to save paper. The ONLY
     # difference vs. normal: each hole is TWO cards (course map = leaf FRONT,
@@ -700,6 +700,6 @@ def build_coach(coach_name="Eric Stone"):
 
 if __name__ == "__main__":
     if os.environ.get("COACH"):
-        build_coach(os.environ.get("COACH_NAME", "Eric Stone"))
+        build_coach(os.environ.get("COACH_NAME", "Erik Stone"))
     else:
         main()
