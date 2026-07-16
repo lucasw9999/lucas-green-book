@@ -2,13 +2,15 @@
 """
 Render ONE green from real cached USGS elevation + OSM polygon.
 
-Everything drawn is computed from measured 1 m 3DEP elevation:
+Everything drawn is computed from measured USGS 3DEP elevation -- 0.4 m LiDAR
+ground returns where available (1 m seamless DEM as an honest fallback):
   * downhill flow arrows = -gradient of the (denoised) surface
   * contour lines        = iso-elevation of the surface
   * slope heat           = |gradient|, fixed golf scale (0=flat green .. >=5%=red)
 The whole drawing is rotated so the hole's APPROACH is at the bottom of the panel.
 
-Honest limit: 1 m LiDAR resolves real overall tilt / tiers, not sub-inch break.
+Honest limit: airborne LiDAR (~10 cm vertical) resolves real overall tilt / tiers,
+not sub-inch break -- that needs an on-site survey.
 """
 import json, math, os
 import numpy as np
