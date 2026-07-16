@@ -9,7 +9,8 @@ Exactly what data built each book. "Distributed" = safe to hand out; "Personal" 
 | Monarch Bay — Tony Lema | **Distributed ✅** | OSM (ODbL) | Computed from USGS 3DEP LiDAR (Alameda 2021) + seamless 1 m; 5 bayside holes use 1 m (no LiDAR over water) | Official PDF + USGA NCRDB + BlueGolf (facts) | Clean |
 | Castlewood — Valley | **Distributed ✅** | OSM (ODbL) | Computed from USGS 3DEP LiDAR (Alameda 2021) 0.4 m | BlueGolf/NCGA (facts) | Clean |
 | Castlewood — Hill | **Distributed ✅** | OSM (ODbL) | Computed from USGS 3DEP LiDAR (Alameda 2021) 0.4 m | BlueGolf (facts) | Clean |
-| Callippe Preserve | **Distributed ✅** | OSM (ODbL) | Computed from USGS 3DEP 1 m (Alameda 2021, public domain) | BlueGolf (facts) | Clean |
+| Callippe Preserve | **Distributed ✅** | OSM (ODbL) | Computed from USGS 3DEP LiDAR (Alameda 2021) 0.4 m; ~7.9k LiDAR trees | BlueGolf (facts) | Clean |
+| Bay View Golf Club (Milpitas) | **Distributed ✅** | OSM (ODbL); greens for holes 5 & 7 **digitized from public‑domain USDA NAIP** (not in OSM) | Computed from USGS 3DEP LiDAR (Santa Clara 2020) 0.4 m | BlueGolf + GolfLink, cross‑verified (facts) | Clean; 2 greens digitized from NAIP, documented |
 | **Poppy Ridge** | Personal | Aerial: **USDA NAIP (public domain)**, pre‑2025 layout, labeled | none (no post‑rebuild elevation exists) | Official NCGA scorecard (facts) — clean | Esri/Maxar imagery REMOVED 2026‑07‑13; now NAIP + facts only |
 
 ## Notes on the special cases

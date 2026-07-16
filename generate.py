@@ -63,74 +63,6 @@ def tee_color(name):
     }.get((name or "").strip().lower(), "#b8860b")   # default: the house gold
 
 # ---------------------------------------------------------------------------
-# BLANK GREEN TEMPLATE (no invented data -- a canvas to record real reads)
-# ---------------------------------------------------------------------------
-def green_template_svg(hole, par):
-    VW, VH = 244, 300
-    if par == 3:
-        gw, gh = 168, 182
-    elif par == 5:
-        gw, gh = 198, 226
-    else:
-        gw, gh = 182, 208
-    gx0 = (VW - gw) / 2.0
-    gy0 = 28.0
-    cid = f"g{hole}"
-
-    def XY(u, v):
-        return (gx0 + u * gw, gy0 + v * gh)
-
-    def r_theta(t):
-        # gentle, generic rounded green -- identical for every hole so it reads
-        # clearly as a BLANK template, not a specific surveyed shape
-        return 0.44 * (1 + 0.06 * math.cos(2 * t) + 0.04 * math.cos(3 * t + 0.6))
-
-    def inside(u, v):
-        dx, dy = u - 0.5, v - 0.5
-        r = math.hypot(dx, dy)
-        return r <= r_theta(math.atan2(dy, dx)) if r > 1e-6 else True
-
-    # outline path (smooth)
-    N = 72
-    pts = [XY(0.5 + r_theta(2*math.pi*k/N)*math.cos(2*math.pi*k/N),
-              0.5 + r_theta(2*math.pi*k/N)*math.sin(2*math.pi*k/N)) for k in range(N)]
-    d = f"M {(pts[0][0]+pts[-1][0])/2:.1f},{(pts[0][1]+pts[-1][1])/2:.1f} "
-    for i in range(N):
-        cx, cy = pts[i]
-        nx_, ny_ = pts[(i + 1) % N]
-        d += f"Q {cx:.1f},{cy:.1f} {(cx+nx_)/2:.1f},{(cy+ny_)/2:.1f} "
-    d += "Z"
-
-    # faint dot grid to sketch the real break on
-    dots = []
-    step = 0.092
-    u = step
-    while u < 1:
-        v = step
-        while v < 1:
-            if inside(u, v):
-                x, y = XY(u, v)
-                dots.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="1" fill="#a9c39a"/>')
-            v += step
-        u += step
-    dotg = f'<g clip-path="url(#{cid})">{"".join(dots)}</g>'
-
-    # neutral centre reference cross (a pencil anchor, not a claim)
-    cxp, cyp = XY(0.5, 0.5)
-    cross = (f'<line x1="{cxp-5:.1f}" y1="{cyp:.1f}" x2="{cxp+5:.1f}" y2="{cyp:.1f}" stroke="#9bb58c" stroke-width="0.7"/>'
-             f'<line x1="{cxp:.1f}" y1="{cyp-5:.1f}" x2="{cxp:.1f}" y2="{cyp+5:.1f}" stroke="#9bb58c" stroke-width="0.7"/>')
-
-    return f'''<svg viewBox="0 0 {VW} {VH}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
-  <defs><clipPath id="{cid}"><path d="{d}"/></clipPath></defs>
-  <text x="{VW/2:.0f}" y="16" font-size="8" text-anchor="middle" fill="#999">BACK</text>
-  <path d="{d}" fill="#eef5e2" stroke="#3f6b34" stroke-width="2"/>
-  {dotg}
-  {cross}
-  <text x="{VW/2:.0f}" y="{gy0+gh+16:.0f}" font-size="9" text-anchor="middle" fill="#333">&#9650; FRONT / approach &#9650;</text>
-  <text x="{VW/2:.0f}" y="{gy0+gh+27:.0f}" font-size="6.4" text-anchor="middle" fill="#aa7">draw the slope you see here</text>
-</svg>'''
-
-# ---------------------------------------------------------------------------
 # PANELS
 # ---------------------------------------------------------------------------
 def yardage_hole_panel(hole, sheet_label):
@@ -201,23 +133,6 @@ def hole_panel(hole, sheet_label):
   </div>
   <div class="foot"><span>feeds <b>{esc(s['feeds'])}</b> ({esc(s['conf'])}) &middot; {s['tilt_pct']}%</span>
     <span>{s['depth_yd']}yd deep &middot; {i['bunkers']}B {i['waters']}W &middot; {esc(others)}</span></div>
-</div>'''
-
-def layout_hole_panel(hole, sheet_label):
-    par, hcp, black, gold, blue, white, green = HOLES[hole]
-    svg, i = LAYOUTS[hole]
-    return f'''<div class="panel hole">
-  <div class="sheettab">{esc(sheet_label)}</div>
-  <div class="hhead">
-    <div class="hnum">{hole}</div>
-    <div class="hmeta"><div class="par">PAR {par}</div><div class="si">HCP {hcp}</div></div>
-    <div class="hyd"><span class="ymain">{gold}</span><span class="ylab">Gold</span>
-      <span class="yalt">{black} Blk</span></div>
-  </div>
-  <div class="greenbox">{svg}</div>
-  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water</span>
-    <span>tee &rarr; green</span></div>
-  <div class="tees">Blu {blue} &middot; Wht {white} &middot; Grn {green}</div>
 </div>'''
 
 def cover_panel():
@@ -370,32 +285,6 @@ def notes_panel(title, holes_range):
     lines = "".join(f'<div class="nrow"><b>{h}</b><span></span></div>' for h in holes_range)
     return f'<div class="panel notesp"><div class="gtitle">{esc(title)}</div>{lines}</div>'
 
-def layout_cover():
-    return f'''<div class="panel cover">
-  <div class="ctop">HOLE&nbsp;LAYOUTS</div>
-  <div class="ctitle">{esc(COURSE)}</div>
-  <div class="caddr">{esc(ADDR)}</div>
-  <div class="cflag">&#9971;</div>
-  <div class="cpar">tee &rarr; green &middot; bunkers &amp; water</div>
-  <div class="cnote">Sheet 1/3 &middot; Holes 1&ndash;6<br>layouts from OpenStreetMap</div>
-</div>'''
-
-def layout_guide():
-    return '''<div class="panel guide">
-  <div class="gtitle">Reading a layout</div>
-  <div class="legrow"><svg width="28" height="14"><rect x="3" y="9" width="6" height="3" rx="1" fill="#7fb069" stroke="#4a7a3a" stroke-width="0.5"/></svg>
-    <span><b>Green box</b> = a tee (bottom of each hole).</span></div>
-  <div class="legrow"><svg width="28" height="14"><ellipse cx="8" cy="7" rx="6" ry="3.5" fill="#efe3b8" stroke="#c9b477"/></svg>
-    <span><b>Tan</b> = fairway/greenside bunkers.</span></div>
-  <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="14" height="9" fill="#a9d3ef" stroke="#5b9bd0"/></svg>
-    <span><b>Blue</b> = water / lateral hazard.</span></div>
-  <div class="legrow"><svg width="28" height="14"><circle cx="8" cy="7" r="3" fill="none" stroke="#c0392b"/></svg>
-    <span><b>Red ring</b> on the green = pin; write in today's spot.</span></div>
-  <div class="legrow"><span>Small ticks on the dashed line are <b>100/150/200 yd</b> to the green centre. Tee at bottom, green at top.</span></div>
-  <div class="gsmall">Geometry: OpenStreetMap (ODbL). Yardages: NCGA. Hazard shapes are
-    contributor-mapped from aerials &mdash; accurate to a few metres, not surveyed.</div>
-</div>'''
-
 # ---- imposition: one-cut 8-page zine ---------------------------------------
 PHYS_ORDER = [5, 4, 3, 2, 6, 7, 8, 1]
 ROTATED = {0, 1, 2, 3}
@@ -451,13 +340,10 @@ def main():
   .ymain {{ font-size: 17pt; font-weight: 800; color: #b8860b; }}
   .ylab {{ font-size: 7pt; color: #b8860b; }}
   .yalt {{ display: block; font-size: 7.5pt; color: #9a9a9a; }}   /* front tee: light gray like the footer, secondary to the back tee */
-  .greenbox {{ flex: 1; min-height: 0; margin: 1px 0; }}
   .body {{ flex: 1; min-height: 0; display: flex; gap: 1px; margin: 1px 0 0; }}
   .lay {{ flex: 1.6; min-width: 0; position: relative; }}
   .grn {{ flex: 2.4; min-width: 0; position: relative; }}
   .lay svg, .grn svg {{ width: 100%; height: 100%; }}
-  .ytees {{ font-size: 7pt; color: #444; text-align: center; padding: 2px 0 1px; border-bottom: 1px solid #e3e3e3; }}
-  .ytees b {{ color: #b8860b; }}
   .ytab {{ width: 100%; border-collapse: collapse; font-size: 11pt; margin-top: 4px; }}
   .ytab td {{ border: 1px solid #d7d7d7; padding: 3px 8px; }}
   .ytab tr td:first-child {{ text-align: left; font-weight: 600; color: #2b6a2b; }}
@@ -466,10 +352,7 @@ def main():
   .ynotehd {{ font-size: 8pt; font-weight: 700; color: #2b6a2b; margin: 7px 0 3px; }}
   .ynote {{ flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: space-between; padding-bottom: 2px; }}
   .ynote .nl {{ border-bottom: 1px solid #cfcfcf; height: 1px; }}
-  .ygreen {{ flex: 1; min-height: 0; position: relative; margin-top: 2px; }}
-  .ygreen svg {{ width: 100%; height: 100%; }}
   .minilab {{ position: absolute; top: 0; left: 1px; font-size: 5.5pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
-  .tees {{ font-size: 7pt; color: #666; text-align: center; }}
   .foot {{ display: flex; justify-content: space-between; font-size: 7.5pt; color: #999; margin-top: 1px; }}
   .sheettab {{ position: absolute; top: 2px; right: 5px; font-size: 7pt; color: #bbb; }}
 
@@ -486,9 +369,6 @@ def main():
   .bmain {{ font-size: 20.5pt; font-weight: 800; letter-spacing: 2px; line-height: 1; margin-top: 3px; color: #fbf6ea; white-space: nowrap; }}
   .cdiv {{ position: relative; width: 46%; height: 1px; background: linear-gradient(90deg,transparent,#c8a24a,transparent); margin: 13px 0; }}
   .cdiv span {{ position: absolute; left: 50%; top: -3px; width: 6px; height: 6px; background: #c8a24a; transform: translateX(-50%) rotate(45deg); }}
-  .cover .ctitle {{ font-family: Georgia,"Times New Roman",serif; font-style: italic; font-size: 12.5pt;
-    line-height: 1.22; margin: 2px 10px; color: #f6efe0; font-weight: 500; }}
-  .cover .caddr {{ font-size: 6.7pt; letter-spacing: .8px; opacity: .62; margin-top: 5px; text-transform: uppercase; }}
   .cchip {{ margin-top: 15px; font-size: 6.2pt; letter-spacing: 1.4px; color: #d8be78;
     border: 0.7px solid #b9973f; border-radius: 11px; padding: 2.5px 9px; }}
   .cedition {{ margin-top: 9px; font-size: 6pt; letter-spacing: 3px; opacity: .5; text-transform: uppercase; }}

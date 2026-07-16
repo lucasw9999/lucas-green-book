@@ -31,8 +31,9 @@ If the data to do a course *accurately* doesn't exist yet, we don't guess; we sa
 Everything is built from sources anyone can use:
 - **Hole & green geometry:** [OpenStreetMap](https://www.openstreetmap.org) contributors,
   under the Open Database License (ODbL).
-- **Green slope / contours / arrows:** computed by this engine from **USGS 3DEP** elevation /
-  LiDAR — U.S. federal **public domain**.
+- **Green slope / contours / arrows:** computed by this engine from **USGS 3DEP** LiDAR —
+  0.4 m ground returns where dense coverage exists, or the 1 m seamless DEM as a fallback —
+  U.S. federal **public domain**.
 - **Par / yardage / handicap:** facts from the published scorecard.
 
 **No commercial green‑reading product's data, imagery, artwork, layout, or trade dress is
@@ -44,18 +45,32 @@ independent‑creation record.
 
 ## Pipeline (overview)
 ```
-fetch_osm.py       # OpenStreetMap geometry (greens, holes, fairways, bunkers, water, trees)
-fetch_dem.py       # USGS 3DEP seamless 1 m elevation per green   (works anywhere)
-fetch_dem_hd.py    # OR high-res 0.4 m green surfaces from raw LiDAR point clouds
-fetch_trees.py     # trees from LiDAR canopy returns
-render_green.py    # green slope map (arrows, contours, %, depth grid)
-render_hole.py     # tee -> green hole layout
-generate.py        # lays out the palm cards -> printable HTML/PDF
+fetch_osm.py            # OpenStreetMap geometry (greens, holes, fairways, bunkers, water)
+fetch_lidar.py          # download USGS 3DEP LiDAR tiles covering the course (via The National Map)
+fetch_lidar_alameda.py  #   Alameda County 2021 tile-name decoder (used when TNM naming needs it)
+fetch_dem_hd.py         # 0.4 m green surfaces from the raw LiDAR ground returns
+fetch_dem.py            #   OR USGS 3DEP seamless 1 m per green (fallback where no dense LiDAR)
+fetch_trees.py          # trees from LiDAR canopy returns (never placed on greens/fairways/tees/bunkers)
+render_green.py         # green slope map (arrows, contours, slope %, 5-yard depth grid)
+render_hole.py          # tee -> green hole layout
+generate.py             # lays out the palm cards -> printable HTML/PDF
 ```
 See [`PIPELINE.md`](PIPELINE.md) for the full per‑course build steps.
 
+## Editions & extras
+- **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex, top‑flip; slips into a
+  back‑pocket yardage‑book cover. Each hole shows the back tee as the headline yardage, in
+  its own tee colour.
+- **Large‑print edition** (`COURSE=<slug> COACH=1 python3 generate.py`) — same paper‑saving
+  layout, but each hole is split across two cards (course map, then green) with larger type,
+  for coaches and anyone who wants an easier read. It's marked a **practice edition**
+  (enlarged past the tournament scale, so not a conforming competition book).
+- **3D‑printable binding** — [`green book binding.stl`](green%20book%20binding.stl), a
+  printable cover/binding for the trimmed card deck.
+
 ## What's in this repo (and what isn't)
-- **Included:** the engine (Python), the build docs, and the [`legal/`](legal/) folder.
+- **Included:** the engine (Python), the build docs, a 3D‑printable binding
+  (`green book binding.stl`), and the [`legal/`](legal/) folder.
 - **Not included:** the `courses/` folder — per‑course data (OSM/LiDAR caches) and the
   generated books are kept **local**, not in version control.
 
