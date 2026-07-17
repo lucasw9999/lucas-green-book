@@ -1,7 +1,7 @@
 # Lucas Green Book
 
 Free, printable **green books** for junior golfers — built entirely from open and
-public‑domain data.
+public‑domain data.  🌐 **[lucasgreenbook.org](https://lucasgreenbook.org)**
 
 A "green book" is the little booklet tour players carry: a per‑hole map of the green's
 slope and break, the hole layout, and the yardages. The good ones cost real money.
@@ -89,3 +89,4 @@ its own licenses — see [`legal/`](legal/).
 
 ---
 *Crafted by Lucas · a free contribution to junior golf · not for sale.*
+*[lucasgreenbook.org](https://lucasgreenbook.org) · info@lucasgreenbook.org*

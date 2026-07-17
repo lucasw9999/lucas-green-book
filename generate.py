@@ -108,7 +108,7 @@ def yardage_guide_panel():
       or product; course names &amp; trademarks belong to their owners and are used only to identify the
       course &mdash; if a course would prefer not to be included, contact the maker for removal. Provided
       <b>free and as-is, with no warranty of any kind</b>; use at your own risk. Confirm materials/equipment
-      rules with your Committee before competition. Contact / removal: <b>lucasruomingwu@gmail.com</b>.
+      rules with your Committee before competition. <b>lucasgreenbook.org</b> &middot; contact/removal <b>info@lucasgreenbook.org</b>.
       &copy;&nbsp;2026 Lucas.</div>
   </div>
 </div>'''
@@ -139,14 +139,18 @@ def cover_panel():
     parts = config.BRAND.split()
     btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
     # Title: split on the em-dash so the club name stays whole on its own line
-    # (e.g. "Castlewood Country Club" / "Hill Course"); otherwise wrap ~17 chars.
+    # (e.g. "Castlewood Country Club" / "Hill Course"). Otherwise keep the whole
+    # name on ONE line -- the font auto-shrinks to fit -- and only word-wrap a
+    # genuinely long (>30 char) name so it never gets too small.
     raw = COURSE
     if "—" in raw:
         tlines = [p.strip() for p in raw.split("—") if p.strip()]
+    elif len(raw) <= 30:
+        tlines = [raw]
     else:
         tlines = []; cur = ""
         for w in raw.split():
-            if len(cur) + len(w) + 1 <= 17:
+            if len(cur) + len(w) + 1 <= 20:
                 cur = (cur + " " + w).strip()
             else:
                 tlines.append(cur); cur = w
@@ -219,7 +223,7 @@ def guide_panel():
       (accuracy, fitness or rules conformance): maps show general tilt &amp; tiers, not exact break, and may
       contain errors &mdash; <b>use at your own risk and trust your own read</b>. To the fullest extent
       permitted by law the maker is not liable for any loss, penalty or damage from use of this book.
-      Contact / removal requests: <b>lucasruomingwu@gmail.com</b>. &copy;&nbsp;2026 Lucas.</div>
+      Learn more at <b>lucasgreenbook.org</b>; contact / removal requests: <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas.</div>
   </div>
 </div>'''
 
@@ -277,7 +281,7 @@ def legend_panel():
   </div>
   <div class="drule"></div>
   <div class="dsign">Crafted by <b>Lucas</b></div>
-  <div class="dmail">lucasruomingwu@gmail.com</div>
+  <div class="dmail">lucasgreenbook.org &middot; info@lucasgreenbook.org</div>
   {qr}
 </div>'''
 
@@ -574,7 +578,7 @@ def coach_about_card():
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
       trademarks belong to their owners and identify the course only &mdash; contact the maker for removal.
       Provided <b>as-is, no warranty</b>; maps show general tilt, not exact break &mdash; trust your own read.
-      Contact: <b>lucasruomingwu@gmail.com</b>. &copy;&nbsp;2026 Lucas.</div>
+      <b>lucasgreenbook.org</b> &middot; contact <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas.</div>
   </div>
 </div>'''
 
