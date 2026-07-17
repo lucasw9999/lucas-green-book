@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
+# Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
+# https://github.com/lucasw9999/lucas-green-book
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 """
 Generic per-green elevation for any course, from the USGS 3DEP seamless 1 m DEM
 (public domain) -- no per-course LiDAR tile picking required.

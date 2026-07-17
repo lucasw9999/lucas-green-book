@@ -87,6 +87,12 @@ share it, please keep the credit — **"Lucas Green Book" by Lucas Wu** — and 
 attributions (© OpenStreetMap contributors / ODbL; USGS public domain). The underlying data keeps
 its own licenses — see [`legal/`](legal/).
 
+The **finished books** (the generated PDFs) are a separate work, released under
+[**CC BY‑NC‑ND 4.0**](https://creativecommons.org/licenses/by-nc-nd/4.0/): free to print and share
+**with credit**, but **not for sale** and **not to be altered**. **"Lucas Green Book"** and the flag
+emblem are **trademarks of Lucas Wu** — this project grants no trademark rights, and the name/logo
+may not be used to brand another (or a modified) product or to imply endorsement.
+
 ---
 *Crafted by Lucas · a free contribution to junior golf · not for sale.*
 *[lucasgreenbook.org](https://lucasgreenbook.org) · info@lucasgreenbook.org*
