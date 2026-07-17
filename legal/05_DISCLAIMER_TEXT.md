@@ -22,7 +22,7 @@ the standard one on the six green books, and the yardage‑mode one on Poppy Rid
 > show general tilt & tiers, not exact break, and may contain errors — use at your own risk and
 > trust your own read. To the fullest extent permitted by law the maker is not liable for any
 > loss, penalty or damage from use of this book. Contact / removal requests:
-> lucasruomingwu@gmail.com. © 2026 Lucas.
+> info@lucasgreenbook.org. © 2026 Lucas.
 
 ## B. Yardage‑mode "About & legal" — on Poppy Ridge (personal)
 > A free, independent yardage book for junior golfers, not for sale. Par, yardage & handicap
@@ -36,7 +36,7 @@ the standard one on the six green books, and the yardage‑mode one on Poppy Rid
 > names & trademarks belong to their owners and are used only to identify the course — if a course
 > would prefer not to be included, contact the maker for removal. Provided free and as‑is, with
 > no warranty of any kind; use at your own risk. Confirm materials/equipment rules with your
-> Committee before competition. Contact / removal: lucasruomingwu@gmail.com. © 2026 Lucas.
+> Committee before competition. Contact / removal: info@lucasgreenbook.org · lucasgreenbook.org. © 2026 Lucas.
 
 ## Why this text covers the risks
 - **Independent / open‑data provenance** → copyright + trade‑dress defense.
