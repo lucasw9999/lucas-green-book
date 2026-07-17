@@ -36,7 +36,7 @@ the standard one on the six green books, and the yardage‑mode one on Poppy Rid
 > names & trademarks belong to their owners and are used only to identify the course — if a course
 > would prefer not to be included, contact the maker for removal. Provided free and as‑is, with
 > no warranty of any kind; use at your own risk. Confirm materials/equipment rules with your
-> Committee before competition. Contact / removal: info@lucasgreenbook.org. © 2026 Lucas.
+> Committee before competition. Contact / removal: info@lucasgreenbook.org · lucasgreenbook.org. © 2026 Lucas.
 
 ## Why this text covers the risks
 - **Independent / open‑data provenance** → copyright + trade‑dress defense.
