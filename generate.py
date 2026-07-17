@@ -139,14 +139,18 @@ def cover_panel():
     parts = config.BRAND.split()
     btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
     # Title: split on the em-dash so the club name stays whole on its own line
-    # (e.g. "Castlewood Country Club" / "Hill Course"); otherwise wrap ~17 chars.
+    # (e.g. "Castlewood Country Club" / "Hill Course"). Otherwise keep the whole
+    # name on ONE line -- the font auto-shrinks to fit -- and only word-wrap a
+    # genuinely long (>30 char) name so it never gets too small.
     raw = COURSE
     if "—" in raw:
         tlines = [p.strip() for p in raw.split("—") if p.strip()]
+    elif len(raw) <= 30:
+        tlines = [raw]
     else:
         tlines = []; cur = ""
         for w in raw.split():
-            if len(cur) + len(w) + 1 <= 17:
+            if len(cur) + len(w) + 1 <= 20:
                 cur = (cur + " " + w).strip()
             else:
                 tlines.append(cur); cur = w
