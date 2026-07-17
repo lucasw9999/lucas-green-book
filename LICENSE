@@ -158,4 +158,18 @@ licenses, which you must also honor and attribute:
 - Elevation / slope: **USGS 3DEP** — U.S. Government **public domain**.
 - Par / yardage / handicap: facts from published scorecards.
 
+## The books it produces
+
+The generated **books (PDFs)** are a separate work from this source code. They
+are released for free, personal use under **Creative Commons Attribution-
+NonCommercial-NoDerivatives 4.0** (CC BY-NC-ND 4.0): you may print and share them
+with attribution, but **not sell them and not distribute altered versions**.
+
+## Trademark
+
+**"Lucas Green Book"** and the flag emblem are **trademarks of Lucas Wu**. This
+license grants **no trademark rights** — you may not use the name or logo to brand
+your own (or a modified) product, or in any way that suggests endorsement or
+affiliation. All rights in the name and mark are reserved.
+
 See the [`legal/`](legal/) folder for full sources, licenses, and attributions.

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
+# Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
+# https://github.com/lucasw9999/lucas-green-book
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 """
 Green-book generator (course-agnostic engine).
 
@@ -109,7 +113,7 @@ def yardage_guide_panel():
       course &mdash; if a course would prefer not to be included, contact the maker for removal. Provided
       <b>free and as-is, with no warranty of any kind</b>; use at your own risk. Confirm materials/equipment
       rules with your Committee before competition. <b>lucasgreenbook.org</b> &middot; contact/removal <b>info@lucasgreenbook.org</b>.
-      &copy;&nbsp;2026 Lucas.</div>
+      &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. This book: free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
   </div>
 </div>'''
 
@@ -189,6 +193,7 @@ def cover_panel():
   <rect x="70" y="426" width="210" height="18" rx="9" fill="none" stroke="#b9973f" stroke-width="0.8"/>
   <text x="175" y="438" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="7.0" letter-spacing="1.0" fill="#dcc27f">DESIGNED TO CONFORM &#183; RULE 4.3</text>
   <text x="175" y="462" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="8" letter-spacing="3" fill="#7f9484">JUNIOR GOLF EDITION</text>
+  <text x="175" y="474" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.2" letter-spacing="0.5" fill="#6f8676">&#169; 2026 Lucas Wu &#183; Lucas Green Book&#8482;</text>
 </svg></div>'''
 
 
@@ -223,7 +228,7 @@ def guide_panel():
       (accuracy, fitness or rules conformance): maps show general tilt &amp; tiers, not exact break, and may
       contain errors &mdash; <b>use at your own risk and trust your own read</b>. To the fullest extent
       permitted by law the maker is not liable for any loss, penalty or damage from use of this book.
-      Learn more at <b>lucasgreenbook.org</b>; contact / removal requests: <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas.</div>
+      Learn more at <b>lucasgreenbook.org</b>; contact / removal requests: <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. This book: free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
   </div>
 </div>'''
 
@@ -280,8 +285,9 @@ def legend_panel():
     <p>Play well, read true, and pass it on.</p>
   </div>
   <div class="drule"></div>
-  <div class="dsign">Crafted by <b>Lucas</b></div>
+  <div class="dsign">Crafted by <b>Lucas Wu</b></div>
   <div class="dmail">lucasgreenbook.org &middot; info@lucasgreenbook.org</div>
+  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
   {qr}
 </div>'''
 
@@ -391,6 +397,7 @@ def main():
   .drule {{ width: 40%; border-top: 1.4px solid #d9b23a; margin: 9px auto 6px; }}
   .dsign {{ font-size: 9pt; color: #1a1a1a; letter-spacing: .4px; }}
   .dmail {{ font-size: 7pt; color: #888; margin-top: 2px; letter-spacing: .3px; }}
+  .dcopy {{ font-size: 6pt; color: #9a9a9a; margin-top: 4px; letter-spacing: .2px; line-height: 1.3; }}
   .dqr {{ margin-top: 10px; }}
   .dqr img {{ width: 0.92in; height: auto; display: block; margin: 0 auto; }}
   .dqrcap {{ font-size: 6.4pt; color: #777; margin-top: 3px; letter-spacing: .2px; }}
@@ -578,7 +585,7 @@ def coach_about_card():
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
       trademarks belong to their owners and identify the course only &mdash; contact the maker for removal.
       Provided <b>as-is, no warranty</b>; maps show general tilt, not exact break &mdash; trust your own read.
-      <b>lucasgreenbook.org</b> &middot; contact <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas.</div>
+      <b>lucasgreenbook.org</b> &middot; contact <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. This book: free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
   </div>
 </div>'''
 
@@ -598,6 +605,7 @@ def coach_dedic_card(coach_name):
   </div>
   <div class="drule"></div>
   <div class="dsign">from <b>Lucas Wu</b></div>
+  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Practice aid, free to share &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
 </div>'''
 
 def build_coach(coach_name=""):
@@ -693,6 +701,7 @@ def build_coach(coach_name=""):
   .dtext p {{ margin: 0 0 7px; }}
   .drule {{ width: 40%; border-top: 1.4px solid #d9b23a; margin: 11px auto 7px; }}
   .dsign {{ font-size: 12pt; color: #1a1a1a; }}
+  .dcopy {{ font-size: 7pt; color: #9a9a9a; margin-top: 5px; letter-spacing: .2px; line-height: 1.3; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 9pt; }}
   td {{ border: 1px solid #ddd; padding: 1px 3px; text-align: center; }}
   .th td {{ background: #2b6a2b; color: #fff; font-weight: 700; }}

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
+# Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
+# https://github.com/lucasw9999/lucas-green-book
+# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
 """
 Extract TREES from the LiDAR point cloud (high-vegetation returns, class 5) for a
 course, so trees appear at real locations even where OpenStreetMap has none.
