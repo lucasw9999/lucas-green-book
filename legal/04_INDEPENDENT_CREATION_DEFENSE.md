@@ -20,7 +20,7 @@ the six distributed books.
 > statement of non‑affiliation and non‑endorsement. The full build pipeline and its open inputs
 > are **reproducible**, demonstrating independent creation. The books are **given away, not
 > sold**. If any course would prefer not to be included, the maker will remove it promptly on
-> request: **info@lucasgreenbook.org**.
+> request: **info@lucasgreenbook.org** &middot; **lucasgreenbook.org**.
 
 ## Why each legal theory fails (against the six books)
 - **Copyright infringement** — needs copying of protected expression. We copied none; we
