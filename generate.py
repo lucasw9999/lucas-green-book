@@ -139,27 +139,30 @@ def hole_panel(hole, sheet_label):
     <span>{s['depth_yd']}yd deep &middot; {i['bunkers']}B {i['waters']}W &middot; {esc(others)}</span></div>
 </div>'''
 
+def _title_lines(raw):
+    """Cover-title lines, shared by the standard AND the enlarged (coach) covers:
+    split a two-part name on the em-dash so the club and the course each keep their
+    own line (e.g. "Monarch Bay Golf Club" / "Tony Lema Course"); otherwise keep a
+    short name on one line and word-wrap only a genuinely long (>30 char) name."""
+    raw = (raw or "").strip()
+    if "—" in raw:
+        return [p.strip() for p in raw.split("—") if p.strip()] or [raw]
+    if len(raw) <= 30:
+        return [raw]
+    lines, cur = [], ""
+    for w in raw.split():
+        if len(cur) + len(w) + 1 <= 20:
+            cur = (cur + " " + w).strip()
+        else:
+            lines.append(cur); cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
 def cover_panel():
     parts = config.BRAND.split()
     btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
-    # Title: split on the em-dash so the club name stays whole on its own line
-    # (e.g. "Castlewood Country Club" / "Hill Course"). Otherwise keep the whole
-    # name on ONE line -- the font auto-shrinks to fit -- and only word-wrap a
-    # genuinely long (>30 char) name so it never gets too small.
-    raw = COURSE
-    if "—" in raw:
-        tlines = [p.strip() for p in raw.split("—") if p.strip()]
-    elif len(raw) <= 30:
-        tlines = [raw]
-    else:
-        tlines = []; cur = ""
-        for w in raw.split():
-            if len(cur) + len(w) + 1 <= 20:
-                cur = (cur + " " + w).strip()
-            else:
-                tlines.append(cur); cur = w
-        if cur:
-            tlines.append(cur)
+    tlines = _title_lines(COURSE)          # shared with the enlarged (coach) cover
     maxch = max(len(l) for l in tlines)
     fst = max(13.0, min(19.0, 274.0 / (maxch * 0.52)))   # shrink font so the longest line fits
     dyt = fst * 1.22
@@ -488,8 +491,7 @@ def main():
 def coach_cover_panel(coach_name):
     parts = config.BRAND.split()
     btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
-    raw = COURSE.split("—")[0].strip()        # club name only ("Monarch Bay Golf Club"), drop course sub-name
-    tlines = [raw]
+    tlines = _title_lines(COURSE)          # exact same title logic as the standard cover
     maxch = max(len(l) for l in tlines)
     fst = max(13.0, min(19.0, 274.0 / (maxch * 0.52)))
     dyt = fst * 1.22
@@ -605,6 +607,7 @@ def coach_dedic_card(coach_name):
   </div>
   <div class="drule"></div>
   <div class="dsign">from <b>Lucas Wu</b></div>
+  <div class="dmail">lucasgreenbook.org &middot; info@lucasgreenbook.org</div>
   <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Practice aid, free to share &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
 </div>'''
 
@@ -701,6 +704,7 @@ def build_coach(coach_name=""):
   .dtext p {{ margin: 0 0 7px; }}
   .drule {{ width: 40%; border-top: 1.4px solid #d9b23a; margin: 11px auto 7px; }}
   .dsign {{ font-size: 12pt; color: #1a1a1a; }}
+  .dmail {{ font-size: 9pt; color: #6f8676; margin-top: 6px; letter-spacing: .3px; }}
   .dcopy {{ font-size: 7pt; color: #9a9a9a; margin-top: 5px; letter-spacing: .2px; line-height: 1.3; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 9pt; }}
   td {{ border: 1px solid #ddd; padding: 1px 3px; text-align: center; }}
