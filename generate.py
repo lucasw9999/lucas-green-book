@@ -289,9 +289,9 @@ def legend_panel():
   </div>
   <div class="drule"></div>
   <div class="dsign">Crafted by <b>Lucas Wu</b></div>
-  <div class="dmail">lucasgreenbook.org &middot; info@lucasgreenbook.org</div>
-  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
+  <div class="dweb"><div class="dwebtag">VISIT</div><div class="dweburl">lucasgreenbook.org</div></div>
   {qr}
+  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
 </div>'''
 
 def notes_panel(title, holes_range):
@@ -399,8 +399,10 @@ def main():
   .dtext p {{ margin: 0 0 5px; }}
   .drule {{ width: 40%; border-top: 1.4px solid #d9b23a; margin: 9px auto 6px; }}
   .dsign {{ font-size: 9pt; color: #1a1a1a; letter-spacing: .4px; }}
-  .dmail {{ font-size: 7pt; color: #888; margin-top: 2px; letter-spacing: .3px; }}
-  .dcopy {{ font-size: 6pt; color: #9a9a9a; margin-top: 4px; letter-spacing: .2px; line-height: 1.3; }}
+  .dweb {{ margin-top: 8px; }}
+  .dwebtag {{ font-size: 4.5pt; letter-spacing: 2px; color: #b8860b; font-weight: 700; margin-bottom: 1.5px; }}
+  .dweburl {{ font-size: 7pt; font-weight: 600; color: #2b6a2b; letter-spacing: .5px; }}
+  .dcopy {{ position: absolute; bottom: 0.14in; left: 0.3in; right: 0.3in; font-size: 6pt; color: #9a9a9a; letter-spacing: .2px; line-height: 1.3; }}
   .dqr {{ margin-top: 10px; }}
   .dqr img {{ width: 0.92in; height: auto; display: block; margin: 0 auto; }}
   .dqrcap {{ font-size: 6.4pt; color: #777; margin-top: 3px; letter-spacing: .2px; }}
@@ -607,7 +609,7 @@ def coach_dedic_card(coach_name):
   </div>
   <div class="drule"></div>
   <div class="dsign">from <b>Lucas Wu</b></div>
-  <div class="dmail">lucasgreenbook.org &middot; info@lucasgreenbook.org</div>
+  <div class="dweb"><div class="dwebtag">VISIT</div><div class="dweburl">lucasgreenbook.org</div></div>
   <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Practice aid, free to share &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
 </div>'''
 
@@ -704,8 +706,10 @@ def build_coach(coach_name=""):
   .dtext p {{ margin: 0 0 7px; }}
   .drule {{ width: 40%; border-top: 1.4px solid #d9b23a; margin: 11px auto 7px; }}
   .dsign {{ font-size: 12pt; color: #1a1a1a; }}
-  .dmail {{ font-size: 9pt; color: #6f8676; margin-top: 6px; letter-spacing: .3px; }}
-  .dcopy {{ font-size: 7pt; color: #9a9a9a; margin-top: 5px; letter-spacing: .2px; line-height: 1.3; }}
+  .dweb {{ margin-top: 10px; }}
+  .dwebtag {{ font-size: 5.5pt; letter-spacing: 2.5px; color: #b8860b; font-weight: 700; margin-bottom: 2px; }}
+  .dweburl {{ font-size: 9pt; font-weight: 600; color: #2b6a2b; letter-spacing: .6px; }}
+  .dcopy {{ position: absolute; bottom: 0.16in; left: 0.3in; right: 0.3in; font-size: 7pt; color: #9a9a9a; letter-spacing: .2px; line-height: 1.3; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 9pt; }}
   td {{ border: 1px solid #ddd; padding: 1px 3px; text-align: center; }}
   .th td {{ background: #2b6a2b; color: #fff; font-weight: 700; }}
