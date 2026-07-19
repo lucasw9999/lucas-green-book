@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="assets/banner.png" alt="Lucas Green Book" width="760">
+<img src="assets/banner.png" alt="Lucas Green Book" width="100%">
 
-### Free, printable **green‑reading books** for junior golfers — built entirely from open &amp; public‑domain data.
+### Free **yardage &amp; green‑reading books** for junior golfers — built from open &amp; public‑domain data.
 
 [![Website](https://img.shields.io/badge/🌐_lucasgreenbook.org-2b6a2b?style=flat-square)](https://lucasgreenbook.org)
 [![Code](https://img.shields.io/badge/code-PolyForm_Noncommercial_1.0.0-1c4e8a?style=flat-square)](LICENSE)
