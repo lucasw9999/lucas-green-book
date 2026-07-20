@@ -239,28 +239,39 @@ def guide_panel():
 def scorecard_panel():
     fl, sl = config.FEATURED, config.SECONDARY
     fi, si = config.FI, config.SI
-    rows = []
-    for h in range(1, 19):
+    nums = config.HOLE_NUMS
+    def row(h):
         r = HOLES[h]
-        rows.append(f"<tr><td>{h}</td><td>{r[0]}</td><td>{r[1]}</td><td>{r[fi]}</td><td>{r[si]}</td></tr>")
-    op = sum(HOLES[h][0] for h in range(1,10)); ip = sum(HOLES[h][0] for h in range(10,19))
-    of = sum(HOLES[h][fi] for h in range(1,10)); iff = sum(HOLES[h][fi] for h in range(10,19))
-    os_ = sum(HOLES[h][si] for h in range(1,10)); iss = sum(HOLES[h][si] for h in range(10,19))
+        return f"<tr><td>{h}</td><td>{r[0]}</td><td>{r[1]}</td><td>{r[fi]}</td><td>{r[si]}</td></tr>"
+    def tot(hs):
+        return (sum(HOLES[h][0] for h in hs), sum(HOLES[h][fi] for h in hs), sum(HOLES[h][si] for h in hs))
+    head = (f'<tr class="th"><td>H</td><td>Par</td><td>HCP</td>'
+            f'<td>{esc(fl[:4])}</td><td>{esc(sl[:4])}</td></tr>')
+    if len(nums) <= 9:
+        # single nine (a 9-hole course): holes then one Total row -- no front/back split
+        tp, tf, ts = tot(nums)
+        table = (head + "".join(row(h) for h in nums) +
+                 f'<tr class="sum tot"><td>Tot</td><td>{tp}</td><td></td><td>{tf}</td><td>{ts}</td></tr>')
+    else:
+        front = [h for h in nums if h <= 9]; back = [h for h in nums if h > 9]
+        op, of, os_ = tot(front); ip, iff, iss = tot(back)
+        table = (head + "".join(row(h) for h in front) +
+                 f'<tr class="sum"><td>Out</td><td>{op}</td><td></td><td>{of}</td><td>{os_}</td></tr>' +
+                 "".join(row(h) for h in back) +
+                 f'<tr class="sum"><td>In</td><td>{ip}</td><td></td><td>{iff}</td><td>{iss}</td></tr>' +
+                 f'<tr class="sum tot"><td>Tot</td><td>{op+ip}</td><td></td><td>{of+iff}</td><td>{os_+iss}</td></tr>')
     return f'''<div class="panel card">
   <div class="cardtitle">Scorecard &mdash; {esc(fl)} / {esc(sl)}</div>
   <table>
-    <tr class="th"><td>H</td><td>Par</td><td>HCP</td><td>{esc(fl[:4])}</td><td>{esc(sl[:4])}</td></tr>
-    {''.join(rows[:9])}
-    <tr class="sum"><td>Out</td><td>{op}</td><td></td><td>{of}</td><td>{os_}</td></tr>
-    {''.join(rows[9:])}
-    <tr class="sum"><td>In</td><td>{ip}</td><td></td><td>{iff}</td><td>{iss}</td></tr>
-    <tr class="sum tot"><td>Tot</td><td>{op+ip}</td><td></td><td>{of+iff}</td><td>{os_+iss}</td></tr>
+    {table}
   </table>
 </div>'''
 
 def tees_panel():
+    def cell(v):
+        return "&mdash;" if v is None or v == "" else esc(v)
     rows = "".join(
-        f'<tr><td>{esc(t["name"][:7])}</td><td>{t["yards"]}</td><td>{t["rating"]}</td><td>{t["slope"]}</td></tr>'
+        f'<tr><td>{esc(t["name"][:7])}</td><td>{cell(t["yards"])}</td><td>{cell(t.get("rating"))}</td><td>{cell(t.get("slope"))}</td></tr>'
         for t in config.TEE_TABLE)
     return f'''<div class="panel info">
   <div class="cardtitle">Tees &middot; Rating / Slope</div>
@@ -315,16 +326,19 @@ def crop_ticks(x, y, w, h, t=0.14):
 def main():
     yardage = (config.BUILD_MODE == "yardage")
     if not yardage:
-        for h in range(1, 19):
+        for h in config.HOLE_NUMS:
             GREENS[h] = render_green.render(h, HOLES[h][3], tournament=True)  # single conforming book
             LAYOUTS[h] = render_hole.render_hole(h, HOLES)
     # flat, ordered deck of cards (cut-and-stack, top-bound)
     panels = [cover_panel(), yardage_guide_panel() if yardage else guide_panel()]
-    for h in range(1, 19):
-        grp = "Front" if h <= 6 else ("Mid" if h <= 14 else "Finish")
+    for h in config.HOLE_NUMS:
+        if config.NHOLES <= 9:
+            grp = "Front" if h <= 3 else ("Mid" if h <= 6 else "Finish")
+        else:
+            grp = "Front" if h <= 6 else ("Mid" if h <= 14 else "Finish")
         panels.append(yardage_hole_panel(h, grp) if yardage else hole_panel(h, grp))
     panels += [scorecard_panel(), tees_panel(),
-               notes_panel("Notes 1-9", range(1, 10)), legend_panel()]
+               notes_panel("Notes 1-9", config.HOLE_NUMS[:9]), legend_panel()]
 
     def doc(sheets, subtitle):
         return f'''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
@@ -621,13 +635,13 @@ def build_coach(coach_name=""):
     # difference vs. normal: each hole is TWO cards (course map = leaf FRONT,
     # green = leaf BACK), so you "flip up one more page" to the green. Map
     # wording/numbers are rendered ~2x bigger (font_scale) for older eyes.
-    for h in range(1, 19):
+    for h in config.HOLE_NUMS:
         GREENS[h] = render_green.render(h, HOLES[h][3], tournament=True)
         LAYOUTS[h] = render_hole.render_hole(h, HOLES, font_scale=2.0)
     # deck: leaf0 = [cover, enlarged-about]; leaf h = [hole h map, hole h green];
     # then back matter. Holes land one-per-leaf (map front / green back).
     cards = [coach_cover_panel(coach_name), coach_about_card()]
-    for h in range(1, 19):
+    for h in config.HOLE_NUMS:
         cards.append(coach_map_card(h))
         cards.append(coach_green_card(h))
     # scorecard = front of the LAST leaf, dedication = its back (upright via is_last).
