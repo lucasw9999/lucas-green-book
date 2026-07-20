@@ -21,11 +21,14 @@ import config
 DIR = config.COURSE_DIR
 R_LAT = 111320.0
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
-FWD = Transformer.from_crs("EPSG:4326", "EPSG:26910", always_xy=True)   # lon/lat -> UTM10N m
-INV = Transformer.from_crs("EPSG:26910", "EPSG:4326", always_xy=True)
+# NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
+_LON = config.COURSE.get("location", {}).get("lon", -121.0)
+UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)
+FWD = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM m
+INV = Transformer.from_crs(UTM, "EPSG:4326", always_xy=True)
 
 def laz_to_utm():
-    """Transformer from the tiles' native CRS -> UTM10N metres + vertical scale to m."""
+    """Transformer from the tiles' native CRS -> the course's UTM zone (metres) + vertical scale to m."""
     src = config.COURSE.get("lidar_crs")
     if not src:
         for t in sorted(glob.glob(f"{DIR}/laz/*.laz")):
@@ -37,11 +40,11 @@ def laz_to_utm():
             except Exception:
                 pass
     if src is None:
-        src = "EPSG:26910"
+        src = UTM
     name = str(src).lower()
     zscale = 0.3048006096012192 if ("ftus" in name or "us survey foot" in name
                                     or "foot" in name or "feet" in name) else 1.0
-    return Transformer.from_crs(src, "EPSG:26910", always_xy=True), zscale
+    return Transformer.from_crs(src, UTM, always_xy=True), zscale
 
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy
@@ -108,7 +111,7 @@ def main():
     for tf in tiles:
         las=laspy.read(tf)
         cls=np.asarray(las.classification)
-        # reproject XY to UTM10N metres, scale Z to metres (State Plane ftUS -> m)
+        # reproject XY to the course UTM zone (metres), scale Z to metres (State Plane ftUS -> m)
         x,y = pt2utm.transform(np.asarray(las.x), np.asarray(las.y))
         z = np.asarray(las.z)*zscale
         # bare-earth grid from ground returns (class 2): min z per GC-metre cell
