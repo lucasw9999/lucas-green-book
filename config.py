@@ -42,6 +42,8 @@ PER = COLS * ROWS
 
 # hole -> (par, mens_hcp, <tee yardages in hole_cols order>)
 HOLES = {int(k): tuple(v) for k, v in COURSE["holes"].items()}
+HOLE_NUMS = sorted(HOLES)                          # actual holes present (9-hole courses have 1..9)
+NHOLES = len(HOLE_NUMS)
 NAME = COURSE["name"]
 ADDRESS = COURSE["address"]
 PAR = COURSE.get("par", 72)
