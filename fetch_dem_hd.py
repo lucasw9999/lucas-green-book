@@ -24,11 +24,14 @@ RES = 0.4                                   # target metres/pixel
 MARGIN_M = 12.0
 R_LAT = 111320.0
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
-TR = Transformer.from_crs("EPSG:4326", "EPSG:26910", always_xy=True)   # lon/lat -> UTM10N metres
+# NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
+_LON = config.COURSE.get("location", {}).get("lon", -121.0)
+UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)
+TR = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM metres
 
 def laz_to_utm():
-    """Transformer from the tiles' native CRS -> UTM10N metres, plus the vertical
-    scale to metres. Auto-read from the LAZ header so State Plane (ftUS) and UTM
+    """Transformer from the tiles' native CRS -> the course's UTM zone (metres), plus the
+    vertical scale to metres. Auto-read from the LAZ header so State Plane (ftUS) and UTM
     both work; everything downstream then stays in metres."""
     src = config.COURSE.get("lidar_crs")
     if not src:
@@ -41,8 +44,8 @@ def laz_to_utm():
             except Exception:
                 pass
     if src is None:
-        src = "EPSG:26910"
-    pt = Transformer.from_crs(src, "EPSG:26910", always_xy=True)
+        src = UTM
+    pt = Transformer.from_crs(src, UTM, always_xy=True)
     name = str(src).lower()
     zscale = 0.3048006096012192 if ("ftus" in name or "us survey foot" in name
                                     or "foot" in name or "feet" in name) else 1.0
@@ -107,7 +110,7 @@ def build_targets():
 
 def main():
     pt2utm, zscale = laz_to_utm()
-    print("LiDAR -> UTM10N reproject; vertical scale to m =", zscale)
+    print(f"LiDAR -> {UTM} reproject; vertical scale to m =", zscale)
     targets=build_targets()
     tiles=sorted(glob.glob(f"{DIR}/laz/*.laz"))
     print("tiles:",[os.path.basename(t) for t in tiles])
@@ -115,7 +118,7 @@ def main():
         las=laspy.read(tf)
         cls=np.asarray(las.classification)
         g=cls==2
-        # reproject ground points to UTM10N metres; scale Z to metres
+        # reproject ground points to the course UTM zone (metres); scale Z to metres
         x,y = pt2utm.transform(np.asarray(las.x)[g], np.asarray(las.y)[g])
         z = np.asarray(las.z)[g]*zscale
         txmin,txmax=x.min(),x.max(); tymin,tymax=y.min(),y.max()
@@ -144,7 +147,7 @@ def main():
         meta=dict(hole=hn,approach_bearing=t['appr'],bbox=t['bbox'],W=t['W'],H=t['H'],
                   green_id=t['green']['id'],green_center=[t['clat'],t['clon']],
                   polygon=[[p['lat'],p['lon']] for p in t['green']['geometry']],
-                  source="CA_Central_Valley_LiDAR_2016 ground returns @0.4m",
+                  source="USGS 3DEP LiDAR ground returns @0.4m",
                   npts=int(len(pz)), density=round(len(pz)/((t['bbox'][2]-t['bbox'][0])*mlon(t['clat'])*(t['bbox'][3]-t['bbox'][1])*R_LAT),1))
         json.dump(meta,open(f"{OUT}/hole{hn:02d}.json","w"))
         print(f"hole {hn:2d}: {t['W']}x{t['H']} @0.4m  {len(pz):6d} ground pts ({meta['density']}/m^2)")
