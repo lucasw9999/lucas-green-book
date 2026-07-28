@@ -72,8 +72,52 @@ def rot(x, y, cx, cy, deg):
 DIRS = [(0,-1,"back"),(0.71,-0.71,"back-right"),(1,0,"right"),(0.71,0.71,"front-right"),
         (0,1,"front"),(-0.71,0.71,"front-left"),(-1,0,"left"),(-0.71,-0.71,"back-left")]
 
+def _blank_green(meta, tournament):
+    """A green we will NOT read: the LiDAR did not measure this surface (see the honesty gate
+    in fetch_dem_hd.py). Draw the real outline -- that geometry IS measured, it comes from OSM --
+    with ruled lines to mark your own read, and say plainly why there are no arrows. Printing
+    invented contours here would be the one thing this project promises never to do."""
+    poly = poly_to_px(meta['polygon'], meta['bbox'], meta['W'], meta['H'])
+    xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
+    pad = 8
+    VBx, VBy = min(xs)-pad, min(ys)-pad
+    VBw, VBh = (max(xs)-min(xs))+2*pad, (max(ys)-min(ys))+2*pad
+    d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in poly) + " Z"
+    lines = "".join(
+        f'<line x1="{VBx+4:.1f}" y1="{VBy+VBh*0.42+i*7:.1f}" x2="{VBx+VBw-4:.1f}" '
+        f'y2="{VBy+VBh*0.42+i*7:.1f}" stroke="#cfcfcf" stroke-width="0.5"/>' for i in range(4))
+    if tournament:
+        # no scale claim is needed (no green image is drawn to scale), so just fit the panel
+        grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)
+        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - 0.18
+        kf = min(grn_w_in/VBw, grn_h_in/VBh)
+        wattr, hattr = f'{VBw*kf:.3f}in', f'{VBh*kf:.3f}in'
+        wrapopen = ('<div style="display:flex;align-items:center;justify-content:center;'
+                    'width:100%;height:100%">'); wrapclose = '</div>'
+    else:
+        wattr = hattr = '100%'; wrapopen = wrapclose = ''
+    svg = (f'{wrapopen}<svg viewBox="{VBx:.1f} {VBy:.1f} {VBw:.1f} {VBh:.1f}" '
+           f'style="width:{wattr};height:{hattr}" preserveAspectRatio="xMidYMid meet">'
+           f'<path d="{d}" fill="#f4f7f4" stroke="#20402a" stroke-width="1.3"/>{lines}'
+           f'<text x="{VBx+VBw/2:.1f}" y="{VBy+VBh*0.30:.1f}" font-size="4.4" text-anchor="middle" '
+           f'fill="#b02418">no LiDAR coverage</text>'
+           f'<text x="{VBx+VBw/2:.1f}" y="{VBy+VBh*0.36:.1f}" font-size="3.6" text-anchor="middle" '
+           f'fill="#777">mark your own read</text>'
+           f'<text x="{VBx+VBw-2.5:.1f}" y="{VBy+VBh-2.5:.1f}" font-size="4" text-anchor="end" '
+           f'fill="#333">&#9650; approach</text></svg>{wrapclose}')
+    la = [p[0] for p in meta['polygon']]; lo = [p[1] for p in meta['polygon']]
+    clat = meta['green_center'][0]
+    depth_yd = int(round((max(la)-min(la))*R_LAT/0.9144))
+    width_yd = int(round((max(lo)-min(lo))*mlon(clat)/0.9144))
+    return svg, dict(relief_ft=0.0, median_slope=0.0, tilt_pct=0.0, feeds="not surveyed",
+                     undul_ft=0.0, conf="no data", depth_yd=depth_yd, width_yd=width_yd,
+                     scale_max_in=None, insufficient=True)
+
+
 def render(hole, center_yd=None, tournament=False):
     meta = json.load(open(f"{DEM}/hole{hole:02d}.json"))
+    if meta.get("insufficient"):
+        return _blank_green(meta, tournament)
     arr = np.load(f"{DEM}/hole{hole:02d}.npy").astype('float64')
     H, W = arr.shape
     bbox = meta['bbox']; xmin, ymin, xmax, ymax = bbox
