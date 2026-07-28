@@ -370,7 +370,10 @@ def main():
   .body {{ flex: 1; min-height: 0; display: flex; gap: 1px; margin: 1px 0 0; }}
   .lay {{ flex: 1.6; min-width: 0; position: relative; }}
   .grn {{ flex: 2.4; min-width: 0; position: relative; }}
-  .lay svg, .grn svg {{ width: 100%; height: 100%; }}
+  .lay svg {{ width: 100%; height: 100%; }}
+  /* GREEN: never force a size -- render_green sizes it in inches to hold the Rule 4.3
+     scale cap. max-* can only shrink, so it can never enlarge past the legal scale. */
+  .grn svg {{ max-width: 100%; max-height: 100%; }}
   .ytab {{ width: 100%; border-collapse: collapse; font-size: 11pt; margin-top: 4px; }}
   .ytab td {{ border: 1px solid #d7d7d7; padding: 3px 8px; }}
   .ytab tr td:first-child {{ text-align: left; font-weight: 600; color: #2b6a2b; }}

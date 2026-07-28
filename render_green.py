@@ -310,7 +310,9 @@ def render(hole, center_yd=None, tournament=False):
     # its panel so nothing overflows/clips. Whichever is smaller wins -> consistent framing.
     if tournament:
         legal_kf = 0.36 * px_m / 4.572                                   # legal ceiling
-        grn_w_in = (config.CARD_W_IN - 2*0.07) * (2.4/4.0) - 0.03        # .grn column width
+        # .grn column width must match generate.py's CSS: card minus padding, minus the 1px
+        # flex gap, times the .grn share (2.4 of 1.6+2.4). Measured in-browser at 2.010in.
+        grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)        # .grn column width
         grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - 0.18              # minus header + foot
         fit_kf = min(grn_w_in/VBw, grn_h_in/VBh)                         # fit the whole frame
         kf = min(legal_kf, fit_kf)
@@ -321,7 +323,12 @@ def render(hole, center_yd=None, tournament=False):
         wattr = hattr = '100%'
         wrapopen = wrapclose = ''
 
-    svg = (f'{wrapopen}<svg viewBox="{vb}" width="{wattr}" height="{hattr}" preserveAspectRatio="xMidYMid meet">'
+    # NOTE: the size MUST be emitted as an inline `style` (not width=/height= presentation
+    # attributes). A presentation attribute has zero specificity, so the book stylesheet's
+    # `.grn svg { width:100%; height:100% }` would override it and re-fit the drawing to the
+    # whole column -- silently breaking the Rule 4.3 scale cap computed above.
+    svg = (f'{wrapopen}<svg viewBox="{vb}" style="width:{wattr};height:{hattr}" '
+           f'preserveAspectRatio="xMidYMid meet">'
            f'{body}{gridg}{slabels}{pin}{fcb}{scalebar}{comp}'
            f'<text x="{VBx+VBw-2.5:.1f}" y="{VBy+VBh-2.5:.1f}" font-size="4" text-anchor="end" fill="#333">&#9650; approach</text>'
            f'</svg>{wrapclose}')
