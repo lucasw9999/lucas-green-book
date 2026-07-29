@@ -990,6 +990,20 @@ def test_every_built_course_is_self_consistent():
 
 
 @needs_corpus
+def test_disclaimer_record_matches_what_the_books_print():
+    """legal/05 calls itself "verbatim" and its entire value is being the exact printed words. It had
+    drifted: it described SIX distributed green books when there are twelve, both quoted versions
+    ended "(c) 2026 Lucas." while every real book prints the trademark and the CC BY-NC-ND line, its
+    own intro promised a coach-edition variant it never contained, and it predated the NAIP credit.
+    It is now generated from the built books, so this test is what keeps it honest."""
+    import subprocess
+    if not glob.glob(os.path.join(ROOT, "courses", "*", "greenbook_coach.html")):
+        pytest.skip("no coach edition built locally (COACH=1); the record cannot be regenerated")
+    r = subprocess.run([sys.executable, "tools/gen_disclaimers.py", "--check"],
+                       cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def test_provenance_doc_matches_the_build_artifacts():
     """legal/03 documented 8 of 12 books, named the wrong dataset for one, and carried project-name
     'years' wrong by 2-12 years. It is now generated from the artifacts; this fails if it drifts."""

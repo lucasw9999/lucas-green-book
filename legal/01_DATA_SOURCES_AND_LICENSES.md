@@ -9,9 +9,14 @@ Every input used to build the books, its license, our obligation, and how we mee
 - **Our obligations & compliance:**
   - **Attribution:** ✔ Each book prints "© OpenStreetMap contributors, ODbL 1.0,
     osm.org/copyright."
-  - **Produced Work (§4.5(b)):** the rendered book is a "Produced Work" under ODbL — we must
-    attribute and note the data is under ODbL. ✔ Done. We are **not** required to open‑license the
-    PDFs, so CC BY‑NC‑ND on the books does not conflict with ODbL.
+  - **Produced Work — the notice duty is §4.3, not §4.5(b).** ODbL §4.3 ("Notice for using
+    output (Contents)") is the clause that governs us: creating and using a Produced Work does
+    *not* require the full §4.2 notice, but publicly using one obliges a notice "reasonably
+    calculated" to tell anyone exposed to the work that the Contents came from the database and are
+    available under ODbL. ✔ Done — every book prints exactly that. Separately, **§4.5(b)** is what
+    exempts a Produced Work from share‑alike, which is why CC BY‑NC‑ND on the books does not
+    conflict with ODbL. Earlier revisions of this file cited §4.5(b) for the attribution duty
+    itself; that was the wrong clause for the right conclusion.
   - **Share‑alike (§4.4):** attaches only if we publicly release a **modified OSM database**. We
     keep the extracted `osm_*.json` as internal build inputs and do not publish them as a standalone
     dataset. If we ever do, that dataset must ship under ODbL.

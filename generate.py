@@ -112,7 +112,7 @@ def yardage_guide_panel():
       2025 with new greens</b>, and accurate post-construction green-surface data is not yet publicly
       available &mdash; so rather than print slope maps that could be wrong, the greens are left <b>blank
       to mark your own read</b>. (Our other books compute slope from public-domain USGS 3DEP elevation;
-      that data does not yet reflect this rebuilt course, so we do not use it here.) <b>No proprietary
+      that data does not yet reflect this rebuilt course, so we do not use it here.)''' + _naip_line() + ''' <b>No proprietary
       data, images, artwork, layout or trade dress from any commercial green-reading product was used,
       copied or referenced.</b> Not affiliated with, endorsed or sponsored by any course, club, association
       or product; course names &amp; trademarks belong to their owners and are used only to identify the
@@ -236,6 +236,23 @@ def cover_panel():
 </svg></div>'''
 
 
+def _naip_line():
+    """Credit USDA NAIP where -- and only where -- a course actually used it.
+
+    NAIP is a USDA public-domain work, so no permission or notice is legally required. But the about
+    panel enumerates the book's sources, and two books named it nowhere: valley-hi digitized hole
+    16's green from NAIP, and poppy-ridge used it as a site reference. A book that lists its sources
+    should list all of them.
+
+    Deliberately worded to cover both uses without overstating either -- "traced a green outline"
+    would be false for poppy-ridge, whose greens are blank; per-course detail is in legal/03."""
+    blob = str(config.COURSE.get("sources", {})).lower()
+    if "naip" not in blob:
+        return ""
+    return (' <b>USDA NAIP</b> aerial imagery (a U.S. Government work, public domain) was used as a '
+            'mapping reference for this course.')
+
+
 def _flown_line():
     """One honest line naming WHEN the elevation under these greens was measured.
 
@@ -279,7 +296,7 @@ def guide_panel():
       green shapes are a Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap
       contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright); slope, contours &amp; arrows are computed by the
       maker from <b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work); par, yardage &amp;
-      handicap are <b>facts</b> from the published scorecard. Every map is <b>independently created</b>:
+      handicap are <b>facts</b> from the published scorecard.''' + _naip_line() + ''' Every map is <b>independently created</b>:
       <b>no proprietary data, image, symbol set, page layout or trade dress of any commercial green-reading
       product was used, copied, referenced or reverse-engineered</b>, and this book references no third-party
       brand and is not a substitute for any product. Built <b>entirely from remote public data, without

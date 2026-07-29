@@ -23,7 +23,14 @@ DIR = config.COURSE_DIR
 R_LAT = 111320.0
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
 # NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
-_LON = config.COURSE.get("location", {}).get("lon", -121.0)
+# No default. A course.json without "location" used to fall back to -121.0, i.e. silently pick
+# California UTM zone 10 -- for a Pennsylvania course (zone 18) every tree would be projected
+# through the wrong zone, and nothing would say so.
+_LOC = config.COURSE.get("location") or {}
+if not isinstance(_LOC, dict) or _LOC.get("lon") is None:
+    raise SystemExit('course.json needs "location": {"lat": .., "lon": ..} -- it selects the UTM '
+                     'zone for every tree position. Refusing to guess one.')
+_LON = _LOC["lon"]
 UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)
 FWD = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM m
 INV = Transformer.from_crs(UTM, "EPSG:4326", always_xy=True)
@@ -41,7 +48,14 @@ def laz_to_utm():
             except Exception:
                 pass
     if src is None:
-        src = UTM
+        # Assuming the tiles are already in the course's UTM zone with metres for Z is exactly the
+        # guess geo.vertical_scale exists to prevent: a US-survey-foot cloud would go unscaled and
+        # every slope, contour and arrow would print 3.28x too steep, with nothing to reveal it.
+        raise SystemExit(
+            "no CRS in any LAZ tile and no \"lidar_crs\" in course.json.\n"
+            "  Refusing to assume the cloud is already in %s with metres for Z: if it is in US\n"
+            "  survey feet, every slope would print 3.28x too steep. Set \"lidar_crs\" to a CRS\n"
+            "  that carries its units (a compound EPSG code or full WKT), then re-run." % UTM)
     # vertical unit from the CRS axis, never guessed from its name (see geo.vertical_scale)
     return Transformer.from_crs(src, UTM, always_xy=True), geo.vertical_scale(src)
 
