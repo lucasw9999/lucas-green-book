@@ -386,6 +386,7 @@ def render(hole, center_yd=None, tournament=False):
 
 
     summary = dict(relief_ft=round(relief_m*3.28084,1), median_slope=round(med_slope,1),
+                   source=meta.get('source',''),
                    tilt_pct=round(tilt_pct,1), feeds=best, undul_ft=round(undul_ft,1),
                    conf=conf, depth_yd=int(round(depth_yd)), width_yd=int(round(width_yd)),
                    scale_max_in=scale_max_in)

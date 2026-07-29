@@ -126,7 +126,15 @@ def hole_panel(hole, sheet_label):
     # Greens known to have been rebuilt AFTER the LiDAR flight: the map is real measured data,
     # but the surface may have changed since, so label the card instead of hiding the read.
     outdated = hole in set(config.COURSE.get("greens_possibly_outdated", []))
-    grnlab = 'GREEN &middot; pre-rebuild data' if outdated else 'GREEN'
+    # Some greens have no usable point cloud (canopy, water) and fall back to the coarser but
+    # real USGS 1 m seamless DEM. Say so on the card -- the read is genuine, just less sharp.
+    coarse = 'seamless' in str(s.get('source', '')).lower()
+    if outdated:
+        grnlab = 'GREEN &middot; pre-rebuild data'
+    elif coarse:
+        grnlab = 'GREEN &middot; 1 m data'
+    else:
+        grnlab = 'GREEN'
     # A green we refused to read has no tilt/feed to report -- say so instead of printing 0.0%.
     if s.get('insufficient'):
         foot = (f'<span>green <b>{esc(s["feeds"])}</b> &middot; no slope printed</span>'

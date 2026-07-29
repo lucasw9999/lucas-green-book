@@ -35,6 +35,11 @@ def bearing(a_lat, a_lon, b_lat, b_lon):
     return (math.degrees(math.atan2(dE, dN)) + 360) % 360
 
 def main():
+    # ONLY=14,10 restricts the run to specific holes, so a coarse 1 m fallback can be applied to
+    # one green WITHOUT clobbering the sharp 0.4 m point-cloud surfaces of its neighbours.
+    only = {int(v) for v in os.environ.get("ONLY", "").replace(" ", "").split(",") if v.isdigit()}
+    if only:
+        print("ONLY holes:", sorted(only))
     d = json.load(open(f"{DIR}/osm_geom.json"))
     els = d['elements']
     greens = [e for e in els if e.get('tags', {}).get('golf') == 'green' and e.get('geometry')]
@@ -51,6 +56,8 @@ def main():
     for h in holes:
         ref = h['tags'].get('ref')
         if not (ref and ref.isdigit()):
+            continue
+        if only and int(ref) not in only:
             continue
         hn = int(ref); line = h['geometry']
         def near(pt):
