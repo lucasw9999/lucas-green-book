@@ -55,9 +55,10 @@ def _courses():
 
 EXPECT_MIN_HOLES = 190          # 198 built; a floor that tolerates one course being absent
 EXPECT_MIN_LABELS = 700         # ~823 to-green labels across the corpus
+EXPECT_MIN_PAIRS = 600          # ~726 rows carrying BOTH gutter numbers at 1x, ~682 at 2x
 
 
-def _assert_examined(holes, labels, errors, what):
+def _assert_examined(holes, labels, errors, what, min_labels=None):
     """Corpus tests must prove they looked at something.
 
     Every corpus test used to swallow per-hole render failures with `except Exception: continue`
@@ -65,8 +66,20 @@ def _assert_examined(holes, labels, errors, what):
     "5 passed in 0.04s" -- a green suite that had examined nothing at all."""
     assert not errors, f"{what}: {len(errors)} hole(s) failed to render: {errors[:5]}"
     assert holes >= EXPECT_MIN_HOLES, f"{what}: only examined {holes} holes (expected >= {EXPECT_MIN_HOLES})"
-    if labels is not None:
-        assert labels >= EXPECT_MIN_LABELS, f"{what}: only saw {labels} labels (expected >= {EXPECT_MIN_LABELS})"
+    floor = EXPECT_MIN_LABELS if min_labels is None else min_labels
+    assert labels >= floor, f"{what}: only saw {labels} labels (expected >= {floor})"
+
+
+def _restore_course(prev):
+    """Point COURSE back at something that exists after a synthetic course is torn down."""
+    if prev is not None:
+        os.environ["COURSE"] = prev
+    elif CORPUS:
+        os.environ["COURSE"] = CORPUS[0]
+    else:
+        os.environ.pop("COURSE", None)
+    for m in ("config", "render_hole", "render_green", "fetch_trees"):
+        sys.modules.pop(m, None)
 
 
 def _engine(slug):
@@ -279,7 +292,7 @@ def synth_engine(tmp_path_factory):
         holes[str(hn)] = [4, hn, spec["card"]]
     json.dump(dict(elements=els), open(os.path.join(cdir, "osm_geom.json"), "w"))
     json.dump(dict(elements=[]), open(os.path.join(cdir, "osm_course.json"), "w"))
-    json.dump(dict(slug=slug, name="Synthetic", address="", location=[lat0, lon0],
+    json.dump(dict(slug=slug, name="Synthetic", address="", location={"lat": lat0, "lon": lon0},
                    par=8, holes_count=len(SYNTH), green_speed="",
                    tees=[dict(name="Card", yards=sum(s["card"] for s in SYNTH.values()),
                               rating=70.0, slope=113)],
@@ -287,10 +300,19 @@ def synth_engine(tmp_path_factory):
                    osm_bbox=[lat0 - 0.01, lon0 - 0.01, lat0 + 0.02, lon0 + 0.02],
                    sources={}),
               open(os.path.join(cdir, "course.json"), "w"))
-    yield _engine(slug)
-    for f in ("osm_geom.json", "osm_course.json", "course.json"):
-        os.remove(os.path.join(cdir, f))
-    os.rmdir(cdir)
+    prev = os.environ.get("COURSE")
+    try:
+        yield _engine(slug)
+    finally:
+        for f in ("osm_geom.json", "osm_course.json", "course.json"):
+            fp = os.path.join(cdir, f)
+            if os.path.exists(fp):
+                os.remove(fp)
+        if os.path.isdir(cdir):
+            os.rmdir(cdir)
+        # MUST restore: this dir is now gone, and a stale COURSE pointing at it makes config raise
+        # SystemExit in every later test that shells out to a tool.
+        _restore_course(prev)
 
 
 def _ticks(svg):
@@ -478,9 +500,11 @@ def test_gutter_numbers_never_overprint(font_scale):
                 labels += 1
                 if left_end > right_start:
                     bad.append((slug, hn, n, rights[y], round(left_end - right_start, 2)))
-    # the 2x coach scale legitimately drops ~90 marks, so only the hole floor applies there
-    _assert_examined(holes, labels if font_scale == 1.0 else None, errors,
-                     f"overprint sweep @{font_scale}x")
+    # A None floor here let the 2x sweep pass on ZERO examined pairs -- the exact scale the
+    # overprint bug occurred at. Both scales pair roughly the same number of rows (the 2x scale
+    # drops marks, not the gutter numbers), so floor both.
+    _assert_examined(holes, labels, errors, f"overprint sweep @{font_scale}x",
+                     min_labels=EXPECT_MIN_PAIRS)
     assert not bad, f"overlapping gutter numbers at font_scale={font_scale}: {bad}"
 
 
@@ -579,31 +603,63 @@ def test_the_dedication_is_always_the_last_card_and_upright():
         assert upright == [last], f"{n}: exactly the dedication prints upright, got {upright}"
 
 
-def test_on_playing_surface_classifies_buildings_and_greens():
+def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
     building hit must report 'building', not 'golf' -- conflating them overstated the golf-surface
-    drop count 16x on valley-hi."""
-    import fetch_trees
+    drop count 16x on valley-hi.
 
-    def surf(tags, poly):
-        xs = [c[0] for c in poly]; ys = [c[1] for c in poly]
-        kind = "building" if tags.get("building") not in (None, "no") else "golf"
-        return (min(xs), min(ys), max(xs), max(ys), poly, kind)
+    Drives load_playing_surfaces() against real osm_*.json files. The first version of this test
+    built the surface tuples itself, which duplicated the very kind/`building=no` logic it claimed
+    to check: mutating the engine to report a building as 'golf', to treat `building=no` as a
+    building, or to drop the footprint clause entirely all left the suite green."""
+    slug = "_synth_trees"
+    cdir = os.path.join(ROOT, "courses", slug)
+    os.makedirs(cdir, exist_ok=True)
+    lat0, lon0 = 40.0, -75.0
+    box = lambda dx, dy, r=0.0005: [
+        dict(lat=lat0 + dy + sy * r, lon=lon0 + dx + sx * r)
+        for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1), (-1, -1))]
+    els = [
+        dict(type="way", id=1, tags={"building": "yes"},       geometry=box(0.000, 0.0)),
+        dict(type="way", id=2, tags={"golf": "green"},         geometry=box(0.004, 0.0)),
+        dict(type="way", id=3, tags={"building": "no"},        geometry=box(0.008, 0.0)),
+        dict(type="way", id=4, tags={"leisure": "pitch"},      geometry=box(0.012, 0.0)),
+    ]
+    try:
+        json.dump(dict(elements=els), open(os.path.join(cdir, "osm_course.json"), "w"))
+        json.dump(dict(elements=[]), open(os.path.join(cdir, "osm_geom.json"), "w"))
+        json.dump(dict(slug=slug, name="SynthTrees", address="",
+                       location={"lat": lat0, "lon": lon0}, par=72, green_speed="",
+                       tees=[dict(name="Card", yards=100, rating=70.0, slope=113)],
+                       featured_tee="Card", hole_cols=["par", "mens_hcp", "Card"],
+                       holes={"1": [72, 1, 100]},
+                       osm_bbox=[lat0 - 0.01, lon0 - 0.01, lat0 + 0.01, lon0 + 0.01], sources={}),
+                  open(os.path.join(cdir, "course.json"), "w"))
+        prev = os.environ.get("COURSE")
+        os.environ["COURSE"] = slug          # bind explicitly; do not inherit another test's course
+        for m in ("config", "fetch_trees"):
+            sys.modules.pop(m, None)
+        import fetch_trees
 
-    box = lambda x, y, r=0.001: [(x - r, y - r), (x + r, y - r), (x + r, y + r), (x - r, y + r)]
-    bld = surf({"building": "yes"}, box(-75.0, 40.0))
-    grn = surf({"golf": "green"}, box(-75.01, 40.0))
-    surfaces = [bld, grn]
+        surfaces = fetch_trees.load_playing_surfaces()
+        kinds = sorted(k for *_rest, k in surfaces)
+        assert kinds == ["building", "golf"], f"expected one building + one green, got {kinds}"
 
-    assert fetch_trees.on_playing_surface(-75.0, 40.0, surfaces) == "building"
-    assert fetch_trees.on_playing_surface(-75.01, 40.0, surfaces) == "golf"
-    assert fetch_trees.on_playing_surface(-74.5, 40.0, surfaces) is False   # outside both
-    # inside the bbox but outside the polygon: the bbox is a prefilter, not the answer
-    concave = surf({"building": "yes"}, [(0, 0), (2, 0), (2, 2), (1, 2), (1, 1), (0, 1)])
-    assert fetch_trees.on_playing_surface(0.5, 1.5, [concave]) is False   # the notch
-    assert fetch_trees.on_playing_surface(0.5, 0.5, [concave]) == "building"
-    assert fetch_trees.on_playing_surface(1.5, 1.5, [concave]) == "building"
+        at = lambda dx: fetch_trees.on_playing_surface(lon0 + dx, lat0, surfaces)
+        assert at(0.000) == "building", "a roof must report 'building', not 'golf'"
+        assert at(0.004) == "golf", "a green must report 'golf'"
+        assert at(0.008) is False, "building=no means NOT a building -- not a surface at all"
+        assert at(0.012) is False, "a non-golf, non-building polygon is not a playing surface"
+        assert at(0.050) is False, "outside every polygon"
+    finally:
+        for f in ("osm_course.json", "osm_geom.json", "course.json"):
+            fp = os.path.join(cdir, f)
+            if os.path.exists(fp):
+                os.remove(fp)
+        if os.path.isdir(cdir):
+            os.rmdir(cdir)
+        _restore_course(prev)
 
 
 @needs_corpus
