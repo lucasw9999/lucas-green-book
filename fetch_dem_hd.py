@@ -23,6 +23,10 @@ OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 RES = 0.4                                   # target metres/pixel
 MARGIN_M = 12.0
 R_LAT = 111320.0
+# Trust thresholds for a green surface. Above/below these the surface was not really measured,
+# so the book must not print a read for it (see the honesty gate in main()).
+NAN_FRAC_MAX = 0.02                         # max share of the green interior that may be extrapolated
+DENSITY_MIN = 4.0                           # min ground returns per m^2 over the patch
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
 # NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
 _LON = config.COURSE.get("location", {}).get("lon", -121.0)
@@ -54,6 +58,22 @@ def laz_to_utm():
 def centroid(g):
     la=sum(p['lat'] for p in g['geometry'])/len(g['geometry'])
     lo=sum(p['lon'] for p in g['geometry'])/len(g['geometry']); return la,lo
+
+def _in_polygon(ux, uy, geometry):
+    """Mask of sample points (UTM) falling inside a green polygon (lat/lon ring).
+    Vectorised ray-cast; the ring is projected to the same UTM frame as the samples."""
+    vx, vy = TR.transform([p['lon'] for p in geometry], [p['lat'] for p in geometry])
+    vx = np.asarray(vx); vy = np.asarray(vy)
+    inside = np.zeros(len(ux), dtype=bool)
+    for i in range(len(vx)):
+        j = i-1
+        x1, y1, x2, y2 = vx[i], vy[i], vx[j], vy[j]
+        crosses = (y1 > uy) != (y2 > uy)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            xint = (x2-x1)*(uy-y1)/np.where(y2 == y1, np.nan, y2-y1) + x1
+        inside ^= crosses & (ux < xint)
+    return inside
+
 def bearing(a_lat,a_lon,b_lat,b_lon):
     dE=(b_lon-a_lon)*mlon((a_lat+b_lat)/2); dN=(b_lat-a_lat)*R_LAT
     return (math.degrees(math.atan2(dE,dN))+360)%360
@@ -140,17 +160,33 @@ def main():
         grid=np.c_[t['UX'],t['UY']]
         zi=griddata(pts,pz,grid,method='linear')
         nan=np.isnan(zi)
+        # HONESTY GATE. griddata's linear pass returns NaN for every node OUTSIDE the point
+        # cloud's convex hull; the nearest pass below then copies a z value in -- terrain the
+        # LiDAR never saw. That is fine for the 12 m margin ring (deliberately outside the
+        # green) but NOT on the putting surface itself, so measure the gap where it matters:
+        # the fraction of NaN nodes lying INSIDE the green polygon. Recorded in the meta so
+        # render_green can refuse to draw a read that was invented rather than measured.
+        inside=_in_polygon(t['UX'],t['UY'],t['green']['geometry'])
+        n_in=int(inside.sum())
+        nan_frac=float((nan & inside).sum())/n_in if n_in else 1.0
         if nan.any():
             zi[nan]=griddata(pts,pz,grid[nan],method='nearest')
         arr=zi.reshape(t['H'],t['W'])
+        dens=round(len(pz)/((t['bbox'][2]-t['bbox'][0])*mlon(t['clat'])*(t['bbox'][3]-t['bbox'][1])*R_LAT),1)
+        # A green is only trustworthy if the surface was actually measured under it.
+        insufficient = bool(nan_frac > NAN_FRAC_MAX or dens < DENSITY_MIN)
         np.save(f"{OUT}/hole{hn:02d}.npy",arr)
         meta=dict(hole=hn,approach_bearing=t['appr'],bbox=t['bbox'],W=t['W'],H=t['H'],
                   green_id=t['green']['id'],green_center=[t['clat'],t['clon']],
                   polygon=[[p['lat'],p['lon']] for p in t['green']['geometry']],
                   source="USGS 3DEP LiDAR ground returns @0.4m",
-                  npts=int(len(pz)), density=round(len(pz)/((t['bbox'][2]-t['bbox'][0])*mlon(t['clat'])*(t['bbox'][3]-t['bbox'][1])*R_LAT),1))
+                  npts=int(len(pz)), density=dens,
+                  nan_frac=round(nan_frac,4), insufficient=insufficient)
         json.dump(meta,open(f"{OUT}/hole{hn:02d}.json","w"))
-        print(f"hole {hn:2d}: {t['W']}x{t['H']} @0.4m  {len(pz):6d} ground pts ({meta['density']}/m^2)")
+        flag=("  *** INSUFFICIENT LiDAR: %.1f%% of the green interior was extrapolated, not "
+              "measured -- render blank ***" % (100*nan_frac)) if insufficient else ""
+        print(f"hole {hn:2d}: {t['W']}x{t['H']} @0.4m  {len(pz):6d} ground pts "
+              f"({dens}/m^2, {100*nan_frac:.1f}% extrapolated){flag}")
 
 if __name__=="__main__":
     main()

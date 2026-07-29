@@ -123,6 +123,26 @@ def hole_panel(hole, sheet_label):
     gsvg, s = GREENS[hole]
     lsvg, i = LAYOUTS[hole]
     others = " / ".join(f"{lbl[:3]}{row[idx]}" for lbl, idx in config.OTHERS)
+    # Greens known to have been rebuilt AFTER the LiDAR flight: the map is real measured data,
+    # but the surface may have changed since, so label the card instead of hiding the read.
+    outdated = hole in set(config.COURSE.get("greens_possibly_outdated", []))
+    # Some greens have no usable point cloud (canopy, water) and fall back to the coarser but
+    # real USGS 1 m seamless DEM. Say so on the card -- the read is genuine, just less sharp.
+    coarse = 'seamless' in str(s.get('source', '')).lower()
+    if outdated:
+        grnlab = 'GREEN &middot; pre-rebuild data'
+    elif coarse:
+        grnlab = 'GREEN &middot; 1 m data'
+    else:
+        grnlab = 'GREEN'
+    # A green we refused to read has no tilt/feed to report -- say so instead of printing 0.0%.
+    if s.get('insufficient'):
+        foot = (f'<span>green <b>{esc(s["feeds"])}</b> &middot; no slope printed</span>'
+                f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
+    else:
+        tilt = (f'{s["tilt_pct"]}% <b>&#9888;</b>' if outdated else f'{s["tilt_pct"]}%')
+        foot = (f'<span>feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}</span>'
+                f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
   <div class="hhead">
@@ -133,10 +153,9 @@ def hole_panel(hole, sheet_label):
   </div>
   <div class="body">
     <div class="lay"><div class="minilab">HOLE</div>{lsvg}</div>
-    <div class="grn"><div class="minilab">GREEN</div>{gsvg}</div>
+    <div class="grn"><div class="minilab">{grnlab}</div>{gsvg}</div>
   </div>
-  <div class="foot"><span>feeds <b>{esc(s['feeds'])}</b> ({esc(s['conf'])}) &middot; {s['tilt_pct']}%</span>
-    <span>{s['depth_yd']}yd deep &middot; {i['bunkers']}B {i['waters']}W &middot; {esc(others)}</span></div>
+  <div class="foot">{foot}</div>
 </div>'''
 
 def _title_lines(raw):
@@ -200,6 +219,29 @@ def cover_panel():
 </svg></div>'''
 
 
+def _flown_line():
+    """One honest line naming WHEN the elevation under these greens was measured.
+
+    A green map is only as current as the flight beneath it, and a USGS project NAME is not a
+    date (four of our courses were mislabelled by 2-12 years). The date is decoded from the LAZ
+    point records by tools/lidar_dates.py and stored in course.json as lidar_flown."""
+    fl = config.COURSE.get("lidar_flown") or {}
+    label = fl.get("label")
+    if not label:
+        return ""
+    out = ('  <div class="legrow"><span><b>Measured</b> from public USGS 3DEP LiDAR flown '
+           f'<b>{esc(label)}</b>. Greens rebuilt after that date will not match &mdash; '
+           'trust what you see on the ground.</span></div>\n')
+    stale = sorted(config.COURSE.get("greens_possibly_outdated", []))
+    if stale:
+        holes = ", ".join(str(h) for h in stale)
+        out += ('  <div class="legrow"><span><b>&#9888; Holes ' + esc(holes) + '</b> were '
+                '<b>rebuilt after</b> that survey, so their green maps are marked '
+                '<b>&ldquo;pre-rebuild data&rdquo;</b> &mdash; the shapes and tiers may have '
+                'changed. Use them as a guide only and trust your own read.</span></div>\n')
+    return out
+
+
 def guide_panel():
     return '''<div class="panel guide">
   <div class="gtitle">How to read a green</div>
@@ -209,9 +251,9 @@ def guide_panel():
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep.</span></div>
   <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="7" height="9" fill="rgb(120,190,120)"/><rect x="10" y="3" width="7" height="9" fill="rgb(232,224,120)"/><rect x="18" y="3" width="7" height="9" fill="rgb(210,90,70)"/></svg>
     <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%). <b>Numbers</b> = slope % there.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: fairway (green), rough, <b>trees</b> (dark green), bunkers (tan), water (blue). Edge numbers: <b>left = yд to green</b>, <b>right = yд from the back tee</b>.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: fairway (green), rough, <b>trees</b> (dark green), bunkers (tan), water (blue). Edge numbers: <b>left = yd to green</b>, <b>right = yd from the back tee</b>.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
-  <div class="abt">
+''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book for junior golfers, <b>not for sale</b>. Hole &amp;
       green shapes are a Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap
@@ -370,7 +412,10 @@ def main():
   .body {{ flex: 1; min-height: 0; display: flex; gap: 1px; margin: 1px 0 0; }}
   .lay {{ flex: 1.6; min-width: 0; position: relative; }}
   .grn {{ flex: 2.4; min-width: 0; position: relative; }}
-  .lay svg, .grn svg {{ width: 100%; height: 100%; }}
+  .lay svg {{ width: 100%; height: 100%; }}
+  /* GREEN: never force a size -- render_green sizes it in inches to hold the Rule 4.3
+     scale cap. max-* can only shrink, so it can never enlarge past the legal scale. */
+  .grn svg {{ max-width: 100%; max-height: 100%; }}
   .ytab {{ width: 100%; border-collapse: collapse; font-size: 11pt; margin-top: 4px; }}
   .ytab td {{ border: 1px solid #d7d7d7; padding: 3px 8px; }}
   .ytab tr td:first-child {{ text-align: left; font-weight: 600; color: #2b6a2b; }}
