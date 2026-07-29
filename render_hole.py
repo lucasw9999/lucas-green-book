@@ -183,17 +183,16 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     bla_y = ty + FS*1.1 if ty + FS*1.1 < VBH-2 else ty - FS*0.6
     labels=txt(tx, bla_y, back_tee, "#20402a") + txt(gcx, grn_y, "GRN", "#2f5a26")
 
-    # Distance ticks. LEFT number = yds to GREEN (green). RIGHT number = yds from
-    # the BLACK (back) tee (brown). Placed at the frame edges and spaced apart so
-    # numbers never overlap; points too near the tee or green are skipped.
+    # Distance ticks. LEFT number (green) = yds to the GREEN, the straight-line distance a
+    # rangefinder reads. RIGHT number (brown) = yds from the BACK tee, measured ALONG the drawn
+    # line. Both are drawn in the frame gutters; a row is dropped if it would collide vertically
+    # with the row above, and the right number is dropped if the two would overprint horizontally.
     def etxt(x, y, sn, fill, anchor):
         return (f'<text x="{x}" y="{y:.1f}" font-size="{FSN:.1f}" text-anchor="{anchor}" '
                 f'paint-order="stroke" stroke="#fff" stroke-width="{FSN*0.28:.1f}" fill="{fill}" font-weight="700">{sn}</text>')
     total_yd = HOLES[hnum][2]                 # BACK (championship) tee scorecard yardage
-    # Ticks must be measured along the PLAYING LINE (the polyline), not the straight tee->green
-    # chord: course yardage follows the line you walk. Measured against arc length, 25 of 198
-    # holes were off by >=20 yd and 4 by >=80 (worst 138) -- and NOT because of doglegs, which
-    # this gets right, but because some OSM centerlines simply do not reach the back tee.
+    # Geometry of the drawn playing line, tee end first. arc_m is its true walked length, which the
+    # from-tee label is derived from -- course yardage follows the line you walk, not the chord.
     same = lambda a, b: abs(a['lat']-b['lat']) < 1e-9 and abs(a['lon']-b['lon']) < 1e-9
     ordered = line if same(line[0], tee_end) else list(reversed(line))
     pts_em = [em(p['lat'], p['lon']) for p in ordered]
@@ -201,29 +200,16 @@ def render_hole(hnum, HOLES, font_scale=1.0):
            for i in range(len(pts_em)-1)]
     arc_m = sum(seg) or 1.0
     arc_yd = arc_m / 0.9144
-    # The tee-relative label stays: the tick sits `yd` from the GREEN along the playing line, so
-    # (card total - yd) is a true distance from the back tee even where OSM's centerline stops
-    # short of it. tee_ok is reported for diagnostics -- on those holes the drawn tee marker is a
-    # forward tee, so the number is right about the hole but not measurable off the picture.
+    # Does the drawn line actually span the hole? Where it stops short of the back tee (22 of 198
+    # holes) no from-tee distance can be derived from it, so that label is omitted rather than
+    # guessed -- the to-green number, which is what you club off, is unaffected.
     tee_ok = abs(arc_yd - total_yd) <= max(15.0, 0.05*total_yd)
 
-    def point_from_green(d_m):
-        """(lat,lon) on the centerline, d_m metres back from the GREEN end, along the polyline."""
-        rem = d_m
-        for i in range(len(seg)-1, -1, -1):
-            if rem <= seg[i]:
-                f = 1.0 - (rem/seg[i] if seg[i] else 0.0)
-                a, b = ordered[i], ordered[i+1]
-                return (a['lat']+(b['lat']-a['lat'])*f, a['lon']+(b['lon']-a['lon'])*f)
-            rem -= seg[i]
-        return (ordered[0]['lat'], ordered[0]['lon'])
-
-    # A golfer clubs off "yards to the green", which is the STRAIGHT-LINE distance a rangefinder
-    # reads -- not how far there is left to walk. So place each tick where the centerline crosses
-    # the circle of radius `yd` about the green centre. That gives both properties at once:
-    # the label is a true to-green distance AND the tick sits on the drawn line.
-    # (Walking distance alone would print up to +43 yd over the straight line on a dogleg;
-    # positioning along the chord alone put the tick up to 85 m off the drawn line.)
+    # A golfer clubs off "yards to the green" -- the STRAIGHT-LINE distance a rangefinder reads, not
+    # how far there is left to walk. So place each tick where the centerline crosses the circle of
+    # that radius about the green centre: the label is then a true to-green distance AND the tick
+    # sits on the drawn line. (Walking distance alone printed up to +43 yd over the straight line on
+    # a dogleg; positioning along the chord alone put the tick up to 85 m off the drawn line.)
     gcla, gclo = centroid(green)
     gce, gcn = em(gcla, gclo)
     def _dist_to_green(la, lo):
@@ -231,8 +217,11 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         return math.hypot(e-gce, n-gcn)
 
     def point_at_radius(R_m):
-        """(lat,lon) on the centerline whose straight-line distance to the green centre is R_m,
-        taking the crossing nearest the green. None when the line never reaches that radius."""
+        """(lat, lon, arc_from_tee_m) for the point on the centerline whose straight-line distance
+        to the green centre is R_m, taking the crossing nearest the green. None when the line never
+        reaches that radius. arc_from_tee_m is that point's walked distance from the tee end, which
+        is what the from-tee label needs -- deriving it as (card total - R) would mix two different
+        measures and was up to 54 yd wrong on a dogleg."""
         prev_pt = ordered[-1]                      # green end
         prev_d = _dist_to_green(prev_pt['lat'], prev_pt['lon'])
         for i in range(len(ordered)-2, -1, -1):    # walk back toward the tee
@@ -249,32 +238,48 @@ def render_hole(hnum, HOLES, font_scale=1.0):
                     else:
                         hi_f = mid
                 f = (lo_f+hi_f)/2
+                # the crossing lies on segment i, a fraction (1-f) along it from ordered[i]
+                arc_from_tee = sum(seg[:i]) + seg[i]*(1.0-f)
                 return (prev_pt['lat']+(cur['lat']-prev_pt['lat'])*f,
-                        prev_pt['lon']+(cur['lon']-prev_pt['lon'])*f)
+                        prev_pt['lon']+(cur['lon']-prev_pt['lon'])*f,
+                        arc_from_tee)
             prev_pt, prev_d = cur, cur_d
         return None
 
     cands=[]
     for yd in (100,150,200,250,300):
-        # skip ticks too near the green, and any whose tee-relative label would be meaningless
-        # (<=30 yd from the tee, or negative -- possible when the drawn line overshoots the card)
-        if yd < 40 or (total_yd - yd) < 30:
+        hit = point_at_radius(yd*0.9144)
+        if hit is None:                            # the line never gets that far from the green
             continue
-        pt = point_at_radius(yd*0.9144)
-        if pt is None:                             # the line never gets that far from the green
+        la, lo, arc_from_tee = hit
+        # From-tee label: scale the card yardage by how far along the drawn line this point is.
+        # Only meaningful when the line spans the hole; otherwise print the to-green number alone.
+        ft = round(total_yd * arc_from_tee / arc_m) if tee_ok else None
+        if ft is not None and ft < 30:             # too close to the tee to be worth printing
             continue
-        sx, sy = proj(pt[0], pt[1])
-        cands.append((TY(sy), TX(sx), yd, total_yd - yd))
+        sx, sy = proj(la, lo)
+        cands.append((TY(sy), TX(sx), yd, ft))
     cands.sort()                              # by screen y (green side first)
     rings=""; lastY=-999
+    # Vertical guard: one printed row needs ~0.998*FSN of baseline separation (0.718 cap height +
+    # two 0.14 halo strokes), so 1.35 clears it with margin while not needlessly dropping the
+    # radius-spaced ticks. Measured tightest realised gap: 1.365*FSN (coach edition, bay-view h9).
+    DIGIT_EM = 0.556                          # Helvetica/Arial Bold digit advance
     for Y0,Xc,yd,ft in cands:
-        if Y0-lastY < FSN*1.35:               # keep the numbers from stacking (tuned so
-                                      # radius-spaced ticks are not needlessly dropped)
+        if Y0-lastY < FSN*1.35:
             continue
         lastY=Y0
         rings+=(f'<line x1="{Xc-4:.1f}" y1="{Y0:.1f}" x2="{Xc+4:.1f}" y2="{Y0:.1f}" stroke="#9a9a9a" stroke-width="0.7"/>'
                 + etxt(9,  Y0+FSN*0.35, str(yd), "#2f5a26", "start"))   # LEFT = to green
-        rings+=etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")         # RIGHT = from back tee
+        # Horizontal guard: the gutters are fixed at x=9 (start-anchored) and x=91 (end-anchored)
+        # while FSN scales with font_scale, so at the 2x coach scale the two numbers ran into each
+        # other -- the brown one is painted second WITH a white halo, so it erased the last digits
+        # of the to-green yardage (monarch-bay h16 printed "1(498"). Drop the from-tee number rather
+        # than the row: the to-green number is the one a golfer clubs off.
+        if ft is not None:
+            wl = DIGIT_EM*FSN*len(str(yd)); wr = DIGIT_EM*FSN*len(str(ft))
+            if 9 + wl <= 91 - wr:
+                rings+=etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")  # RIGHT = from back tee
 
     vb=f"0 0 100 {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'

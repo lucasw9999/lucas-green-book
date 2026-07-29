@@ -78,11 +78,13 @@ def load_playing_surfaces():
     surfaces=[]
     for e in els:
         t=e.get('tags',{})
-        is_surface = t.get('golf') in ('fairway','green','tee','bunker') or t.get('building')
+        is_surface = (t.get('golf') in ('fairway','green','tee','bunker')
+                      or t.get('building') not in (None, 'no'))
         if is_surface and e.get('geometry'):
             poly=[(p['lon'],p['lat']) for p in e['geometry']]
             xs=[c[0] for c in poly]; ys=[c[1] for c in poly]
-            kind='building' if t.get('building') else 'golf'
+            # building='no' means NOT a building -- must not be treated as a surface at all
+            kind='building' if t.get('building') not in (None,'no') else 'golf'
             surfaces.append((min(xs),min(ys),max(xs),max(ys),poly,kind))
     return surfaces
 
@@ -102,6 +104,14 @@ def main():
     pt2utm, zscale = laz_to_utm()
     surfaces = load_playing_surfaces()
     n_golf=sum(1 for s in surfaces if s[5]=='golf'); n_bld=len(surfaces)-n_golf
+    if n_bld == 0 and not os.environ.get("ALLOW_NO_BUILDINGS"):
+        # A cache fetched before way[building] was added silently disables the footprint test, and
+        # clubhouse roofs come back as trees (53 of them at Merion). Fail loudly instead.
+        raise SystemExit("no building polygons in osm_course.json -- this cache predates the "
+                         "way[building] query, so roofs would be drawn as trees.\n"
+                         "  Re-run: COURSE=%s python3 fetch_osm.py   "
+                         "(or set ALLOW_NO_BUILDINGS=1 if this course genuinely has none)"
+                         % config.SLUG)
     geom = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
     holes = [e for e in geom if e.get('tags',{}).get('golf')=='hole' and e.get('geometry')]
     # hole centerlines as UTM segment lists -- keep the LONGEST way per ref (OSM has

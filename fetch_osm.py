@@ -9,7 +9,7 @@ Generic OSM fetch for a course (reads config.osm_bbox, writes into COURSE_DIR):
   osm_course.json -- golf features + water (tees, bunkers, water) for layouts
 Run:  COURSE=<slug> python3 fetch_osm.py
 """
-import urllib.parse, urllib.request, json, time, os
+import urllib.parse, urllib.request, json, time, os, math
 import config
 
 S, W, N, E = config.COURSE["osm_bbox"]   # [south, west, north, east]
@@ -30,13 +30,22 @@ def _digitized_of(path):
     if not os.path.exists(path):
         return []
     try:
-        prev = json.load(open(path)).get('elements', [])
+        j = json.load(open(path))
     except Exception as e:
         raise SystemExit(
             f"REFUSING to overwrite {path}: it exists but could not be parsed ({type(e).__name__}: {e}).\n"
             f"  It may hold hand-digitized geometry that exists nowhere else. Restore or move it\n"
             f"  aside deliberately before re-fetching.")
-    return [e for e in prev if '_digitized' in (e.get('tags') or {})]
+    # Shape-check too, not just parseability. A file that is valid JSON but the wrong SHAPE (no
+    # 'elements' key, elements not a list, elements holding non-objects) would otherwise be read as
+    # "nothing to preserve" and silently overwritten -- exactly the loss this guard exists to stop.
+    if not isinstance(j, dict) or not isinstance(j.get('elements'), list) \
+            or any(not isinstance(e, dict) for e in j['elements']):
+        raise SystemExit(
+            f"REFUSING to overwrite {path}: it parsed as JSON but is not an Overpass result\n"
+            f"  (expected an object with an 'elements' list of objects). Treating this as\n"
+            f"  'nothing to preserve' could destroy hand-digitized geometry. Inspect it by hand.")
+    return [e for e in j['elements'] if '_digitized' in (e.get('tags') or {})]
 
 
 def fetch(query, out):
@@ -52,10 +61,33 @@ def fetch(query, out):
                 have = {e.get('id') for e in j.get('elements', []) if e.get('id') is not None}
                 add = [e for e in kept if e.get('id') is None or e.get('id') not in have]
                 if len(add) != len(kept):
+                    clash = [(e.get('type'), e.get('id')) for e in kept if e not in add]
                     raise SystemExit(
                         f"ABORT: {len(kept)-len(add)} digitized feature(s) in {path} collide by id with\n"
-                        f"  freshly fetched OSM elements. OSM may now map that green for real. Resolve by\n"
-                        f"  hand (delete the digitized copy if OSM's is correct) rather than guessing.")
+                        f"  freshly fetched OSM elements {clash}. OSM may now map that green for real.\n"
+                        f"  Resolve by hand (delete the digitized copy if OSM's is correct).")
+                # An id check alone is not enough: digitized features use negative or synthetic ids
+                # that can never equal a real OSM id, so if OSM has since mapped the same green the
+                # collision is GEOMETRIC, not by id -- and we would keep both, leaving two greens
+                # for one hole and letting nearest-green matching pick the stale trace.
+                for d in add:
+                    dg = d.get('geometry') or []
+                    if not dg or (d.get('tags') or {}).get('golf') != 'green':
+                        continue
+                    dla = sum(p['lat'] for p in dg)/len(dg); dlo = sum(p['lon'] for p in dg)/len(dg)
+                    for e in j.get('elements', []):
+                        eg = e.get('geometry') or []
+                        if not eg or (e.get('tags') or {}).get('golf') != 'green':
+                            continue
+                        ela = sum(p['lat'] for p in eg)/len(eg); elo = sum(p['lon'] for p in eg)/len(eg)
+                        dm = math.hypot((elo-dlo)*111320.0*math.cos(math.radians(dla)),
+                                        (ela-dla)*111320.0)
+                        if dm < 25.0:
+                            raise SystemExit(
+                                f"ABORT: digitized green {d.get('id')} in {path} is {dm:.1f} m from a\n"
+                                f"  freshly fetched OSM green ({e.get('type')} {e.get('id')}) -- OSM has\n"
+                                f"  most likely mapped it for real. Keeping both would give one hole two\n"
+                                f"  greens. Delete the digitized copy and rebuild that hole's DEM.")
                 j.setdefault('elements', []).extend(add)
                 data = json.dumps(j, indent=2).encode()
                 print(f"  {out}: preserved {len(add)} of {len(kept)} digitized feature(s)")
