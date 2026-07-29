@@ -264,6 +264,9 @@ def guide_panel():
   <div class="gtitle">How to read a green</div>
   <div class="legrow"><svg width="28" height="14"><line x1="2" y1="7" x2="18" y2="7" stroke="#15271b" stroke-width="1.3"/><polygon points="18,7 14,4.5 14,9.5" fill="#15271b"/></svg>
     <span><b>Arrows</b> point downhill &mdash; the way the ball rolls. Longer = steeper.</span></div>
+  <div class="legrow"><span><b>Numbers</b> = slope % at that spot. Ground steeper than
+    <b>10%</b> is not putting surface (a bank or bunker face inside the mapped edge), so it is
+    shown by colour only and carries no number.</span></div>
   <div class="legrow"><svg width="28" height="14"><path d="M2,11 Q9,3 26,6" stroke="#3c5a34" fill="none" stroke-width="0.9"/><path d="M2,13 Q11,7 26,11" stroke="#3c5a34" fill="none" stroke-width="0.9"/></svg>
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep.</span></div>
   <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="7" height="9" fill="rgb(120,190,120)"/><rect x="10" y="3" width="7" height="9" fill="rgb(232,224,120)"/><rect x="18" y="3" width="7" height="9" fill="rgb(210,90,70)"/></svg>
@@ -722,7 +725,13 @@ def build_coach(coach_name=""):
     # green = leaf BACK), so you "flip up one more page" to the green. Map
     # wording/numbers are rendered ~2x bigger (font_scale) for older eyes.
     for h in config.HOLE_NUMS:
-        GREENS[h] = render_green.render(h, tournament=True)
+        # tournament=False is the ENLARGED render. This used to ask for the conforming, size-capped
+        # render and then rely on the coach stylesheet to stretch it -- but render_green sets the
+        # size INLINE in inches (deliberately, so CSS cannot enlarge a book past the Rule 4.3 cap),
+        # and an inline style beats a stylesheet. So the "ENLARGED" edition printed its greens at
+        # exactly the pocket scale, ratio 1.00 on all 18 holes, while the card, README and
+        # PIPELINE.md all said they were bigger.
+        GREENS[h] = render_green.render(h, tournament=False)
         LAYOUTS[h] = render_hole.render_hole(h, HOLES, font_scale=2.0)
     # deck: leaf0 = [cover, enlarged-about]; leaf h = [hole h map, hole h green];
     # then back matter. Holes land one-per-leaf (map front / green back).

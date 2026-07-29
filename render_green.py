@@ -120,6 +120,7 @@ def _blank_green(meta, tournament, rebuilt=False):
 # Render-time gate. Deliberately looser than fetch_dem_hd.py's producer gate (NAN_FRAC_MAX=0.02):
 # this is a backstop against an ungated or corrupt surface, not a quality bar, so it must not blank
 # a green the sharper producer already accepted.
+SLOPE_LABEL_MAX_PCT = 10.0      # above this a cell is not putting surface -- colour it, do not number it
 NAN_FRAC_MAX_RENDER = 0.25      # >25% of the green interior with no elevation at all
 MAX_PLAUSIBLE_RELIEF_M = 30.0   # 98 ft of fall inside one green outline is a data artifact
 
@@ -350,7 +351,15 @@ def render(hole, tournament=False):
     cand=[]
     for r in range(4,H-4,6):
         for c in range(4,W-4,6):
-            if core[r,c] and slope[r,c]>=1.5:
+            # A putting surface is built at roughly 1-4%; a tier face reaches ~8%. Anything above
+            # SLOPE_LABEL_MAX_PCT inside the traced outline is a bank, mound or bunker lip, not
+            # green -- the OSM golf=green polygon includes the collar and surround. Those cells are
+            # MEASURED correctly, but the legend reads "Numbers = slope % there" on a green card,
+            # so printing 40 beside 5 tells a reader the green has a 40% putt. It does not.
+            # They stay visible through colour and arrows; they just get no putt number.
+            # (This loop sorts steepest-first, so without a ceiling it actively PREFERRED the
+            # least plausible cells on the card -- merion h2 printed 40, philadelphia 29.)
+            if core[r,c] and slope[r,c]>=1.5 and slope[r,c]<=SLOPE_LABEL_MAX_PCT:
                 cand.append((float(slope[r,c]),r,c))
     cand.sort(reverse=True)
     for sl,r,c in cand:

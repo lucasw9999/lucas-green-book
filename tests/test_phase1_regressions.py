@@ -712,6 +712,57 @@ def test_render_survives_the_real_3dep_nodata_sentinel(gate_course):
     assert s["relief_ft"] < 100.0, f"sentinel leaked into the relief: {s['relief_ft']}"
 
 
+def test_no_slope_label_claims_an_unputtable_number(gate_course):
+    """merion h2 printed "40" beside "5" on a green card whose legend says "Numbers = slope %
+    there". The cell was measured correctly -- it is a bank inside the OSM golf=green polygon,
+    which includes the collar and surround -- but a 40% putt does not exist, and the label
+    placement sorted steepest-first, so it actively PREFERRED the least plausible cells. Across the
+    12 books: 1321 labels, 137 above 8%, worst 40.
+
+    Synthetic surface: a putting-plausible 3% plane with a 45% bank across one edge, inside a
+    single green outline -- exactly the real geometry."""
+    import numpy as np
+    import render_green
+
+    # The bank must sit where the label sampler actually looks: inside the ERODED core (the mask
+    # is inset, then eroded ~1.5 m) and on the c = 4, 10, 16, ... sampling stride. A bank at the
+    # outline edge is never sampled, which is how the first version of this test passed with the
+    # ceiling removed.
+    def plane_with_bank(r, c):
+        base = 100.0 + 0.03 * r
+        return np.where(c < 28, base, np.where(c <= 34, base + 1.2 * (c - 28), base + 1.2 * 6))
+
+    _synth_green(gate_course, 5, plane_with_bank, insufficient=False)
+    svg, _s = render_green.render(5)
+    labels = [int(v) for v in re.findall(
+        r'font-size="4\.6"[^>]*font-weight="700">(\d+)</text>', svg)]
+    assert labels, "the plane must still produce slope labels"
+    assert max(labels) <= render_green.SLOPE_LABEL_MAX_PCT, \
+        f"printed an unputtable slope: {sorted(labels)}"
+
+
+def test_the_two_render_modes_are_actually_different(gate_course):
+    """The ENLARGED coach edition printed its greens at exactly the pocket scale -- ratio 1.00 on
+    all 18 holes -- because build_coach asked for the CONFORMING render (tournament=True), which
+    pins the size INLINE in inches so that CSS cannot enlarge a book past the Rule 4.3 cap, and an
+    inline style beats the coach stylesheet's width:100%. Four places (the printed card, README,
+    PIPELINE.md) asserted the greens were bigger while the print contradicted them.
+
+    So the two modes must stay distinguishable: tournament=True pins the size (the legal cap),
+    tournament=False leaves it to the page (the enlarged edition)."""
+    import render_green
+    _synth_green(gate_course, 6, lambda r, c: 100.0 + 0.03 * r, insufficient=False)
+
+    svg_t, _ = render_green.render(6, tournament=True)
+    svg_e, _ = render_green.render(6, tournament=False)
+    pinned = re.compile(r'style="width:([0-9.]+)in;height:([0-9.]+)in"')
+
+    assert pinned.search(svg_t), \
+        "the conforming render MUST pin its size inline -- that is the Rule 4.3 cap CSS cannot undo"
+    assert not pinned.search(svg_e), \
+        "the enlarged render must NOT pin an inch size, or the coach card cannot grow past the cap"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
@@ -821,6 +872,36 @@ def test_no_tree_marker_sits_on_a_building():
 
 
 @pytest.mark.slow
+@pytest.mark.slow          # rebuilds one book from source, then measures it in a browser
+@needs_corpus
+def test_rule_4_3_holds_for_a_book_BUILT_FROM_THE_CURRENT_CODE():
+    """The sibling test below measures greenbook.html ALREADY ON DISK, so it cannot fail for a code
+    regression -- changing render_green's legal ceiling from 0.36 to 0.45 left the whole suite green
+    while the next real build went to 1:435, over the Rule 4.3 limit. Since the scale computation is
+    this project's worst historical defect, close the loop: generate a book from the current source,
+    then measure THAT."""
+    import subprocess
+    slug = CORPUS[0]
+    html = os.path.join(ROOT, "courses", slug, "greenbook.html")
+    keep = open(html, "rb").read() if os.path.exists(html) else None
+    try:
+        env = dict(os.environ, COURSE=slug)
+        b = subprocess.run([sys.executable, "generate.py"], cwd=ROOT, env=env,
+                           capture_output=True, text=True)
+        assert b.returncode == 0, f"build failed:\n{b.stdout[-1500:]}{b.stderr[-1500:]}"
+        r = subprocess.run([sys.executable, "tools/check_scale.py", slug], cwd=ROOT,
+                           capture_output=True, text=True)
+        if r.returncode == 2 and "SKIP:" in r.stdout:
+            pytest.skip("no browser installed; the rendered-layout measurement cannot run here")
+        assert r.returncode == 0, f"a freshly built book breaks Rule 4.3:\n{r.stdout[-2000:]}"
+        assert "PASS" in r.stdout, r.stdout[-2000:]
+        n = int(re.search(r"(\d+) greens measured", r.stdout).group(1))
+        assert n >= 9, f"only {n} greens measured in the fresh build"
+    finally:
+        if keep is not None:                     # leave the committed book exactly as it was
+            open(html, "wb").write(keep)
+
+
 @pytest.mark.slow          # ~11 s: launches a browser to lay out every book
 @needs_corpus
 def test_every_green_conforms_to_rule_4_3_scale_cap():
