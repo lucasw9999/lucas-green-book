@@ -189,17 +189,42 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     def etxt(x, y, sn, fill, anchor):
         return (f'<text x="{x}" y="{y:.1f}" font-size="{FSN:.1f}" text-anchor="{anchor}" '
                 f'paint-order="stroke" stroke="#fff" stroke-width="{FSN*0.28:.1f}" fill="{fill}" font-weight="700">{sn}</text>')
-    total_yd = HOLES[hnum][2]                 # BLACK (back) tee scorecard yardage
+    total_yd = HOLES[hnum][2]                 # BACK (championship) tee scorecard yardage
+    # Ticks must be measured along the PLAYING LINE (the polyline), not the straight tee->green
+    # chord: course yardage follows the line you walk. Measured against arc length, 25 of 198
+    # holes were off by >=20 yd and 4 by >=80 (worst 138) -- and NOT because of doglegs, which
+    # this gets right, but because some OSM centerlines simply do not reach the back tee.
+    same = lambda a, b: abs(a['lat']-b['lat']) < 1e-9 and abs(a['lon']-b['lon']) < 1e-9
+    ordered = line if same(line[0], tee_end) else list(reversed(line))
+    pts_em = [em(p['lat'], p['lon']) for p in ordered]
+    seg = [math.hypot(pts_em[i+1][0]-pts_em[i][0], pts_em[i+1][1]-pts_em[i][1])
+           for i in range(len(pts_em)-1)]
+    arc_m = sum(seg) or 1.0
+    arc_yd = arc_m / 0.9144
+    # The tee-relative label stays: the tick sits `yd` from the GREEN along the playing line, so
+    # (card total - yd) is a true distance from the back tee even where OSM's centerline stops
+    # short of it. tee_ok is reported for diagnostics -- on those holes the drawn tee marker is a
+    # forward tee, so the number is right about the hole but not measurable off the picture.
+    tee_ok = abs(arc_yd - total_yd) <= max(15.0, 0.05*total_yd)
+
+    def point_from_green(d_m):
+        """(lat,lon) on the centerline, d_m metres back from the GREEN end, along the polyline."""
+        rem = d_m
+        for i in range(len(seg)-1, -1, -1):
+            if rem <= seg[i]:
+                f = 1.0 - (rem/seg[i] if seg[i] else 0.0)
+                a, b = ordered[i], ordered[i+1]
+                return (a['lat']+(b['lat']-a['lat'])*f, a['lon']+(b['lon']-a['lon'])*f)
+            rem -= seg[i]
+        return (ordered[0]['lat'], ordered[0]['lon'])
+
     cands=[]
     for yd in (100,150,200,250,300):
-        ft = total_yd - yd
-        if ft < 30 or yd < 40:                # skip points too near the tee/green
+        if yd < 40 or (arc_yd - yd) < 30:     # skip points too near the green / the tee
             continue
-        t=L-yd*0.9144
-        if t<=2: continue
-        e=tee[0]+ux*t; n=tee[1]+uy*t
-        dx,dy=e-tee[0],n-tee[1]; sx=dx*perp[0]+dy*perp[1]; sy=-(dx*ux+dy*uy)
-        cands.append((TY(sy), TX(sx), yd, ft))
+        la, lo = point_from_green(yd*0.9144)
+        sx, sy = proj(la, lo)
+        cands.append((TY(sy), TX(sx), yd, total_yd - yd))
     cands.sort()                              # by screen y (green side first)
     rings=""; lastY=-999
     for Y0,Xc,yd,ft in cands:
@@ -207,15 +232,17 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             continue
         lastY=Y0
         rings+=(f'<line x1="{Xc-4:.1f}" y1="{Y0:.1f}" x2="{Xc+4:.1f}" y2="{Y0:.1f}" stroke="#9a9a9a" stroke-width="0.7"/>'
-                + etxt(9,  Y0+FSN*0.35, str(yd), "#2f5a26", "start")   # LEFT  = to green
-                + etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end"))    # RIGHT = from black tee
+                + etxt(9,  Y0+FSN*0.35, str(yd), "#2f5a26", "start"))   # LEFT = to green
+        if ft is not None:                                              # RIGHT = from back tee
+            rings+=etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")
 
     vb=f"0 0 100 {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
          f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
          f'{trow_svg}{tdot_svg}{rings}{labels}</svg>')
     info=dict(bunkers=len(bunkers),waters=len(waters),tees=len(tees),
-              trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3))
+              trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
+              arc_yd=round(arc_yd), card_yd=total_yd, tee_ticks=tee_ok)
     return svg, info
 
 if __name__=="__main__":

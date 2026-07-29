@@ -21,9 +21,26 @@ def fetch(query, out):
         try:
             req = urllib.request.Request(url, headers={'Accept': 'application/json', 'User-Agent': 'greenbook/1.0'})
             data = urllib.request.urlopen(req, timeout=150).read()
-            json.loads(data)                      # validate
-            open(os.path.join(config.COURSE_DIR, out), "wb").write(data)
-            return json.loads(data)
+            j = json.loads(data)                  # validate
+            path = os.path.join(config.COURSE_DIR, out)
+            # PRESERVE hand-added geometry. Some courses carry greens digitized from public-domain
+            # NAIP because OSM had none; they are tagged _digitized. A bare re-fetch would silently
+            # delete them, and since holes bind to their NEAREST green, the affected hole would
+            # then bind to a neighbouring green -- a wrong panel with no error.
+            if os.path.exists(path):
+                try:
+                    prev = json.load(open(path)).get('elements', [])
+                except Exception:
+                    prev = []
+                kept = [e for e in prev if '_digitized' in (e.get('tags') or {})]
+                if kept:
+                    have = {e.get('id') for e in j.get('elements', [])}
+                    add = [e for e in kept if e.get('id') not in have]
+                    j.setdefault('elements', []).extend(add)
+                    data = json.dumps(j).encode()
+                    print(f"  {out}: preserved {len(add)} digitized feature(s)")
+            open(path, "wb").write(data)
+            return j
         except Exception as e:
             print(f"  {out} attempt {attempt+1} failed: {type(e).__name__} {e}; retry")
             time.sleep(5)
@@ -40,6 +57,7 @@ def main():
     course = fetch(f'''[out:json][timeout:120];
 (
  way["golf"]({BB});
+ way["building"]({BB});
  way["natural"="water"]({BB});
  way["waterway"]({BB});
  way["natural"="wood"]({BB});

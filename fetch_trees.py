@@ -62,10 +62,14 @@ def _pip(x, y, poly):
     return inside
 
 def load_playing_surfaces():
-    """Fairway / green / tee / bunker polygons (lon,lat) with bboxes. Trees never
-    grow on these, so any marker inside one is a false positive (edge-tree clipped
-    in, or a non-vegetation elevated return: cart, mower, person, flagstick) and is
-    dropped. Correct by definition -- keeps only rough/out-of-play trees."""
+    """Polygons where a tree marker must be a false positive, with bboxes:
+      * fairway / green / tee / bunker -- trees never grow on a playing surface, so a marker
+        there is an edge-tree clipped in or a non-vegetation elevated return (cart, mower,
+        person, flagstick).
+      * BUILDINGS -- a roof is 2.5-35 m above ground and reads exactly like canopy. On tiles
+        that carry class 6 we drop those points upstream, but most of our tiles are
+        unclassified, so a clubhouse roof arrives as class 1 and only its FOOTPRINT can
+        identify it (53 markers sat on Merion's clubhouse before this)."""
     els=[]
     for fn in ("osm_course.json","osm_geom.json"):
         p=f"{DIR}/{fn}"
@@ -73,7 +77,9 @@ def load_playing_surfaces():
             j=json.load(open(p)); els+=j.get("elements",j) if isinstance(j,dict) else j
     surfaces=[]
     for e in els:
-        if e.get('tags',{}).get('golf') in ('fairway','green','tee','bunker') and e.get('geometry'):
+        t=e.get('tags',{})
+        is_surface = t.get('golf') in ('fairway','green','tee','bunker') or t.get('building')
+        if is_surface and e.get('geometry'):
             poly=[(p['lon'],p['lat']) for p in e['geometry']]
             xs=[c[0] for c in poly]; ys=[c[1] for c in poly]
             surfaces.append((min(xs),min(ys),max(xs),max(ys),poly))
@@ -123,8 +129,12 @@ def main():
         grd=np.full((nx,ny), np.inf)
         gi=((x[gnd]-gx0)/GC).astype(int); gj=((y[gnd]-gy0)/GC).astype(int)
         np.minimum.at(grd, (gi,gj), z[gnd])
-        # candidate canopy points: NON-ground, 2.5-35 m above local ground
-        cand=(cls!=2)&(cls!=7)&(cls!=9)      # drop ground/noise/water
+        # Candidate canopy points: NON-ground, 2.5-35 m above local ground.
+        # Excluded classes: 2 ground, 6 BUILDING, 7 noise, 9 water, 17 bridge deck, 18 high noise.
+        # We must NOT restrict to class 5 (high vegetation): 10 of 11 courses have ZERO class-5
+        # points (their tiles are unclassified, class 1 + 2 only), so vegetation arrives as class
+        # 1/3/4 and a class-5 filter would yield no trees at all on almost every course.
+        cand=(cls!=2)&(cls!=6)&(cls!=7)&(cls!=9)&(cls!=17)&(cls!=18)
         cx=x[cand]; cy=y[cand]; cz=z[cand]
         ci=np.clip(((cx-gx0)/GC).astype(int),0,nx-1); cj=np.clip(((cy-gy0)/GC).astype(int),0,ny-1)
         hgt=cz-grd[ci,cj]
