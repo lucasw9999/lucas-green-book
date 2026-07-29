@@ -1004,12 +1004,19 @@ def test_disclaimer_record_matches_what_the_books_print():
     assert r.returncode == 0, r.stdout + r.stderr
 
 
+@needs_corpus
 def test_provenance_doc_matches_the_build_artifacts():
     """legal/03 documented 8 of 12 books, named the wrong dataset for one, and carried project-name
-    'years' wrong by 2-12 years. It is now generated from the artifacts; this fails if it drifts."""
+    'years' wrong by 2-12 years. It is now generated from the artifacts; this fails if it drifts.
+
+    Corpus-gated: without course data the regenerated table is empty, so this used to report the
+    committed 12-row table as STALE and fail the suite on a fresh clone -- for someone who had done
+    nothing wrong. The generator now exits 2 for "nothing to check" as well."""
     import subprocess
     r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "gen_provenance.py"), "--check"],
                        cwd=ROOT, capture_output=True, text=True)
+    if r.returncode == 2:
+        pytest.skip(r.stdout.strip())
     assert r.returncode == 0, r.stdout + r.stderr
 
 

@@ -184,6 +184,12 @@ names below are taken from the actual tile filenames on disk.
 
 
 def main():
+    if not glob.glob(os.path.join(ROOT, "courses", "*", "course.json")):
+        # "no courses" is not the same as "stale". On a fresh clone courses/ is gitignored and empty,
+        # so regenerating produced an EMPTY table and --check reported the committed 12-row table as
+        # stale -- turning the repo's front door red for someone who had done nothing wrong.
+        print("no course data present (courses/ is gitignored) -- nothing to check against.")
+        return 2
     text = build()
     if "--check" in sys.argv:
         cur = open(OUT).read() if os.path.exists(OUT) else ""
