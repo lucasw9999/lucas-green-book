@@ -2,7 +2,7 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Shared course config for the green-book engine.
 
@@ -44,7 +44,7 @@ with open(_CJ) as f:
 
 # ---- physical card + print layout (inches) -------------------------------
 # Card trim size = the finished page that slips into a back-pocket yardage-book
-# cover. 3.5 x 5.5 fits standard covers and is well under the Rules of Golf cap
+# cover. 3.5 x 5.0 fits standard covers and is well under the Rule 4.3 cap
 # (4.25 x 7). Override per course in course.json via "card":{"w":..,"h":..}.
 _card = COURSE.get("card", {})
 CARD_W_IN = float(_card.get("w", 3.5))
@@ -74,4 +74,3 @@ FI = 2 + TEES.index(FEATURED)                     # featured yardage index
 SI = 2 + TEES.index(SECONDARY)                    # secondary yardage index
 OTHERS = [(t, 2 + i) for i, t in enumerate(TEES) if t not in (FEATURED, SECONDARY)]
 TEE_TABLE = COURSE.get("tees", [])
-MAX_YARDS = max((t["yards"] for t in TEE_TABLE), default=0)

@@ -2,12 +2,12 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 High-resolution green surfaces from RAW LiDAR ground returns.
 
 Upgrade over fetch_dem.py (which used the gridded 1 m DEM): here we read the
-CA_Central_Valley_LiDAR_2016 point cloud (~12 pts/m^2, ~6.7 ground pts/m^2),
+course's USGS 3DEP point cloud (typically 9-33 pts/m^2 over a green),
 keep ONLY ground-classified points (class 2), and interpolate a 0.4 m surface
 over each green — sampled on the same lat/lon grid render_green.py expects, so
 the renderer is unchanged. Output -> dem_hd/holeNN.{npy,json}.

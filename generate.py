@@ -2,7 +2,7 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Green-book generator (course-agnostic engine).
 
@@ -351,10 +351,7 @@ def notes_panel(title, holes_range):
     lines = "".join(f'<div class="nrow"><b>{h}</b><span></span></div>' for h in holes_range)
     return f'<div class="panel notesp"><div class="gtitle">{esc(title)}</div>{lines}</div>'
 
-# ---- imposition: one-cut 8-page zine ---------------------------------------
-PHYS_ORDER = [5, 4, 3, 2, 6, 7, 8, 1]
-ROTATED = {0, 1, 2, 3}
-
+# ---- imposition helpers ---------------------------------------------------
 def crop_ticks(x, y, w, h, t=0.14):
     """L-shaped cut ticks just outside each corner of a card, for trimming."""
     segs = []
@@ -380,7 +377,9 @@ def main():
             grp = "Front" if h <= 6 else ("Mid" if h <= 14 else "Finish")
         panels.append(yardage_hole_panel(h, grp) if yardage else hole_panel(h, grp))
     panels += [scorecard_panel(), tees_panel(),
-               notes_panel("Notes 1-9", config.HOLE_NUMS[:9]), legend_panel()]
+               notes_panel(f"Notes {config.HOLE_NUMS[0]}-{config.HOLE_NUMS[-1]}"
+                           if config.NHOLES <= 18 else "Notes",
+                           config.HOLE_NUMS), legend_panel()]
 
     def doc(sheets, subtitle):
         return f'''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
@@ -502,7 +501,10 @@ def main():
         # column-mirrored slot (so they land behind their front under LONG-edge duplex)
         # and rotated 180 (so they read upright when the card is flipped over the top).
         if len(cards) % 2:
-            cards = cards + ['<div class="panel"></div>']     # pad to whole leaves
+            # Pad to whole leaves, inserting the blank BEFORE the last card: the final card is the
+            # dedication and prints upright as the back cover (see is_last below), so appending the
+            # blank after it would land the dedication a leaf early and end the book on a blank.
+            cards = cards[:-1] + ['<div class="panel"></div>'] + cards[-1:]
         nleaves = len(cards) // 2
         lps = config.PER                                       # leaves per sheet
         gx0 = (config.PAGE_W_IN - (config.COLS*config.CARD_W_IN + (config.COLS-1)*config.GUTTER_IN)) / 2
@@ -673,6 +675,13 @@ def coach_dedic_card(coach_name):
 </div>'''
 
 def build_coach(coach_name=""):
+    if config.BUILD_MODE == "yardage":
+        # There is nothing to enlarge: yardage mode exists precisely because no trustworthy green
+        # surface is available, so the pocket book prints blank greens. Say so instead of dying on
+        # a missing dem_hd file.
+        raise SystemExit(f"{config.SLUG} is a yardage-mode course (no green surfaces), so there is\n"
+                         f"  no enlarged green to render. Build the pocket book instead:\n"
+                         f"    COURSE={config.SLUG} python3 generate.py")
     # coach_name is PRIVATE (a specific person) -> default empty; pass it at build time via
     # COACH_NAME so no real name is ever committed. Empty -> generic "your coach" wording.
     # ENLARGED edition: SAME print imposition as the normal book (4-up, duplex,

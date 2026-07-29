@@ -2,7 +2,7 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Render a per-hole LAYOUT (tee -> green corridor) from OpenStreetMap geometry.
 
@@ -263,11 +263,19 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         if hit is None:                            # the line never gets that far from the green
             continue
         la, lo, arc_from_tee = hit
+        # A tick sitting essentially AT the tee is clutter, not information: the hole's full
+        # yardage is already the headline number on the card. Judge that GEOMETRICALLY, by how far
+        # along the line the tick actually is -- not by whether its from-tee label is printable,
+        # which is what previously discarded perfectly good to-green numbers on holes whose
+        # centerline does not span the card.
+        if arc_from_tee / 0.9144 < 25.0:
+            continue
         # From-tee label: scale the card yardage by how far along the drawn line this point is.
         # Only meaningful when the line spans the hole; otherwise print the to-green number alone.
         ft = round(total_yd * arc_from_tee / arc_m) if tee_ok else None
-        if ft is not None and ft < 30:             # too close to the tee to be worth printing
-            continue
+        if ft is not None and ft < 30:
+            ft = None          # keep the row: its to-green number is still true and is the one a
+                               # golfer clubs off -- only the from-tee figure is not worth printing
         sx, sy = proj(la, lo)
         cands.append((TY(sy), TX(sx), yd, ft))
     cands.sort()                              # by screen y (green side first)
@@ -280,19 +288,26 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         if Y0-lastY < FSN*1.35:
             continue
         lastY=Y0
-        rings+=(f'<line x1="{Xc-4:.1f}" y1="{Y0:.1f}" x2="{Xc+4:.1f}" y2="{Y0:.1f}" stroke="#9a9a9a" stroke-width="0.7"/>'
-                + etxt(9,  Y0+FSN*0.35, str(yd), "#2f5a26", "start"))   # LEFT = to green
-        # Horizontal guard: the gutters are fixed at x=9 (start-anchored) and x=91 (end-anchored)
-        # while FSN scales with font_scale, so at the 2x coach scale the two numbers ran into each
-        # other -- the brown one is painted second WITH a white halo, so it erased the last digits
-        # of the to-green yardage (monarch-bay h16 printed "1(498"). Drop the from-tee number rather
-        # than the row: the to-green number is the one a golfer clubs off.
-        if ft is not None:
-            wl = DIGIT_EM*FSN*len(str(yd)); wr = DIGIT_EM*FSN*len(str(ft))
-            # + halo: the right label paints second with a FSN*0.28 white stroke, so budget
-            # its 0.14-em reach or the halo notches the last digit of the left number.
-            if 9 + wl + 0.12*FSN <= 91 - wr:
-                rings+=etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")  # RIGHT = from back tee
+        # Horizontal budget. The gutters are fixed at x=9 (start-anchored) and x=91 (end-anchored)
+        # while FSN scales with font_scale, so at the 2x coach scale the numbers ran into each other
+        # -- the brown one paints second WITH a white halo, so it erased digits of the to-green
+        # yardage (monarch-bay h16 printed "1(498"). Budget the glyph advance plus the halo's
+        # 0.14-em reach.
+        wl = DIGIT_EM*FSN*len(str(yd))
+        wr = DIGIT_EM*FSN*len(str(ft)) if ft is not None else 0.0
+        left_end  = 9 + wl + 0.12*FSN
+        right_beg = (91 - wr - 0.12*FSN) if ft is not None else 100.0
+        show_ft = ft is not None and left_end <= right_beg
+        # The tick MARK must not sit under a number either: at 2x the labels reach far enough in
+        # that the mark was drawn beneath their halos (67 of 814 rows). Clip it to the clear band,
+        # and drop it entirely if nothing legible is left -- the two numbers already mark the row.
+        mx0, mx1 = max(Xc-4, left_end), min(Xc+4, right_beg if show_ft else 100.0)
+        if mx1 - mx0 >= 2.0:
+            rings += (f'<line x1="{mx0:.1f}" y1="{Y0:.1f}" x2="{mx1:.1f}" y2="{Y0:.1f}" '
+                      f'stroke="#9a9a9a" stroke-width="0.7"/>')
+        rings += etxt(9, Y0+FSN*0.35, str(yd), "#2f5a26", "start")      # LEFT = to green
+        if show_ft:
+            rings += etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")   # RIGHT = from back tee
 
     vb=f"0 0 100 {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
