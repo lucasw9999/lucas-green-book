@@ -41,14 +41,24 @@ def tnm_items(tries=8):
 
 def _project_of(it):
     """Stable project name for a TNM item. USGS stages LPC under
-    .../Projects/<PROJECT>/... so the path segment after 'Projects' groups all
-    tiles of one collection; fall back to the title if the URL is unusual."""
+    .../Projects/<PROJECT>/... so the path segment after 'Projects' groups all tiles of one
+    collection.
+
+    There is deliberately NO fallback to the item title. The title carries the per-tile ID
+    (USGS_LPC_CA_..._64992142.laz), so grouping by it makes every tile its own "project": coverage
+    then collapses to one tile and most greens get no ground returns. That is exactly the bug this
+    function was written to fix, so an unexpected URL layout must stop the run, not silently
+    reintroduce it."""
     parts = [p for p in (it.get('downloadURL') or '').split('/') if p]
     if 'Projects' in parts:
         i = parts.index('Projects')
         if i + 1 < len(parts):
             return parts[i + 1]
-    return it.get('title', '')
+    raise SystemExit(
+        f"cannot determine the LiDAR project for a TNM item: {it.get('downloadURL')!r}\n"
+        f"  Expected a .../Projects/<PROJECT>/... URL. Grouping by title instead would make every\n"
+        f"  tile its own project, collapsing coverage to a single tile. Inspect the reply and\n"
+        f"  extend _project_of rather than falling back.")
 
 def _overlaps(bb):
     """True if a TNM item's boundingBox overlaps the course bbox (S,W,N,E)."""
@@ -83,6 +93,19 @@ def _coverage(items):
     return hit / (n * n)
 
 
+def choose_project(projects):
+    """The project whose tiles best cover the course: coverage first, recency second.
+
+    Extracted from main() so it can be tested offline against recorded TNM shapes. Picking by DATE
+    alone chose a newer project that merely clipped the course corner, leaving greens with no
+    ground returns; coverage decides, and recency only breaks ties within 2%."""
+    scored = {p: _coverage(projects[p]) for p in projects}
+    newest = lambda p: max((i.get('publicationDate', '') for i in projects[p]), default='')
+    best_cov = max(scored.values())
+    finalists = [p for p in projects if scored[p] >= best_cov - 0.02]
+    return max(finalists, key=lambda p: (newest(p), len(projects[p]))), scored, newest
+
+
 def main():
     items = tnm_items()
     if not items:
@@ -102,14 +125,7 @@ def main():
     projects = {}
     for it in overlapping:
         projects.setdefault(_project_of(it), []).append(it)
-    def newest(p):
-        return max((i.get('publicationDate', '') for i in projects[p]), default='')
-    scored = {p: _coverage(projects[p]) for p in projects}
-    # Prefer full coverage; among projects that cover the course equally well (within 2%), take the
-    # newest. A newer partial project is only chosen when nothing older covers more.
-    best_cov = max(scored.values())
-    finalists = [p for p in projects if scored[p] >= best_cov - 0.02]
-    proj = max(finalists, key=lambda p: (newest(p), len(projects[p])))
+    proj, scored, newest = choose_project(projects)
     tiles = projects[proj]
     print(f"project: {proj}  ({len(tiles)} overlapping tiles, {newest(proj)}, "
           f"{scored[proj]*100:.0f}% bbox coverage)")

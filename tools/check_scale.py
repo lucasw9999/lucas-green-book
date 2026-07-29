@@ -62,12 +62,23 @@ def px_m_of(course, hole):
 
 
 def measure_rendered(courses):
-    """{course: {hole: inches_representing_5_yards}} as the browser lays the book out."""
-    from playwright.sync_api import sync_playwright
+    """{course: {hole: inches_representing_5_yards}} as the browser lays the book out.
+
+    Returns None when no browser is installed, so the caller can say so instead of dying: this
+    check MUST be done in a browser (the whole point is that CSS can override the SVG's own
+    width), and a machine without one cannot answer the question either way."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None
     exe = _headless_shell()
     out = {}
     with sync_playwright() as p:
-        b = p.chromium.launch(executable_path=exe) if exe else p.chromium.launch()
+        try:
+            b = p.chromium.launch(executable_path=exe) if exe else p.chromium.launch()
+        except Exception as e:
+            print(f"no browser available ({type(e).__name__}); cannot measure rendered scale")
+            return None
         pg = b.new_page()
         for c in courses:
             f = ROOT / "courses" / c / "greenbook.html"
@@ -126,6 +137,11 @@ def main():
           f"{'OK' if card_ok else 'OVER SIZE LIMIT'}\n")
 
     rendered = measure_rendered(courses)
+    if rendered is None:
+        # Distinct exit code: "could not check" is neither PASS nor FAIL. The pytest gate treats a
+        # non-zero rc as a failure, so it is told apart by this message.
+        print("SKIP: no browser to measure the rendered layout in; Rule 4.3 is UNVERIFIED here.")
+        return 2
     failures, warned, total = [], 0, 0
     for c in courses:
         per = rendered.get(c) or {}
@@ -145,6 +161,11 @@ def main():
               f"{'FAIL' if over else 'PASS'}{pr}")
 
     print(f"\n{total} greens measured · limit {LIMIT_IN_PER_5YD} in per 5 yd (1:480)")
+    if total == 0:
+        # "0 greens measured ... PASS" used to exit 0, so a renamed directory or a course set that
+        # failed to load would report Rule 4.3 conformance for an empty measurement.
+        print("FAIL: measured 0 greens -- nothing was checked, so this is not a pass.")
+        return 1
     if failures:
         print(f"FAIL: {len(failures)} green(s) exceed the Rule 4.3 scale limit:")
         for c, h, v in sorted(failures, key=lambda r: -r[2]):

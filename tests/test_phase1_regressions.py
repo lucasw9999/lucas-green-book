@@ -45,9 +45,28 @@ def _courses():
         slug = os.path.basename(os.path.dirname(cj))
         if slug.startswith("_"):
             continue
-        if os.path.exists(os.path.join(ROOT, "courses", slug, "osm_geom.json")):
+        # require EVERY file render_hole.load() reads. Requiring only osm_geom.json admitted
+        # half-built dirs whose holes then failed to render and were silently swallowed.
+        need = ("osm_geom.json", "osm_course.json")
+        if all(os.path.exists(os.path.join(ROOT, "courses", slug, f)) for f in need):
             out.append(slug)
     return out
+
+
+EXPECT_MIN_HOLES = 190          # 198 built; a floor that tolerates one course being absent
+EXPECT_MIN_LABELS = 700         # ~823 to-green labels across the corpus
+
+
+def _assert_examined(holes, labels, errors, what):
+    """Corpus tests must prove they looked at something.
+
+    Every corpus test used to swallow per-hole render failures with `except Exception: continue`
+    and assert nothing about coverage, so making render_hole raise turned the whole file into
+    "5 passed in 0.04s" -- a green suite that had examined nothing at all."""
+    assert not errors, f"{what}: {len(errors)} hole(s) failed to render: {errors[:5]}"
+    assert holes >= EXPECT_MIN_HOLES, f"{what}: only examined {holes} holes (expected >= {EXPECT_MIN_HOLES})"
+    if labels is not None:
+        assert labels >= EXPECT_MIN_LABELS, f"{what}: only saw {labels} labels (expected >= {EXPECT_MIN_LABELS})"
 
 
 def _engine(slug):
@@ -104,17 +123,81 @@ def test_overpass_reply_validation_refuses_destructive_replies(tmp_path):
 
     fetch_osm._check_response(good, str(cache), "osm_geom.json")      # complete -> accepted
 
+    # Each case must isolate ONE guard. Previously every case was also short, so the shrink check
+    # caught them all and the remark and shape checks were dead weight the test could not detect.
     destructive = {
-        "remark + empty":    {"version": 0.6, "remark": "runtime error: Query timed out", "elements": []},
-        "remark + partial":  {"version": 0.6, "remark": "check /api/status", "elements": good["elements"][:5]},
-        "silent partial":    {"version": 0.6, "elements": good["elements"][:3]},
-        "empty, no remark":  {"version": 0.6, "elements": []},
-        "not an element list": {"version": 0.6},
+        # remark present, element list FULL -> only the remark check can refuse this
+        "remark, no shrink":  {"version": 0.6, "remark": "runtime error: Query timed out",
+                               "elements": good["elements"]},
+        # right length, wrong type -> only the shape check can refuse this
+        "elements not a list": {"version": 0.6, "elements": "x" * 20},
+        "elements missing":    {"version": 0.6},
+        # no remark, correct shape, collapsed count -> only the shrink check can refuse this
+        "silent partial":      {"version": 0.6, "elements": good["elements"][:3]},
+        "silent empty":        {"version": 0.6, "elements": []},
     }
     for name, reply in destructive.items():
         with pytest.raises(SystemExit):
             fetch_osm._check_response(reply, str(cache), "osm_geom.json")
         assert json.loads(cache.read_text()) == good, f"{name}: cache must be left untouched"
+
+
+def test_lidar_project_grouping_has_no_title_fallback():
+    """PR #14 fixed grouping by title: TNM titles carry the per-tile ID, so every tile became its
+    own 'project', coverage collapsed to one tile and most greens went unfed. The fallback that
+    caused it must not come back -- an unexpected URL has to stop the run."""
+    os.environ["COURSE"] = CORPUS[0] if CORPUS else "x"
+    if not CORPUS:
+        pytest.skip("needs a course dir for config import")
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    import fetch_lidar
+
+    ok = {"downloadURL": "https://x/Projects/CA_UpperSouthAmerican_Eldorado_2019_B19/LAZ/a.laz",
+          "title": "USGS_LPC_CA_Eldorado_2019_B19_64992142.laz"}
+    assert fetch_lidar._project_of(ok) == "CA_UpperSouthAmerican_Eldorado_2019_B19"
+    for bad in ({"downloadURL": "https://x/LAZ/a.laz", "title": "USGS_LPC_..._649.laz"},
+                {"title": "USGS_LPC_..._649.laz"}):
+        with pytest.raises(SystemExit):
+            fetch_lidar._project_of(bad)
+
+
+def test_lidar_selection_prefers_coverage_over_recency():
+    """Round-1 finding: picking the NEWEST project chose CA_SanJoaquin_2021_A21 (published 2023,
+    90% of the bbox) over CA_UpperSouthAmerican_Eldorado_2019_B19 (2021, 100%), leaving the greens
+    outside the clip with no ground returns. Replayed offline against recorded TNM shapes."""
+    os.environ["COURSE"] = CORPUS[0] if CORPUS else "x"
+    if not CORPUS:
+        pytest.skip("needs a course dir for config import")
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    import fetch_lidar
+
+    S, W, N, E = fetch_lidar.S, fetch_lidar.W, fetch_lidar.N, fetch_lidar.E
+    full = dict(minX=W - 0.01, maxX=E + 0.01, minY=S - 0.01, maxY=N + 0.01)
+    clip = dict(minX=W - 0.01, maxX=E + 0.01, minY=S + (N - S) * 0.1, maxY=N + 0.01)
+    items = [
+        dict(downloadURL="https://x/Projects/CA_Eldorado_2019_B19/LAZ/a.laz",
+             publicationDate="2021-01-01", boundingBox=full),
+        dict(downloadURL="https://x/Projects/CA_SanJoaquin_2021_A21/LAZ/b.laz",
+             publicationDate="2023-01-01", boundingBox=clip),
+    ]
+    projects = {}
+    for it in items:
+        projects.setdefault(fetch_lidar._project_of(it), []).append(it)
+    # call the ENGINE's selection, not a copy of it: the first version of this test re-implemented
+    # the four lines it was checking and so could not have failed
+    chosen, scored, _newest = fetch_lidar.choose_project(projects)
+    assert scored["CA_Eldorado_2019_B19"] > scored["CA_SanJoaquin_2021_A21"]
+    assert chosen == "CA_Eldorado_2019_B19", "coverage must outrank the newer partial project"
+
+    # and the tie-break still prefers the newer project when coverage is equal
+    items[1]["boundingBox"] = full
+    projects = {}
+    for it in items:
+        projects.setdefault(fetch_lidar._project_of(it), []).append(it)
+    chosen, _s, _n = fetch_lidar.choose_project(projects)
+    assert chosen == "CA_SanJoaquin_2021_A21", "equal coverage must fall through to recency"
 
 
 def test_digitized_guard_refuses_malformed_cache(tmp_path):
@@ -156,25 +239,131 @@ def test_digitized_guard_refuses_malformed_cache(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Synthetic-geometry tick tests -- run on a bare clone, and each gate is isolated
+# ---------------------------------------------------------------------------
+YD = 0.9144
+
+# Two holes, each built so that EXACTLY ONE of the two suppression rules is load-bearing. The
+# corpus version of this test could not fail: on real geometry every overshooting tick is also
+# within 25 yd of the tee, so deleting either rule alone left the output byte-identical.
+#   A: centerline 300 yd, card 182 -> the 200 crossing sits 100 yd from the tee (near-tee gate
+#      passes) but is longer than the card, so ONLY the card bound can suppress it.
+#   B: centerline 210 yd, card 400 -> the 200 crossing sits 10 yd from the tee, and 200 < card,
+#      so ONLY the near-tee gate can suppress it.
+SYNTH = {
+    1: dict(line_yd=300.0, card=182, must=[100, 150], must_not=[200, 250, 300]),
+    2: dict(line_yd=210.0, card=400, must=[100, 150], must_not=[200]),
+}
+
+
+@pytest.fixture(scope="module")
+def synth_engine(tmp_path_factory):
+    """A course whose geometry is authored, not downloaded: straight north-running centerlines
+    ending on a green centred at the origin, so every tick position is known in closed form."""
+    slug = "_synth_ticks"                       # leading _ keeps it out of the corpus scan
+    cdir = os.path.join(ROOT, "courses", slug)
+    os.makedirs(cdir, exist_ok=True)
+    lat0, lon0 = 40.0, -75.0
+    dl = lambda m: m / R_LAT                    # metres -> degrees of latitude (due north)
+    dg = lambda m: m / _mlon(lat0)
+    els, holes, hole_cols = [], {}, ["par", "mens_hcp", "Card"]
+    for hn, spec in SYNTH.items():
+        # each hole gets its own lane so greens cannot be confused between holes
+        lon = lon0 + dg(400.0 * (hn - 1))
+        els.append(dict(type="way", id=1000 + hn, tags={"golf": "green"}, geometry=[
+            dict(lat=lat0 + dl(dy), lon=lon + dg(dx))
+            for dx, dy in ((-10, -10), (10, -10), (10, 10), (-10, 10), (-10, -10))]))
+        L = spec["line_yd"] * YD
+        els.append(dict(type="way", id=2000 + hn, tags={"golf": "hole", "ref": str(hn)},
+                        geometry=[dict(lat=lat0 + dl(L), lon=lon), dict(lat=lat0, lon=lon)]))
+        holes[str(hn)] = [4, hn, spec["card"]]
+    json.dump(dict(elements=els), open(os.path.join(cdir, "osm_geom.json"), "w"))
+    json.dump(dict(elements=[]), open(os.path.join(cdir, "osm_course.json"), "w"))
+    json.dump(dict(slug=slug, name="Synthetic", address="", location=[lat0, lon0],
+                   par=8, holes_count=len(SYNTH), green_speed="",
+                   tees=[dict(name="Card", yards=sum(s["card"] for s in SYNTH.values()),
+                              rating=70.0, slope=113)],
+                   featured_tee="Card", hole_cols=hole_cols, holes=holes,
+                   osm_bbox=[lat0 - 0.01, lon0 - 0.01, lat0 + 0.02, lon0 + 0.02],
+                   sources={}),
+              open(os.path.join(cdir, "course.json"), "w"))
+    yield _engine(slug)
+    for f in ("osm_geom.json", "osm_course.json", "course.json"):
+        os.remove(os.path.join(cdir, f))
+    os.rmdir(cdir)
+
+
+def _ticks(svg):
+    """(to_green_yd, y) for every gutter tick label the card prints."""
+    return [(int(n), float(y)) for y, n in
+            re.findall(r'<text x="9" y="([0-9.]+)"[^>]*>(\d+)</text>', svg)]
+
+
+def test_tick_radius_never_exceeds_the_card_yardage(synth_engine):
+    """Round 3: castlewood-hill h4 printed '200 to green' on a hole its own card lists as 182 yd,
+    because the radius bound was gated on the from-tee value, which is None wherever the drawn
+    centerline overshoots the back tee. Isolated here by hole 1, whose 200 crossing is a legal
+    100 yd from the tee -- so only the card bound can stop it."""
+    config, render_hole = synth_engine
+    bad = []
+    for hn, spec in SYNTH.items():
+        svg, _ = render_hole.render_hole(hn, config.HOLES)
+        for yd, _y in _ticks(svg):
+            if yd > spec["card"]:
+                bad.append((hn, yd, spec["card"]))
+    assert not bad, f"tick further from the green than the hole is long: {bad}"
+
+
+def test_no_tick_is_printed_within_25_yd_of_the_tee(synth_engine):
+    """The near-tee gate: a '200 to green' row 10 yd off the tee is clutter, not information.
+    Isolated by hole 2, where 200 is well inside the 400-yd card so the card bound cannot fire.
+    Arc-from-tee is computed from the authored geometry, sharing no code with the engine."""
+    config, render_hole = synth_engine
+    bad = []
+    for hn, spec in SYNTH.items():
+        svg, _ = render_hole.render_hole(hn, config.HOLES)
+        for yd, _y in _ticks(svg):
+            # the line runs due north to a green at the origin, so a point at radius R sits R
+            # metres up the lane and (L - R) along the line from the tee
+            arc_from_tee_yd = spec["line_yd"] - yd
+            if arc_from_tee_yd < 25.0:
+                bad.append((hn, yd, round(arc_from_tee_yd, 1)))
+    assert not bad, f"tick printed too close to the tee to be useful: {bad}"
+
+
+def test_the_ticks_that_should_print_do_print(synth_engine):
+    """Guards the two tests above from passing vacuously: both would be satisfied by an engine
+    that drew no ticks at all. Hole 1 must show 100/150 and hole 2 must show 100/150."""
+    config, render_hole = synth_engine
+    for hn, spec in SYNTH.items():
+        svg, _ = render_hole.render_hole(hn, config.HOLES)
+        got = sorted(yd for yd, _y in _ticks(svg))
+        assert got == sorted(spec["must"]), f"hole {hn}: expected ticks {spec['must']}, got {got}"
+
+
+# ---------------------------------------------------------------------------
 # Corpus tests -- measured on the real rendered output
 # ---------------------------------------------------------------------------
 @needs_corpus
 def test_no_tick_exceeds_its_hole_yardage():
-    """Round 3: castlewood-hill h4 printed a '200 yd to green' tick on a hole its own card lists as
-    182 yd, because the radius bound was gated on the from-tee value, which is None where the drawn
-    centerline overshoots the back tee."""
-    bad = []
+    """Artifact gate for the same defect on the REAL corpus. This cannot isolate either rule (see
+    the synthetic pair above -- on real geometry both fire together), so it exists to catch a
+    violation in the shipped books, not to prove the rules work."""
+    bad, holes, labels, errors = [], 0, 0, []
     for slug in CORPUS:
         config, render_hole = _engine(slug)
         for hn in config.HOLE_NUMS:
             try:
                 svg, _ = render_hole.render_hole(hn, config.HOLES)
-            except Exception:
-                continue
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:120])); continue
+            holes += 1
             card = config.HOLES[hn][2]
             for t in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg):
+                labels += 1
                 if int(t) > card:
                     bad.append((slug, hn, int(t), card))
+    _assert_examined(holes, labels, errors, "tick-vs-card sweep")
     assert not bad, f"ticks further from the green than the hole is long: {bad}"
 
 
@@ -187,7 +376,7 @@ def test_from_tee_labels_are_bounded_and_ordered():
     Bounds and ordering are NOT sufficient -- card_total - yd satisfies all three, which is how the
     original bug survived. So the VALUE is also checked against an independently computed
     along-the-line position (dense sampling, no code shared with the engine)."""
-    bad = []
+    bad, nholes, labels, errors = [], 0, 0, []
     worst_value_err = 0.0
     for slug in CORPUS:
         config, render_hole = _engine(slug)
@@ -197,8 +386,9 @@ def test_from_tee_labels_are_bounded_and_ordered():
         for hn in config.HOLE_NUMS:
             try:
                 svg, _ = render_hole.render_hole(hn, config.HOLES)
-            except Exception:
-                continue
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:120])); continue
+            nholes += 1
             card = config.HOLES[hn][2]
             rights = [int(x) for x in re.findall(r'<text x="91"[^>]*>(\d+)</text>', svg)]
             lefts = [int(x) for x in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg)]
@@ -251,8 +441,13 @@ def test_from_tee_labels_are_bounded_and_ordered():
                 expect = card * best[1] / arc          # card yardage scaled by position on the line
                 err = abs(int(rmap[y]) - expect)
                 worst_value_err = max(worst_value_err, err)
-                if err > 8.0:                          # 8 yd covers sampling + rounding
+                labels += 1
+                # 2 yd covers dense-sampling granularity + rounding. Was 8 yd, which left 8.9x
+                # headroom over the true worst error (0.9 yd) -- a tolerance that loose would have
+                # accepted a real regression as noise.
+                if err > 2.0:
                     bad.append((slug, hn, "from-tee value wrong", int(rmap[y]), round(expect, 1)))
+    _assert_examined(nholes, labels, errors, "from-tee sweep")
     assert not bad, (f"from-tee label violations (worst value error {worst_value_err:.1f} yd): "
                      f"{bad[:8]}{' ...' if len(bad) > 8 else ''}")
 
@@ -263,14 +458,15 @@ def test_gutter_numbers_never_overprint(font_scale):
     """Round 2: the two gutter numbers had no horizontal guard, so at the 2x coach scale the brown
     number -- painted second WITH a white halo -- erased digits of the to-green yardage
     (monarch-bay h16 printed '1(498'). 25 rows on 5 holes."""
-    bad = []
+    bad, holes, labels, errors = [], 0, 0, []
     for slug in CORPUS:
         config, render_hole = _engine(slug)
         for hn in config.HOLE_NUMS:
             try:
                 svg, _ = render_hole.render_hole(hn, config.HOLES, font_scale=font_scale)
-            except Exception:
-                continue
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:120])); continue
+            holes += 1
             rights = {y: n for y, _f, n in
                       re.findall(r'<text x="91" y="([0-9.]+)" font-size="([0-9.]+)"[^>]*>(\d+)</text>', svg)}
             for y, f, n in re.findall(r'<text x="9" y="([0-9.]+)" font-size="([0-9.]+)"[^>]*>(\d+)</text>', svg):
@@ -279,8 +475,12 @@ def test_gutter_numbers_never_overprint(font_scale):
                 FSN = float(f)
                 left_end = 9 + DIGIT_EM * FSN * len(n)
                 right_start = 91 - DIGIT_EM * FSN * len(rights[y])
+                labels += 1
                 if left_end > right_start:
                     bad.append((slug, hn, n, rights[y], round(left_end - right_start, 2)))
+    # the 2x coach scale legitimately drops ~90 marks, so only the hole floor applies there
+    _assert_examined(holes, labels if font_scale == 1.0 else None, errors,
+                     f"overprint sweep @{font_scale}x")
     assert not bad, f"overlapping gutter numbers at font_scale={font_scale}: {bad}"
 
 
@@ -294,6 +494,7 @@ def test_to_green_label_is_a_true_straight_line_distance():
     circular and could not have failed."""
     worst_label = 0.0
     worst_offline = 0.0
+    nholes, labels, errors = 0, 0, []
     for slug in CORPUS:
         config, render_hole = _engine(slug)
         geom = json.load(open(os.path.join(ROOT, "courses", slug, "osm_geom.json")))["elements"]
@@ -314,11 +515,13 @@ def test_to_green_label_is_a_true_straight_line_distance():
             lem = [em(p["lat"], p["lon"]) for p in line]
             try:
                 svg, _ = render_hole.render_hole(hn, config.HOLES)
-            except Exception:
-                continue
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:120])); continue
+            nholes += 1
             # recover each tick's drawn position by re-solving the radius from the label itself
             for t in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg):
                 yd = int(t)
+                labels += 1
                 # the point on the polyline at that radius, found independently of render_hole
                 target = yd * 0.9144
                 best = None
@@ -337,16 +540,51 @@ def test_to_green_label_is_a_true_straight_line_distance():
                                                   lem[i + 1][0], lem[i + 1][1])
                           for i in range(len(lem) - 1))
                 worst_offline = max(worst_offline, off)
+    # Both asserts below are satisfied by worst_*=0.0, i.e. by examining nothing at all -- so the
+    # coverage floor is what gives them meaning.
+    _assert_examined(nholes, labels, errors, "to-green sweep")
     # 1 yd covers the sampling step and the engine's local flat-earth metric vs a geodesic
     assert worst_label < 1.0, f"to-green label off by {worst_label:.2f} yd from the true straight line"
     assert worst_offline < 1.0, f"tick sits {worst_offline:.2f} m off the drawn centerline"
+
+
+def test_on_playing_surface_classifies_buildings_and_greens():
+    """Unit test for the classifier the corpus scan can only observe second-hand. Two live
+    subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
+    building hit must report 'building', not 'golf' -- conflating them overstated the golf-surface
+    drop count 16x on valley-hi."""
+    import fetch_trees
+
+    def surf(tags, poly):
+        xs = [c[0] for c in poly]; ys = [c[1] for c in poly]
+        kind = "building" if tags.get("building") not in (None, "no") else "golf"
+        return (min(xs), min(ys), max(xs), max(ys), poly, kind)
+
+    box = lambda x, y, r=0.001: [(x - r, y - r), (x + r, y - r), (x + r, y + r), (x - r, y + r)]
+    bld = surf({"building": "yes"}, box(-75.0, 40.0))
+    grn = surf({"golf": "green"}, box(-75.01, 40.0))
+    surfaces = [bld, grn]
+
+    assert fetch_trees.on_playing_surface(-75.0, 40.0, surfaces) == "building"
+    assert fetch_trees.on_playing_surface(-75.01, 40.0, surfaces) == "golf"
+    assert fetch_trees.on_playing_surface(-74.5, 40.0, surfaces) is False   # outside both
+    # inside the bbox but outside the polygon: the bbox is a prefilter, not the answer
+    concave = surf({"building": "yes"}, [(0, 0), (2, 0), (2, 2), (1, 2), (1, 1), (0, 1)])
+    assert fetch_trees.on_playing_surface(0.5, 1.5, [concave]) is False   # the notch
+    assert fetch_trees.on_playing_surface(0.5, 0.5, [concave]) == "building"
+    assert fetch_trees.on_playing_surface(1.5, 1.5, [concave]) == "building"
 
 
 @needs_corpus
 def test_no_tree_marker_sits_on_a_building():
     """Phase 1's goal: 1107 markers project-wide (53 on Merion's clubhouse roof) were drawn as
     trees. Class-6 filtering alone is not enough -- most tiles are unclassified, so a roof arrives
-    as class 1 and only the OSM footprint identifies it."""
+    as class 1 and only the OSM footprint identifies it.
+
+    NOTE this is an ARTIFACT gate: it reads the trees_lidar.json already on disk, so it proves the
+    shipped books are clean but CANNOT fail if the filtering code regresses (the file is only
+    rewritten by a LAZ re-run). test_on_playing_surface_classifies_buildings_and_greens covers the
+    code path itself."""
     def pip(x, y, poly):
         inside = False
         n = len(poly)
@@ -386,6 +624,8 @@ def test_no_tree_marker_sits_on_a_building():
     assert total_on_building == 0, f"{total_on_building} of {checked} tree markers sit on a building"
 
 
+@pytest.mark.slow
+@pytest.mark.slow          # ~11 s: launches a browser to lay out every book
 @needs_corpus
 def test_every_green_conforms_to_rule_4_3_scale_cap():
     """The critical defect: render_green computed a legal size but emitted it as an SVG width=
@@ -397,8 +637,13 @@ def test_every_green_conforms_to_rule_4_3_scale_cap():
                        cwd=ROOT, capture_output=True, text=True)
     if "no built books found" in r.stdout:
         pytest.skip("no built books to measure")
+    if r.returncode == 2 and "SKIP:" in r.stdout:
+        pytest.skip("no browser installed; the rendered-layout measurement cannot run here")
     assert r.returncode == 0, f"Rule 4.3 scale gate failed:\n{r.stdout[-2000:]}"
-    assert "PASS" in r.stdout
+    # "0 greens measured ... PASS" was reachable, so require evidence of the measurement too
+    assert "PASS" in r.stdout, r.stdout[-2000:]
+    n = int(re.search(r"(\d+) greens measured", r.stdout).group(1))
+    assert n >= 190, f"only {n} greens measured"
 
 
 # ---------------------------------------------------------------------------
@@ -413,8 +658,13 @@ def _check_course(j, label):
     nums = sorted(int(k) for k in holes)
     cols = j["hole_cols"][2:]
     errs = []
-    if sum(holes[str(h)][0] for h in nums) != j.get("par", 72):
-        errs.append(f"{label}: per-hole pars do not sum to par={j.get('par')}")
+    # No default: `j.get("par", 72)` invented a 72 target for a file that omits par, which is
+    # simply wrong for a 9-hole book (par 35) and would report a phantom mismatch.
+    if "par" not in j:
+        errs.append(f"{label}: no 'par' key -- the per-hole sum has nothing to check against")
+    elif sum(holes[str(h)][0] for h in nums) != j["par"]:
+        errs.append(f"{label}: per-hole pars sum to "
+                    f"{sum(holes[str(h)][0] for h in nums)}, not par={j['par']}")
     if sorted(holes[str(h)][1] for h in nums) != list(range(1, len(nums) + 1)):
         errs.append(f"{label}: mens_hcp is not a permutation of 1..{len(nums)}")
     for h in nums:
@@ -431,10 +681,15 @@ def _check_course(j, label):
     rated = [(t["yards"], t["rating"], t["name"]) for t in j.get("tees", [])
              if t.get("rating") is not None and t.get("yards") is not None]
     rated.sort(reverse=True)
+    # A forward tee may legitimately carry a women's course rating, which is higher than the men's
+    # rating of a longer tee. That is real data, not a transcription error, so it needs an explicit
+    # opt-out per tee ("rating_is_womens": true) rather than a silent pass.
+    womens = {t["name"] for t in j.get("tees", []) if t.get("rating_is_womens")}
     for a, b in zip(rated, rated[1:]):
-        if b[1] > a[1]:
+        if b[1] > a[1] and b[2] not in womens and a[2] not in womens:
             errs.append(f"{label}: {b[2]} ({b[0]}yd) rates {b[1]} above {a[2]} ({a[0]}yd) at {a[1]} "
-                        f"-- a women's rating in a men's column?")
+                        f"-- a women's rating in a men's column? If it IS one, set "
+                        f"\"rating_is_womens\": true on that tee.")
     return errs
 
 
@@ -491,10 +746,18 @@ def test_vertical_unit_comes_from_the_crs_not_its_name():
     code -- which is exactly what course.json's lidar_crs override supplies. EPSG:2227 and 6420 are
     US survey foot, so Z stayed unscaled and every slope would print 3.28x too steep."""
     import geo
-    feet = 0.30480060960121924
-    for code in ("EPSG:2227", "EPSG:6420"):
-        assert abs(geo.vertical_scale(code) - feet) < 1e-9, f"{code} must resolve to US survey feet"
+    feet = 0.30480060960121924           # pyproj's ftUS factor: ONE ULP above the literal 1200/3937
+    assert feet != 1200 / 3937, "the two differ by 1 ULP -- see the note below"
+    for code in ("EPSG:2227", "EPSG:6420", "EPSG:2926"):
+        got = geo.vertical_scale(code)
+        assert abs(got - feet) < 1e-9, f"{code} must resolve to US survey feet"
         assert "foot" not in str(code).lower(), "the old name-matching heuristic would have missed this"
+    # Because pyproj's factor is 1 ULP off the old hard-coded 1200/3937, a ftUS course's dem_hd
+    # .npy is NOT byte-identical across the change: every sample moves, by at most 2.8e-14 m. An
+    # earlier commit message claimed byte-identity, but it was measured on merion -- a METRIC
+    # course, where the factor is 1.0 either way, so the check could not have detected a
+    # difference. Re-measured on bay-view (ftUS): 0 of 18 printed greens change. The claim should
+    # have read "identical to float tolerance", and only for the metric courses byte-exactly.
     for code in ("EPSG:26910", "EPSG:26918", "EPSG:6419"):
         assert abs(geo.vertical_scale(code) - 1.0) < 1e-9, f"{code} is metric"
 
