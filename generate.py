@@ -123,6 +123,13 @@ def hole_panel(hole, sheet_label):
     gsvg, s = GREENS[hole]
     lsvg, i = LAYOUTS[hole]
     others = " / ".join(f"{lbl[:3]}{row[idx]}" for lbl, idx in config.OTHERS)
+    # A green we refused to read has no tilt/feed to report -- say so instead of printing 0.0%.
+    if s.get('insufficient'):
+        foot = (f'<span>green <b>{esc(s["feeds"])}</b> &middot; no slope printed</span>'
+                f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
+    else:
+        foot = (f'<span>feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {s["tilt_pct"]}%</span>'
+                f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
   <div class="hhead">
@@ -135,8 +142,7 @@ def hole_panel(hole, sheet_label):
     <div class="lay"><div class="minilab">HOLE</div>{lsvg}</div>
     <div class="grn"><div class="minilab">GREEN</div>{gsvg}</div>
   </div>
-  <div class="foot"><span>feeds <b>{esc(s['feeds'])}</b> ({esc(s['conf'])}) &middot; {s['tilt_pct']}%</span>
-    <span>{s['depth_yd']}yd deep &middot; {i['bunkers']}B {i['waters']}W &middot; {esc(others)}</span></div>
+  <div class="foot">{foot}</div>
 </div>'''
 
 def _title_lines(raw):
@@ -200,6 +206,21 @@ def cover_panel():
 </svg></div>'''
 
 
+def _flown_line():
+    """One honest line naming WHEN the elevation under these greens was measured.
+
+    A green map is only as current as the flight beneath it, and a USGS project NAME is not a
+    date (four of our courses were mislabelled by 2-12 years). The date is decoded from the LAZ
+    point records by tools/lidar_dates.py and stored in course.json as lidar_flown."""
+    fl = config.COURSE.get("lidar_flown") or {}
+    label = fl.get("label")
+    if not label:
+        return ""
+    return ('  <div class="legrow"><span><b>Measured</b> from public USGS 3DEP LiDAR flown '
+            f'<b>{esc(label)}</b>. Greens rebuilt after that date will not match &mdash; '
+            'trust what you see on the ground.</span></div>\n')
+
+
 def guide_panel():
     return '''<div class="panel guide">
   <div class="gtitle">How to read a green</div>
@@ -211,7 +232,7 @@ def guide_panel():
     <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%). <b>Numbers</b> = slope % there.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: fairway (green), rough, <b>trees</b> (dark green), bunkers (tan), water (blue). Edge numbers: <b>left = yd to green</b>, <b>right = yd from the back tee</b>.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
-  <div class="abt">
+''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book for junior golfers, <b>not for sale</b>. Hole &amp;
       green shapes are a Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap

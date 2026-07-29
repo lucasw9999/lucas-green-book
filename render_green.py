@@ -72,11 +72,12 @@ def rot(x, y, cx, cy, deg):
 DIRS = [(0,-1,"back"),(0.71,-0.71,"back-right"),(1,0,"right"),(0.71,0.71,"front-right"),
         (0,1,"front"),(-0.71,0.71,"front-left"),(-1,0,"left"),(-0.71,-0.71,"back-left")]
 
-def _blank_green(meta, tournament):
-    """A green we will NOT read: the LiDAR did not measure this surface (see the honesty gate
-    in fetch_dem_hd.py). Draw the real outline -- that geometry IS measured, it comes from OSM --
+def _blank_green(meta, tournament, rebuilt=False):
+    """A green we will NOT read: either the LiDAR never measured this surface (honesty gate in
+    fetch_dem_hd.py) or the green was rebuilt after the flight, so the data describes a surface
+    that no longer exists. Draw the real outline -- that geometry IS measured, it comes from OSM --
     with ruled lines to mark your own read, and say plainly why there are no arrows. Printing
-    invented contours here would be the one thing this project promises never to do."""
+    invented or expired contours here would be the one thing this project promises never to do."""
     poly = poly_to_px(meta['polygon'], meta['bbox'], meta['W'], meta['H'])
     xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
     pad = 8
@@ -96,11 +97,12 @@ def _blank_green(meta, tournament):
                     'width:100%;height:100%">'); wrapclose = '</div>'
     else:
         wattr = hattr = '100%'; wrapopen = wrapclose = ''
+    msg = "rebuilt after survey" if rebuilt else "no LiDAR coverage"
     svg = (f'{wrapopen}<svg viewBox="{VBx:.1f} {VBy:.1f} {VBw:.1f} {VBh:.1f}" '
            f'style="width:{wattr};height:{hattr}" preserveAspectRatio="xMidYMid meet">'
            f'<path d="{d}" fill="#f4f7f4" stroke="#20402a" stroke-width="1.3"/>{lines}'
            f'<text x="{VBx+VBw/2:.1f}" y="{VBy+VBh*0.30:.1f}" font-size="4.4" text-anchor="middle" '
-           f'fill="#b02418">no LiDAR coverage</text>'
+           f'fill="#b02418">{msg}</text>'
            f'<text x="{VBx+VBw/2:.1f}" y="{VBy+VBh*0.36:.1f}" font-size="3.6" text-anchor="middle" '
            f'fill="#777">mark your own read</text>'
            f'<text x="{VBx+VBw-2.5:.1f}" y="{VBy+VBh-2.5:.1f}" font-size="4" text-anchor="end" '
@@ -109,15 +111,22 @@ def _blank_green(meta, tournament):
     clat = meta['green_center'][0]
     depth_yd = int(round((max(la)-min(la))*R_LAT/0.9144))
     width_yd = int(round((max(lo)-min(lo))*mlon(clat)/0.9144))
-    return svg, dict(relief_ft=0.0, median_slope=0.0, tilt_pct=0.0, feeds="not surveyed",
+    return svg, dict(relief_ft=0.0, median_slope=0.0, tilt_pct=0.0,
+                     feeds=("rebuilt since survey" if rebuilt else "not surveyed"),
                      undul_ft=0.0, conf="no data", depth_yd=depth_yd, width_yd=width_yd,
                      scale_max_in=None, insufficient=True)
 
 
 def render(hole, center_yd=None, tournament=False):
     meta = json.load(open(f"{DEM}/hole{hole:02d}.json"))
-    if meta.get("insufficient"):
-        return _blank_green(meta, tournament)
+    # Two reasons to refuse a read, both meaning "this surface was not measured":
+    #  1. insufficient  -- the LiDAR did not cover the green (fetch_dem_hd.py honesty gate)
+    #  2. rebuilt_after_lidar -- the green was reconstructed AFTER the flight, so the data
+    #     describes a surface that no longer exists (course.json lists the hole numbers).
+    #     Same call as Poppy Ridge: better a blank green than a confident wrong read.
+    if meta.get("insufficient") or hole in set(config.COURSE.get("greens_rebuilt_after_lidar", [])):
+        return _blank_green(meta, tournament,
+                            rebuilt=hole in set(config.COURSE.get("greens_rebuilt_after_lidar", [])))
     arr = np.load(f"{DEM}/hole{hole:02d}.npy").astype('float64')
     H, W = arr.shape
     bbox = meta['bbox']; xmin, ymin, xmax, ymax = bbox
