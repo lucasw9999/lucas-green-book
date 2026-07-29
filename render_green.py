@@ -117,6 +117,13 @@ def _blank_green(meta, tournament, rebuilt=False):
                      scale_max_in=None, insufficient=True)
 
 
+# Render-time gate. Deliberately looser than fetch_dem_hd.py's producer gate (NAN_FRAC_MAX=0.02):
+# this is a backstop against an ungated or corrupt surface, not a quality bar, so it must not blank
+# a green the sharper producer already accepted.
+NAN_FRAC_MAX_RENDER = 0.25      # >25% of the green interior with no elevation at all
+MAX_PLAUSIBLE_RELIEF_M = 30.0   # 98 ft of fall inside one green outline is a data artifact
+
+
 def render(hole, tournament=False):
     meta = json.load(open(f"{DEM}/hole{hole:02d}.json"))
     # Only refuse when there is genuinely NOTHING measured under the green (fetch_dem_hd.py
@@ -126,6 +133,11 @@ def render(hole, tournament=False):
     if meta.get("insufficient"):
         return _blank_green(meta, tournament)
     arr = np.load(f"{DEM}/hole{hole:02d}.npy").astype('float64')
+    # NoData sentinels must die before anything measures this surface. USGS 3DEP ships
+    # -3.4028235e38; a single one of those makes the 15 cm contour loop iterate over a 3.4e38
+    # range and the process is OOM-killed with no message at all (rc=137, zero output).
+    arr[~np.isfinite(arr)] = np.nan
+    arr[np.abs(arr) > 1e30] = np.nan
     H, W = arr.shape
     bbox = meta['bbox']; xmin, ymin, xmax, ymax = bbox
     clat = meta['green_center'][0]
@@ -157,6 +169,27 @@ def render(hole, tournament=False):
         for r in range(H):
             for c in range(W):
                 if point_in_poly(c+0.5, r+0.5, poly): mask[r,c]=True
+
+    # --- render-time honesty gate -------------------------------------------------------------
+    # The producer's gate is not enough on its own. fetch_dem_hd.py writes `insufficient`, but
+    # fetch_dem.py -- the 1 m seamless path, which is what a BRAND-NEW course gets -- writes no
+    # gate keys at all, so meta.get("insufficient") was None (falsy) for those greens and nothing
+    # could stop a bad surface from being printed. This is the last check before a number reaches
+    # a card, so verify the surface here too, independently of whoever produced it.
+    inside = mask & ~np.isnan(arr)
+    n_in = int(mask.sum())
+    nan_frac = 1.0 - (int(inside.sum()) / n_in) if n_in else 1.0
+    if nan_frac > NAN_FRAC_MAX_RENDER:
+        meta = dict(meta, insufficient=True, nan_frac=nan_frac)
+        return _blank_green(meta, tournament)
+    if inside.any():
+        # A putting surface cannot plausibly fall metres within its own outline. This catches a
+        # partially-filled NoData patch that survived the fraction test above.
+        rel = float(np.nanmax(arr[inside]) - np.nanmin(arr[inside]))
+        if rel > MAX_PLAUSIBLE_RELIEF_M:
+            meta = dict(meta, insufficient=True, relief_m=rel)
+            return _blank_green(meta, tournament)
+    arr = np.where(np.isnan(arr), float(np.nanmedian(arr[inside])) if inside.any() else 0.0, arr)
 
     surf = gauss(arr, 3.0)                       # ~1.5 m smoothing
     core = erode(mask, 3)                        # trim collar (~1.5 m)

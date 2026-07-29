@@ -38,8 +38,14 @@ else:
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 def _data_uri(path):
-    """Base64 data URI so raster assets print reliably in every book."""
+    """Base64 data URI so raster assets print reliably in every book.
+
+    A missing optional asset used to vanish SILENTLY, so a fresh clone (these assets are
+    gitignored) built a visibly different book than this machine does, and the "byte-reproducible"
+    claim held only for someone who happened to have the same local files. Say so instead."""
     if not os.path.exists(path):
+        print(f"  note: optional asset {os.path.basename(path)} not present -- omitting it from "
+              f"the book (output will differ from a build that has it)")
         return ""
     ext = os.path.splitext(path)[1].lstrip(".").lower() or "png"
     with open(path, "rb") as f:
@@ -117,32 +123,43 @@ def yardage_guide_panel():
   </div>
 </div>'''
 
+def green_honesty(hole, s):
+    """The green label and the slope phrase, for BOTH editions.
+
+    These three caveats are the honesty rule made concrete on a card:
+      * a green rebuilt AFTER the flight -> say the data predates the rebuild;
+      * a green fed by the coarser 1 m seamless DEM -> say so;
+      * a green the honesty gate refused to read -> print NO slope at all.
+    They lived only inside hole_panel(), so the ENLARGED coach edition -- a book actually handed to
+    a person -- printed none of them, and reported "0.0%" for a green the engine had declined to
+    read. One rule, one implementation.
+
+    Returns (label, slope_phrase). slope_phrase is None when no slope may be printed.
+    """
+    outdated = hole in set(config.COURSE.get("greens_possibly_outdated", []))
+    coarse = 'seamless' in str(s.get('source', '')).lower()
+    if outdated:
+        label = 'GREEN &middot; pre-rebuild data'
+    elif coarse:
+        label = 'GREEN &middot; 1 m data'
+    else:
+        label = 'GREEN'
+    if s.get('insufficient'):
+        return label, None
+    tilt = (f'{s["tilt_pct"]}% <b>&#9888;</b>' if outdated else f'{s["tilt_pct"]}%')
+    return label, f'feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}'
+
+
 def hole_panel(hole, sheet_label):
     row = HOLES[hole]
     par, hcp = row[0], row[1]
     gsvg, s = GREENS[hole]
     lsvg, i = LAYOUTS[hole]
     others = " / ".join(f"{lbl[:3]}{row[idx]}" for lbl, idx in config.OTHERS)
-    # Greens known to have been rebuilt AFTER the LiDAR flight: the map is real measured data,
-    # but the surface may have changed since, so label the card instead of hiding the read.
-    outdated = hole in set(config.COURSE.get("greens_possibly_outdated", []))
-    # Some greens have no usable point cloud (canopy, water) and fall back to the coarser but
-    # real USGS 1 m seamless DEM. Say so on the card -- the read is genuine, just less sharp.
-    coarse = 'seamless' in str(s.get('source', '')).lower()
-    if outdated:
-        grnlab = 'GREEN &middot; pre-rebuild data'
-    elif coarse:
-        grnlab = 'GREEN &middot; 1 m data'
-    else:
-        grnlab = 'GREEN'
-    # A green we refused to read has no tilt/feed to report -- say so instead of printing 0.0%.
-    if s.get('insufficient'):
-        foot = (f'<span>green <b>{esc(s["feeds"])}</b> &middot; no slope printed</span>'
-                f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
-    else:
-        tilt = (f'{s["tilt_pct"]}% <b>&#9888;</b>' if outdated else f'{s["tilt_pct"]}%')
-        foot = (f'<span>feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}</span>'
-                f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
+    grnlab, slope = green_honesty(hole, s)
+    lead = (f'green <b>{esc(s["feeds"])}</b> &middot; no slope printed' if slope is None else slope)
+    foot = (f'<span>{lead}</span>'
+            f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
   <div class="hhead">
@@ -628,6 +645,9 @@ def coach_map_card(hole):
 def coach_green_card(hole):
     row = HOLES[hole]; par, hcp = row[0], row[1]
     gsvg, s = GREENS[hole]
+    # same honesty rules as the pocket card -- this edition used to print none of them
+    grnlab, slope = green_honesty(hole, s)
+    clead = (f'green <b>{esc(s["feeds"])}</b> &middot; no slope printed' if slope is None else slope)
     return f'''<div class="panel hole">
   <div class="etag">ENLARGED</div>
   <div class="hhead">
@@ -635,8 +655,8 @@ def coach_green_card(hole):
     <div class="hmeta"><div class="par">PAR {par}</div><div class="si">HCP {hcp}</div></div>
     <div class="hyd"><span class="ymain" style="color:{tee_color(BACK_NAME)}">{row[BACK_I]}</span><span class="ylab" style="color:{tee_color(BACK_NAME)}">{esc(BACK_NAME)}</span></div>
   </div>
-  <div class="cmap"><div class="minilab">GREEN &middot; approach at bottom</div>{gsvg}</div>
-  <div class="foot"><span>feeds <b>{esc(s['feeds'])}</b> ({esc(s['conf'])}) &middot; {s['tilt_pct']}%</span>
+  <div class="cmap"><div class="minilab">{grnlab} &middot; approach at bottom</div>{gsvg}</div>
+  <div class="foot"><span>{clead}</span>
     <span>{s['depth_yd']}yd deep</span></div>
 </div>'''
 
@@ -652,7 +672,7 @@ def coach_about_card():
   <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
     this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
     Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
-  <div class="abt">
+''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes are a
       Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>);

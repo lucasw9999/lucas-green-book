@@ -603,6 +603,115 @@ def test_the_dedication_is_always_the_last_card_and_upright():
         assert upright == [last], f"{n}: exactly the dedication prints upright, got {upright}"
 
 
+def _synth_green(cdir, hole, zfn, insufficient=None, n=60, span_deg=0.0004):
+    """Write a synthetic dem_hd surface (npy + json) so the honesty gate can be tested with no
+    LiDAR, no network and no course data."""
+    import numpy as np
+    os.makedirs(os.path.join(cdir, "dem_hd"), exist_ok=True)
+    arr = np.fromfunction(lambda r, c: zfn(r, c), (n, n), dtype=float)
+    np.save(os.path.join(cdir, "dem_hd", f"hole{hole:02d}.npy"), arr)
+    lat0, lon0 = 40.0, -75.0
+    d = span_deg
+    meta = dict(hole=hole, approach_bearing=0.0,
+                bbox=[lon0 - d, lat0 - d, lon0 + d, lat0 + d], W=n, H=n,
+                green_id=1, green_center=[lat0, lon0],
+                polygon=[[lat0 - d * 0.6, lon0 - d * 0.6], [lat0 - d * 0.6, lon0 + d * 0.6],
+                         [lat0 + d * 0.6, lon0 + d * 0.6], [lat0 + d * 0.6, lon0 - d * 0.6],
+                         [lat0 - d * 0.6, lon0 - d * 0.6]],
+                source="test surface")
+    if insufficient is not None:
+        meta["insufficient"] = insufficient
+    json.dump(meta, open(os.path.join(cdir, "dem_hd", f"hole{hole:02d}.json"), "w"))
+
+
+@pytest.fixture
+def gate_course():
+    """A course dir holding only synthetic green surfaces, for honesty-gate tests."""
+    slug = "_synth_gate"
+    cdir = os.path.join(ROOT, "courses", slug)
+    os.makedirs(cdir, exist_ok=True)
+    lat0, lon0 = 40.0, -75.0
+    json.dump(dict(slug=slug, name="SynthGate", address="",
+                   location={"lat": lat0, "lon": lon0}, par=72, green_speed="",
+                   tees=[dict(name="Card", yards=100, rating=70.0, slope=113)],
+                   featured_tee="Card", hole_cols=["par", "mens_hcp", "Card"],
+                   holes={"1": [72, 1, 100]},
+                   osm_bbox=[lat0 - 0.01, lon0 - 0.01, lat0 + 0.01, lon0 + 0.01], sources={}),
+              open(os.path.join(cdir, "course.json"), "w"))
+    prev = os.environ.get("COURSE")
+    os.environ["COURSE"] = slug
+    for m in ("config", "render_green"):
+        sys.modules.pop(m, None)
+    try:
+        yield cdir
+    finally:
+        import shutil
+        shutil.rmtree(cdir, ignore_errors=True)
+        _restore_course(prev)
+
+
+def test_honesty_gate_blanks_a_green_it_refused_to_read(gate_course):
+    """THE most important branch in the engine: the one line that turns insufficient=True into a
+    blank green instead of a printed slope read. It had ZERO test coverage and ZERO data coverage
+    (0 of 198 built greens are insufficient), so deleting or inverting it left the suite green.
+
+    Both directions are asserted, because a gate that always blanks is as wrong as one that never
+    does."""
+    import render_green
+    tilt = lambda r, c: 100.0 + 0.03 * r           # a clean 3% plane: must be READ
+    _synth_green(gate_course, 1, tilt, insufficient=False)
+    _synth_green(gate_course, 2, tilt, insufficient=True)
+
+    svg_ok, s_ok = render_green.render(1)
+    svg_no, s_no = render_green.render(2)
+
+    assert not s_ok.get("insufficient"), "a good surface must be read"
+    assert s_ok["tilt_pct"] > 0, "a 3% plane must report a nonzero tilt"
+    assert s_ok["conf"] != "no data"
+
+    assert s_no.get("insufficient") is True, "insufficient=True must survive to the summary"
+    assert s_no["tilt_pct"] == 0.0 and s_no["conf"] == "no data", \
+        "a refused green must report no slope, not 0.0% dressed as a reading"
+    assert s_no["feeds"] in ("not surveyed", "rebuilt since survey")
+    # and the drawn card must not carry contour/arrow marks for a green with no data
+    assert svg_no.count("<path") <= svg_ok.count("<path")
+
+
+def test_render_refuses_an_ungated_surface_that_is_mostly_nodata(gate_course):
+    """fetch_dem.py -- the 1 m seamless path a BRAND-NEW course uses -- wrote no gate keys at all,
+    so meta.get("insufficient") was None (falsy) and an unusable surface printed slope numbers.
+    render_green must therefore gate on the surface itself, not only on the producer's verdict."""
+    import numpy as np
+    import render_green
+    # no `insufficient` key at all, and most of the green has no elevation
+    holed = lambda r, c: np.where(r < 45, np.nan, 100.0 + 0.03 * r)
+    _synth_green(gate_course, 3, holed)
+    _svg, s = render_green.render(3)
+    assert s.get("insufficient") is True, "a mostly-NoData green must be refused even when ungated"
+    assert s["conf"] == "no data"
+
+
+def test_render_survives_the_real_3dep_nodata_sentinel(gate_course):
+    """A single USGS 3DEP NoData value (-3.4028235e38) made the 15 cm contour loop iterate over a
+    3.4e38 range: the process was OOM-KILLED with rc=137 and zero bytes of output -- no error, no
+    card, nothing to debug. Sentinels must be neutralised before anything measures the surface."""
+    import numpy as np
+    import render_green
+    # the sentinel must land INSIDE the green outline. At (0,0) it sits outside the polygon and
+    # outside the eroded core, so it never reaches the measurement and the test cannot detect
+    # whether it was neutralised -- which is how this test first survived deleting the guard.
+    sentinel = lambda r, c: np.where((r == 30) & (c == 30), -3.4028235e38, 100.0 + 0.03 * r)
+    _synth_green(gate_course, 4, sentinel)
+    svg, s = render_green.render(4)          # must return, not die
+    assert svg and isinstance(s, dict)
+    # ONE bad pixel in 3600 must be neutralised, not cost the whole green: asserting only that the
+    # numbers are small would be satisfied by a BLANK card, which is how this test first passed
+    # while the sentinel was still leaking through to the relief gate.
+    assert not s.get("insufficient"), "one NoData pixel must not blank an otherwise good green"
+    assert s["tilt_pct"] > 0.0, "the 3% plane must still be read"
+    assert s["relief_ft"] < 100.0, f"sentinel leaked into the relief: {s['relief_ft']}"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
