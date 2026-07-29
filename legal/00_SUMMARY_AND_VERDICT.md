@@ -1,12 +1,13 @@
 # Summary & Verdict
 
-**Reviewed:** 2026‑07‑13. Whole project: generator code, all 7 course folders, fetch scripts,
+**Reviewed:** 2026‑07‑13; scope refreshed 2026‑07‑29 to cover all 12 course folders. Whole
+project: generator code, every course folder, fetch scripts,
 every generated HTML/PDF, and embedded assets. An independent adversarial "opposing counsel"
 pass was run in addition to a direct audit.
 
 ## Verdict
 
-### ✅ The six DISTRIBUTED books are CLEAN
+### ✅ All ELEVEN distributed books are CLEAN
 The Reserve at Spanos Park · Copper Valley · Monarch Bay (Tony Lema) · Castlewood Valley ·
 Castlewood Hill · Callippe Preserve.
 
@@ -43,7 +44,7 @@ See `07_POPPY_RIDGE_ESRI_IMAGERY.md`.
 | # | Item | Severity |
 |---|---|---|
 | 1 | Esri/Maxar imagery in Poppy aerial | **RESOLVED** — removed, rebuilt from public-domain NAIP |
-| 2 | Competitor copyright / trade dress / trademark vs. 6 books | Weak → Frivolous |
+| 2 | Competitor copyright / trade dress / trademark vs. the distributed books | Weak → Frivolous |
 | 3 | Course names / depicting a private club | Weak (nominative use) → handled |
 | 4 | "Designed to conform · Rule 4.3" / no‑warranty | Weak, well‑mitigated |
 | 5 | Viewing (not copying) the Jay Blasi routing diagram | Frivolous |

@@ -1,7 +1,8 @@
 # Disclaimer / "About & Legal" Text (verbatim)
 
 This is the exact fine‑print printed in the books (card 2 / back of cover). Two versions:
-the standard one on the six green books, and the yardage‑mode one on Poppy Ridge.
+the standard one on every green book, the yardage‑mode one on Poppy Ridge, and the
+enlarged/practice variant on the coach edition.
 
 ## A. Standard "About & legal" — on all SIX distributed green books
 > A free, independent green book for junior golfers, not for sale. Hole & green shapes are a

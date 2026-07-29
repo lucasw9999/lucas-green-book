@@ -450,3 +450,31 @@ def test_every_built_course_is_self_consistent():
     for slug in CORPUS:
         errs += _check_course(json.load(open(os.path.join(ROOT, "courses", slug, "course.json"))), slug)
     assert not errs, "course data inconsistencies: " + "; ".join(errs)
+
+
+@needs_corpus
+def test_provenance_doc_matches_the_build_artifacts():
+    """legal/03 documented 8 of 12 books, named the wrong dataset for one, and carried project-name
+    'years' wrong by 2-12 years. It is now generated from the artifacts; this fails if it drifts."""
+    import subprocess
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "gen_provenance.py"), "--check"],
+                       cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@needs_corpus
+def test_every_built_course_appears_in_the_provenance_doc():
+    """A book must never ship undocumented: PIPELINE step 7 requires a legal/03 row per course."""
+    p = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
+    if not os.path.exists(p):
+        pytest.skip("no provenance doc")
+    # anchor to the start of a table ROW: the club name also appears inside the scorecard column,
+    # so a bare substring search would pass even with the row deleted.
+    rows = [l.split("|")[1].strip() for l in open(p, encoding="utf-8").read().splitlines()
+            if l.startswith("| ") and not l.startswith("|---")]
+    missing = []
+    for slug in CORPUS:
+        name = json.load(open(os.path.join(ROOT, "courses", slug, "course.json"))).get("name", slug)
+        if not any(r == name for r in rows):
+            missing.append(name)
+    assert not missing, f"courses built but absent as a legal/03 row: {missing}"

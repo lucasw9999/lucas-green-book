@@ -4,17 +4,47 @@ The cover says **"Designed to conform · Rule 4.3."** This documents why that cl
 and defensible (and why we did NOT say "conforms" or "USGA‑approved").
 
 ## The rule
-Rule of Golf **4.3** limits green‑reading materials in competition to:
-- **Image scale** no more detailed than **3/8 inch : 5 yards** (1:480), and
-- a book **no larger than 4.25 × 7 inches**,
-- showing only significant slopes/tiers (arrows, contours and % are allowed at that scale).
-Conformance is a **Committee‑level, per‑competition** determination — **neither the USGA nor
-the R&A "approves" green books.**
+The size and scale limits are **not** in the body of Rule 4.3 — they are in **Clarification 4.3a/1,
+"Limitations on Using Green‑Reading Materials"** (USGA/R&A, effective 1 January 2023; re‑checked
+2026‑07‑29, unchanged). Verbatim:
+- *"Any image of a putting green must be limited to a scale of 3/8 inch to 5 yards (1:480) or
+  smaller"* — a **ceiling**, so a green printed smaller (1:600, say) is fine, and
+- *"Any book or other paper containing a map or image of a putting green must not be larger than
+  4 1/4 inches x 7 inches."*
+- No magnification. Hand‑drawn notes must sit inside a size‑limit book and be written by the player
+  and/or caddie.
+
+A pre‑printed book falls under **Rule 4.3a(3)** — information gathered before the round, allowed.
+**Nothing in Rule 4.3 limits contour interval, arrow density or slope percentages**; only scale,
+size and magnification. Note these limits **apply by default in every competition** (general
+penalty for a first breach, disqualification for a second) — they are not Committee‑optional.
+What *is* Committee‑level is that **neither the USGA nor the R&A "approves" green books**: there is
+no conformance list for them, unlike clubs and balls.
+
+## Two Local Rules a Committee may adopt, which this book cannot satisfy
+- **Model Local Rule G‑11** — the Committee may require players to use **only a yardage book it has
+  approved**. Where G‑11 is in effect, this book may not be used to read a green **even if perfectly
+  scaled**, because it is not the approved book. G‑11's own text says it "is intended only for the
+  highest levels of competitive golf."
+- **Model Local Rule G‑12** — bans referencing **any** material to help read the line of play on the
+  putting green.
+
+So "confirm with your Committee" is not a cure for an over‑scale card; it is a check on whether
+G‑11/G‑12 is in force at your event. The books say to confirm before competition for this reason.
 
 ## How the product is built to stay within it
 - **Green print scale:** rendered at **0.36 in : 5 yd**, i.e. ~4% **under** the 3/8 in (0.375 in)
   cap — a deliberate safety margin so print/rounding can't push a green over the limit.
   (See `render_green.py`: `kf = 0.36 * px_m / 4.572`.)
+- **Measured, not asserted.** The intended cap was once defeated by a single CSS rule: the size was
+  emitted as an SVG `width=` presentation attribute, which has zero specificity, so the stylesheet
+  overrode it and 15 of 198 greens printed over the limit while three documents claimed the cap
+  held. `tools/check_scale.py` now measures the **exported PDF** (and the browser layout) on every
+  build and exits non‑zero above 0.375 in : 5 yd. Latest run: **198/198 conforming, worst
+  0.3602 in : 5 yd (1:500)**. Never trust the renderer's intent again — measure the artifact.
+- **Per‑hole, not per‑book.** Scale is computed per green, so it legitimately varies (roughly 1:500
+  to 1:956). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
+  becomes unusable for reading the green — the rest of the book stays fine.
 - **Book size:** cards are **3.5 × 5.0 in** — well under the 4.25 × 7 in cap.
   (See `config.py`: `CARD_W_IN = 3.5`, `CARD_H_IN = 5.0`.)
 

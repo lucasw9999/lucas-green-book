@@ -2,7 +2,7 @@
 
 If a commercial green‑book company (or anyone) accuses you of copying, this is the factual
 answer. It maps 1:1 to the legal elements a challenger must overcome — and it is **true** for
-the six distributed books.
+every distributed book.
 
 ## Hand this to a challenger (verbatim)
 
@@ -22,7 +22,7 @@ the six distributed books.
 > sold**. If any course would prefer not to be included, the maker will remove it promptly on
 > request: **info@lucasgreenbook.org** &middot; **lucasgreenbook.org**.
 
-## Why each legal theory fails (against the six books)
+## Why each legal theory fails (against the distributed books)
 - **Copyright infringement** — needs copying of protected expression. We copied none; we
   independently created from open/public inputs. Two maps of the same green look alike because
   they depict the **same physical reality** (facts/nature aren't ownable; *Feist*; merger

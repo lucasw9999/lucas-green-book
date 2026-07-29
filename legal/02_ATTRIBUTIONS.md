@@ -18,8 +18,10 @@ appear on any website that hosts them.
 > openstreetmap.org/copyright). Elevation: USGS 3DEP (public domain). Independent, not for
 > sale, not affiliated with any course or product.
 
-## Poppy Ridge aerial (PERSONAL, NOT DISTRIBUTED) — attribution present but insufficient to distribute
-The Esri/Maxar imagery carries "Imagery © Esri / Maxar" (Esri's mandated credit is
-"Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community"). **Attribution
-does not grant redistribution rights for this imagery** — it stays personal only. See
-`07_POPPY_RIDGE_ESRI_IMAGERY.md`.
+## Poppy Ridge aerial — Esri/Maxar imagery REMOVED 2026‑07‑13, now USDA NAIP
+This file formerly embedded Esri/Maxar imagery, which carries "Imagery © Esri / Maxar" (Esri's
+mandated credit is "Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community").
+**Attribution alone never granted redistribution rights for that imagery**, so it was deleted rather
+than merely marked personal: the aerial was rebuilt from **public‑domain USDA NAIP** and labelled as
+the pre‑2025 layout. NAIP is a U.S. Government work and legally requires no attribution; we credit
+it in the book anyway. See `07_POPPY_RIDGE_ESRI_IMAGERY.md`.
