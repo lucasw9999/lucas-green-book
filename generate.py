@@ -123,12 +123,17 @@ def hole_panel(hole, sheet_label):
     gsvg, s = GREENS[hole]
     lsvg, i = LAYOUTS[hole]
     others = " / ".join(f"{lbl[:3]}{row[idx]}" for lbl, idx in config.OTHERS)
+    # Greens known to have been rebuilt AFTER the LiDAR flight: the map is real measured data,
+    # but the surface may have changed since, so label the card instead of hiding the read.
+    outdated = hole in set(config.COURSE.get("greens_possibly_outdated", []))
+    grnlab = 'GREEN &middot; pre-rebuild data' if outdated else 'GREEN'
     # A green we refused to read has no tilt/feed to report -- say so instead of printing 0.0%.
     if s.get('insufficient'):
         foot = (f'<span>green <b>{esc(s["feeds"])}</b> &middot; no slope printed</span>'
                 f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
     else:
-        foot = (f'<span>feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {s["tilt_pct"]}%</span>'
+        tilt = (f'{s["tilt_pct"]}% <b>&#9888;</b>' if outdated else f'{s["tilt_pct"]}%')
+        foot = (f'<span>feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}</span>'
                 f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
@@ -140,7 +145,7 @@ def hole_panel(hole, sheet_label):
   </div>
   <div class="body">
     <div class="lay"><div class="minilab">HOLE</div>{lsvg}</div>
-    <div class="grn"><div class="minilab">GREEN</div>{gsvg}</div>
+    <div class="grn"><div class="minilab">{grnlab}</div>{gsvg}</div>
   </div>
   <div class="foot">{foot}</div>
 </div>'''
@@ -216,9 +221,17 @@ def _flown_line():
     label = fl.get("label")
     if not label:
         return ""
-    return ('  <div class="legrow"><span><b>Measured</b> from public USGS 3DEP LiDAR flown '
-            f'<b>{esc(label)}</b>. Greens rebuilt after that date will not match &mdash; '
-            'trust what you see on the ground.</span></div>\n')
+    out = ('  <div class="legrow"><span><b>Measured</b> from public USGS 3DEP LiDAR flown '
+           f'<b>{esc(label)}</b>. Greens rebuilt after that date will not match &mdash; '
+           'trust what you see on the ground.</span></div>\n')
+    stale = sorted(config.COURSE.get("greens_possibly_outdated", []))
+    if stale:
+        holes = ", ".join(str(h) for h in stale)
+        out += ('  <div class="legrow"><span><b>&#9888; Holes ' + esc(holes) + '</b> were '
+                '<b>rebuilt after</b> that survey, so their green maps are marked '
+                '<b>&ldquo;pre-rebuild data&rdquo;</b> &mdash; the shapes and tiers may have '
+                'changed. Use them as a guide only and trust your own read.</span></div>\n')
+    return out
 
 
 def guide_panel():

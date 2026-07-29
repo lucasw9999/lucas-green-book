@@ -119,14 +119,12 @@ def _blank_green(meta, tournament, rebuilt=False):
 
 def render(hole, center_yd=None, tournament=False):
     meta = json.load(open(f"{DEM}/hole{hole:02d}.json"))
-    # Two reasons to refuse a read, both meaning "this surface was not measured":
-    #  1. insufficient  -- the LiDAR did not cover the green (fetch_dem_hd.py honesty gate)
-    #  2. rebuilt_after_lidar -- the green was reconstructed AFTER the flight, so the data
-    #     describes a surface that no longer exists (course.json lists the hole numbers).
-    #     Same call as Poppy Ridge: better a blank green than a confident wrong read.
-    if meta.get("insufficient") or hole in set(config.COURSE.get("greens_rebuilt_after_lidar", [])):
-        return _blank_green(meta, tournament,
-                            rebuilt=hole in set(config.COURSE.get("greens_rebuilt_after_lidar", [])))
+    # Only refuse when there is genuinely NOTHING measured under the green (fetch_dem_hd.py
+    # honesty gate) -- then there is no surface to draw at all. A green that was rebuilt AFTER
+    # the flight still has real measured data; it is just possibly out of date, so we print the
+    # map and label it (see greens_possibly_outdated in generate.py) rather than dropping it.
+    if meta.get("insufficient"):
+        return _blank_green(meta, tournament)
     arr = np.load(f"{DEM}/hole{hole:02d}.npy").astype('float64')
     H, W = arr.shape
     bbox = meta['bbox']; xmin, ymin, xmax, ymax = bbox
