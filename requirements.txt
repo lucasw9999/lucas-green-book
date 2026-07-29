@@ -1,0 +1,22 @@
+# Lucas Green Book -- runtime dependencies
+#
+#   python3 -m pip install -r requirements.txt
+#   python3 -m playwright install chromium      # one extra step: the PDF renderer
+#
+# Python 3.11+ (the engine uses sys.stdlib_module_names and modern f-strings).
+# Floors are the versions this was developed and verified against; newer is expected to work.
+
+# --- core engine (fetch_* and render_*) -------------------------------------
+numpy>=2.0                # grids, gradients, contouring
+scipy>=1.11               # griddata interpolation of the 0.4 m green surface (fetch_dem_hd.py)
+laspy>=2.5                # read USGS LiDAR .laz point clouds
+lazrs>=0.6                # the LAZ decompression backend laspy needs (laspy[lazrs])
+pyproj>=3.6               # lat/lon <-> UTM, and per-tile CRS from the LAZ header
+tifffile>=2023.1.1        # the 3DEP seamless 1 m DEM arrives as GeoTIFF (fetch_dem.py)
+
+# --- build + verification tooling -------------------------------------------
+playwright>=1.40          # headless Chromium prints the book to PDF; also measures rendered layout.
+                          # Chromium itself is NOT pip-installable: run
+                          #   python3 -m playwright install chromium
+PyMuPDF>=1.23             # measures the printed artifact (tools/check_scale.py Rule 4.3 gate)
+pytest>=7.4               # tests/

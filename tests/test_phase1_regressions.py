@@ -394,3 +394,59 @@ def test_every_green_conforms_to_rule_4_3_scale_cap():
         pytest.skip("no built books to measure")
     assert r.returncode == 0, f"Rule 4.3 scale gate failed:\n{r.stdout[-2000:]}"
     assert "PASS" in r.stdout
+
+
+# ---------------------------------------------------------------------------
+# Course-data integrity -- catches transcription errors before they reach a card
+# ---------------------------------------------------------------------------
+def _check_course(j, label):
+    """The five checks a course.json must satisfy. Every one of these has been violated in
+    practice: par that did not sum, a handicap column that was not a permutation, and a tee whose
+    rating ROSE as its yardage fell (Micke Grove's Red row was a women's rating, which would
+    inflate a boy's handicap differential by ~5 strokes)."""
+    holes = j["holes"]
+    nums = sorted(int(k) for k in holes)
+    cols = j["hole_cols"][2:]
+    errs = []
+    if sum(holes[str(h)][0] for h in nums) != j.get("par", 72):
+        errs.append(f"{label}: per-hole pars do not sum to par={j.get('par')}")
+    if sorted(holes[str(h)][1] for h in nums) != list(range(1, len(nums) + 1)):
+        errs.append(f"{label}: mens_hcp is not a permutation of 1..{len(nums)}")
+    for h in nums:
+        if len(holes[str(h)]) != len(j["hole_cols"]):
+            errs.append(f"{label}: hole {h} has {len(holes[str(h)])} values, hole_cols has {len(j['hole_cols'])}")
+    by_name = {t["name"]: t for t in j.get("tees", [])}
+    for i, name in enumerate(cols):
+        if name not in by_name:
+            errs.append(f"{label}: hole_cols names tee {name!r} which is absent from 'tees'")
+            continue
+        tot = sum(holes[str(h)][2 + i] for h in nums)
+        if by_name[name].get("yards") is not None and tot != by_name[name]["yards"]:
+            errs.append(f"{label}: {name} rows sum to {tot} but 'tees' says {by_name[name]['yards']}")
+    rated = [(t["yards"], t["rating"], t["name"]) for t in j.get("tees", [])
+             if t.get("rating") is not None and t.get("yards") is not None]
+    rated.sort(reverse=True)
+    for a, b in zip(rated, rated[1:]):
+        if b[1] > a[1]:
+            errs.append(f"{label}: {b[2]} ({b[0]}yd) rates {b[1]} above {a[2]} ({a[0]}yd) at {a[1]} "
+                        f"-- a women's rating in a men's column?")
+    return errs
+
+
+def test_example_template_is_self_consistent():
+    """The template a stranger copies must itself pass every check a real course must -- it was
+    shipped once with per-hole rows summing to 7020 against a declared 6800."""
+    p = os.path.join(ROOT, "examples", "course.json")
+    if not os.path.exists(p):
+        pytest.skip("no examples/course.json")
+    errs = _check_course(json.load(open(p)), "examples/course.json")
+    assert not errs, "template is inconsistent: " + "; ".join(errs)
+
+
+@needs_corpus
+def test_every_built_course_is_self_consistent():
+    """Same checks against every course actually built here."""
+    errs = []
+    for slug in CORPUS:
+        errs += _check_course(json.load(open(os.path.join(ROOT, "courses", slug, "course.json"))), slug)
+    assert not errs, "course data inconsistencies: " + "; ".join(errs)

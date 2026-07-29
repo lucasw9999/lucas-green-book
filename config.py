@@ -14,7 +14,7 @@ course to build with the COURSE env var (defaults to the first one we built):
 Each course lives in courses/<slug>/ with a course.json describing it and holds
 that course's cached data (osm_*.json, laz/, dem_hd/) and outputs (greenbook.*).
 """
-import json, os
+import glob, json, os, sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SLUG = os.environ.get("COURSE", "the-reserve-at-spanos-park")
@@ -22,7 +22,24 @@ COURSE_DIR = os.path.join(ROOT, "courses", SLUG)
 
 BRAND = "Lucas Green Book"   # product/brand name shown on the cover
 
-with open(os.path.join(COURSE_DIR, "course.json")) as f:
+_CJ = os.path.join(COURSE_DIR, "course.json")
+if not os.path.exists(_CJ):
+    # courses/ is gitignored (per-course data and generated books stay local), so a fresh clone has
+    # no course to build. Say that plainly instead of raising a bare FileNotFoundError.
+    _have = sorted(os.path.basename(os.path.dirname(p))
+                   for p in glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
+    raise SystemExit(
+        f"no course.json for COURSE={SLUG!r} (looked in {COURSE_DIR}).\n"
+        + (f"  Available locally: {', '.join(_have)}\n"
+           f"  Pick one with:     COURSE=<slug> python3 {os.path.basename(sys.argv[0] or 'generate.py')}\n"
+           if _have else
+           f"  This repo ships the ENGINE only -- courses/ is gitignored, so per-course data and the\n"
+           f"  generated books stay local and are never published. To build one:\n"
+           f"    mkdir -p courses/my-course\n"
+           f"    cp examples/course.json courses/my-course/course.json   # then edit every value\n"
+           f"    COURSE=my-course python3 fetch_osm.py                   # see PIPELINE.md\n"))
+
+with open(_CJ) as f:
     COURSE = json.load(f)
 
 # ---- physical card + print layout (inches) -------------------------------
