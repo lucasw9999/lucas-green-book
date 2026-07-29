@@ -17,6 +17,7 @@ import glob, os, json, math
 import numpy as np, laspy
 from pyproj import Transformer
 import config
+import geo
 
 DIR = config.COURSE_DIR
 R_LAT = 111320.0
@@ -41,10 +42,8 @@ def laz_to_utm():
                 pass
     if src is None:
         src = UTM
-    name = str(src).lower()
-    zscale = 0.3048006096012192 if ("ftus" in name or "us survey foot" in name
-                                    or "foot" in name or "feet" in name) else 1.0
-    return Transformer.from_crs(src, UTM, always_xy=True), zscale
+    # vertical unit from the CRS axis, never guessed from its name (see geo.vertical_scale)
+    return Transformer.from_crs(src, UTM, always_xy=True), geo.vertical_scale(src)
 
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy

@@ -17,6 +17,7 @@ import numpy as np, laspy
 from pyproj import Transformer
 from scipy.interpolate import griddata
 import config
+import geo
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
@@ -50,10 +51,7 @@ def laz_to_utm():
     if src is None:
         src = UTM
     pt = Transformer.from_crs(src, UTM, always_xy=True)
-    name = str(src).lower()
-    zscale = 0.3048006096012192 if ("ftus" in name or "us survey foot" in name
-                                    or "foot" in name or "feet" in name) else 1.0
-    return pt, zscale
+    return pt, geo.vertical_scale(src)      # from the CRS axis unit, never guessed from its name
 
 def centroid(g):
     la=sum(p['lat'] for p in g['geometry'])/len(g['geometry'])
@@ -107,7 +105,7 @@ def build_targets():
         if da<=db: green,gend,prev=ga,line[0],line[1]
         else:      green,gend,prev=gb,line[-1],line[-2]
         appr=bearing(prev['lat'],prev['lon'],gend['lat'],gend['lon'])
-        geo=green['geometry']; lats=[p['lat'] for p in geo]; lons=[p['lon'] for p in geo]
+        gpoly=green['geometry']; lats=[p['lat'] for p in gpoly]; lons=[p['lon'] for p in gpoly]
         clat,clon=centroid(green)
         dlat=MARGIN_M/R_LAT; dlon=MARGIN_M/mlon(clat)
         xmin,xmax=min(lons)-dlon,max(lons)+dlon

@@ -478,3 +478,29 @@ def test_every_built_course_appears_in_the_provenance_doc():
         if not any(r == name for r in rows):
             missing.append(name)
     assert not missing, f"courses built but absent as a legal/03 row: {missing}"
+
+
+def test_vertical_unit_comes_from_the_crs_not_its_name():
+    """Latent, high blast radius: the Z unit was inferred by substring-matching the CRS NAME for
+    'foot'/'ftus'. That works on full WKT (all current tiles) but silently fails for a bare EPSG
+    code -- which is exactly what course.json's lidar_crs override supplies. EPSG:2227 and 6420 are
+    US survey foot, so Z stayed unscaled and every slope would print 3.28x too steep."""
+    import geo
+    feet = 0.30480060960121924
+    for code in ("EPSG:2227", "EPSG:6420"):
+        assert abs(geo.vertical_scale(code) - feet) < 1e-9, f"{code} must resolve to US survey feet"
+        assert "foot" not in str(code).lower(), "the old name-matching heuristic would have missed this"
+    for code in ("EPSG:26910", "EPSG:26918", "EPSG:6419"):
+        assert abs(geo.vertical_scale(code) - 1.0) < 1e-9, f"{code} is metric"
+
+
+def test_vertical_unit_refuses_rather_than_assuming_metres():
+    """A CRS whose vertical unit is not a LENGTH must stop the build, not silently scale Z.
+
+    EPSG:4326's axis unit is 'degree', whose conversion factor is 0.0174533 (degrees to radians).
+    Taken as a vertical scale that shrinks every elevation 57x -- a green that reads nearly flat
+    rather than an error. Found while writing this test."""
+    import geo
+    for bad in ("EPSG:4326", "EPSG:4269", "not-a-crs"):
+        with pytest.raises(SystemExit):
+            geo.vertical_scale(bad)
