@@ -548,6 +548,37 @@ def test_to_green_label_is_a_true_straight_line_distance():
     assert worst_offline < 1.0, f"tick sits {worst_offline:.2f} m off the drawn centerline"
 
 
+def test_the_dedication_is_always_the_last_card_and_upright():
+    """The 9-hole fix: an odd card count needs a blank leaf, and APPENDING it landed the dedication
+    one leaf early so the book ended on a blank page. The blank goes BEFORE the last card, and the
+    dedication -- as the back cover -- prints upright rather than rotated like every other duplex
+    back. Confirmed structurally by review but untested, so a refactor of build_pages could undo it
+    and nothing would notice until a book was folded.
+
+    Drives generate.pad_to_leaves / is_upright_back directly -- the first version of this test
+    re-implemented both rules, which is the circularity the rest of this file exists to avoid."""
+    os.environ["COURSE"] = CORPUS[0] if CORPUS else "x"
+    if not CORPUS:
+        pytest.skip("needs a course dir for config import")
+    for m in ("config", "generate"):
+        sys.modules.pop(m, None)
+    import generate
+
+    for n in (23, 24, 25, 29, 41):
+        cards = [f"c{i}" for i in range(n)]
+        ded = cards[-1]
+        cards = generate.pad_to_leaves(cards, blank="BLANK")
+        assert len(cards) % 2 == 0, f"{n}: card count must be whole leaves"
+        assert cards[-1] == ded, f"{n}: dedication must remain the final card"
+        assert "BLANK" not in cards[-1:], f"{n}: book must not end on a blank"
+        # the dedication sits at index len-1, i.e. the BACK of the last leaf, and that back is the
+        # one printed upright
+        last = len(cards) - 1
+        assert last % 2 == 1, f"{n}: dedication must be a leaf BACK, not a front"
+        upright = [i for i in range(1, len(cards), 2) if generate.is_upright_back(i, len(cards))]
+        assert upright == [last], f"{n}: exactly the dedication prints upright, got {upright}"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens():
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a

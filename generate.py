@@ -362,6 +362,22 @@ def crop_ticks(x, y, w, h, t=0.14):
         segs.append(f'<div class="crop" style="left:{cx-0.003:.3f}in;top:{vt:.3f}in;width:0.006in;height:{t}in"></div>')
     return "".join(segs)
 
+def pad_to_leaves(cards, blank='<div class="panel"></div>'):
+    """Pad an odd card list to whole duplex leaves by inserting the blank BEFORE the last card.
+
+    The final card is Lucas's dedication and prints upright as the back cover, so APPENDING the
+    blank would land the dedication a leaf early and end the book on a blank page. Module-level so
+    the layout test can call this rather than re-implement it."""
+    if len(cards) % 2:
+        return cards[:-1] + [blank] + cards[-1:]
+    return list(cards)
+
+
+def is_upright_back(card_index, ncards):
+    """True for the one duplex BACK that must not be rotated 180: the dedication / back cover."""
+    return card_index == ncards - 1
+
+
 def main():
     yardage = (config.BUILD_MODE == "yardage")
     if not yardage:
@@ -500,11 +516,7 @@ def main():
         # Fronts on one PDF page, backs on the next. Back cards are positioned in the
         # column-mirrored slot (so they land behind their front under LONG-edge duplex)
         # and rotated 180 (so they read upright when the card is flipped over the top).
-        if len(cards) % 2:
-            # Pad to whole leaves, inserting the blank BEFORE the last card: the final card is the
-            # dedication and prints upright as the back cover (see is_last below), so appending the
-            # blank after it would land the dedication a leaf early and end the book on a blank.
-            cards = cards[:-1] + ['<div class="panel"></div>'] + cards[-1:]
+        cards = pad_to_leaves(cards)      # blank goes BEFORE the dedication -- see the helper
         nleaves = len(cards) // 2
         lps = config.PER                                       # leaves per sheet
         gx0 = (config.PAGE_W_IN - (config.COLS*config.CARD_W_IN + (config.COLS-1)*config.GUTTER_IN)) / 2
@@ -530,7 +542,7 @@ def main():
                 xb, yb, _, _ = slot(r*config.COLS + (config.COLS-1-c))   # mirror columns
                 # last card (Lucas's dedication / back cover) prints UPRIGHT like the
                 # front cover -- not rotated like the other duplex backs.
-                is_last = (2*L+1 == len(cards)-1)
+                is_last = is_upright_back(2*L+1, len(cards))
                 backs.append(card_div(xb, yb, 2*L+2, cards[2*L+1], not is_last))
             pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT</div>{"".join(fronts)}</div>')
             pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; BACK (duplex, flip on LONG edge)</div>{"".join(backs)}</div>')
