@@ -70,11 +70,17 @@ def load_playing_surfaces():
         that carry class 6 we drop those points upstream, but most of our tiles are
         unclassified, so a clubhouse roof arrives as class 1 and only its FOOTPRINT can
         identify it (53 markers sat on Merion's clubhouse before this)."""
-    els=[]
+    els=[]; seen=set()
     for fn in ("osm_course.json","osm_geom.json"):
         p=f"{DIR}/{fn}"
         if os.path.exists(p):
-            j=json.load(open(p)); els+=j.get("elements",j) if isinstance(j,dict) else j
+            j=json.load(open(p))
+            for e in (j.get("elements",j) if isinstance(j,dict) else j):
+                # the two files overlap (greens appear in both), so de-dup by id or the polygon
+                # itself -- otherwise the same green is tested twice and the log over-counts.
+                k=e.get('id') if e.get('id') is not None else id(e)
+                if k in seen: continue
+                seen.add(k); els.append(e)
     surfaces=[]
     for e in els:
         t=e.get('tags',{})

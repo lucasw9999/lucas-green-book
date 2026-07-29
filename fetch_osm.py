@@ -48,6 +48,44 @@ def _digitized_of(path):
     return [e for e in j['elements'] if '_digitized' in (e.get('tags') or {})]
 
 
+def _check_response(j, path, out):
+    """Validate the INCOMING Overpass reply before it is allowed to replace a good cache.
+
+    Overpass signals a timeout or rate-limit with HTTP 200 plus a "remark" and a short (often
+    empty) element list. That parses cleanly and has the right SHAPE, so the on-disk guard cannot
+    catch it -- the reply would simply be written over the cache, deleting every green and hole for
+    the course. Downstream nothing errors: holes bind to their nearest surviving green, so a course
+    silently rebinds (measured: bay-view hole 9 to hole 7's green, 47.8 m away).
+
+    Two checks: refuse a remark-bearing reply outright, and refuse a reply whose golf-feature count
+    has collapsed against the cache we are about to overwrite. Set ALLOW_SHRINK=1 to override the
+    second when OSM genuinely lost features.
+    """
+    if not isinstance(j, dict) or not isinstance(j.get('elements'), list):
+        raise SystemExit(f"ABORT: Overpass reply for {out} is not an element list -- refusing to write.")
+    remark = j.get('remark')
+    if remark:
+        raise SystemExit(
+            f"ABORT: Overpass returned a remark instead of complete data for {out}:\n"
+            f"    {str(remark)[:160]}\n"
+            f"  This is a timeout or rate-limit reply, NOT an empty course. Writing it would delete\n"
+            f"  the existing cache. Wait and re-run.")
+    def ngolf(els):
+        return sum(1 for e in els if (e.get('tags') or {}).get('golf'))
+    new_n = ngolf(j['elements'])
+    if os.path.exists(path):
+        try:
+            old_n = ngolf(json.load(open(path)).get('elements', []))
+        except Exception:
+            old_n = 0
+        if old_n >= 4 and new_n < old_n * 0.5 and not os.environ.get("ALLOW_SHRINK"):
+            raise SystemExit(
+                f"ABORT: Overpass returned {new_n} golf features for {out} but the existing cache has\n"
+                f"  {old_n}. A collapse like this is nearly always a partial reply, and overwriting\n"
+                f"  would silently rebind holes to the wrong greens. Re-run; if OSM really did lose\n"
+                f"  these features, set ALLOW_SHRINK=1 deliberately.")
+
+
 def fetch(query, out):
     url = "https://overpass-api.de/api/interpreter?data=" + urllib.parse.quote(query)
     path = os.path.join(config.COURSE_DIR, out)
@@ -56,7 +94,8 @@ def fetch(query, out):
         try:
             req = urllib.request.Request(url, headers={'Accept': 'application/json', 'User-Agent': 'greenbook/1.0'})
             data = urllib.request.urlopen(req, timeout=150).read()
-            j = json.loads(data)                  # validate
+            j = json.loads(data)                  # validate parseability
+            _check_response(j, path, out)         # ...and that it is COMPLETE, not a timeout stub
             if kept:
                 have = {e.get('id') for e in j.get('elements', []) if e.get('id') is not None}
                 add = [e for e in kept if e.get('id') is None or e.get('id') not in have]
