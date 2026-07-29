@@ -50,14 +50,6 @@ def head_size(url):
     except Exception:
         return -1
 
-def head_size(url):
-    """Content-Length of a tile, or -1 if it doesn't exist in this sub-project."""
-    try:
-        r = urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30)
-        return int(r.headers.get("Content-Length", 0))
-    except Exception:
-        return -1
-
 def tile_copies(t):
     """All sub-project copies of a geographic tile. The 3 Alameda sub-projects were
     flown separately, so a tile straddling a project boundary appears in MORE THAN

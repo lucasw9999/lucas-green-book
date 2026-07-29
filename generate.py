@@ -366,7 +366,7 @@ def main():
     yardage = (config.BUILD_MODE == "yardage")
     if not yardage:
         for h in config.HOLE_NUMS:
-            GREENS[h] = render_green.render(h, HOLES[h][3], tournament=True)  # single conforming book
+            GREENS[h] = render_green.render(h, tournament=True)  # single conforming book
             LAYOUTS[h] = render_hole.render_hole(h, HOLES)
     # flat, ordered deck of cards (cut-and-stack, top-bound)
     panels = [cover_panel(), yardage_guide_panel() if yardage else guide_panel()]
@@ -690,7 +690,7 @@ def build_coach(coach_name=""):
     # green = leaf BACK), so you "flip up one more page" to the green. Map
     # wording/numbers are rendered ~2x bigger (font_scale) for older eyes.
     for h in config.HOLE_NUMS:
-        GREENS[h] = render_green.render(h, HOLES[h][3], tournament=True)
+        GREENS[h] = render_green.render(h, tournament=True)
         LAYOUTS[h] = render_hole.render_hole(h, HOLES, font_scale=2.0)
     # deck: leaf0 = [cover, enlarged-about]; leaf h = [hole h map, hole h green];
     # then back matter. Holes land one-per-leaf (map front / green back).

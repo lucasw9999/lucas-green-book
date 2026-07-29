@@ -117,7 +117,7 @@ def _blank_green(meta, tournament, rebuilt=False):
                      scale_max_in=None, insufficient=True)
 
 
-def render(hole, center_yd=None, tournament=False):
+def render(hole, tournament=False):
     meta = json.load(open(f"{DEM}/hole{hole:02d}.json"))
     # Only refuse when there is genuinely NOTHING measured under the green (fetch_dem_hd.py
     # honesty gate) -- then there is no surface to draw at all. A green that was rebuilt AFTER
