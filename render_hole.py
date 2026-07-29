@@ -218,23 +218,63 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             rem -= seg[i]
         return (ordered[0]['lat'], ordered[0]['lon'])
 
+    # A golfer clubs off "yards to the green", which is the STRAIGHT-LINE distance a rangefinder
+    # reads -- not how far there is left to walk. So place each tick where the centerline crosses
+    # the circle of radius `yd` about the green centre. That gives both properties at once:
+    # the label is a true to-green distance AND the tick sits on the drawn line.
+    # (Walking distance alone would print up to +43 yd over the straight line on a dogleg;
+    # positioning along the chord alone put the tick up to 85 m off the drawn line.)
+    gcla, gclo = centroid(green)
+    gce, gcn = em(gcla, gclo)
+    def _dist_to_green(la, lo):
+        e, n = em(la, lo)
+        return math.hypot(e-gce, n-gcn)
+
+    def point_at_radius(R_m):
+        """(lat,lon) on the centerline whose straight-line distance to the green centre is R_m,
+        taking the crossing nearest the green. None when the line never reaches that radius."""
+        prev_pt = ordered[-1]                      # green end
+        prev_d = _dist_to_green(prev_pt['lat'], prev_pt['lon'])
+        for i in range(len(ordered)-2, -1, -1):    # walk back toward the tee
+            cur = ordered[i]
+            cur_d = _dist_to_green(cur['lat'], cur['lon'])
+            if prev_d <= R_m <= cur_d or cur_d <= R_m <= prev_d:
+                lo_f, hi_f = 0.0, 1.0              # bisect between prev_pt (0) and cur (1)
+                for _ in range(48):                # ~sub-millimetre, and immune to the
+                    mid = (lo_f+hi_f)/2            # quadratic's degenerate cases
+                    mla = prev_pt['lat']+(cur['lat']-prev_pt['lat'])*mid
+                    mlo = prev_pt['lon']+(cur['lon']-prev_pt['lon'])*mid
+                    if (_dist_to_green(mla, mlo) < R_m) == (prev_d < R_m):
+                        lo_f = mid
+                    else:
+                        hi_f = mid
+                f = (lo_f+hi_f)/2
+                return (prev_pt['lat']+(cur['lat']-prev_pt['lat'])*f,
+                        prev_pt['lon']+(cur['lon']-prev_pt['lon'])*f)
+            prev_pt, prev_d = cur, cur_d
+        return None
+
     cands=[]
     for yd in (100,150,200,250,300):
-        if yd < 40 or (arc_yd - yd) < 30:     # skip points too near the green / the tee
+        # skip ticks too near the green, and any whose tee-relative label would be meaningless
+        # (<=30 yd from the tee, or negative -- possible when the drawn line overshoots the card)
+        if yd < 40 or (total_yd - yd) < 30:
             continue
-        la, lo = point_from_green(yd*0.9144)
-        sx, sy = proj(la, lo)
+        pt = point_at_radius(yd*0.9144)
+        if pt is None:                             # the line never gets that far from the green
+            continue
+        sx, sy = proj(pt[0], pt[1])
         cands.append((TY(sy), TX(sx), yd, total_yd - yd))
     cands.sort()                              # by screen y (green side first)
     rings=""; lastY=-999
     for Y0,Xc,yd,ft in cands:
-        if Y0-lastY < FSN*2.6:                # keep the numbers from stacking
+        if Y0-lastY < FSN*1.35:               # keep the numbers from stacking (tuned so
+                                      # radius-spaced ticks are not needlessly dropped)
             continue
         lastY=Y0
         rings+=(f'<line x1="{Xc-4:.1f}" y1="{Y0:.1f}" x2="{Xc+4:.1f}" y2="{Y0:.1f}" stroke="#9a9a9a" stroke-width="0.7"/>'
                 + etxt(9,  Y0+FSN*0.35, str(yd), "#2f5a26", "start"))   # LEFT = to green
-        if ft is not None:                                              # RIGHT = from back tee
-            rings+=etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")
+        rings+=etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")         # RIGHT = from back tee
 
     vb=f"0 0 100 {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'

@@ -82,13 +82,17 @@ def load_playing_surfaces():
         if is_surface and e.get('geometry'):
             poly=[(p['lon'],p['lat']) for p in e['geometry']]
             xs=[c[0] for c in poly]; ys=[c[1] for c in poly]
-            surfaces.append((min(xs),min(ys),max(xs),max(ys),poly))
+            kind='building' if t.get('building') else 'golf'
+            surfaces.append((min(xs),min(ys),max(xs),max(ys),poly,kind))
     return surfaces
 
 def on_playing_surface(lon,lat,surfaces):
-    for x0,y0,x1,y1,poly in surfaces:
+    """'golf' | 'building' | False -- which kind of surface this marker falls on (counted
+    separately, because reporting a building drop as a 'green/fairway/tee/bunker' drop
+    overstated that number by 16x on valley-hi)."""
+    for x0,y0,x1,y1,poly,kind in surfaces:
         if x0<=lon<=x1 and y0<=lat<=y1 and _pip(lon,lat,poly):
-            return True
+            return kind
     return False
 
 def main():
@@ -97,6 +101,7 @@ def main():
         raise SystemExit("no LAZ tiles in "+DIR+"/laz  (download the course point cloud first)")
     pt2utm, zscale = laz_to_utm()
     surfaces = load_playing_surfaces()
+    n_golf=sum(1 for s in surfaces if s[5]=='golf'); n_bld=len(surfaces)-n_golf
     geom = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
     holes = [e for e in geom if e.get('tags',{}).get('golf')=='hole' and e.get('geometry')]
     # hole centerlines as UTM segment lists -- keep the LONGEST way per ref (OSM has
@@ -154,20 +159,24 @@ def main():
                     acc[hn][(round(px/CELL),round(py/CELL))]=(px,py)
         print(os.path.basename(tf),f"processed ({int(tree.sum())} canopy pts)")
     out={}
-    dropped=0
+    dropped_surface=0; dropped_building=0
     for hn,cells in acc.items():
         pts=[]
         for (ux,uy) in cells.values():
             lon,lat=INV.transform(ux,uy)
             lat=round(lat,6); lon=round(lon,6)          # round FIRST so stored==tested
-            if on_playing_surface(lon,lat,surfaces):    # no trees on green/fairway/tee/bunker
-                dropped+=1; continue
+            hit=on_playing_surface(lon,lat,surfaces)   # golf surface OR building footprint
+            if hit:
+                if hit=='building': dropped_building+=1
+                else: dropped_surface+=1
+                continue
             pts.append([lat,lon])
         out[str(hn)]=pts
     json.dump(out,open(f"{DIR}/trees_lidar.json","w"))
     tot=sum(len(v) for v in out.values())
     print(f"wrote trees_lidar.json: {tot} tree markers across {len(out)} holes "
-          f"(dropped {dropped} on green/fairway/tee/bunker; e.g. hole1={len(out.get('1',[]))})")
+          f"(dropped {dropped_surface} on green/fairway/tee/bunker, {dropped_building} on buildings; "
+          f"{n_golf} golf + {n_bld} building polygons; e.g. hole1={len(out.get('1',[]))})")
 
 if __name__=="__main__":
     main()

@@ -15,32 +15,58 @@ import config
 S, W, N, E = config.COURSE["osm_bbox"]   # [south, west, north, east]
 BB = f"{S},{W},{N},{E}"
 
+def _digitized_of(path):
+    """Hand-added elements in an existing cache file, tagged _digitized.
+
+    These are irreplaceable: some courses carry greens traced from public-domain NAIP because OSM
+    had none, there is no script that regenerates them, and courses/ is gitignored -- so this file
+    is the ONLY copy. Losing one is silent and destructive: holes bind to their NEAREST green, so
+    the affected hole would quietly bind to a neighbouring green (measured: 42.5 m away) and print
+    a confident slope map for the wrong putting surface.
+
+    Therefore an unreadable existing file is a HARD STOP, never "nothing to preserve" -- a corrupt
+    or truncated cache plus a re-fetch would otherwise erase the geometry with no message at all.
+    """
+    if not os.path.exists(path):
+        return []
+    try:
+        prev = json.load(open(path)).get('elements', [])
+    except Exception as e:
+        raise SystemExit(
+            f"REFUSING to overwrite {path}: it exists but could not be parsed ({type(e).__name__}: {e}).\n"
+            f"  It may hold hand-digitized geometry that exists nowhere else. Restore or move it\n"
+            f"  aside deliberately before re-fetching.")
+    return [e for e in prev if '_digitized' in (e.get('tags') or {})]
+
+
 def fetch(query, out):
     url = "https://overpass-api.de/api/interpreter?data=" + urllib.parse.quote(query)
+    path = os.path.join(config.COURSE_DIR, out)
+    kept = _digitized_of(path)            # read BEFORE the network call, so a fetch can never race it
     for attempt in range(4):
         try:
             req = urllib.request.Request(url, headers={'Accept': 'application/json', 'User-Agent': 'greenbook/1.0'})
             data = urllib.request.urlopen(req, timeout=150).read()
             j = json.loads(data)                  # validate
-            path = os.path.join(config.COURSE_DIR, out)
-            # PRESERVE hand-added geometry. Some courses carry greens digitized from public-domain
-            # NAIP because OSM had none; they are tagged _digitized. A bare re-fetch would silently
-            # delete them, and since holes bind to their NEAREST green, the affected hole would
-            # then bind to a neighbouring green -- a wrong panel with no error.
-            if os.path.exists(path):
-                try:
-                    prev = json.load(open(path)).get('elements', [])
-                except Exception:
-                    prev = []
-                kept = [e for e in prev if '_digitized' in (e.get('tags') or {})]
-                if kept:
-                    have = {e.get('id') for e in j.get('elements', [])}
-                    add = [e for e in kept if e.get('id') not in have]
-                    j.setdefault('elements', []).extend(add)
-                    data = json.dumps(j).encode()
-                    print(f"  {out}: preserved {len(add)} digitized feature(s)")
-            open(path, "wb").write(data)
+            if kept:
+                have = {e.get('id') for e in j.get('elements', []) if e.get('id') is not None}
+                add = [e for e in kept if e.get('id') is None or e.get('id') not in have]
+                if len(add) != len(kept):
+                    raise SystemExit(
+                        f"ABORT: {len(kept)-len(add)} digitized feature(s) in {path} collide by id with\n"
+                        f"  freshly fetched OSM elements. OSM may now map that green for real. Resolve by\n"
+                        f"  hand (delete the digitized copy if OSM's is correct) rather than guessing.")
+                j.setdefault('elements', []).extend(add)
+                data = json.dumps(j, indent=2).encode()
+                print(f"  {out}: preserved {len(add)} of {len(kept)} digitized feature(s)")
+            # write atomically: a crash or a full disk must not leave a half-written cache behind
+            tmp = path + ".part"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
             return j
+        except SystemExit:
+            raise
         except Exception as e:
             print(f"  {out} attempt {attempt+1} failed: {type(e).__name__} {e}; retry")
             time.sleep(5)
