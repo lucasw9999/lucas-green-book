@@ -200,9 +200,11 @@ def render_hole(hnum, HOLES, font_scale=1.0):
            for i in range(len(pts_em)-1)]
     arc_m = sum(seg) or 1.0
     arc_yd = arc_m / 0.9144
-    # Does the drawn line actually span the hole? Where it stops short of the back tee (22 of 198
-    # holes) no from-tee distance can be derived from it, so that label is omitted rather than
-    # guessed -- the to-green number, which is what you club off, is unaffected.
+    # Does the drawn line actually span the hole? On 22 of 198 holes it does not: 20 stop short of
+    # the back tee and 2 OVERSHOOT it (OSM traced past the tee). Either way no from-tee distance
+    # can be derived, so that label is omitted rather than guessed -- the to-green number, which
+    # is what you club off, is unaffected. Note the overshoot case still needs the yd < total_yd
+    # bound below; suppressing the label alone does not bound the radius.
     tee_ok = abs(arc_yd - total_yd) <= max(15.0, 0.05*total_yd)
 
     # A golfer clubs off "yards to the green" -- the STRAIGHT-LINE distance a rangefinder reads, not
@@ -221,7 +223,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         to the green centre is R_m, taking the crossing nearest the green. None when the line never
         reaches that radius. arc_from_tee_m is that point's walked distance from the tee end, which
         is what the from-tee label needs -- deriving it as (card total - R) would mix two different
-        measures and was up to 54 yd wrong on a dogleg."""
+        measures and was up to 42 yd wrong on a dogleg (bay-view h10 printed 76 for a point
+        33.7 yd from the tee)."""
         prev_pt = ordered[-1]                      # green end
         prev_d = _dist_to_green(prev_pt['lat'], prev_pt['lon'])
         for i in range(len(ordered)-2, -1, -1):    # walk back toward the tee
@@ -248,6 +251,14 @@ def render_hole(hnum, HOLES, font_scale=1.0):
 
     cands=[]
     for yd in (100,150,200,250,300):
+        # A tick can never be further from the green than the hole is long. This bound must NOT
+        # depend on tee_ok: where the drawn centerline OVERSHOOTS the card (2 of 198 holes -- OSM
+        # traced past the back tee) the from-tee label is suppressed, so a gate on that value alone
+        # never fires and castlewood-hill h4 printed a "200 to green" tick on a 182-yd hole.
+        # Bound on the card yardage itself, not (total_yd - 30), which would drop legitimate rows
+        # on short holes (the-reserve h15 card 179 keeps its 150 tick).
+        if yd >= total_yd:
+            continue
         hit = point_at_radius(yd*0.9144)
         if hit is None:                            # the line never gets that far from the green
             continue
@@ -278,7 +289,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # than the row: the to-green number is the one a golfer clubs off.
         if ft is not None:
             wl = DIGIT_EM*FSN*len(str(yd)); wr = DIGIT_EM*FSN*len(str(ft))
-            if 9 + wl <= 91 - wr:
+            # + halo: the right label paints second with a FSN*0.28 white stroke, so budget
+            # its 0.14-em reach or the halo notches the last digit of the left number.
+            if 9 + wl + 0.12*FSN <= 91 - wr:
                 rings+=etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")  # RIGHT = from back tee
 
     vb=f"0 0 100 {VBH:.1f}"

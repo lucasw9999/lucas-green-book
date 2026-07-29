@@ -104,7 +104,8 @@ def main():
     pt2utm, zscale = laz_to_utm()
     surfaces = load_playing_surfaces()
     n_golf=sum(1 for s in surfaces if s[5]=='golf'); n_bld=len(surfaces)-n_golf
-    if n_bld == 0 and not os.environ.get("ALLOW_NO_BUILDINGS"):
+    _allow = os.environ.get("ALLOW_NO_BUILDINGS", "").lower() not in ("", "0", "false", "no")
+    if n_bld == 0 and not _allow:
         # A cache fetched before way[building] was added silently disables the footprint test, and
         # clubhouse roofs come back as trees (53 of them at Merion). Fail loudly instead.
         raise SystemExit("no building polygons in osm_course.json -- this cache predates the "
@@ -112,6 +113,9 @@ def main():
                          "  Re-run: COURSE=%s python3 fetch_osm.py   "
                          "(or set ALLOW_NO_BUILDINGS=1 if this course genuinely has none)"
                          % config.SLUG)
+    if n_bld == 0:
+        print("WARNING: ALLOW_NO_BUILDINGS set -- building footprint test DISABLED; "
+              "roofs may be drawn as trees")
     geom = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
     holes = [e for e in geom if e.get('tags',{}).get('golf')=='hole' and e.get('geometry')]
     # hole centerlines as UTM segment lists -- keep the LONGEST way per ref (OSM has

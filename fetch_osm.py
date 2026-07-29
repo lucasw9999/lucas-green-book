@@ -66,10 +66,11 @@ def fetch(query, out):
                         f"ABORT: {len(kept)-len(add)} digitized feature(s) in {path} collide by id with\n"
                         f"  freshly fetched OSM elements {clash}. OSM may now map that green for real.\n"
                         f"  Resolve by hand (delete the digitized copy if OSM's is correct).")
-                # An id check alone is not enough: digitized features use negative or synthetic ids
-                # that can never equal a real OSM id, so if OSM has since mapped the same green the
-                # collision is GEOMETRIC, not by id -- and we would keep both, leaving two greens
-                # for one hole and letting nearest-green matching pick the stale trace.
+                # An id check alone is not enough. It IS reachable (bay-view uses 9000000xx, and the
+                # same cache holds real way ids above 9e8) but it is dead for negative ids, and in
+                # either case OSM mapping the same green afresh gives it a NEW id -- so the real
+                # collision is GEOMETRIC. Keeping both would leave two greens for one hole and let
+                # nearest-green matching pick the stale trace.
                 for d in add:
                     dg = d.get('geometry') or []
                     if not dg or (d.get('tags') or {}).get('golf') != 'green':
