@@ -137,8 +137,11 @@ def _row(slug):
 
 
 def build():
-    slugs = sorted(os.path.basename(os.path.dirname(p))
-                   for p in glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
+    # ignore scratch/underscore dirs: transient course folders (cold-build tests, staging) must not
+    # make the provenance doc look stale and fail the drift check
+    slugs = sorted(s for s in (os.path.basename(os.path.dirname(p))
+                              for p in glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
+                   if not s.startswith("_"))
     rows = [_row(s) for s in slugs]
     return f"""# Provenance by Course
 

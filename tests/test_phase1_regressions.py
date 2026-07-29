@@ -36,10 +36,15 @@ R_LAT = 111320.0
 
 
 def _courses():
-    """Course slugs that have the geometry needed to render a hole map."""
+    """Course slugs that have the geometry needed to render a hole map.
+
+    Underscore-prefixed folders are scratch (staging, the cold-build test) and are skipped so a
+    transient directory cannot silently widen or narrow what the corpus tests measure."""
     out = []
     for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
         slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
         if os.path.exists(os.path.join(ROOT, "courses", slug, "osm_geom.json")):
             out.append(slug)
     return out
@@ -504,3 +509,45 @@ def test_vertical_unit_refuses_rather_than_assuming_metres():
     for bad in ("EPSG:4326", "EPSG:4269", "not-a-crs"):
         with pytest.raises(SystemExit):
             geo.vertical_scale(bad)
+
+
+@pytest.mark.skipif(not os.environ.get("COLD_BUILD"),
+                    reason="set COLD_BUILD=1 to run: needs network and reprocesses ~300 MB of LiDAR")
+def test_cold_build_reproduces_an_existing_book_byte_for_byte():
+    """End-to-end determinism. Every other test checks one stage; this one runs the whole pipeline
+    from nothing but course.json + the cached LAZ tiles (fresh OSM fetch, fresh 0.4 m green
+    surfaces, fresh trees, fresh book) and requires the result to match the committed book EXACTLY.
+
+    That is the property that makes the provenance claims checkable: same inputs -> same book. It
+    also catches cross-stage breakage that per-stage tests cannot -- a stage-order dependency, or
+    OSM having drifted from the cached copy.
+
+    Verified 2026-07-29 on micke-grove-golf-links: 37/837 OSM elements identical, all 18 dem_hd
+    surfaces byte-identical, 5657 tree markers, greenbook.html identical at 4,334,614 bytes.
+
+    Run:  COLD_BUILD=1 python3 -m pytest tests/ -q -k cold_build
+    """
+    import subprocess, shutil, hashlib, json
+    ref = "micke-grove-golf-links"
+    cold = "_coldtest"
+    src, dst = os.path.join(ROOT, "courses", ref), os.path.join(ROOT, "courses", cold)
+    if not os.path.exists(os.path.join(src, "greenbook.html")):
+        pytest.skip(f"{ref} is not built here")
+    shutil.rmtree(dst, ignore_errors=True)
+    os.makedirs(dst)
+    try:
+        j = json.load(open(os.path.join(src, "course.json")))
+        j["slug"] = cold
+        json.dump(j, open(os.path.join(dst, "course.json"), "w"), indent=2)
+        os.symlink(os.path.join(src, "laz"), os.path.join(dst, "laz"))
+        env = {**os.environ, "COURSE": cold}
+        for stage in ("fetch_osm.py", "fetch_dem_hd.py", "fetch_trees.py", "generate.py"):
+            r = subprocess.run([sys.executable, os.path.join(ROOT, stage)], cwd=ROOT,
+                               env=env, capture_output=True, text=True)
+            assert r.returncode == 0, f"{stage} failed:\n{r.stdout[-1500:]}{r.stderr[-1500:]}"
+        a = open(os.path.join(src, "greenbook.html"), encoding="utf-8").read()
+        b = open(os.path.join(dst, "greenbook.html"), encoding="utf-8").read()
+        assert a == b, (f"cold build differs from the committed book "
+                        f"({len(a)} vs {len(b)} bytes) -- the pipeline is not reproducible")
+    finally:
+        shutil.rmtree(dst, ignore_errors=True)
