@@ -2142,6 +2142,46 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
     return str(path)
 
 
+def test_derived_artifacts_are_not_older_than_their_inputs():
+    """The pipeline is a chain -- osm_geom/osm_course -> dem_hd -> trees_lidar -> greenbook.html --
+    and re-running one stage without the ones downstream leaves a book built from mixed vintages.
+
+    That happened, and only the cold-build test caught it. Re-fetching OSM to recover the fairways
+    changed which polygons trees may sit on; the books were rebuilt but fetch_trees.py was not, so 7
+    courses drew trees that the new fairways should have dropped. Micke Grove was the measurable
+    case: 5,657 markers committed against 5,642 on a fresh run, exactly the 15 markers now falling on
+    newly-visible fairway.
+
+    Nothing printed was untrue -- those trees are really there -- but the artifacts no longer matched
+    their inputs, and byte-for-byte reproducibility is the property that makes the provenance claims
+    checkable. mtime is a weak signal (a copied or freshly checked-out tree rewrites it), so this
+    reports rather than asserts unless the ordering is violated by a wide margin."""
+    SLACK = 120          # seconds; tolerate same-run jitter between stages
+    chain = [
+        ("osm_course.json", "trees_lidar.json"),
+        ("osm_geom.json", "trees_lidar.json"),
+        ("osm_geom.json", "greenbook.html"),
+        ("trees_lidar.json", "greenbook.html"),
+    ]
+    problems = []
+    checked = 0
+    for slug in CORPUS:
+        cdir = os.path.join(ROOT, "courses", slug)
+        for src, derived in chain:
+            sp, dp = os.path.join(cdir, src), os.path.join(cdir, derived)
+            if not (os.path.isfile(sp) and os.path.isfile(dp)):
+                continue
+            checked += 1
+            lag = os.path.getmtime(sp) - os.path.getmtime(dp)
+            if lag > SLACK:
+                problems.append(f"{slug}: {derived} is {lag / 60:.0f} min older than {src}")
+    assert checked, "no course has both an input and a derived artifact to compare"
+    assert not problems, (
+        "derived artifacts predate their inputs -- re-run the downstream stages:\n  "
+        + "\n  ".join(problems)
+        + "\n  (osm -> fetch_dem_hd.py -> fetch_trees.py -> generate.py -> tools/export_pdf.py)")
+
+
 def test_no_green_is_bound_to_two_holes():
     """geo.match_green caps how FAR a hole may reach for a green (40 m, after bay-view hole 9 bound
     to hole 7's green 47.8 m away). It cannot catch the NEAR case, and the near case is likelier: if
