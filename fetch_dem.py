@@ -25,7 +25,32 @@ import geo
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
+OVERWRITE = bool(os.environ.get("OVERWRITE"))   # replace a good 0.4 m surface on purpose
 R_LAT = 111320.0
+def keeps_existing_surface(meta_path, overwrite=False):
+    """True when meta_path already holds a GOOD 0.4 m LiDAR surface that must not be replaced.
+
+    This stage shares dem_hd/ with fetch_dem_hd.py and used to rewrite every hole it was given, so
+    running it without ONLY= silently replaced every 0.4 m green with the coarse 1 m one and said
+    nothing about the better data it had just discarded. The books stayed HONEST -- each card prints
+    "1 m data" -- but a whole course quietly lost its precision. Found cold-building Monarch Bay:
+    the result was 3,889,124 bytes against the committed 4,973,620, with "1 m data" on greens that
+    have real LiDAR.
+
+    An INSUFFICIENT LiDAR surface is not worth keeping: that is exactly the gap this stage fills. An
+    unreadable file is not worth keeping either -- rebuilding it is the repair.
+    """
+    if overwrite or not os.path.exists(meta_path):
+        return False
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+    except Exception:
+        return False
+    return ("lidar" in str(meta.get("source", "")).lower()
+            and not meta.get("insufficient"))
+
+
 def mlon(lat): return 111320.0 * math.cos(math.radians(lat))
 
 def centroid(g):
@@ -95,6 +120,7 @@ def main():
     holes = list(best.values())
     gc = [(g, *centroid(g)) for g in greens]
     done = 0
+    skipped = []
     bound = {}        # hole -> green, so a green shared by two holes is caught (see geo.py)
     for h in holes:
         ref = h['tags'].get('ref')
@@ -103,6 +129,16 @@ def main():
         if only and int(ref) not in only:
             continue
         hn = int(ref); line = h['geometry']
+        # FILL GAPS, do not overwrite better data. This stage shares dem_hd/ with fetch_dem_hd.py,
+        # which builds 0.4 m LiDAR surfaces, and it used to rewrite every hole it was given -- so
+        # running it without ONLY= silently replaced every 0.4 m green with the coarse 1 m one and
+        # said nothing about the better data it had just discarded. The books stayed HONEST (each
+        # card prints "1 m data") but a whole course quietly lost its precision. Found cold-building
+        # Monarch Bay: the result was 3,889,124 bytes against the committed 4,973,620, with "1 m
+        # data" on greens that have real LiDAR.
+        if keeps_existing_surface(f"{OUT}/hole{hn:02d}.json", OVERWRITE):
+            skipped.append(hn)
+            continue
         green, gend, _tend = geo.match_green(line, greens, label=f"hole {hn}")
         bound[hn] = green
         prev = line[1] if gend is line[0] else line[-2]
@@ -167,6 +203,11 @@ def main():
         print(f"hole {hn:2d}: green {green['id']} {arr.shape} approach {appr:.0f}deg")
         time.sleep(0.2)
     geo.assert_one_green_per_hole(bound, label=config.SLUG)
+    if skipped:
+        print(f"\nkept the existing 0.4 m LiDAR surface on {len(skipped)} green(s): "
+              f"{', '.join(str(h) for h in sorted(skipped))}\n"
+              f"  This stage only FILLS GAPS. To replace a good surface with the 1 m DEM anyway, "
+              f"re-run with OVERWRITE=1.")
     print(f"\nWrote {done} greens -> {OUT}")
 
 if __name__ == "__main__":

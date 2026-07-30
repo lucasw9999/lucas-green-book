@@ -2142,6 +2142,90 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
     return str(path)
 
 
+def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
+    """fetch_dem.py (1 m seamless) writes into the SAME dem_hd/ as fetch_dem_hd.py (0.4 m LiDAR) and
+    used to rewrite every hole it was given. So running it without ONLY= silently replaced every
+    0.4 m green with the coarse 1 m one, saying nothing about the better data it had just discarded.
+
+    The books stayed HONEST throughout -- each affected card prints "1 m data" -- but a whole course
+    quietly lost its precision, which is why no gate caught it. Found cold-building Monarch Bay:
+    3,889,124 bytes against the committed 4,973,620, with "1 m data" on greens that have real LiDAR.
+    Verified after the fix on a copy of that course: 12 LiDAR surfaces kept, only the 6 seamless
+    holes rewritten.
+
+    It now FILLS GAPS by default; OVERWRITE=1 is the explicit way to replace a good surface."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_dem as fd
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    def meta(name, **kw):
+        p = tmp_path / name
+        p.write_text(json.dumps(kw))
+        return str(p)
+
+    lidar = {"source": "USGS 3DEP LiDAR ground returns @0.4m", "insufficient": False}
+    # a good LiDAR surface must be kept
+    assert fd.keeps_existing_surface(meta("a.json", **lidar)) is True
+    # ...but not when it is the very gap this stage exists to fill
+    assert fd.keeps_existing_surface(
+        meta("b.json", source=lidar["source"], insufficient=True)) is False
+    # an existing seamless surface may be refreshed
+    assert fd.keeps_existing_surface(
+        meta("c.json", source="USGS 3DEP seamless 1 m @0.5m sampling", insufficient=False)) is False
+    # absent or unreadable: rebuilding is the repair
+    assert fd.keeps_existing_surface(str(tmp_path / "nope.json")) is False
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    assert fd.keeps_existing_surface(str(bad)) is False
+    # and the override must be explicit
+    assert fd.keeps_existing_surface(meta("d.json", **lidar), overwrite=True) is False
+
+    # the loop must actually consult it, or the guard is decoration
+    src = open(os.path.join(ROOT, "fetch_dem.py"), encoding="utf-8").read()
+    assert "keeps_existing_surface(" in src.split("def keeps_existing_surface", 1)[1], \
+        "fetch_dem.py defines the guard but never calls it"
+
+
+def test_a_missing_green_surface_explains_itself(tmp_path):
+    """render_green.render() died with a bare FileNotFoundError from json.load, several frames deep,
+    naming a path and nothing else. The situation it describes is ordinary, not exotic:
+    fetch_dem_hd.py builds only the greens with usable 0.4 m LiDAR ground returns, and the ones it
+    refuses need the 1 m seamless fallback from fetch_dem.py. Monarch Bay has six such holes, so
+    running generate.py without fetch_dem.py hits this every time -- which is how it was found,
+    cold-building that course.
+
+    Every other stage here explains itself and names the command to run; this one now does too."""
+    import shutil
+    import subprocess
+
+    slug = "_testmsg"
+    d = os.path.join(ROOT, "courses", slug)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(os.path.join(d, "dem_hd"))
+    try:
+        with open(os.path.join(ROOT, "courses", a_course(), "course.json"), encoding="utf-8") as f:
+            j = json.load(f)
+        j["slug"] = slug
+        with open(os.path.join(d, "course.json"), "w", encoding="utf-8") as f:
+            json.dump(j, f, indent=2)
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import os;os.environ['COURSE']=%r;import render_green;render_green.render(1)" % slug],
+            cwd=ROOT, capture_output=True, text=True)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, "a missing surface must not silently succeed"
+        assert "FileNotFoundError" not in out, f"still a raw traceback:\n{out[-600:]}"
+        assert "no green surface" in out, out[-600:]
+        # it must name the hole and both stages that produce a surface
+        assert "hole 1" in out and "fetch_dem_hd.py" in out and "fetch_dem.py" in out, out[-600:]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_derived_artifacts_are_not_older_than_their_inputs():
     """The pipeline is a chain -- osm_geom/osm_course -> dem_hd -> trees_lidar -> greenbook.html --
     and re-running one stage without the ones downstream leaves a book built from mixed vintages.
