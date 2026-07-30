@@ -1003,6 +1003,53 @@ def test_fetch_dem_gate_measures_only_the_green_interior():
         "a real 3% green must be read"
 
 
+CARD_DIV = re.compile(
+    r'<div class="card( flip)?" style="left:([\d.]+)in;top:([\d.]+)in"><div class="pageno">(\d+)</div>')
+
+
+@needs_corpus
+def test_duplex_imposition_puts_every_back_behind_its_own_front():
+    """A physical property that would ruin every copy and is INVISIBLE in the HTML view.
+
+    The book is printed two-sided and folded, so each leaf's back card must land behind its own
+    front. Under long-edge duplex on a portrait sheet the paper flips about the vertical centreline,
+    so the back card has to sit at PAGE_W - x_front - CARD_W at the same y. Get that wrong by one
+    slot and every green prints behind the WRONG HOLE -- a book that looks perfect on screen and is
+    useless on a course. Seven review rounds never checked it.
+
+    Also asserts the top-flip rotation rule: every back is rotated 180 so it reads upright when the
+    card is flipped over the top, EXCEPT the last card (the dedication / back cover), which prints
+    upright like the front cover."""
+    checked = 0
+    for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        slug = os.path.basename(os.path.dirname(f))
+        if slug.startswith("_"):
+            continue
+        cfg, _rh = _engine(slug)
+        pos = {int(n): (float(x), float(y), bool(fl))
+               for fl, x, y, n in CARD_DIV.findall(open(f, encoding="utf-8").read())}
+        if not pos:
+            continue
+        for L in range(1, len(pos) // 2 + 1):
+            fn, bn = 2 * L - 1, 2 * L
+            if fn not in pos or bn not in pos:
+                continue
+            xf, yf, _ = pos[fn]
+            xb, yb, _ = pos[bn]
+            want = cfg.PAGE_W_IN - xf - cfg.CARD_W_IN
+            assert abs(xb - want) < 0.01 and abs(yb - yf) < 0.01, (
+                f"{slug} leaf {L}: back card {bn} at x={xb} but must mirror front {fn} "
+                f"(x={xf}) to x={want:.3f} -- it would print behind the wrong card")
+        rotated = [n for n, (_x, _y, fl) in pos.items() if fl]
+        assert all(n % 2 == 0 for n in rotated), f"{slug}: a FRONT card is rotated: {rotated}"
+        last = max(pos)
+        assert not pos[last][2], f"{slug}: the dedication (card {last}) must print upright"
+        assert len(rotated) == len(pos) // 2 - 1, \
+            f"{slug}: expected every back but the last rotated, got {len(rotated)} of {len(pos)//2}"
+        checked += 1
+    assert checked > 0, "no built books to check"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
