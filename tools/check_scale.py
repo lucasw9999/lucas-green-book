@@ -31,7 +31,12 @@ import os
 import pathlib
 import sys
 
-LIMIT_IN_PER_5YD = 0.375        # 3/8 in : 5 yd  == 1:480
+IN_PER_5YD = 180.0              # 5 yd on the ground, in inches -- so a printed length of L inches
+                                # per 5 yd is a scale of 1:(180/L). Derived, because the ratio used to
+                                # be hardcoded as "(1:480)" and kept printing 480 when the limit was
+                                # changed: "limit 0.75 in per 5 yd (1:480)" is self-contradictory,
+                                # 0.75 in per 5 yd being 1:240.
+LIMIT_IN_PER_5YD = 0.375        # 3/8 in : 5 yd  == 1:480 (USGA Clarification 4.3a/1)
 TARGET_IN_PER_5YD = 0.360       # our design target, ~4% inside the cap
 CARD_LIMIT_W_IN, CARD_LIMIT_H_IN = 4.25, 7.0
 
@@ -171,10 +176,11 @@ def main():
         printed = measure_printed(c)
         pr = f" | printed bar {printed:.4f} in" if printed else ""
         print(f"{c:34s} {len(per):3d} greens  worst h{worst_h:<2} {worst:.4f} in/5yd "
-              f"(1:{(0.375 / worst) * 480:.0f})  margin {(1 - worst / LIMIT_IN_PER_5YD) * 100:5.1f}%  "
+              f"(1:{IN_PER_5YD / worst:.0f})  margin {(1 - worst / LIMIT_IN_PER_5YD) * 100:5.1f}%  "
               f"{'FAIL' if over else 'PASS'}{pr}")
 
-    print(f"\n{total} greens measured · limit {LIMIT_IN_PER_5YD} in per 5 yd (1:480)")
+    print(f"\n{total} greens measured · limit {LIMIT_IN_PER_5YD} in per 5 yd "
+          f"(1:{IN_PER_5YD / LIMIT_IN_PER_5YD:.0f})")
     if total == 0:
         # "0 greens measured ... PASS" used to exit 0, so a renamed directory or a course set that
         # failed to load would report Rule 4.3 conformance for an empty measurement.
@@ -189,7 +195,7 @@ def main():
     if failures:
         print(f"FAIL: {len(failures)} green(s) exceed the Rule 4.3 scale limit:")
         for c, h, v in sorted(failures, key=lambda r: -r[2]):
-            print(f"   {c} hole {h}: {v:.4f} in/5yd (1:{(0.375 / v) * 480:.0f})")
+            print(f"   {c} hole {h}: {v:.4f} in/5yd (1:{IN_PER_5YD / v:.0f})")
         return 1
     print(f"PASS: every green conforms (design target {TARGET_IN_PER_5YD} in; "
           f"{warned} above target but legal)")

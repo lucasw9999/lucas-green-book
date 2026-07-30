@@ -1719,16 +1719,31 @@ def test_the_printed_flight_date_spans_every_point_not_just_the_first_few():
     2021-07-02. Castlewood Valley was wrong the same way. A full scan costs 6-8 s per course.
 
     This re-derives the span from EVERY point, independently of the module, and requires each course's
-    printed label to cover it."""
+    printed label to cover it. Dates are the LOCAL flight day, not the UTC day: topographic LiDAR is
+    often flown at night, so bay-view's whole survey ran 20:39-21:55 local on 2020-04-14 while the UTC
+    date is the 15th. The zone is derived here from a CONUS longitude band rather than imported, so
+    the test does not inherit the module's own mapping."""
     import datetime as dt
     import laspy
     import numpy as np
+    from zoneinfo import ZoneInfo
     EPOCH = dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)
+
+    def zone_of(lat, lon):
+        if lat is None or lon is None or not (-125.0 <= lon <= -66.9 and 24.0 <= lat <= 49.5):
+            return None
+        return ZoneInfo("America/Los_Angeles" if lon < -114 else
+                        "America/Denver" if lon < -102 else
+                        "America/Chicago" if lon < -87 else "America/New_York")
+
     checked = 0
     for slug in CORPUS:
         cj = os.path.join(ROOT, "courses", slug, "course.json")
         tiles = sorted(glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz")))
-        lab = (json.load(open(cj)).get("lidar_flown") or {}).get("label")
+        cfg = json.load(open(cj))
+        lab = (cfg.get("lidar_flown") or {}).get("label")
+        loc = cfg.get("location") or {}
+        tz = zone_of(loc.get("lat"), loc.get("lon"))
         if not tiles or not lab:
             continue
         lo = hi = None
@@ -1744,7 +1759,9 @@ def test_the_printed_flight_date_spans_every_point_not_just_the_first_few():
                         hi = b if hi is None else max(hi, b)
         if lo is None:
             continue
-        f2d = lambda v: (EPOCH + dt.timedelta(seconds=v + 1e9 - 18)).date()
+        def f2d(v):
+            u = EPOCH + dt.timedelta(seconds=v + 1e9 - 18)
+            return (u.astimezone(tz) if tz else u).date()
         first, last = f2d(lo), f2d(hi)
         # the label must not be NARROWER than what the points show
         assert str(first) in lab, f"{slug}: points start {first} but the label says {lab!r}"
@@ -1919,6 +1936,20 @@ def test_every_green_conforms_to_rule_4_3_scale_cap():
         pytest.skip("no built books to measure")
     if r.returncode == 2 and "SKIP:" in r.stdout:
         pytest.skip("no browser installed; the rendered-layout measurement cannot run here")
+    # The gate's own limit must equal the one stated HERE. Without this the tests only checked
+    # rc == 0 and "PASS", so doubling LIMIT_IN_PER_5YD in the tool to 0.750 left the whole suite
+    # green -- the guard on this project's worst historical defect, disabled by editing one number.
+    # tests/…:39 already declared the cap and it was dead code: one declaration, zero uses.
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import check_scale
+    assert abs(check_scale.LIMIT_IN_PER_5YD - LIMIT_IN_PER_5YD) < 1e-9, (
+        f"the gate enforces {check_scale.LIMIT_IN_PER_5YD} in per 5 yd but USGA Clarification "
+        f"4.3a/1 caps it at {LIMIT_IN_PER_5YD} (3/8 in : 5 yd = 1:480)")
+    # and the worst value it MEASURED must be inside that cap, read out of its own output
+    worst = max(float(v) for v in re.findall(r"([0-9.]+) in/5yd", r.stdout)) if \
+        re.search(r"in/5yd", r.stdout) else 0.0
+    assert 0 < worst <= LIMIT_IN_PER_5YD, (
+        f"worst measured green is {worst} in per 5 yd against a {LIMIT_IN_PER_5YD} cap")
     assert r.returncode == 0, f"Rule 4.3 scale gate failed:\n{r.stdout[-2000:]}"
     # "0 greens measured ... PASS" was reachable, so require evidence of the measurement too
     assert "PASS" in r.stdout, r.stdout[-2000:]
