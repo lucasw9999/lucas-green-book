@@ -101,15 +101,9 @@ def main():
         if only and int(ref) not in only:
             continue
         hn = int(ref); line = h['geometry']
-        def near(pt):
-            best = 1e9; bg = None
-            for g, la, lo in gc:
-                dm = math.hypot((pt['lon']-lo)*mlon(la), (pt['lat']-la)*R_LAT)
-                if dm < best: best, bg = dm, g
-            return best, bg
-        da, ga = near(line[0]); db, gb = near(line[-1])
-        if da <= db: green, gend, prev = ga, line[0], line[1]
-        else:        green, gend, prev = gb, line[-1], line[-2]
+        import geo
+        green, gend, _tend = geo.match_green(line, greens, label=f"hole {hn}")
+        prev = line[1] if gend is line[0] else line[-2]
         appr = bearing(prev['lat'], prev['lon'], gend['lat'], gend['lon'])
 
         geo = green['geometry']; lats = [p['lat'] for p in geo]; lons = [p['lon'] for p in geo]

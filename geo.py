@@ -78,3 +78,49 @@ def vertical_scale(src):
             f"  printed 3.28x too steep. Set \"lidar_crs\" in course.json to a CRS that carries its\n"
             f"  units (a compound EPSG code or the full WKT), then re-run.")
     return factor
+
+
+# The furthest a hole's line endpoint legitimately sits from its green's centroid, measured across
+# all 198 built greens: worst 11.1 m (philadelphia h12), median 2.0 m. The documented mis-binding --
+# bay-view hole 9 attaching to hole 7's green -- was 47.8 m away. 40 m therefore catches that with
+# room to spare while clearing the worst real case by 3.6x.
+GREEN_BIND_MAX_M = 40.0
+
+
+def match_green(hole_line, greens, max_m=GREEN_BIND_MAX_M, label=""):
+    """Bind a hole's centerline to its green: (green, green_end_point, tee_end_point).
+
+    Binds to the NEAREST green to either endpoint, but REFUSES beyond max_m. Without that cap a hole
+    whose own green is missing from OSM silently attaches to a neighbour's, and the card then prints a
+    confident, correctly-computed read of the WRONG putting surface -- the worst thing this project can
+    do. It has happened: bay-view hole 9 bound to hole 7's green, 47.8 m away, when an Overpass reply
+    truncated the data.
+
+    Lives here because the same binding was written three times -- fetch_dem_hd.py, fetch_dem.py and
+    render_hole.py -- and a cap added to one would have left the others silent. That is the exact
+    duplication this module was created to end.
+    """
+    def near(pt):
+        best, bg = 1e9, None
+        for g in greens:
+            gg = g['geometry']
+            gla = sum(p['lat'] for p in gg) / len(gg)
+            glo = sum(p['lon'] for p in gg) / len(gg)
+            dm = math.hypot((pt['lon'] - glo) * mlon(gla), (pt['lat'] - gla) * R_LAT)
+            if dm < best:
+                best, bg = dm, g
+        return best, bg
+
+    da, ga = near(hole_line[0])
+    db, gb = near(hole_line[-1])
+    d, g, gend, tend = ((da, ga, hole_line[0], hole_line[-1]) if da <= db
+                        else (db, gb, hole_line[-1], hole_line[0]))
+    if g is None:
+        raise SystemExit(f"no green found to bind {label or 'this hole'} to.")
+    if d > max_m:
+        raise SystemExit(
+            f"{label or 'a hole'}: the nearest green is {d:.0f} m from either end of its centerline,\n"
+            f"  beyond the {max_m:.0f} m bind limit. Its own green is probably missing from the OSM\n"
+            f"  extract, and binding anyway would print a confident read of the WRONG putting surface.\n"
+            f"  Re-run fetch_osm.py, or add the green (tagged _digitized) before building.")
+    return g, gend, tend

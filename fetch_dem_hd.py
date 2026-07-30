@@ -29,8 +29,15 @@ R_LAT = 111320.0
 NAN_FRAC_MAX = 0.02                         # max share of the green interior that may be extrapolated
 DENSITY_MIN = 4.0                           # min ground returns per m^2 over the patch
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
-# NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
-_LON = config.COURSE.get("location", {}).get("lon", -121.0)
+# NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19).
+# No default: falling back to -121.0 silently selected California zone 10, so a Pennsylvania course
+# (zone 18) would have every green surface projected through the wrong zone with nothing to say so.
+# fetch_trees.py was fixed this way; this module -- which actually BUILDS the surfaces -- was missed.
+_LOC = config.COURSE.get("location") or {}
+if not isinstance(_LOC, dict) or _LOC.get("lon") is None:
+    raise SystemExit('course.json needs "location": {"lat": .., "lon": ..} -- it selects the UTM '
+                     'zone every green surface is built in. Refusing to guess one.')
+_LON = _LOC["lon"]
 UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)
 TR = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM metres
 
@@ -49,7 +56,16 @@ def laz_to_utm():
             except Exception:
                 pass
     if src is None:
-        src = UTM
+        # Assuming a CRS-less cloud is already in the course UTM zone with metres for Z is the guess
+        # geo.vertical_scale exists to prevent: geo.vertical_scale(UTM) returns 1.0, so a US-survey-
+        # foot cloud would go unscaled and EVERY printed slope, contour and arrow would be 3.28x too
+        # steep. fetch_trees.py was hard-stopped on this; this module makes the surfaces those numbers
+        # come from, so it matters more here.
+        raise SystemExit(
+            "no CRS in any LAZ tile and no \"lidar_crs\" in course.json.\n"
+            "  Refusing to assume the cloud is already in %s with metres for Z: if it is in US\n"
+            "  survey feet, every slope would print 3.28x too steep. Set \"lidar_crs\" to a CRS\n"
+            "  that carries its units (a compound EPSG code or full WKT), then re-run." % UTM)
     pt = Transformer.from_crs(src, UTM, always_xy=True)
     return pt, geo.vertical_scale(src)      # from the CRS axis unit, never guessed from its name
 
@@ -95,15 +111,8 @@ def build_targets():
         ref=h['tags'].get('ref')
         if not(ref and ref.isdigit()):continue
         hn=int(ref); line=h['geometry']
-        def near(pt):
-            best=1e9;bg=None
-            for g,la,lo in gc:
-                dm=math.hypot((pt['lon']-lo)*mlon(la),(pt['lat']-la)*R_LAT)
-                if dm<best:best,bg=dm,g
-            return best,bg
-        da,ga=near(line[0]); db,gb=near(line[-1])
-        if da<=db: green,gend,prev=ga,line[0],line[1]
-        else:      green,gend,prev=gb,line[-1],line[-2]
+        green,gend,_tend = geo.match_green(line, greens, label=f"hole {hn}")
+        prev = line[1] if gend is line[0] else line[-2]
         appr=bearing(prev['lat'],prev['lon'],gend['lat'],gend['lon'])
         gpoly=green['geometry']; lats=[p['lat'] for p in gpoly]; lons=[p['lon'] for p in gpoly]
         clat,clon=centroid(green)

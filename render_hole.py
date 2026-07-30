@@ -15,6 +15,7 @@ Data: OpenStreetMap (ODbL) golf features in osm_course.json + osm_geom.json.
 import glob
 import json, math, os
 import config
+import geo
 DIR = config.COURSE_DIR
 R_LAT = 111320.0
 
@@ -55,16 +56,9 @@ def centroid(g):
     la = sum(p['lat'] for p in g['geometry'])/len(g['geometry'])
     lo = sum(p['lon'] for p in g['geometry'])/len(g['geometry']); return la, lo
 
-def match_green(hole_line, greens):
-    def near(pt):
-        best=1e9; bg=None
-        for g in greens:
-            gla,glo=centroid(g)
-            dm=math.hypot((pt['lon']-glo)*mlon(gla),(pt['lat']-gla)*R_LAT)
-            if dm<best: best,bg=dm,g
-        return best,bg
-    da,ga=near(hole_line[0]); db,gb=near(hole_line[-1])
-    return (ga, hole_line[0], hole_line[-1]) if da<=db else (gb, hole_line[-1], hole_line[0])
+def match_green(hole_line, greens, label=""):
+    """Delegates to geo.match_green, which carries the distance cap. See there for why."""
+    return geo.match_green(hole_line, greens, label=label)
 
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy

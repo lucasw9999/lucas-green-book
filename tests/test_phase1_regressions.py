@@ -1614,6 +1614,61 @@ def test_the_enlarged_edition_really_is_enlarged_in_print():
     assert checked > 0, "no course had both editions built"
 
 
+def test_a_hole_never_binds_to_a_distant_green():
+    """The worst thing this project can do is print a correctly-computed read of the WRONG putting
+    surface, and the binding had no distance cap. A hole whose own green is missing from the OSM
+    extract simply attached to the nearest one -- it has happened, bay-view hole 9 to hole 7's green,
+    47.8 m away, after a truncated Overpass reply.
+
+    Measured across all 198 built greens: worst legitimate binding 11.1 m (philadelphia h12), median
+    2.0 m, and every green bound to exactly one hole. The 40 m cap therefore catches the known
+    failure with room to spare and clears the worst real case by 3.6x.
+
+    The cap lives in geo.match_green because this binding was written THREE times -- fetch_dem_hd.py,
+    fetch_dem.py and render_hole.py -- so a cap added to one would have left the other two silent."""
+    import geo
+
+    def green(lat, lon, r=0.0002):
+        return {"id": int(abs(lon) * 1e4), "geometry": [
+            {"lat": lat - r, "lon": lon - r}, {"lat": lat - r, "lon": lon + r},
+            {"lat": lat + r, "lon": lon + r}, {"lat": lat + r, "lon": lon - r},
+            {"lat": lat - r, "lon": lon - r}]}
+
+    lat0, lon0 = 40.0, -75.0
+    near_green = green(lat0, lon0)
+    # a centerline ending right on that green binds fine
+    line = [{"lat": lat0 + 0.002, "lon": lon0}, {"lat": lat0, "lon": lon0}]
+    g, gend, tend = geo.match_green(line, [near_green], label="hole 1")
+    assert g is near_green and gend["lat"] == lat0 and tend["lat"] == lat0 + 0.002
+
+    # ...and a green 60 m away -- further than the 40 m cap -- must be REFUSED, not used
+    far = green(lat0 + 60.0 / geo.R_LAT, lon0)
+    with pytest.raises(SystemExit) as e:
+        geo.match_green(line[:1] + [{"lat": lat0 - 0.001, "lon": lon0}], [far], label="hole 9")
+    assert "bind limit" in str(e.value) or "wrong putting surface" in str(e.value).lower()
+
+    # the cap is stated where the measurement is, and is comfortably above the worst real binding
+    assert 11.1 < geo.GREEN_BIND_MAX_M < 47.8, \
+        f"the cap must sit between the worst real binding and the known mis-binding, got {geo.GREEN_BIND_MAX_M}"
+
+
+def test_the_surface_builder_refuses_to_guess_a_zone_or_a_vertical_unit():
+    """fetch_trees.py was hard-stopped on two silent guesses in 2912831; fetch_dem_hd.py carried the
+    IDENTICAL code and was missed -- and it is the module that actually builds the green surfaces every
+    printed slope comes from. A missing course.json "location" defaulted to lon -121.0, silently
+    choosing California UTM zone 10 for a Pennsylvania course; and a CRS-less point cloud was assumed
+    to be in that zone with metres for Z, which for a US-survey-foot cloud prints every slope 3.28x
+    too steep."""
+    src = open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8").read()
+    assert '"lon", -121.0' not in src and "'lon', -121.0" not in src, \
+        "fetch_dem_hd still defaults the course longitude -- that silently picks California zone 10"
+    assert "src = UTM" not in src, \
+        "fetch_dem_hd still assumes a CRS-less cloud is in the course UTM zone with metres for Z"
+    # and both stops must be reachable failures, not comments (there are exactly two: the missing
+    # location and the missing CRS -- counted, not guessed)
+    assert src.count("raise SystemExit") >= 2, "the guards must actually stop the run"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
