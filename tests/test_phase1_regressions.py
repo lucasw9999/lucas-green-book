@@ -2475,6 +2475,22 @@ def test_project_choice_is_judged_on_the_greens_not_the_bounding_box(tmp_path):
         # an undated project must not be treated as ancient, and must not crash the ranking
         picked3, _, _ = fl.choose_project({"CA_Unnamed_Survey": old, "CA_New_2021_B21": recent})
         assert picked3 == "CA_New_2021_B21", picked3
+
+        # SAME survey year, both above the floor: the tie-break must use the metric we ranked by.
+        # It used bbox coverage, so a survey feeding every green (greens 1.00, bbox 0.62) lost to one
+        # missing a green but filling the rectangle (greens 0.90, bbox 0.95) -- the same
+        # bbox-over-greens mistake the ranking was changed to stop making.
+        wide = [tile(W + (E - W) * 0.06, E, S, N)]
+        narrow = [tile(W, W + (E - W) * 0.62, S, N)]
+        spread = [(W + (E - W) * 0.6 * (i + 0.5) / 10, my) for i in range(10)]
+        fl._green_centroids = lambda: spread
+        gn, gw = fl._green_coverage(narrow, spread), fl._green_coverage(wide, spread)
+        bn, bw = fl._coverage(narrow), fl._coverage(wide)
+        assert gn > gw and bn < bw, (gn, gw, bn, bw)   # the conflict this test needs
+        assert gw >= fl.GREEN_COVERAGE_GOOD, "both must clear the floor or the tie-break never runs"
+        picked4, _, _ = fl.choose_project({"CA_Narrow_2021_B21": narrow, "CA_Wide_2021_B21": wide})
+        assert picked4 == "CA_Narrow_2021_B21", \
+            f"picked {picked4}: same year, so the tie-break must prefer the survey feeding more greens"
     finally:
         fl._green_centroids = real_cents
 

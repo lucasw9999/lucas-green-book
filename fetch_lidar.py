@@ -191,7 +191,12 @@ def choose_project(projects):
         rank, floor = gcov, GREEN_COVERAGE_GOOD
     else:
         rank, floor = scored, COVERAGE_GOOD
-        print("  (no green geometry yet -- ranking projects on bbox coverage)")
+        # Name the ACTUAL reason. This used to say "no green geometry yet" unconditionally, which is
+        # wrong when the greens are known and it is a project's tiles that carry no boundingBox --
+        # blaming the wrong input sends you looking in the wrong place.
+        why = ("no green geometry yet" if not cents
+               else "some project's tiles carry no boundingBox")
+        print(f"  ({why} -- ranking projects on bbox coverage instead of greens)")
     best_cov = max(rank.values())
     # A survey missing some greens is recoverable and disclosed: those greens fall back to the 1 m
     # seamless DEM and the card prints "1 m data". A survey that is a decade stale is not -- it
@@ -203,7 +208,11 @@ def choose_project(projects):
     # oldest -- "unknown" is not "ancient", and guessing it was would pick genuinely old data.
     dated = [p for p in good if survey_year(p) is not None]
     pool = dated or good
-    pick = max(pool, key=lambda p: (survey_year(p) or 0, scored[p], len(projects[p])))
+    # Tie-break on the metric we actually RANKED by, not on bbox coverage. With two surveys from the
+    # same year both above the floor, using scored[] here picked the one that feeds FEWER greens:
+    # measured, greens 1.00 / bbox 0.62 lost to greens 0.90 / bbox 0.95. That is the same
+    # bbox-over-greens mistake the ranking itself was changed to stop making.
+    pick = max(pool, key=lambda p: (survey_year(p) or 0, rank[p], scored[p], len(projects[p])))
     return pick, scored, newest
 
 
