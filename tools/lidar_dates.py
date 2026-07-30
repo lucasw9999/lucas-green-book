@@ -34,12 +34,12 @@ LEAP_SECONDS = 18          # GPS - UTC since 2017-01-01; LiDAR here is all post-
                            # ONE SECOND, so it can only change the printed DATE for a flight within a
                            # second of midnight UTC -- checked, none of ours is. Revisit only if a
                            # pre-2017 course is ever added.
-SAMPLE_POINTS = 2_000_000  # enough to bracket a flight without reading a 200 MB tile in full.
-                           # NOTE this samples the FIRST 2M points of a tile, so a tile flown over
-                           # more than one day can report a narrower range than the truth. That
-                           # understates uncertainty rather than overstating currency, and the
-                           # course label takes min/max across all tiles, which recovers most of it
-                           # (Philadelphia correctly reports "2024-12-17 to 2025-03-28").
+# No sample cap. Reading only the first 2M points of a tile (2% of the largest one here) made the
+# tool report a NARROWER survey than the data holds, and that narrower claim was printed: Callippe's
+# book said "flown 2021-06-21", one day, for a survey that ran 2021-06-21 to 2021-07-02 -- twelve.
+# Castlewood Valley was wrong the same way. A full scan of every tile costs 6-8 s per course and the
+# tool runs once per course, so there is nothing to buy with a prefix.
+CHUNK = 2_000_000
 
 
 def gps_to_utc(gps_seconds, adjusted=True):
@@ -57,23 +57,31 @@ def gps_to_utc(gps_seconds, adjusted=True):
 
 
 def tile_dates(path):
-    """(first_utc, last_utc) for one LAZ tile, or None when it carries no usable GPS time."""
+    """(first_utc, last_utc) for one LAZ tile, or None when it carries no usable GPS time.
+
+    global_encoding bit 0 == 0 means GPS WEEK TIME: seconds since the start of the current GPS week,
+    0..604800, with the week number recorded nowhere in the file. The absolute date is therefore NOT
+    recoverable and the only honest answer is None. The old code treated bit 0 == 0 as raw standard
+    GPS time, which put the value near 1980, failed the 2000-2040 window, flipped to the +1e9
+    interpretation and landed on 1980-01-06 + 1e9 s = 2011-09-14 -- INSIDE the plausibility window.
+    So every week-time tile silently produced a fabricated September-2011 flight date."""
     with laspy.open(path) as f:
-        adjusted = bool(getattr(f.header.global_encoding, "gps_time_type", 0))
+        gtt = int(getattr(f.header.global_encoding, "gps_time_type", 0))
         if "gps_time" not in [d.name for d in f.header.point_format.dimensions]:
             return None
+        if gtt == 0:
+            print(f"    {os.path.basename(path)}: gps_time is GPS Week Time "
+                  f"(global_encoding bit 0 = 0); no absolute date is recoverable from it")
+            return None
+        adjusted = True
         lo = hi = None
-        seen = 0
-        for chunk in f.chunk_iterator(500_000):
+        for chunk in f.chunk_iterator(CHUNK):
             t = chunk.gps_time
             t = t[t > 0]
             if len(t):
                 clo, chi = float(t.min()), float(t.max())
                 lo = clo if lo is None else min(lo, clo)
                 hi = chi if hi is None else max(hi, chi)
-            seen += len(chunk)
-            if seen >= SAMPLE_POINTS:
-                break
         if lo is None:
             return None
         # A tile with times spanning years is raw (unadjusted) GPS time; sanity-check the result.

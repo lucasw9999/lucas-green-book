@@ -1669,6 +1669,93 @@ def test_the_surface_builder_refuses_to_guess_a_zone_or_a_vertical_unit():
     assert src.count("raise SystemExit") >= 2, "the guards must actually stop the run"
 
 
+def test_gps_week_time_is_refused_not_turned_into_september_2011():
+    """global_encoding bit 0 == 0 means GPS WEEK TIME: seconds since the start of the current GPS
+    week, with the week number recorded NOWHERE in the file, so the absolute date is not recoverable.
+
+    The old code treated bit 0 == 0 as raw standard GPS time. That put the value near 1980, failed the
+    2000-2040 plausibility window, flipped to the +1e9 interpretation, and landed on
+    1980-01-06 + 1e9 s = 2011-09-14 -- INSIDE the window. So every week-time tile silently produced a
+    fabricated September-2011 flight date, which --write records into course.json and every book then
+    prints as its provenance."""
+    import laspy
+    import numpy as np
+    import tempfile
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import lidar_dates as ld
+
+    def write_tile(path, gtt, gps_values):
+        hdr = laspy.LasHeader(version="1.4", point_format=6)
+        hdr.global_encoding.gps_time_type = gtt
+        las = laspy.LasData(hdr)
+        n = len(gps_values)
+        las.x = np.linspace(0, 10, n); las.y = np.linspace(0, 10, n); las.z = np.zeros(n)
+        las.gps_time = np.asarray(gps_values, dtype="float64")
+        las.write(path)
+        with laspy.open(path) as f:      # prove the encoding stuck
+            assert int(f.header.global_encoding.gps_time_type) == gtt
+        return path
+
+    # a real instant: monarch-bay's true flight, 2019-08-14 15:04:01Z
+    import datetime as dt
+    inst = dt.datetime(2019, 8, 14, 15, 4, 1, tzinfo=dt.timezone.utc)
+    standard = (inst - dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)).total_seconds() + 18
+    with tempfile.TemporaryDirectory() as td:
+        ok = write_tile(os.path.join(td, "adjusted.laz"), 1, [standard - 1e9] * 64)
+        got = ld.tile_dates(ok)
+        assert got and got[0].date() == inst.date(), f"adjusted time must decode exactly, got {got}"
+
+        # week time: 0..604800 seconds, no week number anywhere
+        wk = write_tile(os.path.join(td, "weektime.laz"), 0, [345_600.0] * 64)
+        assert ld.tile_dates(wk) is None, \
+            "GPS Week Time carries no week number -- the date is not recoverable and must be refused"
+
+
+@needs_corpus
+def test_the_printed_flight_date_spans_every_point_not_just_the_first_few():
+    """tools/lidar_dates.py read only the first 2M points of each tile -- 2% of the largest one here --
+    so it reported a NARROWER survey than the data holds, and that narrower claim reached print:
+    Callippe's book said "flown 2021-06-21", a single day, for a survey that ran 2021-06-21 to
+    2021-07-02. Castlewood Valley was wrong the same way. A full scan costs 6-8 s per course.
+
+    This re-derives the span from EVERY point, independently of the module, and requires each course's
+    printed label to cover it."""
+    import datetime as dt
+    import laspy
+    import numpy as np
+    EPOCH = dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)
+    checked = 0
+    for slug in CORPUS:
+        cj = os.path.join(ROOT, "courses", slug, "course.json")
+        tiles = sorted(glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz")))
+        lab = (json.load(open(cj)).get("lidar_flown") or {}).get("label")
+        if not tiles or not lab:
+            continue
+        lo = hi = None
+        for p in tiles[:2]:                    # two tiles is enough to catch a truncated span
+            with laspy.open(p) as f:
+                if int(getattr(f.header.global_encoding, "gps_time_type", 0)) == 0:
+                    continue
+                for ch in f.chunk_iterator(2_000_000):
+                    t = np.asarray(ch.gps_time); t = t[t > 0]
+                    if len(t):
+                        a, b = float(t.min()), float(t.max())
+                        lo = a if lo is None else min(lo, a)
+                        hi = b if hi is None else max(hi, b)
+        if lo is None:
+            continue
+        f2d = lambda v: (EPOCH + dt.timedelta(seconds=v + 1e9 - 18)).date()
+        first, last = f2d(lo), f2d(hi)
+        # the label must not be NARROWER than what the points show
+        assert str(first) in lab, f"{slug}: points start {first} but the label says {lab!r}"
+        if last != first:
+            assert str(last) in lab, (
+                f"{slug}: points run to {last} but the label says {lab!r} -- the book would claim a "
+                f"shorter survey than the data")
+        checked += 1
+    assert checked >= 2, f"only {checked} courses had tiles to check"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
