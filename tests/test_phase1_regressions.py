@@ -252,7 +252,17 @@ def test_lidar_recency_uses_the_survey_year_not_the_publication_date():
     assert fetch_lidar.survey_year("CA_AlamedaCounty_2021_B21") == 2021
     assert fetch_lidar.survey_year("ARRA_CA_SANFRANCOAST_2010") == 2010
     assert fetch_lidar.survey_year("CA_ALAMEDACO_2006") == 2006
-    assert fetch_lidar.survey_year("no_year_here") == 0
+
+    # USGS dates many projects with a FISCAL-YEAR QUARTER CODE, not a full year. Matching only
+    # 4-digit years returned 0 for those, and 0 ranked them below every dated survey -- which
+    # INVERTED the rule this function exists to implement. Verified live: Merion's PA_17County_D24
+    # (2024) lost to PA_STATEWIDE_S_2006_2008, so the commit meant to stop us printing a 2006 green
+    # as current would have fetched one. Affected Merion, Philadelphia and Copper Valley.
+    assert fetch_lidar.survey_year("PA_17County_D24") == 2024
+    assert fetch_lidar.survey_year("CA_FEMALevee_D23") == 2023
+    assert fetch_lidar.survey_year("CA_SierraNevada_B22") == 2022
+    # and an undated project is UNKNOWN, not ancient -- returning 0 made it lose to everything
+    assert fetch_lidar.survey_year("no_year_here") is None
 
     # equal coverage -> the newer SURVEY wins, even though the older one publishes later
     S, W, N, E = fetch_lidar.S, fetch_lidar.W, fetch_lidar.N, fetch_lidar.E
@@ -264,6 +274,22 @@ def test_lidar_recency_uses_the_survey_year_not_the_publication_date():
     chosen, _s, _n = fetch_lidar.choose_project(projects)
     assert chosen == "CA_AlamedaCounty_2021_B21", \
         f"picked {chosen}: a 2023 publication of 2010 data outranked a 2021 survey"
+
+    # the real Merion case, at equal coverage: a fiscal-year-coded 2024 survey must beat a 2008 one
+    projects = {
+        "PA_STATEWIDE_S_2006_2008": [dict(publicationDate="2010-01-01", boundingBox=full)],
+        "PA_17County_D24": [dict(publicationDate="2025-01-01", boundingBox=full)],
+    }
+    chosen, _s, _n = fetch_lidar.choose_project(projects)
+    assert chosen == "PA_17County_D24", f"picked {chosen}: a 2024 survey must beat a 2008 one"
+
+    # an undated project must not be preferred over a dated one purely by coverage...
+    projects = {
+        "mystery_project": [dict(publicationDate="2025-01-01", boundingBox=full)],
+        "CA_Foo_2019": [dict(publicationDate="2020-01-01", boundingBox=full)],
+    }
+    chosen, _s, _n = fetch_lidar.choose_project(projects)
+    assert chosen == "CA_Foo_2019", f"picked {chosen}: prefer a survey whose date we actually know"
 
 
 def test_lidar_selection_prefers_coverage_over_recency():

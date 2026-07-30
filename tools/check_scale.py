@@ -125,8 +125,14 @@ def measure_printed(course):
 
 
 def main():
+    # Underscore-prefixed dirs are scratch (staging, review sandboxes, the cold-build test). Every
+    # other course-scanning tool filters them -- export_pdf.py, gen_disclaimers.py, gen_provenance.py
+    # and the test suite -- but this one did not, so a leftover sandbox inflated the green count and
+    # turned the Rule 4.3 gate RED on a clean checkout. The review workflow mandates "_" slugs, so
+    # this failure was guaranteed by our own process.
     courses = sys.argv[1:] or sorted(
-        p.parent.name for p in (ROOT / "courses").glob("*/greenbook.html"))
+        p.parent.name for p in (ROOT / "courses").glob("*/greenbook.html")
+        if not p.parent.name.startswith("_"))
     if not courses:
         print("no built books found"); return 0
 
@@ -173,6 +179,12 @@ def main():
         # "0 greens measured ... PASS" used to exit 0, so a renamed directory or a course set that
         # failed to load would report Rule 4.3 conformance for an empty measurement.
         print("FAIL: measured 0 greens -- nothing was checked, so this is not a pass.")
+        return 1
+    if not card_ok:
+        # Rule 4.3 caps the book SIZE as well as the scale; this was computed, printed and then
+        # ignored, so a 5 x 8 in card exited 0 while the docstring advertised both limits.
+        print(f"FAIL: card {config.CARD_W_IN} x {config.CARD_H_IN} in exceeds the Rule 4.3 size "
+              f"limit of {CARD_LIMIT_W_IN} x {CARD_LIMIT_H_IN} in")
         return 1
     if failures:
         print(f"FAIL: {len(failures)} green(s) exceed the Rule 4.3 scale limit:")

@@ -113,15 +113,24 @@ def _coverage(items):
 
 
 def survey_year(project):
-    """The year the survey was FLOWN, from the project name, or 0 if it carries none.
+    """The year the survey was FLOWN, from the project name, or None if the name carries none.
 
     publicationDate is not the survey epoch and can be a decade out: TNM lists
     ARRA_CA_SANFRANCOAST_2010 with publicationDate 2023-04-13. Ranking recency by that made
-    ten-year-old elevation look like the newest data available. The project NAME carries the real
-    year (CA_AlamedaCounty_2021_B21, CA_ALAMEDACO_2006), so use it and fall back to nothing rather
-    than to a misleading number."""
-    yrs = [int(y) for y in re.findall(r'(19\d\d|20\d\d)', project or '')]
-    return max(yrs) if yrs else 0
+    ten-year-old elevation look like the newest data available.
+
+    Many USGS projects date themselves with a FISCAL-YEAR QUARTER CODE rather than a full year --
+    PA_17County_D24 is FY2024 quarter D, CA_FEMALevee_D23 is FY2023 -- and matching only 4-digit
+    years returned 0 for those. Combined with ranking an unknown year BELOW every dated survey, that
+    inverted the whole rule: for Merion, PA_17County_D24 (2024) scored 0 and lost to
+    PA_STATEWIDE_S_2006_2008. The fix that was supposed to stop us printing a 2006 green as current
+    would have fetched one. So decode both forms, and return None -- not 0 -- when the name says
+    nothing, so an undated project is excluded from recency ordering instead of treated as ancient.
+    """
+    p = project or ''
+    yrs = [int(y) for y in re.findall(r'(19\d\d|20\d\d)', p)]
+    yrs += [2000 + int(d) for _q, d in re.findall(r'(?:^|_)([A-D])(\d{2})(?:_|$)', p)]
+    return max(yrs) if yrs else None
 
 
 def choose_project(projects):
@@ -132,12 +141,19 @@ def choose_project(projects):
     rebuilt since, and we print its slope as current. So prefer the newest survey that covers the
     course well; only drop to an older one when nothing recent covers enough, and say so out loud.
     """
+    if not projects:
+        raise SystemExit("no LiDAR projects to choose from for this bbox -- TNM returned nothing "
+                         "usable. Re-run later; this is normally a transient outage.")
     scored = {p: _coverage(projects[p]) for p in projects}
     newest = lambda p: max((i.get('publicationDate', '') for i in projects[p]), default='')
     best_cov = max(scored.values())
     good = [p for p in projects if scored[p] >= min(best_cov, COVERAGE_GOOD) - 0.02]
-    # among adequately-covering projects, the newest SURVEY wins (not the newest publication)
-    pick = max(good, key=lambda p: (survey_year(p), scored[p], len(projects[p])))
+    # Among adequately-covering projects the newest SURVEY wins (not the newest publication). A
+    # project whose name carries no year is ranked by coverage alone rather than being treated as the
+    # oldest -- "unknown" is not "ancient", and guessing it was would pick genuinely old data.
+    dated = [p for p in good if survey_year(p) is not None]
+    pool = dated or good
+    pick = max(pool, key=lambda p: (survey_year(p) or 0, scored[p], len(projects[p])))
     return pick, scored, newest
 
 
