@@ -86,10 +86,16 @@ COURSE=my-course python3 fetch_osm.py                    # then follow PIPELINE.
 Two checks worth running on anything you build:
 ```bash
 python3 -m pytest tests/ -q          # regression tests (skip cleanly with no course data)
-python3 tools/check_scale.py         # measures the PRINTED green scale against Rule 4.3
+python3 tools/check_scale.py         # measures the LAID-OUT green scale against Rule 4.3
+python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
-`tools/check_scale.py` is the important one: it measures the exported PDF rather than trusting the
-renderer, and exits non‑zero if any green prints larger than 3/8 in : 5 yd.
+`tools/check_scale.py` is the important one. It lays each book out in a real browser under print
+media and measures the drawn green there, rather than trusting the SVG's own attributes — a
+stylesheet can override those, which is exactly how 15 greens once printed over the legal scale
+while every attribute looked correct. It exits non‑zero if any green exceeds 3/8 in : 5 yd. (It also
+reports the printed 5‑yd bar length from the PDF, but that figure is informational and does not
+gate.) `tools/export_pdf.py --check` is the companion: it proves the PDF you would actually print
+came from the HTML on disk.
 
 ## Editions &amp; extras
 - **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex, top‑flip; slips into a back‑pocket

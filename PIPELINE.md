@@ -30,7 +30,8 @@ greenbook/
 ```
 COURSE=the-reserve-at-spanos-park python3 generate.py            # -> greenbook.html
 COURSE=the-reserve-at-spanos-park COACH=1 python3 generate.py    # -> greenbook_coach.html (large-print)
-# then render the .html -> .pdf (headless Chrome --print-to-pdf, or Cmd+P)
+python3 tools/export_pdf.py the-reserve-at-spanos-park       # -> greenbook.pdf (+ coach)
+python3 tools/export_pdf.py --check                          # every PDF matches its HTML?
 ```
 
 ## Add a NEW course (what an agent does each time)
@@ -54,8 +55,11 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    interpolates a 0.4 m surface -> `dem_hd/`; `fetch_trees.py` extracts canopy trees ->
    `trees_lidar.json`, dropping any that fall on a green/fairway/tee/bunker. Where no dense
    LiDAR exists, `fetch_dem.py` provides a 1 m seamless fallback.
-6. **Build.** `generate.py` renders the combined cards -> `greenbook.html` -> print to
-   `greenbook.pdf` (add `COACH=1` for the optional large-print edition).
+6. **Build.** `generate.py` renders the combined cards -> `greenbook.html` (add `COACH=1` for the
+   optional large-print edition), then `tools/export_pdf.py` -> `greenbook.pdf`. Always export with
+   that tool, never by hand: hand-exported PDFs drifted three commits behind the engine once, and
+   the printed book still showed a 40% slope label the code had already stopped emitting. The tool
+   records a hash of the source HTML beside each PDF so `--check` can prove they match.
 7. **Verify (never skip).** Eyeball each green (golf-plausible slope % and feed
    direction; near-flat greens flagged "subtle"), confirm hole layouts match
    satellite, and that yardages equal the scorecard.
