@@ -16,7 +16,7 @@ Then: COURSE=<slug> python3 fetch_dem_hd.py   # precision green surfaces
       COURSE=<slug> python3 fetch_trees.py    # trees from canopy returns
       COURSE=<slug> python3 generate.py
 """
-import os, re, json, time, urllib.parse, urllib.request
+import glob, os, re, json, time, urllib.parse, urllib.request
 import config
 
 DIR = config.COURSE_DIR
@@ -345,6 +345,14 @@ def main():
         if p != proj:
             print(f"  (not chosen: {p} — {scored[p]*100:.0f}% coverage, {newest(p)})")
     failed = []
+    # Sweep stale .part files first. A transfer killed outright (SIGKILL, laptop asleep, power) leaves
+    # one behind that no exception handler ever runs to remove, and it then sits in laz/ looking like
+    # a tile forever. It is never valid data: the code below only renames a .part into place after
+    # checking its size against TNM.
+    for stale in glob.glob(f"{DIR}/laz/*.part"):
+        print(f"  removing stale partial download {os.path.basename(stale)} "
+              f"({os.path.getsize(stale)/1e6:.0f} MB)")
+        os.remove(stale)
     todo, ncached = plan_downloads([t for t in tiles if t.get('downloadURL')], f"{DIR}/laz")
     print(f"  {ncached} tile copy(ies) already on disk, {len(todo)} to download")
     for it, name in todo:

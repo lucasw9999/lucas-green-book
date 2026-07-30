@@ -2226,6 +2226,22 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
         (f"footprint {x1 - x0:.0f}x{y1 - y0:.0f} m is not the extent of the points written -- a "
          f"nominal 3000-ft cell would be ~914 m, which is exactly the wrong answer")
 
+    # HOLE centrelines are checked too, not just greens. The greens-only check flagged Castlewood
+    # Hill's holes 14 and 16 but not 15 and 17, whose centrelines run through the same gap -- and the
+    # centreline is where fetch_trees.py looks for canopy returns, so those holes lose their trees
+    # with nothing said. Measured: 9 of 11 courses have every centreline node inside the data.
+    els = json.loads((tmp_path / "osm_geom.json").read_text())["elements"]
+    els.append({"type": "way", "id": 90, "tags": {"golf": "hole", "ref": "7"},
+                "geometry": [{"lon": lon, "lat": lat},                    # inside
+                             {"lon": lon + 0.035, "lat": lat}]})          # 3 km away, outside
+    els.append({"type": "way", "id": 91, "tags": {"golf": "hole", "ref": "8"},
+                "geometry": [{"lon": lon, "lat": lat}]})                  # wholly inside
+    (tmp_path / "osm_geom.json").write_text(json.dumps({"elements": els}))
+    hb = lc.uncovered_holes(str(tmp_path))
+    assert [r for r, _o, _t in hb] == ["7"], \
+        f"expected only hole 7 flagged, got {hb} -- hole 8 is entirely inside the data"
+    assert hb[0][1] == 1 and hb[0][2] == 2, f"hole 7 has 1 of 2 nodes outside, got {hb[0]}"
+
     # and it must REPORT, not raise: a green over water legitimately has no returns
     out = lc.report(str(tmp_path))
     assert out == bad
@@ -2234,6 +2250,12 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     for mod in ("fetch_lidar.py", "fetch_lidar_alameda.py"):
         src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
         assert "lidar_coverage.report" in src, f"{mod} never verifies its tiles against the greens"
+        # ...and both must sweep stale .part files. A transfer killed outright leaves one that no
+        # exception handler runs to remove; observed for real when a Merion fetch was killed mid-tile
+        # and left a 26 MB .part sitting in laz/. It is never valid data -- a .part is only renamed
+        # into place after its size is checked against TNM.
+        assert '*.part' in src and "os.remove(stale)" in src, \
+            f"{mod} must remove stale partial downloads before deciding what is cached"
 
 
 def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):

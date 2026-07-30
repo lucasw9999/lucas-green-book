@@ -61,6 +61,62 @@ def _green_rings(course_dir):
             if e.get("geometry") and (e.get("tags") or {}).get("golf") == "green"]
 
 
+def _footprint_boxes(course_dir):
+    """[(transformer, x0, x1, y0, y1)] for the tiles on disk, or [] if none can be placed."""
+    foot = tile_footprints(os.path.join(course_dir, "laz"))
+    if not foot:
+        return []
+    from pyproj import Transformer
+
+    # Resolve one transformer per tile up front. Doing it inside the point loop meant a to_wkt() and a
+    # dict lookup per sampled node per tile -- thousands of calls for no gain, since a course's tiles
+    # almost always share a CRS.
+    cache, boxes = {}, []
+    for _name, crs, x0, x1, y0, y1 in foot:
+        if crs is None:
+            continue                       # cannot place anything in a tile with no CRS
+        key = crs.to_wkt()
+        if key not in cache:
+            cache[key] = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        boxes.append((cache[key], x0, x1, y0, y1))
+    if not boxes:
+        print("  ! no tile declares a CRS -- cannot check the course against the point data")
+    return boxes
+
+
+def _inside(boxes, lon, lat):
+    return any(x0 <= (xy := T.transform(lon, lat))[0] <= x1 and y0 <= xy[1] <= y1
+               for T, x0, x1, y0, y1 in boxes)
+
+
+def uncovered_holes(course_dir):
+    """[(hole_ref, n_outside, n_nodes)] for holes whose centreline leaves the point data.
+
+    The greens check alone is not enough. At Castlewood Hill it flagged holes 14 and 16 but not 15
+    and 17, whose centrelines also run through the same gap -- and the centreline is where
+    fetch_trees.py looks for canopy returns, so those holes silently lose their trees too. Measured
+    across the corpus: 9 of 11 courses have every centreline node inside the data; Castlewood Hill
+    has 5 of 52 outside (holes 14, 15, 16, 17) and Monarch Bay 5 of 52 (holes 1, 17, 18, which are
+    over the bay).
+    """
+    try:
+        els = json.load(open(os.path.join(course_dir, "osm_geom.json")))["elements"]
+    except Exception:
+        return []
+    holes = [e for e in els
+             if e.get("geometry") and (e.get("tags") or {}).get("golf") == "hole"]
+    boxes = _footprint_boxes(course_dir)
+    if not boxes or not holes:
+        return []
+    bad = []
+    for h in holes:
+        nodes = h["geometry"]
+        out = sum(1 for q in nodes if not _inside(boxes, q["lon"], q["lat"]))
+        if out:
+            bad.append(((h.get("tags") or {}).get("ref"), out, len(nodes)))
+    return sorted(bad, key=lambda r: int(r[0]) if (r[0] or "").isdigit() else 99)
+
+
 def uncovered_greens(course_dir):
     """[(green_id, n_nodes_outside, n_nodes)] for greens the tile data does not fully reach.
 
@@ -71,42 +127,27 @@ def uncovered_greens(course_dir):
     rings = _green_rings(course_dir)
     if not rings:
         return []
-    foot = tile_footprints(os.path.join(course_dir, "laz"))
-    if not foot:
-        return []
-    from pyproj import Transformer
-
-    # Resolve one transformer per tile up front. Doing it inside the point loop meant a to_wkt() and a
-    # dict lookup per green node per tile -- thousands of calls for no gain, since a course's tiles
-    # almost always share a CRS.
-    cache, boxes = {}, []
-    for _name, crs, x0, x1, y0, y1 in foot:
-        if crs is None:
-            continue                       # cannot place a green in a tile with no CRS
-        key = crs.to_wkt()
-        if key not in cache:
-            cache[key] = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        boxes.append((cache[key], x0, x1, y0, y1))
+    boxes = _footprint_boxes(course_dir)
     if not boxes:
-        print("  ! no tile declares a CRS -- cannot check the greens against the point data")
         return []
-
     bad = []
     for gid, ring in rings:
         pts = list(ring)
         pts.append((sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)))
-        outside = 0
-        for lon, lat in pts:
-            if not any(x0 <= (xy := T.transform(lon, lat))[0] <= x1 and y0 <= xy[1] <= y1
-                       for T, x0, x1, y0, y1 in boxes):
-                outside += 1
+        outside = sum(1 for lon, lat in pts if not _inside(boxes, lon, lat))
         if outside:
             bad.append((gid, outside, len(pts)))
     return bad
 
 
 def report(course_dir):
-    """Print the coverage verdict. Returns the uncovered list."""
+    """Print the coverage verdict. Returns the uncovered greens."""
+    holes = uncovered_holes(course_dir)
+    if holes:
+        n = sum(o for _r, o, _t in holes)
+        print(f"  !! {len(holes)} hole(s) have centreline outside the point data "
+              f"({n} node(s) total): " + ", ".join(f"h{r}({o}/{t})" for r, o, t in holes))
+        print("     Trees along those stretches come from canopy returns and will be missing.")
     bad = uncovered_greens(course_dir)
     if not bad:
         rings = _green_rings(course_dir)

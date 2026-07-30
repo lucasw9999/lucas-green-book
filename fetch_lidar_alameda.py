@@ -21,7 +21,7 @@ Run:  COURSE=<slug> python3 fetch_lidar_alameda.py
 Then: COURSE=<slug> python3 fetch_dem_hd.py   # 0.4 m green surfaces
       COURSE=<slug> python3 fetch_trees.py    # canopy trees
 """
-import os, re, time, urllib.request, urllib.error
+import glob, os, re, time, urllib.request, urllib.error
 from pyproj import Transformer
 import config
 
@@ -93,6 +93,11 @@ def tile_copies(t, unknown):
     return out
 
 def main():
+    # Sweep stale .part files first -- a transfer killed outright leaves one that no handler removes.
+    for stale in glob.glob(f"{DIR}/laz/*.part"):
+        print(f"  removing stale partial download {os.path.basename(stale)} "
+              f"({os.path.getsize(stale)/1e6:.0f} MB)")
+        os.remove(stale)
     tiles = covering_tiles(config.COURSE["osm_bbox"])
     print(f"{len(tiles)} candidate tiles for {config.SLUG}")
     got = 0
