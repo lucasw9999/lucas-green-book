@@ -1758,11 +1758,18 @@ def test_the_printed_flight_date_spans_every_point_not_just_the_first_few():
     Callippe's book said "flown 2021-06-21", a single day, for a survey that ran 2021-06-21 to
     2021-07-02. Castlewood Valley was wrong the same way. A full scan costs 6-8 s per course.
 
-    This re-derives the span from EVERY point, independently of the module, and requires each course's
-    printed label to cover it. Dates are the LOCAL flight day, not the UTC day: topographic LiDAR is
-    often flown at night, so bay-view's whole survey ran 20:39-21:55 local on 2020-04-14 while the UTC
-    date is the 15th. The zone is derived here from a CONUS longitude band rather than imported, so
-    the test does not inherit the module's own mapping."""
+    This re-derives the span from EVERY point OVER A GREEN, independently of the module, and requires
+    each course's printed label to cover it. Dates are the LOCAL flight day, not the UTC day:
+    topographic LiDAR is often flown at night, so bay-view's whole survey ran 20:39-21:55 local on
+    2020-04-14 while the UTC date is the 15th. The zone is derived here from a CONUS longitude band
+    rather than imported, so the test does not inherit the module's own mapping.
+
+    Restricted to points over the greens because the label is: the tile set is chosen by bbox overlap
+    with the whole course, so it includes neighbours that feed no green, and folding them in widened
+    the claim. The Reserve's t390135.laz spans 2017-12-16..2018-01-21 with no point within 60 m of a
+    green, and the book printed "flown 2017-12-15 to 2018-01-21" for greens flown on two days. The
+    green geometry and the padding are computed here rather than imported, for the same
+    independence reason. See test_flight_date_is_dated_from_the_points_under_the_greens."""
     import datetime as dt
     import laspy
     import numpy as np
@@ -1786,17 +1793,54 @@ def test_the_printed_flight_date_spans_every_point_not_just_the_first_few():
         tz = zone_of(loc.get("lat"), loc.get("lon"))
         if not tiles or not lab:
             continue
+        rings = []
+        try:
+            for e in json.load(open(os.path.join(ROOT, "courses", slug,
+                                                 "osm_geom.json")))["elements"]:
+                if e.get("geometry") and (e.get("tags") or {}).get("golf") == "green":
+                    rings.append([(q["lon"], q["lat"]) for q in e["geometry"]])
+        except Exception:
+            pass
+        if not rings:
+            continue
         lo = hi = None
-        for p in tiles[:2]:                    # two tiles is enough to catch a truncated span
+        # scan until two tiles have actually yielded points over a green; neighbours that cover no
+        # green would otherwise use up the budget and the check would silently pass on nothing
+        used = 0
+        for p in tiles:
+            if used >= 2:
+                break
             with laspy.open(p) as f:
                 if int(getattr(f.header.global_encoding, "gps_time_type", 0)) == 0:
                     continue
+                crs = f.header.parse_crs()
+                if crs is None:
+                    continue
+                from pyproj import Transformer
+                T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+                per_unit = (crs.axis_info[0].unit_conversion_factor if crs.axis_info else 1.0) or 1.0
+                pad = 30.0 / per_unit
+                boxes = []
+                for ring in rings:
+                    xy = [T.transform(lo_, la_) for lo_, la_ in ring]
+                    xs = [c[0] for c in xy]; ys = [c[1] for c in xy]
+                    boxes.append((min(xs) - pad, max(xs) + pad, min(ys) - pad, max(ys) + pad))
+                seen = False
                 for ch in f.chunk_iterator(2_000_000):
-                    t = np.asarray(ch.gps_time); t = t[t > 0]
-                    if len(t):
-                        a, b = float(t.min()), float(t.max())
+                    t = np.asarray(ch.gps_time)
+                    x = np.asarray(ch.x); y = np.asarray(ch.y)
+                    sel = np.zeros(len(t), dtype=bool)
+                    for x0, x1, y0, y1 in boxes:
+                        sel |= (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
+                    sel &= t > 0
+                    if sel.any():
+                        seen = True
+                        tv = t[sel]
+                        a, b = float(tv.min()), float(tv.max())
                         lo = a if lo is None else min(lo, a)
                         hi = b if hi is None else max(hi, b)
+                if seen:
+                    used += 1
         if lo is None:
             continue
         def f2d(v):
@@ -2034,6 +2078,112 @@ def test_multipolygon_relations_become_drawable_features():
     assert "(._;>;)" in query, (
         "the relation query must recurse down to its members, or Overpass returns bounds and tags "
         f"only and every fairway arrives without geometry. Query was:\n{query}")
+
+
+def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000.0,
+                   near_offset_m=0.0):
+    """A tiny LAZ whose points carry known gps_times: some at a green, some far away."""
+    import datetime as dt
+
+    import laspy
+    import numpy as np
+    from pyproj import CRS, Transformer
+
+    gps_epoch = dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)
+    to_gps = lambda d: (d - gps_epoch).total_seconds() + 18 - 1e9   # noqa: E731 - adjusted std GPS
+    crs = CRS.from_epsg(epsg)
+    per_unit = (crs.axis_info[0].unit_conversion_factor if crs.axis_info else 1.0) or 1.0
+    T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    cx = sum(T.transform(lo, la)[0] for lo, la in ring_lonlat) / len(ring_lonlat)
+    cy = sum(T.transform(lo, la)[1] for lo, la in ring_lonlat) / len(ring_lonlat)
+
+    h = laspy.LasHeader(version="1.4", point_format=6)
+    h.global_encoding.gps_time_type = 1            # adjusted standard GPS time
+    h.add_crs(crs)
+    las = laspy.LasData(h)
+    n = 100
+    off_near, off_far = near_offset_m / per_unit, far_offset_m / per_unit
+    las.x = np.concatenate([np.full(n, cx + off_near), np.full(n, cx + off_far)])
+    las.y = np.concatenate([np.full(n, cy), np.full(n, cy + off_far)])
+    las.z = np.zeros(2 * n)
+    las.gps_time = np.concatenate([np.full(n, to_gps(near_utc)), np.full(n, to_gps(far_utc))])
+    las.write(str(path))
+    return str(path)
+
+
+def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
+    """The printed flight range was the union over WHOLE LAZ tiles, and the tile set is chosen by
+    bbox overlap with the entire course -- so it routinely includes neighbours that cover no green.
+
+    Measured at The Reserve: t390135.laz spans 2017-12-16..2018-01-21 and holds NO point within 60 m
+    of any green (its nearest green is 1336 m from its earliest point and 1382 m from its latest),
+    while the three tiles that do feed greens span only 2017-12-16..2017-12-17. The book printed
+    "flown 2017-12-15 to 2018-01-21" -- 38 days -- for greens flown on two. That line is the one
+    claim the whole honesty argument rests on, so it has to describe the returns the surfaces were
+    actually built from.
+
+    Uses real synthetic LAZ tiles so the gps_time decode is exercised, not mocked."""
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    import datetime as dt
+
+    os.environ["COURSE"] = a_course()
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    for m in ("config", "lidar_dates"):
+        sys.modules.pop(m, None)
+    try:
+        import lidar_dates as ld
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+    ring = [(lon - d, lat - d), (lon + d, lat - d), (lon + d, lat + d), (lon - d, lat + d)]
+    near = dt.datetime(2017, 12, 16, 20, 0, tzinfo=dt.timezone.utc)
+    far = dt.datetime(2018, 1, 21, 20, 0, tzinfo=dt.timezone.utc)
+
+    # metric CRS: half the points sit on the green, half 2 km away on a much later day
+    f = _synthetic_laz(tmp_path / "mixed.laz", 26910, ring, near, far)
+
+    whole = ld.tile_dates(f)
+    assert whole is not None
+    assert whole[0].date() == near.date() and whole[1].date() == far.date(), \
+        "without green geometry the whole-tile range should still span both days"
+    assert whole[2] is False, "no rings supplied -> nothing is known to be over a green"
+
+    over = ld.tile_dates(f, [ring])
+    assert over is not None
+    first, last, is_near, npts = over
+    assert is_near is True and npts == 100, (is_near, npts)
+    assert first.date() == near.date() and last.date() == near.date(), \
+        (f"dated {first.date()}..{last.date()}; the 2018-01-21 points are 2 km from the green and "
+         f"must not widen the range -- this is The Reserve's 38-day label")
+
+    # a tile that covers NO green must report near=False so the caller can exclude it entirely
+    far_ring = [(lon + 0.5 + a, lat + 0.5 + b) for a, b in
+                ((-d, -d), (d, -d), (d, d), (-d, d))]
+    none_over = ld.tile_dates(f, [far_ring])
+    assert none_over[2] is False, "a tile with no points over a green must say so"
+
+    # The pad must be converted into the CRS's own units. Callippe's tiles are in US survey feet, so
+    # treating 30 as feet shrinks the collar to 9.1 m and drops points genuinely on the green's
+    # collar. Use a TINY ring so the pad -- not the green's own extent -- decides: a point 20 m out
+    # is inside a 30 m collar and outside a 9.1 m one.
+    tiny = 0.00002
+    small_ring = [(lon - tiny, lat - tiny), (lon + tiny, lat - tiny),
+                  (lon + tiny, lat + tiny), (lon - tiny, lat + tiny)]
+    ft = _synthetic_laz(tmp_path / "ftus.laz", 2227, small_ring, near, far, near_offset_m=20.0)
+    r = ld.tile_dates(ft, [small_ring])
+    assert r[2] is True and r[3] == 100, \
+        (f"found {r[3]} points 20 m from the green in a ftUS tile; the {ld.GREEN_PAD_M:g} m pad was "
+         f"probably not converted from metres")
+    assert r[0].date() == near.date() and r[1].date() == near.date()
+
+    # and a non-feeding tile must be dropped from the range, not folded into it
+    src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
+    i = src.index("if rings and not near:")
+    assert "continue" in src[i:i + 400] and "NOT counted" in src[i:i + 400], \
+        "a tile with no points over a green must be excluded from the printed flight range"
 
 
 def test_project_choice_is_judged_on_the_greens_not_the_bounding_box(tmp_path):
