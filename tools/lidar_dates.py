@@ -50,6 +50,16 @@ MAX_TILE_SPAN_DAYS = 730   # a tile whose gps_time spans more than two years is 
 GREEN_PAD_M = 30.0         # collar around a green's own footprint; points inside it built the surface
 
 
+def tile_crs(path):
+    """The tile's CRS, or None if its header declares none."""
+    import laspy
+    try:
+        with laspy.open(path) as f:
+            return f.header.parse_crs()
+    except Exception:
+        return None
+
+
 def green_rings(course_dir):
     """Each green's outline as [(lon, lat), ...], from osm_geom.json. [] if OSM is not fetched."""
     try:
@@ -246,7 +256,12 @@ def main():
         ll = last.astimezone(tz) if tz else last
         if rings and not near:
             nskip += 1
-            print(f"  {name}: no points over a green -- NOT counted in the flight range "
+            # Distinguish the two reasons. "No points over a green" is a fact about the data; "could
+            # not place the greens" is a fact about us, and reporting the second as the first would
+            # blame the survey for our own missing CRS.
+            why = ("no CRS in its header, so the greens cannot be placed in it"
+                   if tile_crs(t) is None else "no points over a green")
+            print(f"  {name}: {why} -- NOT counted in the flight range "
                   f"(whole tile {day(first)}{span})")
             continue
         nfeed += 1

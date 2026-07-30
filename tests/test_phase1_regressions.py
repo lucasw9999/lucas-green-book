@@ -2307,7 +2307,8 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
     # and a non-feeding tile must be dropped from the range, not folded into it
     src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
     i = src.index("if rings and not near:")
-    assert "continue" in src[i:i + 400] and "NOT counted" in src[i:i + 400], \
+    block = src[i:src.index("nfeed += 1", i)]      # scoped structurally, not by a character budget
+    assert "continue" in block and "NOT counted" in block, \
         "a tile with no points over a green must be excluded from the printed flight range"
 
 
@@ -2433,6 +2434,16 @@ def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
     (laz / same[0]).write_bytes(b"\0" * 12345)
     todo3, _ = fl.plan_downloads(tiles, str(laz))
     assert len(todo3) == 1, f"a truncated tile must be re-fetched, got {todo3}"
+
+    # nor may a file of the RIGHT size but a different cell. Sizes within one course's laz/ are all
+    # distinct in practice (the only duplicates on disk are the same tile shared by two neighbouring
+    # courses), but accepting a cross-cell match would silently drop a tile we need.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "USGS_LPC_CA_X_2021_B21_w9999n9999.laz").write_bytes(b"\0" * 317568432)
+    todo4, cached4 = fl.plan_downloads([tiles[2]], str(other))
+    assert cached4 == 0 and len(todo4) == 1, \
+        f"a same-size file for a DIFFERENT cell must not count as cached: {todo4}, {cached4}"
 
     # and the suffix must remain strippable by the provenance generator
     suffixed = [n for n in names if "__Co" in n]

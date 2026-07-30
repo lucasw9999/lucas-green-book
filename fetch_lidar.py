@@ -268,6 +268,18 @@ def plan_downloads(tiles, laz_dir):
             want = it.get("sizeInBytes") or 0
             if want and have.get(want):
                 got = have[want].pop(0)
+                # A size match across DIFFERENT cells would mean we skip a tile we actually need. It
+                # does not happen in practice -- every size within a course's laz/ is distinct, the
+                # only duplicates being the same tile shared by two neighbouring courses -- but the
+                # failure would be missing coverage, so say it out loud rather than assume.
+                cell = lambda n: re.sub(r"__Co\d+$", "", os.path.splitext(n)[0])
+                if cell(got) != cell(fn):
+                    print(f"  WARNING cached {got} matches {fn} by size ({want:,} bytes) but is a\n"
+                          f"          different tile. Treating it as {fn} would hide a real gap; "
+                          f"downloading.")
+                    have[want].insert(0, got)
+                    todo.append((it, fn))
+                    continue
                 print(f"  cached {got}" + (f"  (holds {fn})" if got != fn else ""))
                 cached += 1
                 continue
