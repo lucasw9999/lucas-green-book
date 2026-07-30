@@ -39,9 +39,21 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
 - **Measured, not asserted.** The intended cap was once defeated by a single CSS rule: the size was
   emitted as an SVG `width=` presentation attribute, which has zero specificity, so the stylesheet
   overrode it and 15 of 198 greens printed over the limit while three documents claimed the cap
-  held. `tools/check_scale.py` now measures the **exported PDF** (and the browser layout) on every
-  build and exits non‑zero above 0.375 in : 5 yd. Latest run: **198/198 conforming, worst
-  0.3602 in : 5 yd (1:500)**. Never trust the renderer's intent again — measure the artifact.
+  held. `tools/check_scale.py` now **lays every book out in a real browser under print media and
+  measures the drawn green there**, exiting non‑zero above 0.375 in : 5 yd. Latest run:
+  **198/198 conforming, worst 0.3602 in : 5 yd (1:500)**, 4.0% margin. Never trust the renderer's
+  intent again — measure the artifact.
+
+  Two precise statements about what that gate does and does not do, because an earlier revision of
+  this file overstated it:
+  - It gates on the **browser layout under print media**, not on the exported PDF. It also reports
+    the printed 5‑yd bar length read out of the PDF, but that figure is informational and does not
+    fail the run. (Until this was corrected the gate measured the SCREEN layout while the README
+    claimed print media — so a print‑only CSS rule could have enlarged a green past the cap without
+    tripping it. Screen and print layouts were in fact identical, so no shipped number was wrong.)
+  - The exported **PDF is checked separately**: `tools/export_pdf.py --check` proves each PDF was
+    produced from the HTML currently on disk (by recorded content hash), and a test reads the printed
+    card size straight out of the PDF's crop marks and compares it to the 4.25 × 7 in limit.
 - **Per‑hole, not per‑book.** Scale is computed per green, so it legitimately varies (roughly 1:500
   to 1:956). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
   becomes unusable for reading the green — the rest of the book stays fine.

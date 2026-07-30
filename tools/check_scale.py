@@ -85,6 +85,11 @@ def measure_rendered(courses):
             print(f"no browser available ({type(e).__name__}); cannot measure rendered scale")
             return None
         pg = b.new_page()
+        # Measure under PRINT media. Without this the gate measured the SCREEN layout while README
+        # claimed "under print media" -- and a print-only rule (a @media print block that enlarges a
+        # green) would have passed a gate that never looked at print. The book's own stylesheet has
+        # @page and print rules, so this is the layout that actually reaches paper.
+        pg.emulate_media(media="print")
         for c in courses:
             f = ROOT / "courses" / c / "greenbook.html"
             if not f.exists():
