@@ -2,7 +2,7 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Green-book generator (course-agnostic engine).
 
@@ -38,8 +38,14 @@ else:
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 def _data_uri(path):
-    """Base64 data URI so raster assets print reliably in every book."""
+    """Base64 data URI so raster assets print reliably in every book.
+
+    A missing optional asset used to vanish SILENTLY, so a fresh clone (these assets are
+    gitignored) built a visibly different book than this machine does, and the "byte-reproducible"
+    claim held only for someone who happened to have the same local files. Say so instead."""
     if not os.path.exists(path):
+        print(f"  note: optional asset {os.path.basename(path)} not present -- omitting it from "
+              f"the book (output will differ from a build that has it)")
         return ""
     ext = os.path.splitext(path)[1].lstrip(".").lower() or "png"
     with open(path, "rb") as f:
@@ -106,7 +112,7 @@ def yardage_guide_panel():
       2025 with new greens</b>, and accurate post-construction green-surface data is not yet publicly
       available &mdash; so rather than print slope maps that could be wrong, the greens are left <b>blank
       to mark your own read</b>. (Our other books compute slope from public-domain USGS 3DEP elevation;
-      that data does not yet reflect this rebuilt course, so we do not use it here.) <b>No proprietary
+      that data does not yet reflect this rebuilt course, so we do not use it here.)''' + _naip_line() + ''' <b>No proprietary
       data, images, artwork, layout or trade dress from any commercial green-reading product was used,
       copied or referenced.</b> Not affiliated with, endorsed or sponsored by any course, club, association
       or product; course names &amp; trademarks belong to their owners and are used only to identify the
@@ -117,32 +123,43 @@ def yardage_guide_panel():
   </div>
 </div>'''
 
+def green_honesty(hole, s):
+    """The green label and the slope phrase, for BOTH editions.
+
+    These three caveats are the honesty rule made concrete on a card:
+      * a green rebuilt AFTER the flight -> say the data predates the rebuild;
+      * a green fed by the coarser 1 m seamless DEM -> say so;
+      * a green the honesty gate refused to read -> print NO slope at all.
+    They lived only inside hole_panel(), so the ENLARGED coach edition -- a book actually handed to
+    a person -- printed none of them, and reported "0.0%" for a green the engine had declined to
+    read. One rule, one implementation.
+
+    Returns (label, slope_phrase). slope_phrase is None when no slope may be printed.
+    """
+    outdated = hole in set(config.COURSE.get("greens_possibly_outdated", []))
+    coarse = 'seamless' in str(s.get('source', '')).lower()
+    if outdated:
+        label = 'GREEN &middot; pre-rebuild data'
+    elif coarse:
+        label = 'GREEN &middot; 1 m data'
+    else:
+        label = 'GREEN'
+    if s.get('insufficient'):
+        return label, None
+    tilt = (f'{s["tilt_pct"]}% <b>&#9888;</b>' if outdated else f'{s["tilt_pct"]}%')
+    return label, f'feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}'
+
+
 def hole_panel(hole, sheet_label):
     row = HOLES[hole]
     par, hcp = row[0], row[1]
     gsvg, s = GREENS[hole]
     lsvg, i = LAYOUTS[hole]
     others = " / ".join(f"{lbl[:3]}{row[idx]}" for lbl, idx in config.OTHERS)
-    # Greens known to have been rebuilt AFTER the LiDAR flight: the map is real measured data,
-    # but the surface may have changed since, so label the card instead of hiding the read.
-    outdated = hole in set(config.COURSE.get("greens_possibly_outdated", []))
-    # Some greens have no usable point cloud (canopy, water) and fall back to the coarser but
-    # real USGS 1 m seamless DEM. Say so on the card -- the read is genuine, just less sharp.
-    coarse = 'seamless' in str(s.get('source', '')).lower()
-    if outdated:
-        grnlab = 'GREEN &middot; pre-rebuild data'
-    elif coarse:
-        grnlab = 'GREEN &middot; 1 m data'
-    else:
-        grnlab = 'GREEN'
-    # A green we refused to read has no tilt/feed to report -- say so instead of printing 0.0%.
-    if s.get('insufficient'):
-        foot = (f'<span>green <b>{esc(s["feeds"])}</b> &middot; no slope printed</span>'
-                f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
-    else:
-        tilt = (f'{s["tilt_pct"]}% <b>&#9888;</b>' if outdated else f'{s["tilt_pct"]}%')
-        foot = (f'<span>feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}</span>'
-                f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
+    grnlab, slope = green_honesty(hole, s)
+    lead = (f'green <b>{esc(s["feeds"])}</b> &middot; no slope printed' if slope is None else slope)
+    foot = (f'<span>{lead}</span>'
+            f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
   <div class="hhead">
@@ -219,6 +236,23 @@ def cover_panel():
 </svg></div>'''
 
 
+def _naip_line():
+    """Credit USDA NAIP where -- and only where -- a course actually used it.
+
+    NAIP is a USDA public-domain work, so no permission or notice is legally required. But the about
+    panel enumerates the book's sources, and two books named it nowhere: valley-hi digitized hole
+    16's green from NAIP, and poppy-ridge used it as a site reference. A book that lists its sources
+    should list all of them.
+
+    Deliberately worded to cover both uses without overstating either -- "traced a green outline"
+    would be false for poppy-ridge, whose greens are blank; per-course detail is in legal/03."""
+    blob = str(config.COURSE.get("sources", {})).lower()
+    if "naip" not in blob:
+        return ""
+    return (' <b>USDA NAIP</b> aerial imagery (a U.S. Government work, public domain) was used as a '
+            'mapping reference for this course.')
+
+
 def _flown_line():
     """One honest line naming WHEN the elevation under these greens was measured.
 
@@ -239,6 +273,18 @@ def _flown_line():
                 '<b>rebuilt after</b> that survey, so their green maps are marked '
                 '<b>&ldquo;pre-rebuild data&rdquo;</b> &mdash; the shapes and tiers may have '
                 'changed. Use them as a guide only and trust your own read.</span></div>\n')
+    # The other caveat a card can carry needs the same treatment. Six of Monarch Bay's greens print
+    # "GREEN - 1 m data" and the phrase appeared NOWHERE else in either edition -- a 12-year-old
+    # reading it learns nothing, and the whole point of the label is to tell him to trust that green
+    # a little less. Named per hole, exactly like the pre-rebuild wording.
+    coarse = sorted(h for h, (_svg, summ) in GREENS.items()
+                    if 'seamless' in str(summ.get('source', '')).lower())
+    if coarse:
+        holes = ", ".join(str(h) for h in coarse)
+        out += ('  <div class="legrow"><span><b>Holes ' + esc(holes) + '</b> had no usable point '
+                'cloud (tree cover or water), so their greens come from the coarser <b>1 m</b> '
+                'national elevation model and are marked <b>&ldquo;1 m data&rdquo;</b>. The tilt is '
+                'real, just less sharp &mdash; small tiers may be smoothed away.</span></div>\n')
     return out
 
 
@@ -247,11 +293,14 @@ def guide_panel():
   <div class="gtitle">How to read a green</div>
   <div class="legrow"><svg width="28" height="14"><line x1="2" y1="7" x2="18" y2="7" stroke="#15271b" stroke-width="1.3"/><polygon points="18,7 14,4.5 14,9.5" fill="#15271b"/></svg>
     <span><b>Arrows</b> point downhill &mdash; the way the ball rolls. Longer = steeper.</span></div>
+  <div class="legrow"><span><b>Numbers</b> = slope % at that spot. Ground steeper than
+    <b>10%</b> is not putting surface (a bank or bunker face inside the mapped edge), so it is
+    shown by colour only and carries no number.</span></div>
   <div class="legrow"><svg width="28" height="14"><path d="M2,11 Q9,3 26,6" stroke="#3c5a34" fill="none" stroke-width="0.9"/><path d="M2,13 Q11,7 26,11" stroke="#3c5a34" fill="none" stroke-width="0.9"/></svg>
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep.</span></div>
   <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="7" height="9" fill="rgb(120,190,120)"/><rect x="10" y="3" width="7" height="9" fill="rgb(232,224,120)"/><rect x="18" y="3" width="7" height="9" fill="rgb(210,90,70)"/></svg>
     <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%). <b>Numbers</b> = slope % there.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: fairway (green), rough, <b>trees</b> (dark green), bunkers (tan), water (blue). Edge numbers: <b>left = yd to green</b>, <b>right = yd from the back tee</b>.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: fairway (green), rough, <b>trees</b> (dark green), bunkers (tan), water (blue). Edge numbers: <b>left = yd to green</b>, <b>right = yd from the back tee, along the line</b>.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
@@ -259,7 +308,7 @@ def guide_panel():
       green shapes are a Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap
       contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright); slope, contours &amp; arrows are computed by the
       maker from <b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work); par, yardage &amp;
-      handicap are <b>facts</b> from the published scorecard. Every map is <b>independently created</b>:
+      handicap are <b>facts</b> from the published scorecard.''' + _naip_line() + ''' Every map is <b>independently created</b>:
       <b>no proprietary data, image, symbol set, page layout or trade dress of any commercial green-reading
       product was used, copied, referenced or reverse-engineered</b>, and this book references no third-party
       brand and is not a substitute for any product. Built <b>entirely from remote public data, without
@@ -351,10 +400,7 @@ def notes_panel(title, holes_range):
     lines = "".join(f'<div class="nrow"><b>{h}</b><span></span></div>' for h in holes_range)
     return f'<div class="panel notesp"><div class="gtitle">{esc(title)}</div>{lines}</div>'
 
-# ---- imposition: one-cut 8-page zine ---------------------------------------
-PHYS_ORDER = [5, 4, 3, 2, 6, 7, 8, 1]
-ROTATED = {0, 1, 2, 3}
-
+# ---- imposition helpers ---------------------------------------------------
 def crop_ticks(x, y, w, h, t=0.14):
     """L-shaped cut ticks just outside each corner of a card, for trimming."""
     segs = []
@@ -365,11 +411,27 @@ def crop_ticks(x, y, w, h, t=0.14):
         segs.append(f'<div class="crop" style="left:{cx-0.003:.3f}in;top:{vt:.3f}in;width:0.006in;height:{t}in"></div>')
     return "".join(segs)
 
+def pad_to_leaves(cards, blank='<div class="panel"></div>'):
+    """Pad an odd card list to whole duplex leaves by inserting the blank BEFORE the last card.
+
+    The final card is Lucas's dedication and prints upright as the back cover, so APPENDING the
+    blank would land the dedication a leaf early and end the book on a blank page. Module-level so
+    the layout test can call this rather than re-implement it."""
+    if len(cards) % 2:
+        return cards[:-1] + [blank] + cards[-1:]
+    return list(cards)
+
+
+def is_upright_back(card_index, ncards):
+    """True for the one duplex BACK that must not be rotated 180: the dedication / back cover."""
+    return card_index == ncards - 1
+
+
 def main():
     yardage = (config.BUILD_MODE == "yardage")
     if not yardage:
         for h in config.HOLE_NUMS:
-            GREENS[h] = render_green.render(h, HOLES[h][3], tournament=True)  # single conforming book
+            GREENS[h] = render_green.render(h, tournament=True)  # single conforming book
             LAYOUTS[h] = render_hole.render_hole(h, HOLES)
     # flat, ordered deck of cards (cut-and-stack, top-bound)
     panels = [cover_panel(), yardage_guide_panel() if yardage else guide_panel()]
@@ -380,7 +442,9 @@ def main():
             grp = "Front" if h <= 6 else ("Mid" if h <= 14 else "Finish")
         panels.append(yardage_hole_panel(h, grp) if yardage else hole_panel(h, grp))
     panels += [scorecard_panel(), tees_panel(),
-               notes_panel("Notes 1-9", config.HOLE_NUMS[:9]), legend_panel()]
+               notes_panel(f"Notes {config.HOLE_NUMS[0]}-{config.HOLE_NUMS[-1]}"
+                           if config.NHOLES <= 18 else "Notes",
+                           config.HOLE_NUMS), legend_panel()]
 
     def doc(sheets, subtitle):
         return f'''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
@@ -501,8 +565,7 @@ def main():
         # Fronts on one PDF page, backs on the next. Back cards are positioned in the
         # column-mirrored slot (so they land behind their front under LONG-edge duplex)
         # and rotated 180 (so they read upright when the card is flipped over the top).
-        if len(cards) % 2:
-            cards = cards + ['<div class="panel"></div>']     # pad to whole leaves
+        cards = pad_to_leaves(cards)      # blank goes BEFORE the dedication -- see the helper
         nleaves = len(cards) // 2
         lps = config.PER                                       # leaves per sheet
         gx0 = (config.PAGE_W_IN - (config.COLS*config.CARD_W_IN + (config.COLS-1)*config.GUTTER_IN)) / 2
@@ -528,7 +591,7 @@ def main():
                 xb, yb, _, _ = slot(r*config.COLS + (config.COLS-1-c))   # mirror columns
                 # last card (Lucas's dedication / back cover) prints UPRIGHT like the
                 # front cover -- not rotated like the other duplex backs.
-                is_last = (2*L+1 == len(cards)-1)
+                is_last = is_upright_back(2*L+1, len(cards))
                 backs.append(card_div(xb, yb, 2*L+2, cards[2*L+1], not is_last))
             pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT</div>{"".join(fronts)}</div>')
             pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; BACK (duplex, flip on LONG edge)</div>{"".join(backs)}</div>')
@@ -614,6 +677,9 @@ def coach_map_card(hole):
 def coach_green_card(hole):
     row = HOLES[hole]; par, hcp = row[0], row[1]
     gsvg, s = GREENS[hole]
+    # same honesty rules as the pocket card -- this edition used to print none of them
+    grnlab, slope = green_honesty(hole, s)
+    clead = (f'green <b>{esc(s["feeds"])}</b> &middot; no slope printed' if slope is None else slope)
     return f'''<div class="panel hole">
   <div class="etag">ENLARGED</div>
   <div class="hhead">
@@ -621,8 +687,8 @@ def coach_green_card(hole):
     <div class="hmeta"><div class="par">PAR {par}</div><div class="si">HCP {hcp}</div></div>
     <div class="hyd"><span class="ymain" style="color:{tee_color(BACK_NAME)}">{row[BACK_I]}</span><span class="ylab" style="color:{tee_color(BACK_NAME)}">{esc(BACK_NAME)}</span></div>
   </div>
-  <div class="cmap"><div class="minilab">GREEN &middot; approach at bottom</div>{gsvg}</div>
-  <div class="foot"><span>feeds <b>{esc(s['feeds'])}</b> ({esc(s['conf'])}) &middot; {s['tilt_pct']}%</span>
+  <div class="cmap"><div class="minilab">{grnlab} &middot; approach at bottom</div>{gsvg}</div>
+  <div class="foot"><span>{clead}</span>
     <span>{s['depth_yd']}yd deep</span></div>
 </div>'''
 
@@ -638,7 +704,7 @@ def coach_about_card():
   <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
     this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
     Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
-  <div class="abt">
+''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes are a
       Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>);
@@ -673,6 +739,13 @@ def coach_dedic_card(coach_name):
 </div>'''
 
 def build_coach(coach_name=""):
+    if config.BUILD_MODE == "yardage":
+        # There is nothing to enlarge: yardage mode exists precisely because no trustworthy green
+        # surface is available, so the pocket book prints blank greens. Say so instead of dying on
+        # a missing dem_hd file.
+        raise SystemExit(f"{config.SLUG} is a yardage-mode course (no green surfaces), so there is\n"
+                         f"  no enlarged green to render. Build the pocket book instead:\n"
+                         f"    COURSE={config.SLUG} python3 generate.py")
     # coach_name is PRIVATE (a specific person) -> default empty; pass it at build time via
     # COACH_NAME so no real name is ever committed. Empty -> generic "your coach" wording.
     # ENLARGED edition: SAME print imposition as the normal book (4-up, duplex,
@@ -681,7 +754,13 @@ def build_coach(coach_name=""):
     # green = leaf BACK), so you "flip up one more page" to the green. Map
     # wording/numbers are rendered ~2x bigger (font_scale) for older eyes.
     for h in config.HOLE_NUMS:
-        GREENS[h] = render_green.render(h, HOLES[h][3], tournament=True)
+        # tournament=False is the ENLARGED render. This used to ask for the conforming, size-capped
+        # render and then rely on the coach stylesheet to stretch it -- but render_green sets the
+        # size INLINE in inches (deliberately, so CSS cannot enlarge a book past the Rule 4.3 cap),
+        # and an inline style beats a stylesheet. So the "ENLARGED" edition printed its greens at
+        # exactly the pocket scale, ratio 1.00 on all 18 holes, while the card, README and
+        # PIPELINE.md all said they were bigger.
+        GREENS[h] = render_green.render(h, tournament=False)
         LAYOUTS[h] = render_hole.render_hole(h, HOLES, font_scale=2.0)
     # deck: leaf0 = [cover, enlarged-about]; leaf h = [hole h map, hole h green];
     # then back matter. Holes land one-per-leaf (map front / green back).

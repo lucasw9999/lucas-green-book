@@ -2,7 +2,7 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Extract TREES from the LiDAR point cloud (high-vegetation returns, class 5) for a
 course, so trees appear at real locations even where OpenStreetMap has none.
@@ -17,12 +17,20 @@ import glob, os, json, math
 import numpy as np, laspy
 from pyproj import Transformer
 import config
+import geo
 
 DIR = config.COURSE_DIR
 R_LAT = 111320.0
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
 # NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
-_LON = config.COURSE.get("location", {}).get("lon", -121.0)
+# No default. A course.json without "location" used to fall back to -121.0, i.e. silently pick
+# California UTM zone 10 -- for a Pennsylvania course (zone 18) every tree would be projected
+# through the wrong zone, and nothing would say so.
+_LOC = config.COURSE.get("location") or {}
+if not isinstance(_LOC, dict) or _LOC.get("lon") is None:
+    raise SystemExit('course.json needs "location": {"lat": .., "lon": ..} -- it selects the UTM '
+                     'zone for every tree position. Refusing to guess one.')
+_LON = _LOC["lon"]
 UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)
 FWD = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM m
 INV = Transformer.from_crs(UTM, "EPSG:4326", always_xy=True)
@@ -40,11 +48,16 @@ def laz_to_utm():
             except Exception:
                 pass
     if src is None:
-        src = UTM
-    name = str(src).lower()
-    zscale = 0.3048006096012192 if ("ftus" in name or "us survey foot" in name
-                                    or "foot" in name or "feet" in name) else 1.0
-    return Transformer.from_crs(src, UTM, always_xy=True), zscale
+        # Assuming the tiles are already in the course's UTM zone with metres for Z is exactly the
+        # guess geo.vertical_scale exists to prevent: a US-survey-foot cloud would go unscaled and
+        # every slope, contour and arrow would print 3.28x too steep, with nothing to reveal it.
+        raise SystemExit(
+            "no CRS in any LAZ tile and no \"lidar_crs\" in course.json.\n"
+            "  Refusing to assume the cloud is already in %s with metres for Z: if it is in US\n"
+            "  survey feet, every slope would print 3.28x too steep. Set \"lidar_crs\" to a CRS\n"
+            "  that carries its units (a compound EPSG code or full WKT), then re-run." % UTM)
+    # vertical unit from the CRS axis, never guessed from its name (see geo.vertical_scale)
+    return Transformer.from_crs(src, UTM, always_xy=True), geo.vertical_scale(src)
 
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy
@@ -62,27 +75,45 @@ def _pip(x, y, poly):
     return inside
 
 def load_playing_surfaces():
-    """Fairway / green / tee / bunker polygons (lon,lat) with bboxes. Trees never
-    grow on these, so any marker inside one is a false positive (edge-tree clipped
-    in, or a non-vegetation elevated return: cart, mower, person, flagstick) and is
-    dropped. Correct by definition -- keeps only rough/out-of-play trees."""
-    els=[]
+    """Polygons where a tree marker must be a false positive, with bboxes:
+      * fairway / green / tee / bunker -- trees never grow on a playing surface, so a marker
+        there is an edge-tree clipped in or a non-vegetation elevated return (cart, mower,
+        person, flagstick).
+      * BUILDINGS -- a roof is 2.5-35 m above ground and reads exactly like canopy. On tiles
+        that carry class 6 we drop those points upstream, but most of our tiles are
+        unclassified, so a clubhouse roof arrives as class 1 and only its FOOTPRINT can
+        identify it (53 markers sat on Merion's clubhouse before this)."""
+    els=[]; seen=set()
     for fn in ("osm_course.json","osm_geom.json"):
         p=f"{DIR}/{fn}"
         if os.path.exists(p):
-            j=json.load(open(p)); els+=j.get("elements",j) if isinstance(j,dict) else j
+            j=json.load(open(p))
+            for e in (j.get("elements",j) if isinstance(j,dict) else j):
+                # the two files overlap (greens appear in both), so de-dup by id or the polygon
+                # itself -- otherwise the same green is tested twice and the log over-counts.
+                k=e.get('id') if e.get('id') is not None else id(e)
+                if k in seen: continue
+                seen.add(k); els.append(e)
     surfaces=[]
     for e in els:
-        if e.get('tags',{}).get('golf') in ('fairway','green','tee','bunker') and e.get('geometry'):
+        t=e.get('tags',{})
+        is_surface = (t.get('golf') in ('fairway','green','tee','bunker')
+                      or t.get('building') not in (None, 'no'))
+        if is_surface and e.get('geometry'):
             poly=[(p['lon'],p['lat']) for p in e['geometry']]
             xs=[c[0] for c in poly]; ys=[c[1] for c in poly]
-            surfaces.append((min(xs),min(ys),max(xs),max(ys),poly))
+            # building='no' means NOT a building -- must not be treated as a surface at all
+            kind='building' if t.get('building') not in (None,'no') else 'golf'
+            surfaces.append((min(xs),min(ys),max(xs),max(ys),poly,kind))
     return surfaces
 
 def on_playing_surface(lon,lat,surfaces):
-    for x0,y0,x1,y1,poly in surfaces:
+    """'golf' | 'building' | False -- which kind of surface this marker falls on (counted
+    separately, because reporting a building drop as a 'green/fairway/tee/bunker' drop
+    overstated that number by 16x on valley-hi)."""
+    for x0,y0,x1,y1,poly,kind in surfaces:
         if x0<=lon<=x1 and y0<=lat<=y1 and _pip(lon,lat,poly):
-            return True
+            return kind
     return False
 
 def main():
@@ -91,6 +122,19 @@ def main():
         raise SystemExit("no LAZ tiles in "+DIR+"/laz  (download the course point cloud first)")
     pt2utm, zscale = laz_to_utm()
     surfaces = load_playing_surfaces()
+    n_golf=sum(1 for s in surfaces if s[5]=='golf'); n_bld=len(surfaces)-n_golf
+    _allow = os.environ.get("ALLOW_NO_BUILDINGS", "").lower() not in ("", "0", "false", "no")
+    if n_bld == 0 and not _allow:
+        # A cache fetched before way[building] was added silently disables the footprint test, and
+        # clubhouse roofs come back as trees (53 of them at Merion). Fail loudly instead.
+        raise SystemExit("no building polygons in osm_course.json -- this cache predates the "
+                         "way[building] query, so roofs would be drawn as trees.\n"
+                         "  Re-run: COURSE=%s python3 fetch_osm.py   "
+                         "(or set ALLOW_NO_BUILDINGS=1 if this course genuinely has none)"
+                         % config.SLUG)
+    if n_bld == 0:
+        print("WARNING: ALLOW_NO_BUILDINGS set -- building footprint test DISABLED; "
+              "roofs may be drawn as trees")
     geom = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
     holes = [e for e in geom if e.get('tags',{}).get('golf')=='hole' and e.get('geometry')]
     # hole centerlines as UTM segment lists -- keep the LONGEST way per ref (OSM has
@@ -123,8 +167,12 @@ def main():
         grd=np.full((nx,ny), np.inf)
         gi=((x[gnd]-gx0)/GC).astype(int); gj=((y[gnd]-gy0)/GC).astype(int)
         np.minimum.at(grd, (gi,gj), z[gnd])
-        # candidate canopy points: NON-ground, 2.5-35 m above local ground
-        cand=(cls!=2)&(cls!=7)&(cls!=9)      # drop ground/noise/water
+        # Candidate canopy points: NON-ground, 2.5-35 m above local ground.
+        # Excluded classes: 2 ground, 6 BUILDING, 7 noise, 9 water, 17 bridge deck, 18 high noise.
+        # We must NOT restrict to class 5 (high vegetation): 10 of 11 courses have ZERO class-5
+        # points (their tiles are unclassified, class 1 + 2 only), so vegetation arrives as class
+        # 1/3/4 and a class-5 filter would yield no trees at all on almost every course.
+        cand=(cls!=2)&(cls!=6)&(cls!=7)&(cls!=9)&(cls!=17)&(cls!=18)
         cx=x[cand]; cy=y[cand]; cz=z[cand]
         ci=np.clip(((cx-gx0)/GC).astype(int),0,nx-1); cj=np.clip(((cy-gy0)/GC).astype(int),0,ny-1)
         hgt=cz-grd[ci,cj]
@@ -144,20 +192,24 @@ def main():
                     acc[hn][(round(px/CELL),round(py/CELL))]=(px,py)
         print(os.path.basename(tf),f"processed ({int(tree.sum())} canopy pts)")
     out={}
-    dropped=0
+    dropped_surface=0; dropped_building=0
     for hn,cells in acc.items():
         pts=[]
         for (ux,uy) in cells.values():
             lon,lat=INV.transform(ux,uy)
             lat=round(lat,6); lon=round(lon,6)          # round FIRST so stored==tested
-            if on_playing_surface(lon,lat,surfaces):    # no trees on green/fairway/tee/bunker
-                dropped+=1; continue
+            hit=on_playing_surface(lon,lat,surfaces)   # golf surface OR building footprint
+            if hit:
+                if hit=='building': dropped_building+=1
+                else: dropped_surface+=1
+                continue
             pts.append([lat,lon])
         out[str(hn)]=pts
     json.dump(out,open(f"{DIR}/trees_lidar.json","w"))
     tot=sum(len(v) for v in out.values())
     print(f"wrote trees_lidar.json: {tot} tree markers across {len(out)} holes "
-          f"(dropped {dropped} on green/fairway/tee/bunker; e.g. hole1={len(out.get('1',[]))})")
+          f"(dropped {dropped_surface} on green/fairway/tee/bunker, {dropped_building} on buildings; "
+          f"{n_golf} golf + {n_bld} building polygons; e.g. hole1={len(out.get('1',[]))})")
 
 if __name__=="__main__":
     main()

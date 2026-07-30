@@ -2,12 +2,12 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 High-resolution green surfaces from RAW LiDAR ground returns.
 
 Upgrade over fetch_dem.py (which used the gridded 1 m DEM): here we read the
-CA_Central_Valley_LiDAR_2016 point cloud (~12 pts/m^2, ~6.7 ground pts/m^2),
+course's USGS 3DEP point cloud (typically 9-33 pts/m^2 over a green),
 keep ONLY ground-classified points (class 2), and interpolate a 0.4 m surface
 over each green — sampled on the same lat/lon grid render_green.py expects, so
 the renderer is unchanged. Output -> dem_hd/holeNN.{npy,json}.
@@ -16,7 +16,9 @@ import json, math, glob, os
 import numpy as np, laspy
 from pyproj import Transformer
 from scipy.interpolate import griddata
+from scipy.spatial import cKDTree
 import config
+import geo
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
@@ -26,10 +28,20 @@ R_LAT = 111320.0
 # Trust thresholds for a green surface. Above/below these the surface was not really measured,
 # so the book must not print a read for it (see the honesty gate in main()).
 NAN_FRAC_MAX = 0.02                         # max share of the green interior that may be extrapolated
-DENSITY_MIN = 4.0                           # min ground returns per m^2 over the patch
+DENSITY_MIN = 4.0                           # min ground returns per m^2 INSIDE the green ring
+COVER_R_M = 1.0                             # a green node is "measured" if a ground return is
+                                            # within this radius of it
+UNCOVERED_MAX = 0.02                        # max share of the green interior with no return nearby
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
-# NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
-_LON = config.COURSE.get("location", {}).get("lon", -121.0)
+# NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19).
+# No default: falling back to -121.0 silently selected California zone 10, so a Pennsylvania course
+# (zone 18) would have every green surface projected through the wrong zone with nothing to say so.
+# fetch_trees.py was fixed this way; this module -- which actually BUILDS the surfaces -- was missed.
+_LOC = config.COURSE.get("location") or {}
+if not isinstance(_LOC, dict) or _LOC.get("lon") is None:
+    raise SystemExit('course.json needs "location": {"lat": .., "lon": ..} -- it selects the UTM '
+                     'zone every green surface is built in. Refusing to guess one.')
+_LON = _LOC["lon"]
 UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)
 TR = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM metres
 
@@ -48,16 +60,34 @@ def laz_to_utm():
             except Exception:
                 pass
     if src is None:
-        src = UTM
+        # Assuming a CRS-less cloud is already in the course UTM zone with metres for Z is the guess
+        # geo.vertical_scale exists to prevent: geo.vertical_scale(UTM) returns 1.0, so a US-survey-
+        # foot cloud would go unscaled and EVERY printed slope, contour and arrow would be 3.28x too
+        # steep. fetch_trees.py was hard-stopped on this; this module makes the surfaces those numbers
+        # come from, so it matters more here.
+        raise SystemExit(
+            "no CRS in any LAZ tile and no \"lidar_crs\" in course.json.\n"
+            "  Refusing to assume the cloud is already in %s with metres for Z: if it is in US\n"
+            "  survey feet, every slope would print 3.28x too steep. Set \"lidar_crs\" to a CRS\n"
+            "  that carries its units (a compound EPSG code or full WKT), then re-run." % UTM)
     pt = Transformer.from_crs(src, UTM, always_xy=True)
-    name = str(src).lower()
-    zscale = 0.3048006096012192 if ("ftus" in name or "us survey foot" in name
-                                    or "foot" in name or "feet" in name) else 1.0
-    return pt, zscale
+    return pt, geo.vertical_scale(src)      # from the CRS axis unit, never guessed from its name
 
 def centroid(g):
     la=sum(p['lat'] for p in g['geometry'])/len(g['geometry'])
     lo=sum(p['lon'] for p in g['geometry'])/len(g['geometry']); return la,lo
+
+def _polygon_utm(geometry):
+    """The green ring as UTM (x, y) arrays."""
+    vx, vy = TR.transform([p['lon'] for p in geometry], [p['lat'] for p in geometry])
+    return np.asarray(vx), np.asarray(vy)
+
+
+def _ring_area_m2(geometry):
+    """Shoelace area of the green ring in square metres (UTM)."""
+    vx, vy = _polygon_utm(geometry)
+    return abs(float(np.dot(vx, np.roll(vy, -1)) - np.dot(np.roll(vx, -1), vy))) / 2.0
+
 
 def _in_polygon(ux, uy, geometry):
     """Mask of sample points (UTM) falling inside a green polygon (lat/lon ring).
@@ -97,17 +127,10 @@ def build_targets():
         ref=h['tags'].get('ref')
         if not(ref and ref.isdigit()):continue
         hn=int(ref); line=h['geometry']
-        def near(pt):
-            best=1e9;bg=None
-            for g,la,lo in gc:
-                dm=math.hypot((pt['lon']-lo)*mlon(la),(pt['lat']-la)*R_LAT)
-                if dm<best:best,bg=dm,g
-            return best,bg
-        da,ga=near(line[0]); db,gb=near(line[-1])
-        if da<=db: green,gend,prev=ga,line[0],line[1]
-        else:      green,gend,prev=gb,line[-1],line[-2]
+        green,gend,_tend = geo.match_green(line, greens, label=f"hole {hn}")
+        prev = line[1] if gend is line[0] else line[-2]
         appr=bearing(prev['lat'],prev['lon'],gend['lat'],gend['lon'])
-        geo=green['geometry']; lats=[p['lat'] for p in geo]; lons=[p['lon'] for p in geo]
+        gpoly=green['geometry']; lats=[p['lat'] for p in gpoly]; lons=[p['lon'] for p in gpoly]
         clat,clon=centroid(green)
         dlat=MARGIN_M/R_LAT; dlon=MARGIN_M/mlon(clat)
         xmin,xmax=min(lons)-dlon,max(lons)+dlon
@@ -169,24 +192,47 @@ def main():
         inside=_in_polygon(t['UX'],t['UY'],t['green']['geometry'])
         n_in=int(inside.sum())
         nan_frac=float((nan & inside).sum())/n_in if n_in else 1.0
+        # nan_frac alone answers "is the green inside the point cloud's CONVEX HULL?", which is not
+        # the question. griddata's linear pass only returns NaN outside the hull, so an INTERIOR void
+        # -- standing water absorbs 1064 nm and returns nothing -- is spanned by the interpolation and
+        # counted as measured. A demo deleting the returns in a 6 m circle at each green centre (about
+        # a quarter of a 450 m^2 green) still reported nan_frac=0.0000 and insufficient=False, while
+        # changing 7 of 18 printed reads. So ALSO measure real coverage: every green node must have a
+        # ground return near it. (Measured on the built corpus: worst uncovered share is 0.87%, so no
+        # existing green is affected -- this closes a blind spot rather than reclassifying anything.)
+        if n_in:
+            tree=cKDTree(pts)
+            dist,_=tree.query(grid[inside], k=1)
+            uncovered=float((dist>COVER_R_M).mean())
+        else:
+            uncovered=1.0
         if nan.any():
             zi[nan]=griddata(pts,pz,grid[nan],method='nearest')
         arr=zi.reshape(t['H'],t['W'])
-        dens=round(len(pz)/((t['bbox'][2]-t['bbox'][0])*mlon(t['clat'])*(t['bbox'][3]-t['bbox'][1])*R_LAT),1)
+        # Density INSIDE the green ring, over the ring's true area. It used to divide the points of a
+        # padded prefilter region by the unpadded bbox -- and that bbox includes MARGIN_M=12 m of
+        # fairway and bunker, so the published figure was neither a green density nor consistent with
+        # its own divisor. gen_provenance publishes this number as density "over N greens".
+        g_area=_ring_area_m2(t['green']['geometry'])
+        n_pts_in=int(_in_polygon(px,py,t['green']['geometry']).sum())
+        dens=round(n_pts_in/g_area,1) if g_area>0 else 0.0
         # A green is only trustworthy if the surface was actually measured under it.
-        insufficient = bool(nan_frac > NAN_FRAC_MAX or dens < DENSITY_MIN)
+        insufficient = bool(nan_frac > NAN_FRAC_MAX or dens < DENSITY_MIN
+                            or uncovered > UNCOVERED_MAX)
         np.save(f"{OUT}/hole{hn:02d}.npy",arr)
         meta=dict(hole=hn,approach_bearing=t['appr'],bbox=t['bbox'],W=t['W'],H=t['H'],
                   green_id=t['green']['id'],green_center=[t['clat'],t['clon']],
                   polygon=[[p['lat'],p['lon']] for p in t['green']['geometry']],
                   source="USGS 3DEP LiDAR ground returns @0.4m",
                   npts=int(len(pz)), density=dens,
-                  nan_frac=round(nan_frac,4), insufficient=insufficient)
+                  nan_frac=round(nan_frac,4), uncovered=round(uncovered,4),
+                  insufficient=insufficient)
         json.dump(meta,open(f"{OUT}/hole{hn:02d}.json","w"))
         flag=("  *** INSUFFICIENT LiDAR: %.1f%% of the green interior was extrapolated, not "
               "measured -- render blank ***" % (100*nan_frac)) if insufficient else ""
         print(f"hole {hn:2d}: {t['W']}x{t['H']} @0.4m  {len(pz):6d} ground pts "
-              f"({dens}/m^2, {100*nan_frac:.1f}% extrapolated){flag}")
+              f"({dens}/m^2 in-green, {100*nan_frac:.1f}% extrapolated, "
+              f"{100*uncovered:.1f}% uncovered){flag}")
 
 if __name__=="__main__":
     main()

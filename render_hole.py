@@ -2,7 +2,7 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Render a per-hole LAYOUT (tee -> green corridor) from OpenStreetMap geometry.
 
@@ -12,17 +12,37 @@ the green (with a hollow 'pin' ring you mark on the day), and yardage.
 
 Data: OpenStreetMap (ODbL) golf features in osm_course.json + osm_geom.json.
 """
+import glob
 import json, math, os
 import config
+import geo
 DIR = config.COURSE_DIR
 R_LAT = 111320.0
 
 _LIDAR_TREES = None
 def _lidar_trees():
-    """LiDAR-derived tree markers per hole (from fetch_trees.py), if available."""
+    """LiDAR-derived tree markers per hole (from fetch_trees.py), if available.
+
+    If the course HAS a point cloud but no trees_lidar.json, the map silently fell back to OSM tree
+    nodes -- which on Merion means 25 markers instead of 5086, so a tree-lined corridor printed as
+    open ground while the legend still promised "trees (dark green)". Nothing said a word. That got
+    easier to hit when fetch_trees.py gained hard stops (a course.json missing "location" now aborts
+    the tree stage, and generate.py would still produce a clean-looking 18-hole book).
+
+    A missing file when there is no LiDAR at all is fine -- OSM trees are then the honest best
+    available. Refusing only when the tiles EXIST keeps that distinction."""
     global _LIDAR_TREES
     if _LIDAR_TREES is None:
         p = os.path.join(config.COURSE_DIR, "trees_lidar.json")
+        if not os.path.exists(p) and glob.glob(os.path.join(config.COURSE_DIR, "laz", "*.laz")):
+            if not os.environ.get("ALLOW_OSM_TREES"):
+                raise SystemExit(
+                    "this course has LiDAR tiles but no trees_lidar.json, so the hole maps would\n"
+                    "  show only the handful of trees OSM happens to have (25 vs 5086 on Merion)\n"
+                    "  while the legend still promises trees. Run:\n"
+                    f"    COURSE={config.SLUG} python3 fetch_trees.py\n"
+                    "  Set ALLOW_OSM_TREES=1 to draw OSM trees anyway and accept a sparse map.")
+            print("  NOTE: ALLOW_OSM_TREES set -- drawing sparse OSM trees, not LiDAR canopy")
         _LIDAR_TREES = json.load(open(p)) if os.path.exists(p) else {}
     return _LIDAR_TREES
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
@@ -36,16 +56,9 @@ def centroid(g):
     la = sum(p['lat'] for p in g['geometry'])/len(g['geometry'])
     lo = sum(p['lon'] for p in g['geometry'])/len(g['geometry']); return la, lo
 
-def match_green(hole_line, greens):
-    def near(pt):
-        best=1e9; bg=None
-        for g in greens:
-            gla,glo=centroid(g)
-            dm=math.hypot((pt['lon']-glo)*mlon(gla),(pt['lat']-gla)*R_LAT)
-            if dm<best: best,bg=dm,g
-        return best,bg
-    da,ga=near(hole_line[0]); db,gb=near(hole_line[-1])
-    return (ga, hole_line[0], hole_line[-1]) if da<=db else (gb, hole_line[-1], hole_line[0])
+def match_green(hole_line, greens, label=""):
+    """Delegates to geo.match_green, which carries the distance cap. See there for why."""
+    return geo.match_green(hole_line, greens, label=label)
 
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy
@@ -80,6 +93,38 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     def in_corridor(g, buf=45):
         gla,glo=centroid(g); pe,pn=em(gla,glo)
         return dist_to_line(pe,pn) < buf
+    # Which hole does a feature BELONG to? The corridor answers "is it near this hole", which is the
+    # right question for DRAWING (a neighbouring bunker that is in play should be visible) but the
+    # wrong one for COUNTING: a bunker between two parallel holes sits in both corridors and was
+    # counted on both cards. Summed per-hole counts came to 168 bunkers on a 122-bunker course at
+    # Merion and 35 on 25 at bay-view, while Philadelphia's corridor MISSED some at 119 of 131. The
+    # card prints "2B 0W", which a reader takes as this hole's bunkers. So assign each feature to
+    # the single nearest hole and count only those; the totals then reconcile with the course.
+    _hole_lines=[]
+    for _h in holes:
+        _r=(_h.get('tags') or {}).get('ref')
+        if _r and _r.isdigit() and _h.get('geometry'):
+            _hole_lines.append((int(_r), [em(p['lat'],p['lon']) for p in _h['geometry']]))
+    def _dist_to(pe, pn, pts):
+        return min(dist_pt_seg(pe,pn,pts[i][0],pts[i][1],pts[i+1][0],pts[i+1][1])
+                   for i in range(len(pts)-1)) if len(pts)>1 else 1e9
+    BELONG_MAX_M=90.0    # past this, a feature belongs to no hole rather than to the nearest one
+    def belongs_here(g):
+        """True if THIS hole's centerline is the nearest of all holes AND close enough to own it.
+
+        The distance bound matters: without it the nearest-hole rule attributed a pond 200 m away to
+        whichever hole happened to be least far, and Merion hole 4 gained 2W it has no water on. A
+        feature further than BELONG_MAX_M from every hole -- a practice bunker, a boundary pond --
+        belongs to none, so it is counted nowhere. That is why the per-hole counts can sum to slightly
+        LESS than the course total, and why they must never sum to more."""
+        if not _hole_lines:
+            return True
+        gla,glo=centroid(g); pe,pn=em(gla,glo)
+        best_ref,best_d=None,1e18
+        for ref,pts in _hole_lines:
+            d=_dist_to(pe,pn,pts)
+            if d<best_d: best_ref,best_d=ref,d
+        return best_ref==hnum and best_d<=BELONG_MAX_M
     def frac_in(g, buf):
         # fraction of the feature's own vertices that lie within `buf` of THIS hole's
         # centerline -> excludes a neighbouring parallel hole's fairway/rough that only
@@ -183,39 +228,148 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     bla_y = ty + FS*1.1 if ty + FS*1.1 < VBH-2 else ty - FS*0.6
     labels=txt(tx, bla_y, back_tee, "#20402a") + txt(gcx, grn_y, "GRN", "#2f5a26")
 
-    # Distance ticks. LEFT number = yds to GREEN (green). RIGHT number = yds from
-    # the BLACK (back) tee (brown). Placed at the frame edges and spaced apart so
-    # numbers never overlap; points too near the tee or green are skipped.
+    # Distance ticks. LEFT number (green) = yds to the GREEN, the straight-line distance a
+    # rangefinder reads. RIGHT number (brown) = yds from the BACK tee, measured ALONG the drawn
+    # line. Both are drawn in the frame gutters; a row is dropped if it would collide vertically
+    # with the row above, and the right number is dropped if the two would overprint horizontally.
     def etxt(x, y, sn, fill, anchor):
         return (f'<text x="{x}" y="{y:.1f}" font-size="{FSN:.1f}" text-anchor="{anchor}" '
                 f'paint-order="stroke" stroke="#fff" stroke-width="{FSN*0.28:.1f}" fill="{fill}" font-weight="700">{sn}</text>')
-    total_yd = HOLES[hnum][2]                 # BLACK (back) tee scorecard yardage
+    total_yd = HOLES[hnum][2]                 # BACK (championship) tee scorecard yardage
+    # Geometry of the drawn playing line, tee end first. arc_m is its true walked length, which the
+    # from-tee label is derived from -- course yardage follows the line you walk, not the chord.
+    same = lambda a, b: abs(a['lat']-b['lat']) < 1e-9 and abs(a['lon']-b['lon']) < 1e-9
+    ordered = line if same(line[0], tee_end) else list(reversed(line))
+    pts_em = [em(p['lat'], p['lon']) for p in ordered]
+    seg = [math.hypot(pts_em[i+1][0]-pts_em[i][0], pts_em[i+1][1]-pts_em[i][1])
+           for i in range(len(pts_em)-1)]
+    arc_m = sum(seg) or 1.0
+    arc_yd = arc_m / 0.9144
+    # Does the drawn line actually span the hole? On 22 of 198 holes it does not: 20 stop short of
+    # the back tee and 2 OVERSHOOT it (OSM traced past the tee). Either way no from-tee distance
+    # can be derived, so that label is omitted rather than guessed -- the to-green number, which
+    # is what you club off, is unaffected. Note the overshoot case still needs the yd < total_yd
+    # bound below; suppressing the label alone does not bound the radius.
+    tee_ok = abs(arc_yd - total_yd) <= max(15.0, 0.05*total_yd)
+
+    # A golfer clubs off "yards to the green" -- the STRAIGHT-LINE distance a rangefinder reads, not
+    # how far there is left to walk. So place each tick where the centerline crosses the circle of
+    # that radius about the green centre: the label is then a true to-green distance AND the tick
+    # sits on the drawn line. (Walking distance alone printed up to +43 yd over the straight line on
+    # a dogleg; positioning along the chord alone put the tick up to 85 m off the drawn line.)
+    gcla, gclo = centroid(green)
+    gce, gcn = em(gcla, gclo)
+    def _dist_to_green(la, lo):
+        e, n = em(la, lo)
+        return math.hypot(e-gce, n-gcn)
+
+    def point_at_radius(R_m):
+        """(lat, lon, arc_from_tee_m) for the point on the centerline whose straight-line distance
+        to the green centre is R_m, taking the crossing nearest the green. None when the line never
+        reaches that radius. arc_from_tee_m is that point's walked distance from the tee end, which
+        is what the from-tee label needs -- deriving it as (card total - R) would mix two different
+        measures and was up to 42 yd wrong on a dogleg (bay-view h10 printed 76 for a point
+        33.7 yd from the tee)."""
+        prev_pt = ordered[-1]                      # green end
+        prev_d = _dist_to_green(prev_pt['lat'], prev_pt['lon'])
+        for i in range(len(ordered)-2, -1, -1):    # walk back toward the tee
+            cur = ordered[i]
+            cur_d = _dist_to_green(cur['lat'], cur['lon'])
+            if prev_d <= R_m <= cur_d or cur_d <= R_m <= prev_d:
+                lo_f, hi_f = 0.0, 1.0              # bisect between prev_pt (0) and cur (1)
+                for _ in range(48):                # ~sub-millimetre, and immune to the
+                    mid = (lo_f+hi_f)/2            # quadratic's degenerate cases
+                    mla = prev_pt['lat']+(cur['lat']-prev_pt['lat'])*mid
+                    mlo = prev_pt['lon']+(cur['lon']-prev_pt['lon'])*mid
+                    if (_dist_to_green(mla, mlo) < R_m) == (prev_d < R_m):
+                        lo_f = mid
+                    else:
+                        hi_f = mid
+                f = (lo_f+hi_f)/2
+                # the crossing lies on segment i, a fraction (1-f) along it from ordered[i]
+                arc_from_tee = sum(seg[:i]) + seg[i]*(1.0-f)
+                return (prev_pt['lat']+(cur['lat']-prev_pt['lat'])*f,
+                        prev_pt['lon']+(cur['lon']-prev_pt['lon'])*f,
+                        arc_from_tee)
+            prev_pt, prev_d = cur, cur_d
+        return None
+
     cands=[]
     for yd in (100,150,200,250,300):
-        ft = total_yd - yd
-        if ft < 30 or yd < 40:                # skip points too near the tee/green
+        # A tick can never be further from the green than the hole is long. This bound must NOT
+        # depend on tee_ok: where the drawn centerline OVERSHOOTS the card (2 of 198 holes -- OSM
+        # traced past the back tee) the from-tee label is suppressed, so a gate on that value alone
+        # never fires and castlewood-hill h4 printed a "200 to green" tick on a 182-yd hole.
+        # Bound on the card yardage itself, not (total_yd - 30), which would drop legitimate rows
+        # on short holes (the-reserve h15 card 179 keeps its 150 tick).
+        if yd >= total_yd:
             continue
-        t=L-yd*0.9144
-        if t<=2: continue
-        e=tee[0]+ux*t; n=tee[1]+uy*t
-        dx,dy=e-tee[0],n-tee[1]; sx=dx*perp[0]+dy*perp[1]; sy=-(dx*ux+dy*uy)
+        hit = point_at_radius(yd*0.9144)
+        if hit is None:                            # the line never gets that far from the green
+            continue
+        la, lo, arc_from_tee = hit
+        # A tick sitting essentially AT the tee is clutter, not information: the hole's full
+        # yardage is already the headline number on the card. Judge that GEOMETRICALLY, by how far
+        # along the line the tick actually is -- not by whether its from-tee label is printable,
+        # which is what previously discarded perfectly good to-green numbers on holes whose
+        # centerline does not span the card.
+        if arc_from_tee / 0.9144 < 25.0:
+            continue
+        # From-tee label: scale the card yardage by how far along the drawn line this point is.
+        # Only meaningful when the line spans the hole; otherwise print the to-green number alone.
+        ft = round(total_yd * arc_from_tee / arc_m) if tee_ok else None
+        if ft is not None and ft < 30:
+            ft = None          # keep the row: its to-green number is still true and is the one a
+                               # golfer clubs off -- only the from-tee figure is not worth printing
+        sx, sy = proj(la, lo)
         cands.append((TY(sy), TX(sx), yd, ft))
     cands.sort()                              # by screen y (green side first)
     rings=""; lastY=-999
+    # Vertical guard: one printed row needs ~0.998*FSN of baseline separation (0.718 cap height +
+    # two 0.14 halo strokes), so 1.35 clears it with margin while not needlessly dropping the
+    # radius-spaced ticks. Measured tightest realised gap: 1.365*FSN (coach edition, bay-view h9).
+    DIGIT_EM = 0.556                          # Helvetica/Arial Bold digit advance
     for Y0,Xc,yd,ft in cands:
-        if Y0-lastY < FSN*2.6:                # keep the numbers from stacking
+        if Y0-lastY < FSN*1.35:
             continue
         lastY=Y0
-        rings+=(f'<line x1="{Xc-4:.1f}" y1="{Y0:.1f}" x2="{Xc+4:.1f}" y2="{Y0:.1f}" stroke="#9a9a9a" stroke-width="0.7"/>'
-                + etxt(9,  Y0+FSN*0.35, str(yd), "#2f5a26", "start")   # LEFT  = to green
-                + etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end"))    # RIGHT = from black tee
+        # Horizontal budget. The gutters are fixed at x=9 (start-anchored) and x=91 (end-anchored)
+        # while FSN scales with font_scale, so at the 2x coach scale the numbers ran into each other
+        # -- the brown one paints second WITH a white halo, so it erased digits of the to-green
+        # yardage (monarch-bay h16 printed "1(498"). Budget the glyph advance plus the halo's
+        # 0.14-em reach.
+        wl = DIGIT_EM*FSN*len(str(yd))
+        wr = DIGIT_EM*FSN*len(str(ft)) if ft is not None else 0.0
+        left_end  = 9 + wl + 0.12*FSN
+        right_beg = (91 - wr - 0.12*FSN) if ft is not None else 100.0
+        show_ft = ft is not None and left_end <= right_beg
+        # The tick MARK must not sit under a number either: at 2x the labels reach far enough in
+        # that the mark was drawn beneath their halos (67 of 814 rows). Clip it to the clear band,
+        # and drop it entirely if nothing legible is left -- the two numbers already mark the row.
+        mx0, mx1 = max(Xc-4, left_end), min(Xc+4, right_beg if show_ft else 100.0)
+        if mx1 - mx0 >= 2.0:
+            rings += (f'<line x1="{mx0:.1f}" y1="{Y0:.1f}" x2="{mx1:.1f}" y2="{Y0:.1f}" '
+                      f'stroke="#9a9a9a" stroke-width="0.7"/>')
+        rings += etxt(9, Y0+FSN*0.35, str(yd), "#2f5a26", "start")      # LEFT = to green
+        if show_ft:
+            rings += etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")   # RIGHT = from back tee
 
     vb=f"0 0 100 {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
          f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
          f'{trow_svg}{tdot_svg}{rings}{labels}</svg>')
-    info=dict(bunkers=len(bunkers),waters=len(waters),tees=len(tees),
-              trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3))
+    # Count over the WHOLE course, not the corridor-filtered draw list: a bunker further than the
+    # 40 m draw corridor from its own hole's line would otherwise be counted on no card at all
+    # (Philadelphia lost 32 of 131 that way). Assigning every feature to its nearest hole makes the
+    # per-hole counts sum to the course total by construction.
+    all_bunkers=[g for g in course if (g.get('tags') or {}).get('golf')=='bunker' and g.get('geometry')]
+    all_waters =[g for g in course if ((g.get('tags') or {}).get('golf') in ('water_hazard','lateral_water_hazard')
+                 or (g.get('tags') or {}).get('natural')=='water') and g.get('geometry')]
+    info=dict(bunkers=sum(1 for g in all_bunkers if belongs_here(g)),
+              waters=sum(1 for g in all_waters if belongs_here(g)),
+              tees=len(tees),
+              trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
+              arc_yd=round(arc_yd), card_yd=total_yd, tee_ticks=tee_ok)
     return svg, info
 
 if __name__=="__main__":

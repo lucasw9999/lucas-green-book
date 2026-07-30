@@ -2,7 +2,7 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Render ONE green from real cached USGS elevation + OSM polygon.
 
@@ -72,6 +72,33 @@ def rot(x, y, cx, cy, deg):
 DIRS = [(0,-1,"back"),(0.71,-0.71,"back-right"),(1,0,"right"),(0.71,0.71,"front-right"),
         (0,1,"front"),(-0.71,0.71,"front-left"),(-1,0,"left"),(-0.71,-0.71,"back-left")]
 
+def depth_width_yd(meta):
+    """(depth, width) in yards, measured in the APPROACH frame -- front-to-back is depth.
+
+    Both card paths must use this. _blank_green measured depth from the raw LATITUDE extent, i.e.
+    north-to-south, regardless of which way the hole plays; render() measures it after rotating the
+    approach to point up. On a hole that plays east-west the two are the depth and the width
+    swapped. Corpus-wide the disagreement ran to 18 yards -- two clubs -- with 32 greens off by more
+    than 30%, and callippe h6 printing 42 x 29 where the truth is 27 deep x 43 wide.
+
+    Nothing shipped hits it today (no built green is blank), but the whole point of the blank card is
+    the case where a course has no usable LiDAR, and then it fires on all 18 holes at once."""
+    poly = poly_to_px(meta['polygon'], meta['bbox'], meta['W'], meta['H'])
+    W, H = meta['W'], meta['H']
+    xmin, ymin, xmax, ymax = meta['bbox']
+    clat = meta['green_center'][0]
+    px_x = (xmax - xmin) * mlon(clat) / W
+    px_y = (ymax - ymin) * R_LAT / H
+    px_m = (px_x + px_y) / 2.0
+    B = meta['approach_bearing']
+    a_ang = math.degrees(math.atan2(-math.cos(math.radians(B)), math.sin(math.radians(B))))
+    theta = -90.0 - a_ang
+    cx, cy = W / 2.0, H / 2.0
+    rp = [rot(x, y, cx, cy, theta) for x, y in poly]
+    rxs = [p[0] for p in rp]; rys = [p[1] for p in rp]
+    return ((max(rys) - min(rys)) * px_m / 0.9144, (max(rxs) - min(rxs)) * px_m / 0.9144)
+
+
 def _blank_green(meta, tournament, rebuilt=False):
     """A green we will NOT read: either the LiDAR never measured this surface (honesty gate in
     fetch_dem_hd.py) or the green was rebuilt after the flight, so the data describes a surface
@@ -107,17 +134,25 @@ def _blank_green(meta, tournament, rebuilt=False):
            f'fill="#777">mark your own read</text>'
            f'<text x="{VBx+VBw-2.5:.1f}" y="{VBy+VBh-2.5:.1f}" font-size="4" text-anchor="end" '
            f'fill="#333">&#9650; approach</text></svg>{wrapclose}')
-    la = [p[0] for p in meta['polygon']]; lo = [p[1] for p in meta['polygon']]
-    clat = meta['green_center'][0]
-    depth_yd = int(round((max(la)-min(la))*R_LAT/0.9144))
-    width_yd = int(round((max(lo)-min(lo))*mlon(clat)/0.9144))
+    d_yd, w_yd = depth_width_yd(meta)          # approach frame, same as the measured card
+    depth_yd = int(round(d_yd)); width_yd = int(round(w_yd))
     return svg, dict(relief_ft=0.0, median_slope=0.0, tilt_pct=0.0,
                      feeds=("rebuilt since survey" if rebuilt else "not surveyed"),
                      undul_ft=0.0, conf="no data", depth_yd=depth_yd, width_yd=width_yd,
                      scale_max_in=None, insufficient=True)
 
 
-def render(hole, center_yd=None, tournament=False):
+# Render-time gate. Deliberately looser than fetch_dem_hd.py's producer gate (NAN_FRAC_MAX=0.02):
+# this is a backstop against an ungated or corrupt surface, not a quality bar, so it must not blank
+# a green the sharper producer already accepted.
+CINT_M = 0.15                   # contour interval; the card's legend states "15 cm each"
+SLOPE_LABEL_MAX_PCT = 10.0      # above this a cell is not putting surface -- colour it, do not number it
+NAN_FRAC_MAX_RENDER = 0.25      # >25% of the green interior with no elevation at all
+MIN_RELIEF_M = 0.05            # a green flat to within 5 cm is a zero-fill, not a green
+MAX_PLAUSIBLE_RELIEF_M = 30.0   # 98 ft of fall inside one green outline is a data artifact
+
+
+def render(hole, tournament=False):
     meta = json.load(open(f"{DEM}/hole{hole:02d}.json"))
     # Only refuse when there is genuinely NOTHING measured under the green (fetch_dem_hd.py
     # honesty gate) -- then there is no surface to draw at all. A green that was rebuilt AFTER
@@ -126,6 +161,11 @@ def render(hole, center_yd=None, tournament=False):
     if meta.get("insufficient"):
         return _blank_green(meta, tournament)
     arr = np.load(f"{DEM}/hole{hole:02d}.npy").astype('float64')
+    # NoData sentinels must die before anything measures this surface. USGS 3DEP ships
+    # -3.4028235e38; a single one of those makes the 15 cm contour loop iterate over a 3.4e38
+    # range and the process is OOM-killed with no message at all (rc=137, zero output).
+    arr[~np.isfinite(arr)] = np.nan
+    arr[np.abs(arr) > 1e30] = np.nan
     H, W = arr.shape
     bbox = meta['bbox']; xmin, ymin, xmax, ymax = bbox
     clat = meta['green_center'][0]
@@ -157,6 +197,37 @@ def render(hole, center_yd=None, tournament=False):
         for r in range(H):
             for c in range(W):
                 if point_in_poly(c+0.5, r+0.5, poly): mask[r,c]=True
+
+    # --- render-time honesty gate -------------------------------------------------------------
+    # The producer's gate is not enough on its own. fetch_dem_hd.py writes `insufficient`, but
+    # fetch_dem.py -- the 1 m seamless path, which is what a BRAND-NEW course gets -- writes no
+    # gate keys at all, so meta.get("insufficient") was None (falsy) for those greens and nothing
+    # could stop a bad surface from being printed. This is the last check before a number reaches
+    # a card, so verify the surface here too, independently of whoever produced it.
+    inside = mask & ~np.isnan(arr)
+    n_in = int(mask.sum())
+    nan_frac = 1.0 - (int(inside.sum()) / n_in) if n_in else 1.0
+    if nan_frac > NAN_FRAC_MAX_RENDER:
+        meta = dict(meta, insufficient=True, nan_frac=nan_frac)
+        return _blank_green(meta, tournament)
+    if inside.any():
+        rel = float(np.nanmax(arr[inside]) - np.nanmin(arr[inside]))
+        # A putting surface cannot plausibly fall metres within its own outline. This catches a
+        # partially-filled NoData patch that survived the fraction test above.
+        if rel > MAX_PLAUSIBLE_RELIEF_M:
+            meta = dict(meta, insufficient=True, relief_m=rel)
+            return _blank_green(meta, tournament)
+        # ...and it cannot plausibly be PERFECTLY FLAT either. Out of coverage, 3DEP's exportImage
+        # returns a constant raster rather than any NoData marker, so this gate -- which claims in its
+        # own comment to verify the surface "independently of whoever produced it" -- was blind to the
+        # single failure mode that producer is documented to have. Demonstrated by zeroing a real
+        # green: the card printed "feeds back (subtle) - 0.0%", a fabricated read. fetch_dem.py grew
+        # a MIN_RELIEF_M check for exactly this; the renderer needs it too, because 8 surfaces on
+        # disk predate any producer gate and a future producer may forget again.
+        if rel < MIN_RELIEF_M:
+            meta = dict(meta, insufficient=True, relief_m=rel)
+            return _blank_green(meta, tournament)
+    arr = np.where(np.isnan(arr), float(np.nanmedian(arr[inside])) if inside.any() else 0.0, arr)
 
     surf = gauss(arr, 3.0)                       # ~1.5 m smoothing
     core = erode(mask, 3)                        # trim collar (~1.5 m)
@@ -221,7 +292,7 @@ def render(hole, center_yd=None, tournament=False):
     # not the presence of contours/arrows/% -- so the tournament book keeps full
     # detail (a conforming coarse-scale book); only the scale is capped below.
     segs = []
-    cint = 0.15
+    cint = CINT_M
     zmin, zmax = surf[mask].min(), surf[mask].max()
     lvl = math.ceil(zmin/cint)*cint
     levels = []
@@ -317,7 +388,15 @@ def render(hole, center_yd=None, tournament=False):
     cand=[]
     for r in range(4,H-4,6):
         for c in range(4,W-4,6):
-            if core[r,c] and slope[r,c]>=1.5:
+            # A putting surface is built at roughly 1-4%; a tier face reaches ~8%. Anything above
+            # SLOPE_LABEL_MAX_PCT inside the traced outline is a bank, mound or bunker lip, not
+            # green -- the OSM golf=green polygon includes the collar and surround. Those cells are
+            # MEASURED correctly, but the legend reads "Numbers = slope % there" on a green card,
+            # so printing 40 beside 5 tells a reader the green has a 40% putt. It does not.
+            # They stay visible through colour and arrows; they just get no putt number.
+            # (This loop sorts steepest-first, so without a ceiling it actively PREFERRED the
+            # least plausible cells on the card -- merion h2 printed 40, philadelphia 29.)
+            if core[r,c] and slope[r,c]>=1.5 and slope[r,c]<=SLOPE_LABEL_MAX_PCT:
                 cand.append((float(slope[r,c]),r,c))
     cand.sort(reverse=True)
     for sl,r,c in cand:

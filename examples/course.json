@@ -1,0 +1,114 @@
+{
+  "_README": [
+    "TEMPLATE. Copy to courses/<your-slug>/course.json, replace every value, then follow",
+    "PIPELINE.md. courses/ is gitignored, so your course data stays local and is never pushed.",
+    "",
+    "The numbers in 'holes' and 'tees' are FACTS from the club's published scorecard -- transcribe",
+    "them, do not estimate. Cross-check against a second source: aggregator sites swap the nines,",
+    "misstate par, and (seen in practice) list a WOMEN'S rating in a men's column. Leave a value",
+    "null rather than guess; the book prints an em-dash for null.",
+    "",
+    "Keys the engine actually reads are marked REQUIRED / OPTIONAL below. Any key starting with",
+    "an underscore is ignored, so this block is safe to keep."
+  ],
+
+  "slug": "example-golf-club",
+  "name": "Example Golf Club",
+  "address": "1 Fairway Rd, Somewhere, ST 00000",
+
+  "_location": "REQUIRED in practice: picks the NAD83 UTM zone for the LiDAR reprojection (26900 + zone).",
+  "location": {"lat": 37.7000, "lon": -121.5000},
+
+  "_par": "OPTIONAL, defaults 72. Must equal the sum of the per-hole pars; a test checks this.",
+  "par": 72,
+  "holes_count": 18,
+  "green_speed": "—",
+
+  "_tees": [
+    "REQUIRED for the Tees panel. yards/rating/slope come from the card; use null for anything the",
+    "club does not publish (9-hole courses often have no rating). Ratings must FALL as yardage",
+    "falls -- if they don't, you have mixed a women's rating into a men's column."
+  ],
+  "tees": [
+    {"name": "Black", "yards": 7020, "rating": 73.1, "slope": 132},
+    {"name": "Blue",  "yards": 6670, "rating": 71.2, "slope": 127},
+    {"name": "White", "yards": 6255, "rating": 69.4, "slope": 121},
+    {"name": "Red",   "yards": 5445, "rating": null, "slope": 115}
+  ],
+
+  "_featured_tee": "REQUIRED: the big number on each hole card. secondary_tee is the small one.",
+  "featured_tee": "Black",
+  "secondary_tee": "White",
+
+  "_hole_cols": [
+    "REQUIRED. Describes each row in 'holes': always par, then mens_hcp, then one entry per tee",
+    "whose yardages you list. The tee names here must appear in 'tees' above."
+  ],
+  "hole_cols": ["par", "mens_hcp", "Black", "Blue", "White", "Red"],
+
+  "_holes": [
+    "REQUIRED. hole number -> [par, mens_hcp, <one yardage per tee in hole_cols order>].",
+    "mens_hcp must be a permutation of 1..N. Per-tee yardages must sum to that tee's total.",
+    "A 9-hole course simply lists 1..9; the engine adapts (single Total row, no front/back split)."
+  ],
+  "holes": {
+    "1":  [4, 11, 400, 380, 355, 310],
+    "2":  [4,  1, 445, 425, 400, 350],
+    "3":  [3, 17, 175, 165, 150, 120],
+    "4":  [5,  5, 530, 505, 480, 425],
+    "5":  [4,  9, 410, 390, 365, 320],
+    "6":  [4,  3, 435, 415, 390, 340],
+    "7":  [3, 15, 195, 180, 160, 130],
+    "8":  [5,  7, 545, 520, 495, 435],
+    "9":  [4, 13, 390, 370, 345, 305],
+    "10": [4, 12, 405, 385, 360, 315],
+    "11": [4,  2, 440, 420, 395, 345],
+    "12": [3, 18, 165, 155, 140, 115],
+    "13": [5,  6, 535, 510, 485, 430],
+    "14": [4, 10, 400, 380, 355, 310],
+    "15": [4,  4, 430, 410, 385, 335],
+    "16": [3, 16, 185, 170, 155, 125],
+    "17": [5,  8, 540, 515, 490, 430],
+    "18": [4, 14, 395, 375, 350, 305]
+  },
+
+  "_osm_bbox": [
+    "REQUIRED: [south, west, north, east] enclosing the whole property, with a little margin.",
+    "Too tight is a real trap -- a green just outside the box looks 'missing from OSM' and tempts",
+    "you into hand-digitising geometry that already exists. Widen the box first."
+  ],
+  "osm_bbox": [37.6940, -121.5080, 37.7060, -121.4920],
+
+  "_build_mode": [
+    "OPTIONAL, defaults 'full'. Set to 'yardage' when no trustworthy post-construction elevation",
+    "exists (e.g. the course was rebuilt after the latest public LiDAR flight): the book then",
+    "prints verified yardages with BLANK greens to mark your own read, instead of slope maps that",
+    "could be wrong."
+  ],
+  "build_mode": "full",
+
+  "_greens_possibly_outdated": [
+    "OPTIONAL: hole numbers whose greens were rebuilt AFTER the LiDAR flight. Those cards print",
+    "the real map but are labelled 'pre-rebuild data' and the guide page names the holes."
+  ],
+
+  "_lidar_flown": [
+    "WRITTEN FOR YOU by tools/lidar_dates.py --write, which decodes the true acquisition date from",
+    "the LAZ point records. Do not hand-edit. A USGS project NAME is not a flight date: four of our",
+    "courses were mislabelled by 2-12 years until this was measured."
+  ],
+
+  "_lidar_crs": "OPTIONAL override, e.g. 'EPSG:2227', when a LAZ header carries no readable CRS.",
+
+  "_card": "OPTIONAL {w,h,page_w,page_h} inches. Defaults 3.5 x 5.0 on US Letter (4-up duplex).",
+
+  "_sources": [
+    "STRONGLY RECOMMENDED and free-text. Record exactly where each number came from and what you",
+    "could NOT verify. This is the project's provenance record; write it as if a stranger will audit it."
+  ],
+  "sources": {
+    "scorecard": "Where the par/handicap/yardages came from, which sources agreed, and anything single-source or unverified.",
+    "geometry": "OpenStreetMap contributors (ODbL)",
+    "elevation": "USGS 3DEP LiDAR (public domain) — name the project, and note any caveat (e.g. flown mid-renovation)."
+  }
+}

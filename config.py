@@ -2,7 +2,7 @@
 # Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
 # Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
 # https://github.com/lucasw9999/lucas-green-book
-# SPDX-License-Identifier: LicenseRef-PolyForm-Noncommercial-1.0.0
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
 Shared course config for the green-book engine.
 
@@ -14,7 +14,7 @@ course to build with the COURSE env var (defaults to the first one we built):
 Each course lives in courses/<slug>/ with a course.json describing it and holds
 that course's cached data (osm_*.json, laz/, dem_hd/) and outputs (greenbook.*).
 """
-import json, os
+import glob, json, os, sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SLUG = os.environ.get("COURSE", "the-reserve-at-spanos-park")
@@ -22,16 +22,38 @@ COURSE_DIR = os.path.join(ROOT, "courses", SLUG)
 
 BRAND = "Lucas Green Book"   # product/brand name shown on the cover
 
-with open(os.path.join(COURSE_DIR, "course.json")) as f:
+_CJ = os.path.join(COURSE_DIR, "course.json")
+if not os.path.exists(_CJ):
+    # courses/ is gitignored (per-course data and generated books stay local), so a fresh clone has
+    # no course to build. Say that plainly instead of raising a bare FileNotFoundError.
+    _have = sorted(os.path.basename(os.path.dirname(p))
+                   for p in glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
+    raise SystemExit(
+        f"no course.json for COURSE={SLUG!r} (looked in {COURSE_DIR}).\n"
+        + (f"  Available locally: {', '.join(_have)}\n"
+           f"  Pick one with:     COURSE=<slug> python3 {os.path.basename(sys.argv[0] or 'generate.py')}\n"
+           if _have else
+           f"  This repo ships the ENGINE only -- courses/ is gitignored, so per-course data and the\n"
+           f"  generated books stay local and are never published. To build one:\n"
+           f"    mkdir -p courses/my-course\n"
+           f"    cp examples/course.json courses/my-course/course.json   # then edit every value\n"
+           f"    COURSE=my-course python3 fetch_osm.py                   # see PIPELINE.md\n"))
+
+with open(_CJ) as f:
     COURSE = json.load(f)
 
 # ---- physical card + print layout (inches) -------------------------------
 # Card trim size = the finished page that slips into a back-pocket yardage-book
-# cover. 3.5 x 5.5 fits standard covers and is well under the Rules of Golf cap
+# cover. 3.5 x 5.0 fits standard covers and is well under the Rule 4.3 cap
 # (4.25 x 7). Override per course in course.json via "card":{"w":..,"h":..}.
+# Engine defaults, named so a tool checking OTHER courses can fall back to them instead of to
+# whatever course this module happens to be bound to. tools/check_scale.py used config.CARD_W_IN as
+# the default when a course.json had no "card", which meant a scratch course with a 5 x 8 card made
+# every other course look 5 x 8 too.
+CARD_DEFAULT_W_IN, CARD_DEFAULT_H_IN = 3.5, 5.0
 _card = COURSE.get("card", {})
-CARD_W_IN = float(_card.get("w", 3.5))
-CARD_H_IN = float(_card.get("h", 5.0))         # 5.0 -> 4 cards (2x2) per US Letter
+CARD_W_IN = float(_card.get("w", CARD_DEFAULT_W_IN))
+CARD_H_IN = float(_card.get("h", CARD_DEFAULT_H_IN))   # 5.0 -> 4 cards (2x2) per US Letter
 PAGE_W_IN = float(_card.get("page_w", 8.5))    # print sheet (US Letter portrait)
 PAGE_H_IN = float(_card.get("page_h", 11.0))
 MARGIN_IN = 0.35
@@ -57,4 +79,3 @@ FI = 2 + TEES.index(FEATURED)                     # featured yardage index
 SI = 2 + TEES.index(SECONDARY)                    # secondary yardage index
 OTHERS = [(t, 2 + i) for i, t in enumerate(TEES) if t not in (FEATURED, SECONDARY)]
 TEE_TABLE = COURSE.get("tees", [])
-MAX_YARDS = max((t["yards"] for t in TEE_TABLE), default=0)

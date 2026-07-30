@@ -69,6 +69,34 @@ generate.py             # lays out the palm cards -> printable HTML/PDF
 ```
 See [`PIPELINE.md`](PIPELINE.md) for the full per‑course build steps.
 
+## Install &amp; run
+Python **3.11+**. Chromium is fetched separately by Playwright — it prints the book to PDF and is
+also what the Rule 4.3 gate measures.
+```bash
+python3 -m pip install -r requirements.txt
+python3 -m playwright install chromium
+```
+This repo ships the **engine only** — `courses/` is gitignored, so per‑course data and the generated
+books stay local and are never published. To build a course, start from the documented template:
+```bash
+mkdir -p courses/my-course
+cp examples/course.json courses/my-course/course.json    # then replace every value
+COURSE=my-course python3 fetch_osm.py                    # then follow PIPELINE.md
+```
+Two checks worth running on anything you build:
+```bash
+python3 -m pytest tests/ -q          # regression tests (skip cleanly with no course data)
+python3 tools/check_scale.py         # measures the LAID-OUT green scale against Rule 4.3
+python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
+```
+`tools/check_scale.py` is the important one. It lays each book out in a real browser under print
+media and measures the drawn green there, rather than trusting the SVG's own attributes — a
+stylesheet can override those, which is exactly how 15 greens once printed over the legal scale
+while every attribute looked correct. It exits non‑zero if any green exceeds 3/8 in : 5 yd. (It also
+reports the printed 5‑yd bar length from the PDF, but that figure is informational and does not
+gate.) `tools/export_pdf.py --check` is the companion: it proves the PDF you would actually print
+came from the HTML on disk.
+
 ## Editions &amp; extras
 - **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex, top‑flip; slips into a back‑pocket
   yardage‑book cover. Each hole shows the back tee as the headline yardage, in its own tee colour.
@@ -79,7 +107,9 @@ See [`PIPELINE.md`](PIPELINE.md) for the full per‑course build steps.
   cover/binding for the trimmed card deck.
 
 ## What's in this repo
-- **Included:** the engine (Python), the build docs, the 3D‑printable binding, and [`legal/`](legal/).
+- **Included:** the engine (Python), the build docs, `requirements.txt`, a documented
+  [`examples/course.json`](examples/course.json) template, the regression tests, the Rule 4.3
+  measurement tool, the 3D‑printable binding, and [`legal/`](legal/).
 - **Not included:** the per‑course data (OSM/LiDAR caches) and the generated books.
 
 ## Accuracy &amp; the rules
