@@ -317,8 +317,9 @@ def main():
     if yr and yr < 2015:
         print(f"  WARNING: {proj} was surveyed around {yr}. Greens rebuilt since then would print\n"
               f"           stale slope. Check for a newer survey, or pin one with \"lidar_project\".")
-    ngreens = len(_green_centroids())
-    gc = _green_coverage(tiles, _green_centroids())
+    cents_now = _green_centroids()
+    ngreens = len(cents_now)
+    gc = _green_coverage(tiles, cents_now)
     if gc is not None and gc < 1.0:
         print(f"  NOTE {proj} reaches {gc*100:.0f}% of the {ngreens} greens "
               f"({round(gc*ngreens)}/{ngreens}); the rest fall back to the 1 m seamless DEM and\n"
@@ -367,7 +368,7 @@ def main():
     # Check the DATA, not just the filenames: a tile can be present and correctly named and still
     # hold no points where a green is. See lidar_coverage.py for the two greens this cost us.
     import lidar_coverage
-    lidar_coverage.report(config.COURSE_DIR, config.SLUG)
+    lidar_coverage.report(config.COURSE_DIR)
 
 if __name__ == "__main__":
     main()

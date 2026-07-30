@@ -76,12 +76,20 @@ def uncovered_greens(course_dir):
         return []
     from pyproj import Transformer
 
-    # one transformer per distinct CRS; tiles of one course normally share theirs
-    tf = {}
-    for _n, crs, _a, _b, _c, _d in foot:
-        key = crs.to_wkt() if crs is not None else None
-        if key not in tf:
-            tf[key] = Transformer.from_crs("EPSG:4326", crs, always_xy=True) if crs else None
+    # Resolve one transformer per tile up front. Doing it inside the point loop meant a to_wkt() and a
+    # dict lookup per green node per tile -- thousands of calls for no gain, since a course's tiles
+    # almost always share a CRS.
+    cache, boxes = {}, []
+    for _name, crs, x0, x1, y0, y1 in foot:
+        if crs is None:
+            continue                       # cannot place a green in a tile with no CRS
+        key = crs.to_wkt()
+        if key not in cache:
+            cache[key] = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        boxes.append((cache[key], x0, x1, y0, y1))
+    if not boxes:
+        print("  ! no tile declares a CRS -- cannot check the greens against the point data")
+        return []
 
     bad = []
     for gid, ring in rings:
@@ -89,23 +97,15 @@ def uncovered_greens(course_dir):
         pts.append((sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)))
         outside = 0
         for lon, lat in pts:
-            hit = False
-            for _name, crs, x0, x1, y0, y1 in foot:
-                T = tf[crs.to_wkt() if crs is not None else None]
-                if T is None:
-                    continue
-                x, y = T.transform(lon, lat)
-                if x0 <= x <= x1 and y0 <= y <= y1:
-                    hit = True
-                    break
-            if not hit:
+            if not any(x0 <= (xy := T.transform(lon, lat))[0] <= x1 and y0 <= xy[1] <= y1
+                       for T, x0, x1, y0, y1 in boxes):
                 outside += 1
         if outside:
             bad.append((gid, outside, len(pts)))
     return bad
 
 
-def report(course_dir, slug=""):
+def report(course_dir):
     """Print the coverage verdict. Returns the uncovered list."""
     bad = uncovered_greens(course_dir)
     if not bad:
@@ -129,7 +129,7 @@ def main():
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import config
-    bad = report(config.COURSE_DIR, config.SLUG)
+    bad = report(config.COURSE_DIR)
     return 1 if bad else 0
 
 

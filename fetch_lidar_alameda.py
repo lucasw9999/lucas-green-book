@@ -161,7 +161,7 @@ def main():
     # w6153n2055 copy on disk covers a 470-ft strip of a 3000-ft cell, and two greens fell in the
     # gap. See lidar_coverage.py.
     import lidar_coverage
-    lidar_coverage.report(config.COURSE_DIR, config.SLUG)
+    lidar_coverage.report(config.COURSE_DIR)
 
 if __name__ == "__main__":
     main()
