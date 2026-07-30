@@ -16,7 +16,7 @@ Then: COURSE=<slug> python3 fetch_dem_hd.py   # precision green surfaces
       COURSE=<slug> python3 fetch_trees.py    # trees from canopy returns
       COURSE=<slug> python3 generate.py
 """
-import os, re, json, time, urllib.request
+import os, re, json, time, urllib.parse, urllib.request
 import config
 
 DIR = config.COURSE_DIR
@@ -157,6 +157,82 @@ def choose_project(projects):
     return pick, scored, newest
 
 
+def _sub_project(u):
+    """The sub-project directory of a TNM LAZ url: .../Projects/<project>/<SUB>/LAZ/<tile>.laz"""
+    parts = [x for x in urllib.parse.urlparse(u).path.split("/") if x]
+    for i, x in enumerate(parts):
+        if x.upper() == "LAZ" and i:
+            return parts[i - 1]
+    return parts[-2] if len(parts) > 1 else ""
+
+
+def plan_downloads(tiles, laz_dir):
+    """[(item, filename)] still to fetch, plus the number already on disk.
+
+    Two things this has to get right, both of which cost real ground returns when wrong.
+
+    DISTINCT NAMES FOR DISTINCT COPIES. One geographic cell can appear in several sub-projects of the
+    same USGS project, flown separately, each holding only the points collected in its own footprint.
+    Their download urls differ *only* in the sub-project directory, so naming a file by url basename
+    gave both copies the same local name: the first was downloaded, and the second matched
+    `os.path.exists(fn)` and was reported "cached" -- a distinct file silently discarded. Measured
+    live at Callippe: 8 of 20 cells have two copies, and the two copies of w6168n2055 have different
+    bounding boxes -- CA_AlamedaCo_3_2021 reaches west to -121.85963, CA_AlamedaCo_1_2021 east to
+    -121.84912 -- so they are COMPLEMENTARY strips, not duplicates. Extra copies now take a
+    `__Co<n>` suffix from the sub-project name; tools/gen_provenance.py strips it when it reads
+    project names off disk.
+
+    MATCH THE CACHE BY SIZE, NOT BY NAME. Existing courses were fetched under an older naming scheme,
+    so a cell's copies can be on disk under names this function would not choose. Treating "no file
+    of that name" as "not downloaded" would fetch a copy that is already present under another name
+    and store it TWICE, and duplicate points inflate the pts/m2 that the legal provenance table
+    publishes. TNM reports sizeInBytes per copy and the copies differ by millions of bytes, so an
+    exact size match identifies a copy whatever it is called. Files are consumed as they are matched,
+    so two copies that happen to be byte-identical still require two files on disk.
+    """
+    have = {}
+    for f in sorted(os.listdir(laz_dir)) if os.path.isdir(laz_dir) else []:
+        if f.lower().endswith(".laz"):
+            have.setdefault(os.path.getsize(os.path.join(laz_dir, f)), []).append(f)
+
+    by_base = {}
+    for it in tiles:
+        by_base.setdefault(os.path.basename(it["downloadURL"]), []).append(it)
+
+    todo, cached, used = [], 0, set()
+    for base in sorted(by_base):
+        group = sorted(by_base[base], key=lambda t: t["downloadURL"])
+        stem, ext = os.path.splitext(base)
+        for i, it in enumerate(group):
+            if len(group) == 1 or i == 0:
+                fn = base                      # keep the plain name: every existing cache uses it
+            else:
+                sub = _sub_project(it["downloadURL"])
+                m = re.search(r"(\d+)", sub)
+                token = m.group(1) if m else str(50 + i)
+                fn = f"{stem}__Co{token}{ext}"
+                while fn in used:              # two sub-projects reducing to the same token
+                    token += "0"
+                    fn = f"{stem}__Co{token}{ext}"
+            used.add(fn)
+            want = it.get("sizeInBytes") or 0
+            if want and have.get(want):
+                got = have[want].pop(0)
+                print(f"  cached {got}" + (f"  (holds {fn})" if got != fn else ""))
+                cached += 1
+                continue
+            if not want:
+                # No size from TNM: fall back to the old name-and-nonempty test, and say so, because
+                # this is the one path that still cannot tell a truncated file from a complete one.
+                pth = os.path.join(laz_dir, fn)
+                if os.path.exists(pth) and os.path.getsize(pth) > 1e6:
+                    print(f"  cached {fn}  (TNM reported no size; accepted on name alone)")
+                    cached += 1
+                    continue
+            todo.append((it, fn))
+    return todo, cached
+
+
 def main():
     items = tnm_items()
     if not items:
@@ -200,27 +276,30 @@ def main():
         if p != proj:
             print(f"  (not chosen: {p} — {scored[p]*100:.0f}% coverage, {newest(p)})")
     failed = []
-    for it in tiles:
-        u = it.get('downloadURL')
-        if not u:
-            continue
-        fn = f"{DIR}/laz/" + os.path.basename(u)
-        if os.path.exists(fn) and os.path.getsize(fn) > 1e6:
-            print("  cached", os.path.basename(u)); continue
+    todo, ncached = plan_downloads([t for t in tiles if t.get('downloadURL')], f"{DIR}/laz")
+    print(f"  {ncached} tile copy(ies) already on disk, {len(todo)} to download")
+    for it, name in todo:
+        u, fn = it['downloadURL'], f"{DIR}/laz/{name}"
+        want = it.get('sizeInBytes') or 0
         ok = False
         for a in range(4):
             try:
                 # download to .part and rename, so an interrupted transfer cannot be mistaken
                 # for a complete tile by the size check above on the next run
                 urllib.request.urlretrieve(u, fn + ".part")
+                got = os.path.getsize(fn + ".part")
+                if want and got != want:
+                    # A short read that still parses is the worst case: the tile looks fine and
+                    # simply has no points over part of the course.
+                    raise IOError(f"got {got:,} bytes, TNM says {want:,}")
                 os.replace(fn + ".part", fn)
-                print("  downloaded", os.path.basename(u), round(os.path.getsize(fn)/1e6), "MB")
+                print(f"  downloaded {name} {round(got/1e6)} MB")
                 ok = True
                 break
             except Exception as e:
-                print(f"  {os.path.basename(u)} try {a+1} failed: {e}"); time.sleep(3)
+                print(f"  {name} try {a+1} failed: {e}"); time.sleep(3)
         if not ok:
-            failed.append(os.path.basename(u))
+            failed.append(name)
             if os.path.exists(fn + ".part"):
                 os.remove(fn + ".part")
     if failed:

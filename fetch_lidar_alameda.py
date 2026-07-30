@@ -21,7 +21,7 @@ Run:  COURSE=<slug> python3 fetch_lidar_alameda.py
 Then: COURSE=<slug> python3 fetch_dem_hd.py   # 0.4 m green surfaces
       COURSE=<slug> python3 fetch_trees.py    # canopy trees
 """
-import os, time, urllib.request, urllib.error
+import os, re, time, urllib.request, urllib.error
 from pyproj import Transformer
 import config
 
@@ -102,15 +102,22 @@ def main():
     for t in tiles:
         copies = tile_copies(t, unknown)
         if not copies:
-            # genuinely absent, or a HEAD that failed -- head_size cannot tell those apart, so
-            # count them and report at the end rather than letting a network wobble look like the
-            # edge of the survey
+            # Genuinely absent: every sub-project answered an authoritative 404. A HEAD that
+            # merely FAILED landed in `unknown` instead and aborts the run below, so reaching here
+            # really does mean the edge of the survey.
             absent.append(t)
-            print(f"  {t}: no copy found on server (edge of coverage, or HEAD failed) -- skip")
+            print(f"  {t}: not in any sub-project (404) -- edge of coverage, skip")
             continue
         for i, (sub, url, sz) in enumerate(copies):
-            # first copy keeps the plain name; extra sub-project copies get a suffix
-            fn = f"{DIR}/laz/{PREFIX}_{t}.laz" if i == 0 else f"{DIR}/laz/{PREFIX}_{t}__{sub[-9:]}.laz"
+            # First copy keeps the plain name; extra sub-project copies get a `__Co<n>` suffix taken
+            # from the sub-project number. The suffix MUST end in digits: tools/gen_provenance.py
+            # reads the LiDAR project name off these filenames for the legal record and strips
+            # `__Co\d+$`. The previous suffix was the sub-project's last 9 characters
+            # (`__Co_3_2021`), which that strip does not match, so the generator published
+            # "CA_AlamedaCounty_2021_B21_w6162n2049__Co_3" as the project a book was built from.
+            m = re.search(r"Co_?(\d+)", sub)
+            tok = m.group(1) if m else str(50 + i)
+            fn = f"{DIR}/laz/{PREFIX}_{t}.laz" if i == 0 else f"{DIR}/laz/{PREFIX}_{t}__Co{tok}.laz"
             if os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024:
                 print(f"  cached {t} [{sub[-9:]}]"); got += 1; continue
             ok = False

@@ -2002,6 +2002,92 @@ def test_multipolygon_relations_become_drawable_features():
         f"only and every fairway arrives without geometry. Query was:\n{query}")
 
 
+def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
+    """One geographic cell can appear in several sub-projects of the same USGS project, flown
+    separately, each holding only the points in its own footprint. The download urls differ only in
+    the sub-project directory, so naming the local file by url basename gave both copies the SAME
+    name: the first downloaded, the second reported "cached" and thrown away.
+
+    Measured live at Callippe: 8 of 20 cells have two copies, and the two copies of w6168n2055 have
+    different bounding boxes (CA_AlamedaCo_3_2021 reaches west to -121.85963, CA_AlamedaCo_1_2021
+    east to -121.84912), so they are complementary strips -- 190,503,168 bytes of ground returns
+    dropped on the floor for that one cell.
+
+    Also asserts the cache is matched by SIZE, not by name: existing courses were fetched under an
+    older naming scheme, and re-downloading a copy that is already on disk under another name stores
+    it twice, which inflates the pts/m2 the legal provenance table publishes."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar as fl
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    base = "USGS_LPC_CA_X_2021_B21_w6168n2055.laz"
+    root = "https://x/Projects/CA_X_2021_B21"
+    tiles = [{"downloadURL": f"{root}/CA_XCo_3_2021/LAZ/{base}", "sizeInBytes": 190503168},
+             {"downloadURL": f"{root}/CA_XCo_1_2021/LAZ/{base}", "sizeInBytes": 91675672},
+             {"downloadURL": f"{root}/CA_XCo_1_2021/LAZ/USGS_LPC_CA_X_2021_B21_w6162n2052.laz",
+              "sizeInBytes": 317568432}]
+    laz = tmp_path / "laz"
+    laz.mkdir()
+
+    todo, cached = fl.plan_downloads(tiles, str(laz))
+    assert cached == 0
+    names = [n for _, n in todo]
+    assert len(names) == 3, f"every copy must be planned, got {names}"
+    assert len(set(names)) == 3, f"two copies of one cell collided on one filename: {names}"
+    # the two copies of the same cell must map to different files, and both must still be findable
+    same = sorted(n for _, n in todo if "w6168n2055" in n)
+    assert len(same) == 2 and same[0] != same[1], same
+    assert all(n.lower().endswith(".laz") for n in names), names
+
+    # size-based cache matching: write the two cell copies under the OTHER one's name
+    for _, n in todo:
+        want = next(t["sizeInBytes"] for t, nn in todo if nn == n)
+        (laz / n).write_bytes(b"\0" * want)
+    todo2, cached2 = fl.plan_downloads(tiles, str(laz))
+    assert cached2 == 3 and not todo2, f"already-present copies re-scheduled: {todo2}"
+
+    # a file of the wrong size must NOT satisfy the cache -- that is a truncated download
+    (laz / same[0]).write_bytes(b"\0" * 12345)
+    todo3, _ = fl.plan_downloads(tiles, str(laz))
+    assert len(todo3) == 1, f"a truncated tile must be re-fetched, got {todo3}"
+
+    # and the suffix must remain strippable by the provenance generator
+    suffixed = [n for n in names if "__Co" in n]
+    assert suffixed, names
+    for n in suffixed:
+        assert re.search(r"__Co\d+\.laz$", n), \
+            f"{n} does not match tools/gen_provenance.py's __Co<digits> strip"
+
+    # The Alameda fetcher writes the same kind of name and must obey the same rule. It used to use
+    # the sub-project's last 9 characters (`__Co_3_2021`), which the strip below does not match, so
+    # gen_provenance.py published "CA_AlamedaCounty_2021_B21_w6162n2049__Co_3" as a book's LiDAR
+    # project in the legal record.
+    def strip_like_gen_provenance(name):
+        stem = re.sub(r"\.laz$", "", name)[len("USGS_LPC_"):]
+        for pat in (r"__Co\d+$", r"_w\d+n\d+$", r"_\d{2}[A-Z]{3}\d+$", r"_\d+$"):
+            stem = re.sub(pat, "", stem)
+        return stem
+
+    assert strip_like_gen_provenance(
+        "USGS_LPC_CA_AlamedaCounty_2021_B21_w6162n2049__Co3.laz") == "CA_AlamedaCounty_2021_B21"
+    assert strip_like_gen_provenance(
+        "USGS_LPC_CA_AlamedaCounty_2021_B21_w6162n2049__Co_3_2021.laz") != "CA_AlamedaCounty_2021_B21", \
+        "this is the naming that broke the legal record; the assertion below guards against it"
+    ala = open(os.path.join(ROOT, "fetch_lidar_alameda.py"), encoding="utf-8").read()
+    # scope to the FILENAME construction: sub[-9:] is fine in a progress label, not in a filename
+    fnlines = [ln.strip() for ln in ala.splitlines()
+               if re.match(r"fn\s*=", ln.strip()) and "laz" in ln]
+    assert fnlines, "could not find the tile filename construction in fetch_lidar_alameda.py"
+    joined = " ".join(fnlines)
+    assert "__Co{tok}" in joined, f"expected a __Co<digits> suffix, got: {joined}"
+    assert "sub[-9:]" not in joined, \
+        f"the sub-project slice in a FILENAME is what broke the provenance strip: {joined}"
+
+
 def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
     """head_size() swallowed every exception and returned -1, so a transient timeout looked exactly
     like an authoritative "this tile is not in this sub-project". The caller printed "edge of
