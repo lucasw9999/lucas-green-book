@@ -254,8 +254,23 @@ def plan_downloads(tiles, laz_dir):
         if f.lower().endswith(".laz"):
             have.setdefault(os.path.getsize(os.path.join(laz_dir, f)), []).append(f)
 
-    by_base = {}
+    # Deduplicate by URL first. Two entries for the SAME url are the same file, but the grouping
+    # below would see two copies of one cell and give the second a __CoN name -- downloading the
+    # identical tile twice and doubling its points, which inflates the pts/m2 the legal provenance
+    # table publishes. Live TNM returns no duplicates today (checked: 10/40/9 urls, 0 repeats across
+    # three courses), but it is a third-party API that has already surprised us with a 200-item cap,
+    # fiscal-year project codes and surveys nested under buckets.
+    seen_url, deduped = set(), []
     for it in tiles:
+        u = it["downloadURL"]
+        if u in seen_url:
+            continue
+        seen_url.add(u)
+        deduped.append(it)
+    if len(deduped) != len(tiles):
+        print(f"  ({len(tiles) - len(deduped)} duplicate url(s) in the TNM listing, ignored)")
+    by_base = {}
+    for it in deduped:
         by_base.setdefault(os.path.basename(it["downloadURL"]), []).append(it)
 
     todo, cached, used = [], 0, set()

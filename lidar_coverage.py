@@ -149,7 +149,7 @@ def uncovered_greens(course_dir, boxes=None):
 
 
 def report(course_dir):
-    """Print the coverage verdict. Returns (status, uncovered_greens).
+    """Print the coverage verdict. Returns (status, uncovered_greens, uncovered_holes).
 
     status is "checked", or a reason why nothing could be checked. Callers must not read an empty
     green list as "covered" without looking at the status -- that conflation is what let this module
@@ -160,10 +160,10 @@ def report(course_dir):
     if not boxes:
         print(f"  coverage NOT CHECKED: {why}. Greens here are read from the 1 m seamless DEM (or\n"
               f"     not at all); nothing has been verified against a point cloud.")
-        return why, []
+        return why, [], []
     if not rings:
         print("  coverage NOT CHECKED: no green geometry in osm_geom.json -- run fetch_osm.py first.")
-        return "no green geometry", []
+        return "no green geometry", [], []
     holes = uncovered_holes(course_dir, boxes)
     if holes:
         n = sum(o for _r, o, _t in holes)
@@ -174,7 +174,7 @@ def report(course_dir):
     if not bad:
         print(f"  coverage: all {len(rings)} green(s) sit inside the downloaded tiles' data "
               f"({len(boxes)} tile(s) checked)")
-        return "checked", bad
+        return "checked", bad, holes
     print(f"  !! {len(bad)} green(s) are NOT fully covered by the point data on disk:")
     for gid, out, tot in bad:
         print(f"       green {gid}: {out} of {tot} sampled node(s) have no returns over them")
@@ -184,19 +184,22 @@ def report(course_dir):
           "     is not simply missing: one geographic cell can exist in several sub-projects, each\n"
           "     holding only its own strip, and Castlewood Hill lost two greens' 0.4 m reads that\n"
           "     way. Re-run the fetch; it now keeps every sub-project copy under its own name.")
-    return "checked", bad
+    return "checked", bad, holes
 
 
 def main():
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import config
-    status, bad = report(config.COURSE_DIR)
+    # One call, one answer. main() used to re-run uncovered_holes() for its exit code, which reopened
+    # every tile header and left a window where the verdict printed and the code returned could
+    # disagree.
+    status, bad, holes = report(config.COURSE_DIR)
     if status != "checked":
         return 2          # could not check -- same convention as tools/gen_provenance.py
     # holes count too: a course can have every green covered while a centreline leaves the data, and
     # that is where fetch_trees.py looks for canopy returns
-    return 1 if (bad or uncovered_holes(config.COURSE_DIR)) else 0
+    return 1 if (bad or holes) else 0
 
 
 if __name__ == "__main__":

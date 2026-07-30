@@ -2308,8 +2308,8 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     assert hb[0][1] == 1 and hb[0][2] == 2, f"hole 7 has 1 of 2 nodes outside, got {hb[0]}"
 
     # and it must REPORT, not raise: a green over water legitimately has no returns
-    status, out = lc.report(str(tmp_path))
-    assert status == "checked" and out == bad
+    status, out, holes_out = lc.report(str(tmp_path))
+    assert status == "checked" and out == bad and holes_out == hb
 
     # "nothing flagged" must never be reported as "verified covered" when NOTHING WAS CHECKED. With
     # zero tiles on disk this printed "all 1 green(s) sit inside the downloaded tiles' data" and
@@ -2319,7 +2319,7 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     (empty / "laz").mkdir(parents=True)
     (empty / "osm_geom.json").write_text(json.dumps({"elements": [
         {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring()}]}))
-    st, bad0 = lc.report(str(empty))
+    st, bad0, _ = lc.report(str(empty))
     assert bad0 == [], bad0
     assert st != "checked", \
         f"status {st!r}: with no tiles on disk the check must say so, not imply coverage"
@@ -2329,7 +2329,7 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     nogeom = tmp_path / "nogeom"
     (nogeom / "laz").mkdir(parents=True)
     write_tile(nogeom / "laz" / "a.laz", ring(), 5.0)
-    st2, _ = lc.report(str(nogeom))
+    st2, _, _ = lc.report(str(nogeom))
     assert st2 != "checked" and "green" in st2.lower(), st2
 
     # both fetchers must run the check, or a missing tile copy goes unnoticed again
@@ -2558,6 +2558,18 @@ def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
     (laz / same[0]).write_bytes(b"\0" * 12345)
     todo3, _ = fl.plan_downloads(tiles, str(laz))
     assert len(todo3) == 1, f"a truncated tile must be re-fetched, got {todo3}"
+
+    # a duplicate URL in the TNM listing is ONE file, not two copies of a cell. Grouping by basename
+    # gave the second entry a __CoN name and downloaded the identical tile twice, doubling its points
+    # -- which inflates the pts/m2 the legal provenance table publishes. Live TNM returns no
+    # duplicates today (10/40/9 urls, 0 repeats across three courses), so this is a latent guard
+    # against an API that has already surprised us with a 200-item cap and fiscal-year codes.
+    dupe = tmp_path / "dupe"
+    dupe.mkdir()
+    one = {"downloadURL": f"{root}/CA_XCo_1_2021/LAZ/{base}", "sizeInBytes": 91675672}
+    todo_d, cached_d = fl.plan_downloads([one, dict(one)], str(dupe))
+    assert len(todo_d) == 1, f"the same url twice must yield one download, got {[n for _, n in todo_d]}"
+    assert cached_d == 0
 
     # nor may a file of the RIGHT size but a different cell. Sizes within one course's laz/ are all
     # distinct in practice (the only duplicates on disk are the same tile shared by two neighbouring
