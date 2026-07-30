@@ -2163,9 +2163,20 @@ def test_one_shared_rule_decides_what_may_be_distributed():
     assert ok2 is False and label2 == "Personal" and why2, "a Personal course needs a stated reason"
     assert distribution.is_distributable({"slug": "x"}) is True
     assert distribution.is_distributable({"slug": "y", "build_mode": "yardage"}) is False
-    # a missing/empty course record must not be assumed publishable by accident
     assert distribution.is_distributable({}) is True, \
         "an ordinary course with no build_mode is distributable; this documents the default"
+
+    # It must FAIL CLOSED, because this decides whether a book may be handed out.
+    # None means the course record could not be read -- an exact == "yardage" test answered
+    # "Distributed" for that, i.e. took a publish decision on no information at all.
+    assert distribution.is_distributable(None) is False, \
+        "an unreadable course record must not resolve to publishable"
+    # ...and the mode must be normalised. "YARDAGE" and " yardage" both answered "Distributed",
+    # so a stray capital or space in a HAND-EDITED course.json would have shipped a personal-use
+    # book. course.json is hand-edited: it holds the scorecard transcription.
+    for variant in ("YARDAGE", " yardage", "Yardage", "yardage\n", "\tYardage "):
+        assert distribution.is_distributable({"build_mode": variant}) is False, \
+            f"build_mode={variant!r} must still read as Personal"
 
     # the generator must consult it rather than re-deriving the rule
     src = open(os.path.join(ROOT, "tools", "gen_provenance.py"), encoding="utf-8").read()

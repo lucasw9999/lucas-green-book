@@ -24,9 +24,29 @@ than slope that could be wrong -- and for Poppy Ridge the aerial also predates t
 """
 
 
+YARDAGE = "yardage"
+
+
 def distribution_status(course):
-    """(distributable: bool, label: str, reason: str) for a parsed course.json."""
-    if (course or {}).get("build_mode") == "yardage":
+    """(distributable: bool, label: str, reason: str) for a parsed course.json.
+
+    Fails CLOSED, deliberately. This decides whether a book may be handed out, so every uncertain
+    input has to resolve to "no":
+
+    * `None` means the course record could not be read. An exact `== "yardage"` test answered
+      "Distributed" for that, which is a publish decision taken on no information at all.
+    * The mode is normalised before comparison. `"YARDAGE"` and `" yardage"` both answered
+      "Distributed" too, so a stray capital or space in a hand-edited course.json -- and course.json
+      IS hand-edited, it holds the scorecard transcription -- would have shipped a personal-use book.
+
+    The corpus uses only `None` (11 courses) and `"yardage"` (1), so nothing changes today; this is
+    about which way the next typo falls.
+    """
+    if course is None:
+        return (False, "Personal",
+                "no course record could be read, so distributability is unknown; refusing by default")
+    mode = (course.get("build_mode") or "").strip().lower()
+    if mode == YARDAGE:
         return (False, "Personal",
                 "built in yardage mode: no trustworthy post-construction elevation exists, so the "
                 "book prints blank greens and is personal-use only")
