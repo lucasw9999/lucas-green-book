@@ -1546,6 +1546,74 @@ def test_lidar_dates_refuses_an_implausible_date_rather_than_inventing_one():
             "a tile whose gps_time is implausible under BOTH readings must yield no date"
 
 
+@pytest.mark.slow          # lays both editions out in a browser
+@needs_corpus
+def test_the_enlarged_edition_really_is_enlarged_in_print():
+    """Round 6 found the ENLARGED edition printing its greens at EXACTLY the pocket scale -- ratio
+    1.00 on all 18 holes -- while the printed card, README and PIPELINE.md all said they were bigger.
+    test_the_two_render_modes_are_actually_different guards the cause (the conforming render pins an
+    inch size inline, the enlarged one must not), but nothing measured the EFFECT in print.
+
+    Measured in a browser under print media, per hole, using the scale preserveAspectRatio="meet"
+    actually applies -- min(w/vbWidth, h/vbHeight). Taking width alone gives the wrong answer
+    whenever height is the limiting dimension, which it is for most greens; that mistake first told
+    me the coach type was SMALLER than the pocket type.
+
+    Because stroke widths and font sizes are expressed in the same user units, one ratio governs the
+    green, the contour weights and the type together: 1.66x, so a 4.6-unit slope label prints 8.8 pt
+    in the pocket book and 14.7 pt in the coach edition. "Bigger but worse" would show up here as a
+    ratio near 1."""
+    coach = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook_coach.html")))
+    coach = [f for f in coach if not os.path.basename(os.path.dirname(f)).startswith("_")]
+    if not coach:
+        pytest.skip("no coach edition built (COACH=1 python3 generate.py)")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+    exe = export_pdf._headless_shell()
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
+    import pathlib
+    import statistics
+    JS = """(sel)=>[...document.querySelectorAll(sel)].map(s=>{
+      const bb=s.getBoundingClientRect(); const vb=s.getAttribute('viewBox').split(' ').map(Number);
+      const k=Math.min((bb.width/96)/vb[2], (bb.height/96)/vb[3]);
+      const card=s.closest('.panel'); const hn=card&&card.querySelector('.hnum');
+      return {hole: hn?+hn.textContent:null, k:k};})"""
+    with sync_playwright() as pw:
+        try:
+            b = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
+        except Exception:
+            pytest.skip("no browser available")
+        pg = b.new_page()
+        checked = 0
+        try:
+            for cf in coach:
+                pf = cf.replace("greenbook_coach.html", "greenbook.html")
+                if not os.path.exists(pf):
+                    continue
+                scales = {}
+                for tag, f, sel in (("pocket", pf, ".grn svg"), ("coach", cf, ".cmap svg")):
+                    pg.goto(pathlib.Path(f).resolve().as_uri())
+                    pg.emulate_media(media="print")
+                    scales[tag] = {r["hole"]: r["k"] for r in pg.evaluate(JS, sel) if r["hole"]}
+                common = sorted(set(scales["pocket"]) & set(scales["coach"]))
+                assert len(common) >= 9, f"{cf}: only {len(common)} holes comparable"
+                ratios = [scales["coach"][h] / scales["pocket"][h] for h in common]
+                med = statistics.median(ratios)
+                assert med > 1.3, (
+                    f"{os.path.relpath(cf, ROOT)}: enlarged greens print at only {med:.2f}x the "
+                    f"pocket scale -- the card claims they are larger than the tournament scale")
+                assert min(ratios) > 1.1, (
+                    f"{os.path.relpath(cf, ROOT)}: hole {common[ratios.index(min(ratios))]} prints "
+                    f"at {min(ratios):.2f}x -- barely enlarged")
+                checked += 1
+        finally:
+            b.close()
+    assert checked > 0, "no course had both editions built"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
