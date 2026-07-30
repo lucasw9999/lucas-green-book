@@ -2142,6 +2142,55 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
     return str(path)
 
 
+def test_each_tee_column_carries_the_right_tee_name():
+    """A card prints a yardage under a TEE NAME, and a junior picks their tee by that name. Two
+    separate structures have to agree for that to be true: `hole_cols` names the per-hole yardage
+    columns, and `tees` carries each set's total with its rating and slope. Nothing checked that the
+    column called "White" really is the White column.
+
+    The mapping is not positional, which is what makes this worth asserting: Philadelphia's per-hole
+    columns correspond to declared tee sets 0, 1, 2 and 4, and The Reserve's to 0, 1, 2, 4 and 6,
+    because both courses declare COMBO tees (Blu/Wht, Wht/Grn) that have a scorecard total but no
+    per-hole column. Mapping column i to tees[i] would therefore print "Green" over the Gold
+    yardages at Philadelphia. Measured across the corpus: 51 name-to-column pairs, all consistent.
+
+    Also checks featured_tee/secondary_tee -- the two names printed on every hole card -- actually
+    name per-hole columns, since config.py resolves them with TEES.index() and would otherwise be
+    reading a yardage from the wrong column."""
+    pairs = 0
+    problems = []
+    for slug in CORPUS:
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as f:
+            j = json.load(f)
+        holes = j.get("holes") or {}
+        cols = (j.get("hole_cols") or [])[2:]
+        tees = j.get("tees") or []
+        if not holes or not cols:
+            continue
+        ks = sorted(holes, key=lambda x: int(x))
+        ncol = min(len(holes[k]) for k in ks) - 2
+        if len(cols) != ncol:
+            problems.append(f"{slug}: hole_cols names {len(cols)} column(s), rows carry {ncol}")
+            continue
+        declared = {t.get("name"): t.get("yards") for t in tees}
+        for i, name in enumerate(cols):
+            total = sum(holes[k][2 + i] for k in ks)
+            if name not in declared:
+                problems.append(f"{slug}: column {name!r} is absent from the tee table")
+            elif isinstance(declared[name], int):
+                pairs += 1
+                if total != declared[name]:
+                    problems.append(
+                        f"{slug}: column {name!r} sums to {total} but the tee table says "
+                        f"{declared[name]} -- one of the two printed numbers is wrong")
+        for field in ("featured_tee", "secondary_tee"):
+            v = j.get(field)
+            if v is not None and v not in cols:
+                problems.append(f"{slug}: {field}={v!r} is not one of the per-hole columns {cols}")
+    assert not problems, "tee labelling disagrees with the tee table:\n  " + "\n  ".join(problems)
+    assert pairs >= 20, f"only {pairs} tee/column pairs checked -- the corpus should offer far more"
+
+
 def test_one_shared_rule_decides_what_may_be_distributed():
     """legal/03_PROVENANCE_BY_COURSE.md marks each course Distributed or Personal, and its own legend
     defines Personal as *do not distribute*; legal/00_SUMMARY_AND_VERDICT.md names Poppy Ridge as
