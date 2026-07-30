@@ -1185,6 +1185,74 @@ def test_contours_join_equal_height_at_the_stated_interval():
     assert abs(cint - 0.15) < 1e-9, f"interval is {cint} m but the legend says 15 cm"
 
 
+FEEDS_OCTANTS = [(0, "back"), (45, "back-right"), (90, "right"), (135, "front-right"),
+                 (180, "front"), (225, "front-left"), (270, "left"), (315, "back-left")]
+
+
+def test_feeds_label_is_right_in_all_eight_directions(gate_course):
+    """"feeds front-left" is the most actionable line on a green card -- the direction putts run
+    toward -- and it is stated in the CARD frame, after the map is rotated so the approach points up.
+    A sign or rotation error there would swap left for right, or front for back, on every green at
+    once, and would look entirely plausible in print.
+
+    Authored planes make the answer known: with the approach bearing due north, a plane falling
+    toward bearing B must be labelled by B's octant (0 = back, 90 = right, 180 = front, 270 = left).
+
+    Cross-checked on the real corpus by re-deriving the plane fit independently over the eroded core:
+    107 of 108 greens agree exactly; the one difference sits 0.1 degrees from an octant boundary."""
+    import numpy as np
+    import render_green
+
+    hole = 20
+    for bearing, want in FEEDS_OCTANTS:
+        th = math.radians(bearing)
+        # z = a*E + b*N with downhill (-a,-b) along the bearing; E = c*px_x, N = -r*px_y
+        _synth_green(gate_course, hole, lambda r, c: 0.0, insufficient=False)
+        meta = json.load(open(os.path.join(gate_course, "dem_hd", f"hole{hole:02d}.json")))
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        W, H = meta["W"], meta["H"]
+        clat = meta["green_center"][0]
+        px_x = (xmax - xmin) * _mlon(clat) / W
+        px_y = (ymax - ymin) * R_LAT / H
+        k = 0.03                                     # a 3% plane: unambiguously "firm"
+        z = np.fromfunction(
+            lambda r, c: 100.0 - k * math.sin(th) * px_x * c + k * math.cos(th) * px_y * r,
+            (H, W), dtype=float)
+        np.save(os.path.join(gate_course, "dem_hd", f"hole{hole:02d}.npy"), z)
+
+        _svg, summ = render_green.render(hole)
+        assert summ["feeds"] == want, (
+            f"a plane falling toward bearing {bearing} deg (approach due north) must read "
+            f"{want!r}, got {summ['feeds']!r} -- the card frame is rotated wrongly")
+        assert summ["conf"] == "firm", f"a 3% plane should be firm, got {summ['conf']!r}"
+
+    # With the approach due NORTH the card rotation is the identity, so the cases above cannot tell
+    # whether the rotation is applied at all -- skipping it entirely still passed them. Repeat with a
+    # non-north approach, where the label MUST account for the rotation: a plane falling due north
+    # read from a green approached due east feeds to the player's LEFT.
+    for appr, bearing, want in ((90.0, 0.0, "left"), (90.0, 90.0, "back"),
+                                (180.0, 0.0, "front"), (270.0, 0.0, "right")):
+        th = math.radians(bearing)
+        _synth_green(gate_course, hole, lambda r, c: 0.0, insufficient=False)
+        mp = os.path.join(gate_course, "dem_hd", f"hole{hole:02d}.json")
+        meta = json.load(open(mp))
+        meta["approach_bearing"] = appr
+        json.dump(meta, open(mp, "w"))
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        W, H = meta["W"], meta["H"]
+        px_x = (xmax - xmin) * _mlon(meta["green_center"][0]) / W
+        px_y = (ymax - ymin) * R_LAT / H
+        k = 0.03
+        z = np.fromfunction(
+            lambda r, c: 100.0 - k * math.sin(th) * px_x * c + k * math.cos(th) * px_y * r,
+            (H, W), dtype=float)
+        np.save(os.path.join(gate_course, "dem_hd", f"hole{hole:02d}.npy"), z)
+        _svg, summ = render_green.render(hole)
+        assert summ["feeds"] == want, (
+            f"fall bearing {bearing} deg with approach {appr} deg must read {want!r}, got "
+            f"{summ['feeds']!r} -- the fall vector is not being rotated into the card frame")
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
