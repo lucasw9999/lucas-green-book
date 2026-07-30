@@ -46,9 +46,14 @@ with open(_CJ) as f:
 # Card trim size = the finished page that slips into a back-pocket yardage-book
 # cover. 3.5 x 5.0 fits standard covers and is well under the Rule 4.3 cap
 # (4.25 x 7). Override per course in course.json via "card":{"w":..,"h":..}.
+# Engine defaults, named so a tool checking OTHER courses can fall back to them instead of to
+# whatever course this module happens to be bound to. tools/check_scale.py used config.CARD_W_IN as
+# the default when a course.json had no "card", which meant a scratch course with a 5 x 8 card made
+# every other course look 5 x 8 too.
+CARD_DEFAULT_W_IN, CARD_DEFAULT_H_IN = 3.5, 5.0
 _card = COURSE.get("card", {})
-CARD_W_IN = float(_card.get("w", 3.5))
-CARD_H_IN = float(_card.get("h", 5.0))         # 5.0 -> 4 cards (2x2) per US Letter
+CARD_W_IN = float(_card.get("w", CARD_DEFAULT_W_IN))
+CARD_H_IN = float(_card.get("h", CARD_DEFAULT_H_IN))   # 5.0 -> 4 cards (2x2) per US Letter
 PAGE_W_IN = float(_card.get("page_w", 8.5))    # print sheet (US Letter portrait)
 PAGE_H_IN = float(_card.get("page_h", 11.0))
 MARGIN_IN = 0.35

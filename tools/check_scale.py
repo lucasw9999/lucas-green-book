@@ -150,7 +150,22 @@ def main():
     if not os.path.exists(ROOT / "courses" / os.environ["COURSE"] / "course.json"):
         os.environ["COURSE"] = courses[0]
     import config  # card size is engine-wide
-    card_ok = config.CARD_W_IN <= CARD_LIMIT_W_IN and config.CARD_H_IN <= CARD_LIMIT_H_IN
+    # The card size is PER COURSE (config.py:49-51 reads course.json's "card"), so reading it once
+    # from whichever course imported first and calling it engine-wide would let an over-size book
+    # through: the gate would report the default 3.5 x 5.0 while a course printing 5 x 8 passed.
+    # Check every course's own card.
+    oversize = []
+    for c in courses:
+        cd = {}
+        cjp = ROOT / "courses" / c / "course.json"
+        if cjp.exists():
+            cd = (json.loads(cjp.read_text()).get("card") or {})
+        # fall back to the ENGINE default, never to config's currently-bound course
+        cw = float(cd.get("w", config.CARD_DEFAULT_W_IN))
+        chh = float(cd.get("h", config.CARD_DEFAULT_H_IN))
+        if cw > CARD_LIMIT_W_IN or chh > CARD_LIMIT_H_IN:
+            oversize.append((c, cw, chh))
+    card_ok = not oversize
     print(f"card size {config.CARD_W_IN} x {config.CARD_H_IN} in "
           f"vs limit {CARD_LIMIT_W_IN} x {CARD_LIMIT_H_IN} in -> "
           f"{'OK' if card_ok else 'OVER SIZE LIMIT'}\n")
@@ -189,8 +204,10 @@ def main():
     if not card_ok:
         # Rule 4.3 caps the book SIZE as well as the scale; this was computed, printed and then
         # ignored, so a 5 x 8 in card exited 0 while the docstring advertised both limits.
-        print(f"FAIL: card {config.CARD_W_IN} x {config.CARD_H_IN} in exceeds the Rule 4.3 size "
-              f"limit of {CARD_LIMIT_W_IN} x {CARD_LIMIT_H_IN} in")
+        print(f"FAIL: {len(oversize)} course(s) print a card over the Rule 4.3 size limit of "
+              f"{CARD_LIMIT_W_IN} x {CARD_LIMIT_H_IN} in:")
+        for c, cw, chh in oversize:
+            print(f"   {c}: {cw} x {chh} in")
         return 1
     if failures:
         print(f"FAIL: {len(failures)} green(s) exceed the Rule 4.3 scale limit:")
