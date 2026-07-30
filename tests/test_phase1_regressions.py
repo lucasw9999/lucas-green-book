@@ -557,6 +557,24 @@ def test_no_tick_exceeds_its_hole_yardage():
 
 
 @needs_corpus
+def test_par3_exact_from_tee_rule():
+    """The straightness guard on the exact par-3 from-tee derivation, tested DIRECTLY.
+
+    The corpus cannot exercise it: its only non-straight par 3 (copper-valley 13, arc/chord 1.0237)
+    happens to agree with the proportional value within 2 yd, so deleting the guard changes no
+    printed number and every corpus sweep still passes. Verified by mutation -- removing the guard
+    left the from-tee sweep green, which is exactly the kind of hole this file exists to close."""
+    _config, render_hole = _engine(CORPUS[0])
+    f = render_hole.par3_exact_from_tee
+    assert f(3, 100.0, 100.0)          # dead straight par 3 -> collinear, derivation is exact
+    assert f(3, 101.9, 100.0)          # inside the 2% slack for vertex noise
+    assert not f(3, 102.1, 100.0)      # a par 3 cannot bend: this is bad data, so refuse
+    assert not f(4, 100.0, 100.0)      # par 4/5 card follows a played route that can dogleg
+    assert not f(5, 100.0, 100.0)
+    assert not f(3, 100.0, 0.0)        # degenerate chord must not fall through to True
+
+
+@needs_corpus
 def test_from_tee_labels_are_bounded_and_ordered():
     """Round 2: the from-tee number was card_total - yd while yd had become a straight-line radius,
     mixing two measures (max +54 yd wrong). It must now be >= 30, <= the hole's card yardage, and
@@ -564,7 +582,19 @@ def test_from_tee_labels_are_bounded_and_ordered():
 
     Bounds and ordering are NOT sufficient -- card_total - yd satisfies all three, which is how the
     original bug survived. So the VALUE is also checked against an independently computed
-    along-the-line position (dense sampling, no code shared with the engine)."""
+    along-the-line position (dense sampling, no code shared with the engine).
+
+    The engine derives the from-tee number two ways, and this test must check the one it actually
+    used or it just re-asserts the model it happens to encode:
+      * PAR 3 on a straight line -- exact: from-tee = card - to_green, because tee, tick and green
+        are collinear. Checked as (a) the printed pair summing to the card exactly, which catches a
+        brown number paired with the wrong to-green row, and (b) the tick's measured along-the-line
+        position matching (arc - to_green), which catches the tick being drawn in the wrong place.
+        Bound (b) per hole by how far the line's green end sits from the green centroid -- the only
+        thing that makes a straight line's walked and radial measures differ -- plus 5 yd. Worst
+        residual over the corpus is 2.17 yd, so that is 2.3x headroom, and it scales with the
+        geometry instead of being a constant that a bigger green would silently break.
+      * everything else -- the card yardage scaled by position along the drawn line."""
     bad, nholes, labels, errors = [], 0, 0, []
     worst_value_err = 0.0
     for slug in CORPUS:
@@ -598,7 +628,7 @@ def test_from_tee_labels_are_bounded_and_ordered():
             if not cand:
                 continue
             line = max(cand, key=lambda h: len(h["geometry"]))["geometry"]
-            g, _gend, tend = render_hole.match_green(line, greens)
+            g, gend, tend = render_hole.match_green(line, greens)
             gla = sum(p["lat"] for p in g["geometry"]) / len(g["geometry"])
             glo = sum(p["lon"] for p in g["geometry"]) / len(g["geometry"])
             la0 = sum(p["lat"] for p in line) / len(line)
@@ -611,6 +641,12 @@ def test_from_tee_labels_are_bounded_and_ordered():
                    for i in range(len(pts) - 1)]
             arc = sum(seg) or 1.0
             gc = em(gla, glo)
+            # straightness and the green-end offset, both measured here rather than taken from the
+            # engine, so the choice of model is verified and not inherited
+            chord = math.hypot(pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1]) or 1.0
+            exact_model = config.HOLES[hn][0] == 3 and arc <= 1.02 * chord
+            ge = em(gend["lat"], gend["lon"])
+            green_end_off = math.hypot(ge[0] - gc[0], ge[1] - gc[1]) / 0.9144
             for y, ln in pairs:
                 if y not in rmap:
                     continue
@@ -627,10 +663,22 @@ def test_from_tee_labels_are_bounded_and_ordered():
                             best = (abs(d - target), base + seg[i] * f)
                 if best is None:
                     continue
+                labels += 1
+                if exact_model:
+                    # (a) the pair must sum to the card exactly -- collinearity is the whole claim
+                    if int(rmap[y]) + int(ln) != card:
+                        bad.append((slug, hn, "par-3 pair does not sum to the card",
+                                    f"{rmap[y]}+{ln}", card))
+                    # (b) the tick must SIT where a straight tee-to-green line puts it
+                    err = abs(best[1] / 0.9144 - (arc / 0.9144 - int(ln)))
+                    worst_value_err = max(worst_value_err, err)
+                    if err > green_end_off + 5.0:
+                        bad.append((slug, hn, "par-3 tick off the straight-line position",
+                                    round(err, 1), round(green_end_off + 5.0, 1)))
+                    continue
                 expect = card * best[1] / arc          # card yardage scaled by position on the line
                 err = abs(int(rmap[y]) - expect)
                 worst_value_err = max(worst_value_err, err)
-                labels += 1
                 # 2 yd covers dense-sampling granularity + rounding. Was 8 yd, which left 8.9x
                 # headroom over the true worst error (0.9 yd) -- a tolerance that loose would have
                 # accepted a real regression as noise.
@@ -3375,6 +3423,104 @@ def test_every_built_course_appears_in_the_provenance_doc():
         if not any(r == name for r in rows):
             missing.append(name)
     assert not missing, f"courses built but absent as a legal/03 row: {missing}"
+
+
+@needs_corpus
+def test_tee_anchor_locates_the_back_tee_or_refuses():
+    """The elevation figure names the BACK TEE, so the point sampled must actually be one.
+
+    Two ways it silently was not, both fixed and both pinned here:
+
+    * The old code took line geometry[0] as the tee. That is the tee end on all 198 corpus holes, so
+      it worked by luck; a course traced GREEN-FIRST would have compared the green's height against
+      itself and printed an elevation change of about zero -- plausible-looking, not obviously wrong.
+      No course exercises this, so the reversed line is built here explicitly.
+
+    * The mapped line stops short of the back tee on 22 of 198 holes, by up to 138 yd. Sampling there
+      measures the fairway. A straight par 3 is recoverable by collinearity; a par 4/5 is not and must
+      refuse. Merion 9 moved 11.5 ft (23.0 -> 34.5 ft below) once measured at the real tee, so this is
+      not a rounding concern."""
+    for m in ("config", "render_hole", "fetch_hole_elev"):
+        sys.modules.pop(m, None)
+    os.environ["COURSE"] = "merion-golf-club"
+    if not os.path.isdir(os.path.join(ROOT, "courses", "merion-golf-club")):
+        pytest.skip("merion-golf-club not built")
+    import config
+    import fetch_hole_elev as fhe
+    geom = json.load(open(os.path.join(ROOT, "courses", "merion-golf-club", "osm_geom.json")))["elements"]
+    greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+    holes = {}
+    for e in geom:
+        t = e.get("tags") or {}
+        if t.get("golf") == "hole" and e.get("geometry"):
+            r = t.get("ref")
+            if r and r.isdigit() and len(e["geometry"]) > len(holes.get(int(r), {}).get("geometry", [])):
+                holes[int(r)] = e
+
+    def anchor(hn, line):
+        return fhe.tee_anchor(hn, line, greens)
+
+    def _match_green_for(hn):
+        import geo
+        return geo.match_green(holes[hn]["geometry"], greens)[0]
+
+    def yd_from_green_of(hn, la_, lo_):
+        g = _match_green_for(hn)
+        gla_ = sum(p["lat"] for p in g["geometry"]) / len(g["geometry"])
+        glo_ = sum(p["lon"] for p in g["geometry"]) / len(g["geometry"])
+        return math.hypot((lo_ - glo_) * _mlon(gla_), (la_ - gla_) * R_LAT) / 0.9144
+
+    # hole 7 spans its card -> anchored on the line's own tee end
+    la, lo, basis = anchor(7, holes[7]["geometry"])
+    assert la is not None and basis.startswith("tee end"), basis
+    # and it must be the TEE end, i.e. about a hole's length from the green. Returning the green end
+    # instead also satisfies the basis string and reversal-invariance, so check the position.
+    d7 = yd_from_green_of(7, la, lo)
+    assert abs(d7 - config.HOLES[7][2]) < 0.20 * config.HOLES[7][2], \
+        f"spanning anchor sits {d7:.1f} yd from the green on a {config.HOLES[7][2]} yd hole"
+
+    # hole 9: par 3, line 69 yd short -> tee recovered along the hole axis. Check WHERE it landed, not
+    # merely that it moved: a sign error in the extrapolation also moves it (off toward the green),
+    # and "it moved" accepted that mutation.
+    g9 = _match_green_for(9)
+    gla = sum(p["lat"] for p in g9["geometry"]) / len(g9["geometry"])
+    glo = sum(p["lon"] for p in g9["geometry"]) / len(g9["geometry"])
+
+    def yd_from_green(la_, lo_):
+        return math.hypot((lo_ - glo) * _mlon(gla), (la_ - gla) * R_LAT) / 0.9144
+
+    la9, lo9, b9 = anchor(9, holes[9]["geometry"])
+    assert la9 is not None and "extrapolated" in b9, b9
+    card9 = config.HOLES[9][2]
+    d9 = yd_from_green(la9, lo9)
+    assert abs(d9 - card9) < 3.0, f"par-3 tee should sit {card9} yd from the green centre, got {d9:.1f}"
+    tend9 = holes[9]["geometry"][0]
+    assert d9 > yd_from_green(tend9["lat"], tend9["lon"]) + 30.0, \
+        "the recovered tee must be FURTHER from the green than the short line's end, not nearer"
+    # ...and on the SAME SIDE. Distance-from-the-green alone cannot see a sign error: flipping the
+    # extrapolation puts the anchor the card yardage away on the far side of the green, which keeps
+    # that distance identical. So pin how far it sits from the line's own tee end -- the gap it was
+    # meant to close, not roughly twice the hole.
+    gap9 = card9 - yd_from_green(tend9["lat"], tend9["lon"])
+    off9 = math.hypot((lo9 - tend9["lon"]) * _mlon(tend9["lat"]),
+                      (la9 - tend9["lat"]) * R_LAT) / 0.9144
+    assert abs(off9 - gap9) < 5.0, \
+        f"recovered tee sits {off9:.1f} yd from the line's tee end but the gap is {gap9:.1f} yd"
+
+    # ...and reversing hole 9's line must not move the anchor. The spanning branch returns the tee end
+    # match_green picked, so it is reversal-safe on its own; the extrapolation reads pts[0], which is
+    # where taking geometry[0] would silently start from the GREEN.
+    r9 = anchor(9, list(reversed(holes[9]["geometry"])))
+    assert r9[0] is not None and abs(r9[0] - la9) < 1e-7 and abs(r9[1] - lo9) < 1e-7, \
+        f"reversed par-3 line anchored elsewhere: {r9[:2]} vs {(la9, lo9)} -- geometry[0] was used"
+    r7 = anchor(7, list(reversed(holes[7]["geometry"])))
+    assert abs(r7[0] - la) < 1e-9 and abs(r7[1] - lo) < 1e-9, "reversed spanning line moved"
+
+    # holes 2/5/6/8: par 4 and 5 whose lines fall short -> must REFUSE, not guess
+    for hn in (2, 5, 6, 8):
+        la_, lo_, why = anchor(hn, holes[hn]["geometry"])
+        assert la_ is None and lo_ is None, f"hole {hn} should refuse, got {(la_, lo_)}"
+        assert "dogleg" in why, why
 
 
 def test_vertical_unit_comes_from_the_crs_not_its_name():

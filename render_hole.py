@@ -60,6 +60,28 @@ def match_green(hole_line, greens, label=""):
     """Delegates to geo.match_green, which carries the distance cap. See there for why."""
     return geo.match_green(hole_line, greens, label=label)
 
+PAR3_STRAIGHT_MAX = 1.02          # arc / chord
+
+def par3_exact_from_tee(par, arc_m, chord_m):
+    """True when a tick's distance FROM THE TEE can be derived exactly as (card - to_green).
+
+    Only a par 3 qualifies. Its played line IS the straight tee-to-green line, so tee, tick and green
+    are collinear and the two numbers must sum to the card -- no arc, no proportional scaling, and
+    nothing assumed about where a card-vs-line length mismatch lives. That is what lets the from-tee
+    number be printed on a par 3 whose OSM centreline stops short of the back tee (4 of the 22 short
+    holes), which the proportional model cannot do.
+
+    A par 4 or 5 is excluded because its card yardage follows a played route that can dogleg, so
+    (card - to_green) would mix a walked measure with a straight-line one -- up to 42 yd wrong.
+
+    The straightness check refuses a par 3 whose drawn line is NOT straight: a par 3 cannot bend, so
+    that means bad data, and collinearity would not hold. Kept as a pure function because the corpus
+    cannot exercise this guard -- its one non-straight par 3 (copper-valley 13, arc/chord 1.0237)
+    happens to agree with the proportional value within tolerance, so removing the guard changed no
+    printed number and no corpus sweep could catch it.
+    """
+    return par == 3 and arc_m <= PAR3_STRAIGHT_MAX * (chord_m or 1.0)
+
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy
     if L2<1e-9: return math.hypot(px-ax,py-ay)
@@ -220,6 +242,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # bound below; suppressing the label alone does not bound the radius.
     tee_ok = abs(arc_yd - total_yd) <= max(15.0, 0.05*total_yd)
 
+    # A PAR 3 is the one case where the from-tee distance needs no model at all -- see
+    # par3_exact_from_tee for why, and why par 4/5 are excluded. This also CORRECTS the 64 par-3 rows
+    # that already printed: the proportional value differed from the exact one by a median 2 yd and
+    # up to 11 yd, always because arc_m disagreed with the card.
+    par3_straight = par3_exact_from_tee(HOLES[hnum][0], arc_m, L)
+
     # A golfer clubs off "yards to the green" -- the STRAIGHT-LINE distance a rangefinder reads, not
     # how far there is left to walk. So place each tick where the centerline crosses the circle of
     # that radius about the green centre: the label is then a true to-green distance AND the tick
@@ -283,9 +311,13 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # centerline does not span the card.
         if arc_from_tee / 0.9144 < 25.0:
             continue
-        # From-tee label: scale the card yardage by how far along the drawn line this point is.
-        # Only meaningful when the line spans the hole; otherwise print the to-green number alone.
-        ft = round(total_yd * arc_from_tee / arc_m) if tee_ok else None
+        # From-tee label: on a straight par 3 it is exact (see par3_straight above). Otherwise scale
+        # the card yardage by how far along the drawn line this point is -- only meaningful when the
+        # line spans the hole; otherwise print the to-green number alone.
+        if par3_straight:
+            ft = round(total_yd - yd)
+        else:
+            ft = round(total_yd * arc_from_tee / arc_m) if tee_ok else None
         if ft is not None and ft < 30:
             ft = None          # keep the row: its to-green number is still true and is the one a
                                # golfer clubs off -- only the from-tee figure is not worth printing
@@ -322,6 +354,50 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         if show_ft:
             rings += etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")   # RIGHT = from back tee
 
+    # --- CARRY DISTANCES to the bunkers a tee shot has to deal with ---------------------------
+    # Standard yardage-book content the card was missing. proj() already gives along-line distance
+    # from the tee, so a bunker's near and far edges are its carry window. Three filters keep this
+    # honest and useful:
+    #   * only bunkers inside the tee CORRIDOR (they are already, by construction of `bunkers`)
+    #   * only those the tee shot can reach and must clear -- past CARRY_MIN_YD, and short of the
+    #     green, so a GREENSIDE bunker is not printed as a tee carry (Merion 18's greenside pair sits
+    #     at 401-429 yd and would otherwise read as a driving carry)
+    #   * only those near enough to the line to be in play, not a neighbouring hole's sand
+    # A bunker straddling the line (offset ~0) is the one that matters most, so offset is not used to
+    # rank -- distance is, because that is what a player is choosing a club against.
+    # The window is what a TEE SHOT is clubbed against. Below 80 yd nobody is carrying anything off
+    # the tee; past 300 yd nobody is reaching it, and that upper bound is also what stops a genuine
+    # fairway bunker far up a long hole from reading as a driving decision (Merion 18's pair at
+    # 401-429 on a 502 yd hole). Both ends chosen for the reader, not the data.
+    CARRY_MIN_YD, CARRY_MAX_YD = 80.0, 300.0
+    CARRY_OFF_M  = 30.0        # further off the line than this is not this hole's problem
+    carries = []
+    for g in bunkers:
+        alongs, offs = [], []
+        for p in (g.get('geometry') or []):
+            e, n = em(p['lat'], p['lon'])
+            dx, dy = e - tee[0], n - tee[1]
+            alongs.append(dx*ux + dy*uy)
+            offs.append(abs(dx*perp[0] + dy*perp[1]))
+        if not alongs:
+            continue
+        near_yd, far_yd = min(alongs)/0.9144, max(alongs)/0.9144
+        if not (CARRY_MIN_YD <= near_yd <= CARRY_MAX_YD) or min(offs) > CARRY_OFF_M:
+            continue
+        if near_yd > total_yd - 40:        # greenside sand, not a tee carry
+            continue
+        carries.append((near_yd, far_yd))
+    # Merge windows that overlap or nearly touch: a cluster of three bunkers spanning 149-187 is one
+    # decision, and printing "149 163 167" spends the card's scarcest resource on noise.
+    carries.sort()
+    merged = []
+    for a, b in carries:
+        if merged and a - merged[-1][1] <= 8:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    carries = [(round(a), round(b)) for a, b in merged][:3]
+
     vb=f"0 0 100 {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
          f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
@@ -340,7 +416,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               waters=len(waters),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
-              arc_yd=round(arc_yd), card_yd=total_yd, tee_ticks=tee_ok)
+              arc_yd=round(arc_yd), card_yd=total_yd, tee_ticks=tee_ok or par3_straight,
+              line_spans=tee_ok, par3_straight=par3_straight,
+              carries=carries)
     return svg, info
 
 if __name__=="__main__":

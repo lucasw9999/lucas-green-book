@@ -15,6 +15,7 @@ free/open data:
 Not affiliated with, and not derived from, any commercial green-book product.
 """
 import math
+import json
 import os
 import base64
 import render_green
@@ -150,6 +151,52 @@ def green_honesty(hole, s):
     return label, f'feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}'
 
 
+def _hole_elev():
+    """{hole: change_ft} measured by fetch_hole_elev.py, or {} when it has not been run.
+
+    Optional by design: a course without it simply prints no elevation line, the same way a green
+    with no usable surface prints no read."""
+    p = os.path.join(config.COURSE_DIR, "hole_elev.json")
+    if not os.path.isfile(p):
+        return {}                      # stage not run for this course: print no elevation line
+    try:
+        with open(p) as f:
+            rec = json.load(f)
+    except Exception as e:
+        # NOT silent. A blanket `except` here swallowed a NameError (json was never imported) and
+        # every card lost its elevation line with no message at all -- the exact silent-fallback
+        # failure this project keeps having to dig out.
+        print(f"  ! {p} exists but could not be read ({type(e).__name__}: {e}); "
+              f"no elevation line will print")
+        return {}
+    return {int(k): v.get("change_ft") for k, v in (rec.get("holes") or {}).items()
+            if v.get("change_ft") is not None}
+
+
+HOLE_ELEV = _hole_elev()
+
+
+def elev_phrase(hole):
+    """"green 37 ft above" / "green 12 ft below" / "" when unmeasured or level.
+
+    The MEASUREMENT, never a "plays like +12 yd". Turning elevation into an effective yardage needs a
+    ball-flight model LiDAR cannot supply, and a printed "plays" figure would be the confident-but-
+    unsupported number this book exists not to print. Under 3 ft is inside what a tee box's own
+    contour justifies, so it reads as level rather than as a precise small number."""
+    ft = HOLE_ELEV.get(hole)
+    if ft is None or abs(ft) < 3:
+        return ""
+    return f'green <b>{abs(round(ft))} ft {"above" if ft > 0 else "below"}</b>'
+
+
+def carry_phrase(info):
+    """"carry 172 / 212 / 245" -- the near edge of each bunker window a tee shot must clear."""
+    cs = info.get("carries") or []
+    if not cs:
+        return ""
+    return "carry <b>" + " / ".join(str(a) for a, _b in cs) + "</b>"
+
+
 def hole_panel(hole, sheet_label):
     row = HOLES[hole]
     par, hcp = row[0], row[1]
@@ -158,6 +205,13 @@ def hole_panel(hole, sheet_label):
     others = " / ".join(f"{lbl[:3]}{row[idx]}" for lbl, idx in config.OTHERS)
     grnlab, slope = green_honesty(hole, s)
     lead = (f'green <b>{esc(s["feeds"])}</b> &middot; no slope printed' if slope is None else slope)
+    # Second footer row: what the player decides with -- elevation to the green and the carries off
+    # the tee. Both are omitted entirely when unmeasured rather than shown as a blank or a zero.
+    extras = " &middot; ".join(x for x in (elev_phrase(hole), carry_phrase(i)) if x)
+    # Its OWN full-width line, not a third column in the flex footer: as a third span the row wrapped
+    # mid-phrase and left "&middot; 1.8%" and "carry / 95" orphaned on their own lines.
+    playline = f'<div class="playline">{extras}</div>' if extras else ''
+
     foot = (f'<span>{lead}</span>'
             f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
     return f'''<div class="panel hole">
@@ -173,6 +227,7 @@ def hole_panel(hole, sheet_label):
     <div class="grn"><div class="minilab">{grnlab}</div>{gsvg}</div>
   </div>
   <div class="foot">{foot}</div>
+  {playline}
 </div>'''
 
 def _title_lines(raw):
@@ -316,11 +371,18 @@ def guide_panel():
     <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%). <b>Numbers</b> = slope % there.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: fairway (green), rough, <b>trees</b> (dark green), bunkers (tan), water (blue). Edge numbers: <b>left = yd to green</b>, <b>right = yd from the back tee, along the line</b>.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
+  <div class="legrow"><span><b>green N ft above/below</b> = the <b>measured</b> height of the green
+    against its back tee. It is <b>not</b> a yardage adjustment &mdash; how much club that is worth
+    depends on your own ball flight, so <b>you</b> make that call.</span></div>
+  <div class="legrow"><span><b>carry N</b> = yd from the back tee to the <b>near edge</b> of a fairway
+    bunker, along the line. Clearing it needs more than N.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book for junior golfers, <b>not for sale</b>. Hole &amp;
-      green shapes are a Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap
-      contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright); slope, contours &amp; arrows are computed by the
+      green shapes, and the <b>carry</b> distances measured from them, are a Produced Work from
+      <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap
+      contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright); slope, contours, arrows &amp; <b>elevation
+      change</b> are computed by the
       maker from <b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work); par, yardage &amp;
       handicap are <b>facts</b> from the published scorecard.''' + _naip_line() + ''' Every map is <b>independently created</b>:
       <b>no proprietary data, image, symbol set, page layout or trade dress of any commercial green-reading
@@ -504,6 +566,7 @@ def main():
   .ynote .nl {{ border-bottom: 1px solid #cfcfcf; height: 1px; }}
   .minilab {{ position: absolute; top: 0; left: 1px; font-size: 5.5pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
   .foot {{ display: flex; justify-content: space-between; font-size: 7.5pt; color: #999; margin-top: 1px; }}
+  .playline {{ font-size: 7.5pt; color: #777; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .sheettab {{ position: absolute; top: 2px; right: 5px; font-size: 7pt; color: #bbb; }}
 
   .cover {{ position: relative; overflow: hidden; padding: 0;
@@ -718,11 +781,16 @@ def coach_about_card():
   <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
     this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
     Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
+  <div class="legrow"><span><b>green N ft above/below</b> = the <b>measured</b> height of the green
+    against its back tee &mdash; <b>not</b> a yardage adjustment. <b>carry N</b> = yd from the back tee
+    to the <b>near edge</b> of a fairway bunker; clearing it needs more than N.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
-    <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes are a
+    <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes, and the <b>carry</b>
+      distances measured from them, are a
       Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>);
-      slope, contours &amp; arrows are computed by the maker from <b>public-domain USGS&nbsp;3DEP</b> LiDAR; par,
+      slope, contours, arrows &amp; <b>elevation change</b> are computed by the maker from
+      <b>public-domain USGS&nbsp;3DEP</b> LiDAR; par,
       yardage &amp; handicap are <b>facts</b> from the published scorecard. <b>No proprietary data, image, symbol
       set, layout or trade dress of any commercial green-reading product was used, copied or referenced.</b>
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
@@ -845,6 +913,7 @@ def build_coach(coach_name=""):
   .cmap svg {{ width: 100%; height: 100%; }}
   .minilab {{ position: absolute; top: 0; left: 1px; font-size: 7pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
   .foot {{ display: flex; justify-content: space-between; font-size: 8pt; color: #999; margin-top: 1px; }}
+  .playline {{ font-size: 8pt; color: #777; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .cover {{ position: relative; overflow: hidden; padding: 0; }}
   .gtitle, .cardtitle {{ font-size: 12pt; font-weight: 800; color: #2b6a2b; border-bottom: 2px solid #2b6a2b; padding-bottom: 2px; margin-bottom: 4px; }}
   .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 8pt; line-height: 1.3; margin-bottom: 5px; }}
