@@ -93,38 +93,6 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     def in_corridor(g, buf=45):
         gla,glo=centroid(g); pe,pn=em(gla,glo)
         return dist_to_line(pe,pn) < buf
-    # Which hole does a feature BELONG to? The corridor answers "is it near this hole", which is the
-    # right question for DRAWING (a neighbouring bunker that is in play should be visible) but the
-    # wrong one for COUNTING: a bunker between two parallel holes sits in both corridors and was
-    # counted on both cards. Summed per-hole counts came to 168 bunkers on a 122-bunker course at
-    # Merion and 35 on 25 at bay-view, while Philadelphia's corridor MISSED some at 119 of 131. The
-    # card prints "2B 0W", which a reader takes as this hole's bunkers. So assign each feature to
-    # the single nearest hole and count only those; the totals then reconcile with the course.
-    _hole_lines=[]
-    for _h in holes:
-        _r=(_h.get('tags') or {}).get('ref')
-        if _r and _r.isdigit() and _h.get('geometry'):
-            _hole_lines.append((int(_r), [em(p['lat'],p['lon']) for p in _h['geometry']]))
-    def _dist_to(pe, pn, pts):
-        return min(dist_pt_seg(pe,pn,pts[i][0],pts[i][1],pts[i+1][0],pts[i+1][1])
-                   for i in range(len(pts)-1)) if len(pts)>1 else 1e9
-    BELONG_MAX_M=90.0    # past this, a feature belongs to no hole rather than to the nearest one
-    def belongs_here(g):
-        """True if THIS hole's centerline is the nearest of all holes AND close enough to own it.
-
-        The distance bound matters: without it the nearest-hole rule attributed a pond 200 m away to
-        whichever hole happened to be least far, and Merion hole 4 gained 2W it has no water on. A
-        feature further than BELONG_MAX_M from every hole -- a practice bunker, a boundary pond --
-        belongs to none, so it is counted nowhere. That is why the per-hole counts can sum to slightly
-        LESS than the course total, and why they must never sum to more."""
-        if not _hole_lines:
-            return True
-        gla,glo=centroid(g); pe,pn=em(gla,glo)
-        best_ref,best_d=None,1e18
-        for ref,pts in _hole_lines:
-            d=_dist_to(pe,pn,pts)
-            if d<best_d: best_ref,best_d=ref,d
-        return best_ref==hnum and best_d<=BELONG_MAX_M
     def frac_in(g, buf):
         # fraction of the feature's own vertices that lie within `buf` of THIS hole's
         # centerline -> excludes a neighbouring parallel hole's fairway/rough that only
@@ -359,7 +327,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
          f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
          f'{trow_svg}{tdot_svg}{rings}{labels}</svg>')
     # COUNT WHAT THIS CARD DRAWS. An earlier attempt counted "features whose nearest hole is this
-    # one, within 90 m" so that the per-hole numbers would sum to no more than the course holds --
+    # one, within 90 m" so that the per-hole numbers would sum to no more than the course holds
+    # (they had reached 168 bunkers on a 122-bunker course at Merion, 35 on 25 at bay-view, while
+    # Philadelphia's corridor MISSED some at 119 of 131) --
     # but drawing still uses the 40 m corridor, so the footer stopped matching its own map on 115 of
     # 198 cards: Merion hole 3 printed "2B" beside eight drawn bunkers, 23 cards printed a ZERO with
     # the feature drawn, and 15 printed more than the map showed. The sum is something nobody

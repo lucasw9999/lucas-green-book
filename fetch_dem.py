@@ -27,6 +27,13 @@ DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 OVERWRITE = bool(os.environ.get("OVERWRITE"))   # replace a good 0.4 m surface on purpose
 R_LAT = 111320.0
+def is_seamless(meta):
+    """True when this surface came from the 1 m seamless DEM rather than 0.4 m LiDAR ground returns.
+
+    One spelling of the test, matching generate.py and tools/gen_provenance.py."""
+    return "seamless" in str((meta or {}).get("source", "")).lower()
+
+
 def keeps_existing_surface(meta_path, overwrite=False):
     """True when meta_path already holds a GOOD 0.4 m LiDAR surface that must not be replaced.
 
@@ -47,8 +54,19 @@ def keeps_existing_surface(meta_path, overwrite=False):
             meta = json.load(f)
     except Exception:
         return False
-    return ("lidar" in str(meta.get("source", "")).lower()
-            and not meta.get("insufficient"))
+    # Ask the SAME question the rest of the engine asks, the same way. generate.py (twice) and
+    # tools/gen_provenance.py all test `'seamless' in source` -- generate.py to decide whether the
+    # card prints the "1 m data" honesty label, gen_provenance to count fallbacks in the legal
+    # record. Testing `"lidar" in source` here instead made this the one reader with the OPPOSITE
+    # polarity over the same hand-written prose field: reword the producer string and the write
+    # guard and the printed label would move in opposite directions, and one of them is the label
+    # the honesty argument rests on.
+    # Requires a source we can positively read as LiDAR-derived. A meta with no source at all is of
+    # unknown provenance, and this stage exists to fill gaps -- so leave it fillable rather than
+    # protect it on a guess. (That also keeps the pre-existing behaviour of the `"lidar" in source`
+    # test for that case, so unifying the polarity above changes nothing in practice.)
+    src = str((meta or {}).get("source", "")).strip()
+    return bool(src) and not is_seamless(meta) and not meta.get("insufficient")
 
 
 def mlon(lat): return 111320.0 * math.cos(math.radians(lat))
@@ -119,9 +137,21 @@ def main():
             best[ref] = h
     holes = list(best.values())
     gc = [(g, *centroid(g)) for g in greens]
+
+    # Bind EVERY hole to its green and check the invariant BEFORE deciding what to write. Building
+    # `bound` inside the write loop made the check vacuous exactly when it mattered: both `ONLY=` and
+    # the gap-fill skip below `continue` before the binding, so on a normal course -- where every
+    # green already has a 0.4 m surface and all 18 are skipped -- `bound` was empty and
+    # assert_one_green_per_hole compared nothing. Now it sees the whole course whatever gets written.
+    bound = {}
+    for h in holes:
+        ref = h['tags'].get('ref')
+        if ref and ref.isdigit():
+            bound[int(ref)] = geo.match_green(h['geometry'], greens, label=f"hole {int(ref)}")[0]
+    geo.assert_one_green_per_hole(bound, label=config.SLUG)
+
     done = 0
     skipped = []
-    bound = {}        # hole -> green, so a green shared by two holes is caught (see geo.py)
     for h in holes:
         ref = h['tags'].get('ref')
         if not (ref and ref.isdigit()):
@@ -140,7 +170,6 @@ def main():
             skipped.append(hn)
             continue
         green, gend, _tend = geo.match_green(line, greens, label=f"hole {hn}")
-        bound[hn] = green
         prev = line[1] if gend is line[0] else line[-2]
         appr = bearing(prev['lat'], prev['lon'], gend['lat'], gend['lon'])
 
@@ -202,7 +231,6 @@ def main():
         done += 1
         print(f"hole {hn:2d}: green {green['id']} {arr.shape} approach {appr:.0f}deg")
         time.sleep(0.2)
-    geo.assert_one_green_per_hole(bound, label=config.SLUG)
     if skipped:
         print(f"\nkept the existing 0.4 m LiDAR surface on {len(skipped)} green(s): "
               f"{', '.join(str(h) for h in sorted(skipped))}\n"

@@ -3328,9 +3328,12 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
         src = os.path.join(ROOT, "courses", ref)
         if not os.path.exists(os.path.join(src, "greenbook.html")):
             continue
+        import distribution
         with open(os.path.join(src, "course.json"), encoding="utf-8") as f:
-            if (json.load(f) or {}).get("build_mode") == "yardage":
-                continue                      # no green surfaces to reproduce
+            if not distribution.is_distributable(json.load(f)):
+                continue    # yardage mode: no green surfaces to reproduce. Asks the SHARED rule
+                            # rather than re-testing build_mode == "yardage", which is the fragile
+                            # exact form distribution.py exists to replace.
         try:
             with open(os.path.join(src, "osm_geom.json"), encoding="utf-8") as f:
                 digitized = any("_digitized" in (e.get("tags") or {})

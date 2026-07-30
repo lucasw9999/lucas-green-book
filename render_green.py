@@ -20,8 +20,6 @@ import json, math, os
 import numpy as np
 import config
 
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-
 DEM = os.path.join(config.COURSE_DIR, "dem_hd")
 R_LAT = 111320.0
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
@@ -163,7 +161,7 @@ def render(hole, tournament=False):
         # ground returns, and the ones it refuses need the 1 m seamless fallback. Monarch Bay has
         # six such holes, so running generate.py without fetch_dem.py hits this every time.
         raise SystemExit(
-            f"hole {hole} of {config.SLUG} has no green surface ({os.path.relpath(mp, ROOT_DIR)}).\n"
+            f"hole {hole} of {config.SLUG} has no green surface ({os.path.relpath(mp, config.ROOT)}).\n"
             f"  fetch_dem_hd.py builds only greens with usable 0.4 m LiDAR ground returns; the rest\n"
             f"  need the 1 m seamless fallback. Run both, then rebuild:\n"
             f"    COURSE={config.SLUG} python3 fetch_dem_hd.py\n"

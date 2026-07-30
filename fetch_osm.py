@@ -71,7 +71,6 @@ def _flatten_relations(elements):
     ways = {e.get("id"): e for e in elements
             if e.get("type") == "way" and e.get("geometry")}
     out = []
-    added = 0
     missing = []
     for e in elements:
         if e.get("type") != "relation":
@@ -89,9 +88,8 @@ def _flatten_relations(elements):
                         "tags": dict(tags),
                         "geometry": w["geometry"],
                         "_from_relation": e.get("id")})
-            added += 1
-    if added:
-        print(f"  flattened {added} outer ring(s) from multipolygon relations")
+    if out:
+        print(f"  flattened {len(out)} outer ring(s) from multipolygon relations")
     if missing:
         # Silence here is how the fairways went missing in the first place: a relation whose rings we
         # never received produces no feature and no error, and the book just draws less.

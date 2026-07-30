@@ -278,8 +278,9 @@ def plan_downloads(tiles, laz_dir):
         group = sorted(by_base[base], key=lambda t: t["downloadURL"])
         stem, ext = os.path.splitext(base)
         for i, it in enumerate(group):
-            if len(group) == 1 or i == 0:
-                fn = base                      # keep the plain name: every existing cache uses it
+            if i == 0:
+                # the first copy keeps the plain name: every existing cache on disk uses it
+                fn = base
             else:
                 sub = _sub_project(it["downloadURL"])
                 m = re.search(r"(\d+)", sub)

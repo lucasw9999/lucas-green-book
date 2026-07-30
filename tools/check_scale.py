@@ -40,6 +40,9 @@ LIMIT_IN_PER_5YD = 0.375        # 3/8 in : 5 yd  == 1:480 (USGA Clarification 4.
 TARGET_IN_PER_5YD = 0.360       # our design target, ~4% inside the cap
 CARD_LIMIT_W_IN, CARD_LIMIT_H_IN = 4.25, 7.0
 
+from export_pdf import _headless_shell   # one discovery of the bundled
+                                         # chrome-headless-shell, not two
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 R_LAT = 111320.0
 
@@ -47,12 +50,6 @@ R_LAT = 111320.0
 def mlon(lat):
     return 111320.0 * math.cos(math.radians(lat))
 
-
-def _headless_shell():
-    """The bundled chrome-headless-shell that matches the installed Playwright build."""
-    hits = sorted(glob.glob(os.path.expanduser(
-        "~/Library/Caches/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell")))
-    return hits[-1] if hits else None
 
 
 def px_m_of(course, hole):

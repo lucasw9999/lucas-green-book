@@ -91,12 +91,28 @@ def _digitized(slug):
 def _row(slug):
     j = json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
     name = j.get("name", slug)
-    yardage_mode = j.get("build_mode") == "yardage"
+    # ONE rule, asked once. The Status column and the "yardage mode: blank greens" slope text are the
+    # same decision, and they used to be derived separately -- this line was an exact `== "yardage"`
+    # match while the Status column below asked distribution.py. A mis-cased or space-padded
+    # build_mode in a hand-edited course.json would therefore have printed "Personal" in Status and a
+    # LiDAR density sentence in Green slope, in the same row.
+    distributable, label, _why = distribution.distribution_status(j)
+    yardage_mode = not distributable
     proj, ntiles, from_names = _tile_project(slug, j.get('dem_source', ''))
     ngreens, dlo, dhi, seam, insuf = _greens(slug)
     dig = _digitized(slug)
     stale = sorted(j.get("greens_possibly_outdated", []))
-    flown = (j.get("lidar_flown") or {}).get("label")
+    flown_rec = j.get("lidar_flown") or {}
+    flown = flown_rec.get("label")
+    # A flight range is only as trustworthy as what it was measured over. tools/lidar_dates.py
+    # narrows the range to the points that actually lie over the greens and records that in `basis`;
+    # when it cannot -- no point over any green, or no green geometry to place -- it falls back to the
+    # union over WHOLE TILES and says so there. This table read only `label`, so that fallback would
+    # have been published as a flight date with no hint that a tile 1.3 km from any green may have set
+    # its extremes, which is the exact fault the lidar_dates change was made to fix. Qualify it here.
+    basis = flown_rec.get("basis") or ""
+    flown_note = " *(range measured over whole tiles, not the points over the greens)*" \
+        if basis.startswith("whole tiles") else ""
 
     geom = "OSM (ODbL)"
     if dig:
@@ -112,7 +128,7 @@ def _row(slug):
             bits.append(f"project `{proj}` ({ntiles} tiles)"
                         + ("" if from_names else " *(label recorded in course.json; these tiles\u2019 filenames carry no project name)*"))
         if flown:
-            bits.append(f"**flown {flown}**")
+            bits.append(f"**flown {flown}**{flown_note}")
         if dlo is not None:
             bits.append(f"{dlo:g}–{dhi:g} pts/m² over {ngreens} greens @0.4 m")
         if seam:
@@ -127,8 +143,8 @@ def _row(slug):
         notes.append(f"{insuf} green(s) had no usable point cloud and print no read")
     if dig:
         notes.append("hand-added greens were traced from public-domain USDA NAIP because OSM had none")
-    # the SAME rule any publisher uses -- see distribution.py for why this is shared
-    distributable, label, _why = distribution.distribution_status(j)
+    # the SAME rule any publisher uses -- see distribution.py for why this is shared (resolved above,
+    # so the Status column and the slope text cannot disagree)
     status = f"**{label} ✅**" if distributable else label
 
     # first sentence of the recorded scorecard provenance, so the table stays readable
