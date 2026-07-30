@@ -120,6 +120,7 @@ def _blank_green(meta, tournament, rebuilt=False):
 # Render-time gate. Deliberately looser than fetch_dem_hd.py's producer gate (NAN_FRAC_MAX=0.02):
 # this is a backstop against an ungated or corrupt surface, not a quality bar, so it must not blank
 # a green the sharper producer already accepted.
+CINT_M = 0.15                   # contour interval; the card's legend states "15 cm each"
 SLOPE_LABEL_MAX_PCT = 10.0      # above this a cell is not putting surface -- colour it, do not number it
 NAN_FRAC_MAX_RENDER = 0.25      # >25% of the green interior with no elevation at all
 MAX_PLAUSIBLE_RELIEF_M = 30.0   # 98 ft of fall inside one green outline is a data artifact
@@ -255,7 +256,7 @@ def render(hole, tournament=False):
     # not the presence of contours/arrows/% -- so the tournament book keeps full
     # detail (a conforming coarse-scale book); only the scale is capped below.
     segs = []
-    cint = 0.15
+    cint = CINT_M
     zmin, zmax = surf[mask].min(), surf[mask].max()
     lvl = math.ceil(zmin/cint)*cint
     levels = []

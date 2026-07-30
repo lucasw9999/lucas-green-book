@@ -17,6 +17,12 @@ Design notes:
     check could not fail. Measuring the artifact is the point.
 
 Run:  python3 -m pytest tests/ -q
+
+MUTATION TESTING NOTE: clear __pycache__ before each run. A stale
+__pycache__/<module>.cpython-*.pyc can be imported in place of restored source, which makes a
+mutation test report the OPPOSITE of the truth -- it cost an hour here, first appearing to show that
+the contour test could not detect a broken interpolation when in fact it could. Always confirm the
+mutation applied (assert the old string was present) AND that the module you import reflects it.
 """
 import glob
 import json
@@ -1096,6 +1102,87 @@ def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
             f"{cfg.CARD_W_IN}x{cfg.CARD_H_IN} -- the export is not honouring the page rule")
         checked += 1
     assert checked > 0, "no shipped PDFs to measure"
+
+
+@pytest.mark.slow          # re-derives the surface for every green it checks
+@needs_corpus
+def test_contours_join_equal_height_at_the_stated_interval():
+    """The card's legend promises "Contours join equal height (15 cm each)". A broken extraction would
+    make a reader misread every tier on every green, and nothing else we check would notice: the
+    lines would still look like contours.
+
+    Measured on the REAL corpus, with the surface re-smoothed by an independently written Gaussian
+    rather than the engine's: for each interior contour segment, both endpoints must sit at the same
+    elevation, and that elevation must land on a multiple of the interval.
+
+    Deliberately not a synthetic-geometry test. Three attempts to predict the contour count on an
+    authored patch were wrong, because the engine's Gaussian uses np.convolve(..., 'same'), which
+    zero-pads: on a small patch the surface near the edges is dragged toward 0 and no closed form
+    describes the in-mask range. Measuring real greens needs no such prediction."""
+    import numpy as np
+    import render_green
+
+    def my_gauss(a, sig):                     # written independently of render_green.gauss
+        r = max(1, int(sig * 3)); x = np.arange(-r, r + 1)
+        k = np.exp(-(x * x) / (2 * sig * sig)); k /= k.sum()
+        out = np.empty_like(a)
+        for j in range(a.shape[1]):
+            out[:, j] = np.convolve(a[:, j], k, "same")
+        out2 = np.empty_like(out)
+        for i in range(a.shape[0]):
+            out2[i, :] = np.convolve(out[i, :], k, "same")
+        return out2
+
+    def bilerp(z, x, y):
+        x0, y0 = int(np.floor(x)), int(np.floor(y))
+        x1, y1 = min(x0 + 1, z.shape[1] - 1), min(y0 + 1, z.shape[0] - 1)
+        fx, fy = x - x0, y - y0
+        return (z[y0, x0] * (1 - fx) * (1 - fy) + z[y0, x1] * fx * (1 - fy) +
+                z[y1, x0] * (1 - fx) * fy + z[y1, x1] * fx * fy)
+
+    CONTG = re.compile(r'<g stroke="#3c5a34" stroke-width="0\.5" opacity="0\.55">(.*?)</g>', re.S)
+    LINE = re.compile(r'<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)"/>')
+    cint = render_green.CINT_M
+    checked = worst_iso = worst_level = 0
+    for slug in CORPUS[:3]:
+        cfg, _rh = _engine(slug)
+        import render_green as rg
+        for h in cfg.HOLE_NUMS:
+            p = os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{h:02d}.npy")
+            if not os.path.exists(p):
+                continue
+            try:
+                svg, summ = rg.render(h, tournament=True)
+            except Exception:
+                continue
+            if summ.get("insufficient"):
+                continue
+            g = CONTG.search(svg)
+            if not g:
+                continue
+            arr = np.load(p).astype(float)
+            arr[~np.isfinite(arr)] = np.nan
+            arr[np.abs(arr) > 1e30] = np.nan
+            arr = np.where(np.isnan(arr), float(np.nanmedian(arr)), arr)
+            z = my_gauss(arr, 3.0)
+            H, W = z.shape
+            for x1, y1, x2, y2 in LINE.findall(g.group(1)):
+                ax, ay, bx, by = map(float, (x1, y1, x2, y2))
+                if min(ax, bx) < 10 or min(ay, by) < 10 or max(ax, bx) > W - 11 or max(ay, by) > H - 11:
+                    continue      # skip the band where zero-padded smoothing differs from mine
+                z1, z2 = bilerp(z, ax, ay), bilerp(z, bx, by)
+                checked += 1
+                worst_iso = max(worst_iso, abs(z1 - z2))
+                mid = (z1 + z2) / 2.0
+                worst_level = max(worst_level, abs(mid / cint - round(mid / cint)) * cint)
+    assert checked > 2000, f"only {checked} interior contour segments examined"
+    # measured on this corpus: 11.8 mm and 5.8 mm. The bounds are a third of the interval, which is
+    # loose enough to survive a smoothing difference and tight enough that a real break fails.
+    assert worst_iso < cint / 3, \
+        f"a contour segment's ends differ by {worst_iso*1000:.1f} mm -- not iso-elevation"
+    assert worst_level < cint / 3, \
+        f"a contour sits {worst_level*1000:.1f} mm off any {cint*100:.0f} cm level"
+    assert abs(cint - 0.15) < 1e-9, f"interval is {cint} m but the legend says 15 cm"
 
 
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):

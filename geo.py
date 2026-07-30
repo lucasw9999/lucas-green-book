@@ -14,6 +14,15 @@ import math
 
 R_LAT = 111320.0                    # metres per degree of latitude (mean)
 
+# The cost of this local flat-earth model, MEASURED rather than assumed. Comparing every course
+# centreline point against a WGS84 geodesic (pyproj) at the radii the book actually prints:
+#   100 yd tick -> worst 0.29 yd     200 yd -> 0.60 yd     300 yd -> 0.89 yd
+# Under one yard everywhere a tick appears, against club gaps of 10-15 yd, and the labels are
+# integers. Using the true meridian radius would shave that but would change every book's output for
+# no gain a golfer could act on -- so this is a deliberate, quantified approximation, not an
+# oversight. Re-measure before assuming it is still fine if tick radii ever exceed 300 yd (the error
+# grows with distance: 1.53 yd at 540 yd).
+
 
 def mlon(lat):
     """Metres per degree of longitude at a given latitude."""
