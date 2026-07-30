@@ -85,7 +85,43 @@ def _overlaps(bb):
     except (KeyError, TypeError):
         return False
 
-COVERAGE_GOOD = 0.95         # coverage at which a project is "good enough" to prefer recency
+COVERAGE_GOOD = 0.95         # bbox coverage at which a project is "good enough" (fallback metric)
+GREEN_COVERAGE_GOOD = 0.80   # fraction of GREENS a survey must reach to be preferred on recency
+
+
+def _green_centroids():
+    """Green centroids from osm_geom.json, or [] if OSM has not been fetched yet.
+
+    fetch_osm.py runs before this script, so the file is normally there; [] simply means fall back
+    to bbox coverage."""
+    try:
+        els = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
+    except Exception:
+        return []
+    out = []
+    for e in els:
+        g = e.get("geometry") or []
+        if g and (e.get("tags") or {}).get("golf") == "green":
+            out.append((sum(p["lon"] for p in g) / len(g), sum(p["lat"] for p in g) / len(g)))
+    return out
+
+
+def _green_coverage(items, cents):
+    """Fraction of greens whose centroid falls inside the union of these tiles' footprints.
+
+    This, not bbox coverage, is what the choice is really about: the LiDAR exists to build green
+    surfaces. Measuring the rectangular bbox instead punished exactly the surveys we want. Monarch
+    Bay sits on San Francisco Bay, so about a quarter of its bbox is open water that no land survey
+    covers -- CA_AlamedaCounty_2021_B21 scored 74.9% of the bbox and was excluded outright, while
+    ARRA_CA_SANFRANCOAST_2010 scored 100% and won. A rebuild would have fetched 2010 elevation for
+    a course whose book is built on the 2021 survey. Over the greens the same two projects score
+    18/20 and 20/20."""
+    boxes = [it["boundingBox"] for it in items if it.get("boundingBox")]
+    if not boxes or not cents:
+        return None
+    inside = sum(1 for x, y in cents
+                 if any(b["minX"] <= x <= b["maxX"] and b["minY"] <= y <= b["maxY"] for b in boxes))
+    return inside / len(cents)
 
 
 def _coverage(items):
@@ -146,8 +182,22 @@ def choose_project(projects):
                          "usable. Re-run later; this is normally a transient outage.")
     scored = {p: _coverage(projects[p]) for p in projects}
     newest = lambda p: max((i.get('publicationDate', '') for i in projects[p]), default='')
-    best_cov = max(scored.values())
-    good = [p for p in projects if scored[p] >= min(best_cov, COVERAGE_GOOD) - 0.02]
+    # Judge coverage over the GREENS when we know where they are, and only fall back to the bbox
+    # when OSM has not been fetched yet. See _green_coverage: a bayside course loses a quarter of its
+    # bbox to open water, which no land survey covers, so bbox coverage vetoed the recent survey.
+    cents = _green_centroids()
+    gcov = {p: _green_coverage(projects[p], cents) for p in projects}
+    if cents and all(v is not None for v in gcov.values()):
+        rank, floor = gcov, GREEN_COVERAGE_GOOD
+    else:
+        rank, floor = scored, COVERAGE_GOOD
+        print("  (no green geometry yet -- ranking projects on bbox coverage)")
+    best_cov = max(rank.values())
+    # A survey missing some greens is recoverable and disclosed: those greens fall back to the 1 m
+    # seamless DEM and the card prints "1 m data". A survey that is a decade stale is not -- it
+    # prints slope for a green that may since have been rebuilt. So the bar for preferring the newer
+    # survey is a substantial majority of greens, not near-complete coverage.
+    good = [p for p in projects if rank[p] >= min(best_cov, floor)]
     # Among adequately-covering projects the newest SURVEY wins (not the newest publication). A
     # project whose name carries no year is ranked by coverage alone rather than being treated as the
     # oldest -- "unknown" is not "ancient", and guessing it was would pick genuinely old data.
@@ -267,7 +317,13 @@ def main():
     if yr and yr < 2015:
         print(f"  WARNING: {proj} was surveyed around {yr}. Greens rebuilt since then would print\n"
               f"           stale slope. Check for a newer survey, or pin one with \"lidar_project\".")
-    if scored[proj] < COVERAGE_GOOD:
+    ngreens = len(_green_centroids())
+    gc = _green_coverage(tiles, _green_centroids())
+    if gc is not None and gc < 1.0:
+        print(f"  NOTE {proj} reaches {gc*100:.0f}% of the {ngreens} greens "
+              f"({round(gc*ngreens)}/{ngreens}); the rest fall back to the 1 m seamless DEM and\n"
+              f"       their cards are labelled '1 m data'.")
+    elif gc is None and scored[proj] < COVERAGE_GOOD:
         print(f"  WARNING: {proj} covers only {scored[proj]*100:.0f}% of the course bbox; greens\n"
               f"           outside it will have no ground returns and will not be read.")
     print(f"project: {proj}  ({len(tiles)} overlapping tiles, {newest(proj)}, "

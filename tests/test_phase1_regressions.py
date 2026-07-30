@@ -312,10 +312,19 @@ def test_lidar_recency_uses_the_survey_year_not_the_publication_date():
     assert chosen == "CA_Foo_2019", f"picked {chosen}: prefer a survey whose date we actually know"
 
 
-def test_lidar_selection_prefers_coverage_over_recency():
-    """Round-1 finding: picking the NEWEST project chose CA_SanJoaquin_2021_A21 (published 2023,
-    90% of the bbox) over CA_UpperSouthAmerican_Eldorado_2019_B19 (2021, 100%), leaving the greens
-    outside the clip with no ground returns. Replayed offline against recorded TNM shapes."""
+def test_lidar_selection_prefers_green_coverage_over_recency():
+    """Round-1 finding: picking the NEWEST project chose CA_SanJoaquin_2021_A21 (published 2023, 90%
+    of the bbox) over CA_UpperSouthAmerican_Eldorado_2019_B19 (2021, 100%), "leaving the greens
+    outside the clip with no ground returns."
+
+    The harm named in that finding is about GREENS; bbox coverage was only a proxy for it, and a bad
+    one -- see test_project_choice_is_judged_on_the_greens_not_the_bounding_box, where a quarter of
+    Monarch Bay's bbox is open water and the proxy vetoed the 2021 survey the book is built on. So
+    this test now states the finding in its own terms: a newer survey that leaves greens unfed must
+    lose; a newer survey that feeds every green must win even though it covers less of the rectangle,
+    because the area beyond the greens is not what the green surfaces are built from.
+
+    Replayed offline against recorded TNM shapes."""
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar"):
         sys.modules.pop(m, None)
@@ -333,19 +342,44 @@ def test_lidar_selection_prefers_coverage_over_recency():
     projects = {}
     for it in items:
         projects.setdefault(fetch_lidar._project_of(it), []).append(it)
-    # call the ENGINE's selection, not a copy of it: the first version of this test re-implemented
-    # the four lines it was checking and so could not have failed
-    chosen, scored, _newest = fetch_lidar.choose_project(projects)
-    assert scored["CA_Eldorado_2019_B19"] > scored["CA_SanJoaquin_2021_A21"]
-    assert chosen == "CA_Eldorado_2019_B19", "coverage must outrank the newer partial project"
 
-    # and the tie-break still prefers the newer project when coverage is equal
-    items[1]["boundingBox"] = full
-    projects = {}
-    for it in items:
-        projects.setdefault(fetch_lidar._project_of(it), []).append(it)
-    chosen, _s, _n = fetch_lidar.choose_project(projects)
-    assert chosen == "CA_SanJoaquin_2021_A21", "equal coverage must fall through to recency"
+    # greens spread across the bbox, most of them BELOW the clip's south edge, so the newer project
+    # genuinely cannot feed them -- the situation the round-1 finding described
+    cents = [(W + (E - W) * 0.5, S + (N - S) * f) for f in (0.01, 0.02, 0.03, 0.04, 0.05, 0.5)]
+    real = fetch_lidar._green_centroids
+    fetch_lidar._green_centroids = lambda: cents
+    try:
+        assert fetch_lidar._green_coverage([items[1]], cents) < fetch_lidar.GREEN_COVERAGE_GOOD
+        # call the ENGINE's selection, not a copy of it: the first version of this test
+        # re-implemented the four lines it was checking and so could not have failed
+        chosen, scored, _newest = fetch_lidar.choose_project(projects)
+        assert scored["CA_Eldorado_2019_B19"] > scored["CA_SanJoaquin_2021_A21"]
+        assert chosen == "CA_Eldorado_2019_B19", \
+            "a newer survey that leaves most greens unfed must not win on recency"
+
+        # the tie-break still prefers the newer project when both feed every green
+        items[1]["boundingBox"] = full
+        projects = {}
+        for it in items:
+            projects.setdefault(fetch_lidar._project_of(it), []).append(it)
+        chosen, _s, _n = fetch_lidar.choose_project(projects)
+        assert chosen == "CA_SanJoaquin_2021_A21", "equal coverage must fall through to recency"
+
+        # and the case the bbox proxy got wrong: the newer survey feeds every green while covering
+        # less of the rectangle. It must win now -- this is the Monarch Bay situation in miniature.
+        items[1]["boundingBox"] = dict(minX=W - 0.01, maxX=W + (E - W) * 0.55,
+                                       minY=S - 0.01, maxY=N + 0.01)
+        projects = {}
+        for it in items:
+            projects.setdefault(fetch_lidar._project_of(it), []).append(it)
+        chosen, scored, _n = fetch_lidar.choose_project(projects)
+        assert scored["CA_SanJoaquin_2021_A21"] < scored["CA_Eldorado_2019_B19"], \
+            "the newer survey should cover less of the BBOX in this case"
+        assert fetch_lidar._green_coverage(projects["CA_SanJoaquin_2021_A21"], cents) == 1.0
+        assert chosen == "CA_SanJoaquin_2021_A21", \
+            "a newer survey that feeds every green must win despite less bbox coverage"
+    finally:
+        fetch_lidar._green_centroids = real
 
 
 def test_digitized_guard_refuses_malformed_cache(tmp_path):
@@ -2000,6 +2034,76 @@ def test_multipolygon_relations_become_drawable_features():
     assert "(._;>;)" in query, (
         "the relation query must recurse down to its members, or Overpass returns bounds and tags "
         f"only and every fairway arrives without geometry. Query was:\n{query}")
+
+
+def test_project_choice_is_judged_on_the_greens_not_the_bounding_box(tmp_path):
+    """Ranking surveys by how much of the rectangular bbox they cover punished exactly the surveys
+    we want. Monarch Bay is on San Francisco Bay, so about a quarter of its bbox is open water that
+    no land survey covers: CA_AlamedaCounty_2021_B21 scored 74.9% and was excluded by the 95% gate,
+    while ARRA_CA_SANFRANCOAST_2010 scored 100% and won. A rebuild would have fetched 2010 elevation
+    for a course whose book is built on the 2021 survey (flown 2019-08-14).
+
+    Coverage is now measured over the GREENS -- the thing the LiDAR exists to build -- and the gate
+    is a substantial majority rather than near-completeness, because the two failure modes are not
+    symmetric: a green the survey misses falls back to the 1 m seamless DEM and its card says
+    "1 m data", whereas a decade-old survey silently prints stale slope as current.
+
+    Built from synthetic geometry so it does not need the network."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar as fl
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    assert fl.GREEN_COVERAGE_GOOD <= 0.9, \
+        (f"the gate is {fl.GREEN_COVERAGE_GOOD}; Monarch Bay's 2021 survey reaches 18 of 20 greens "
+         f"(0.90), so a gate above that re-excludes it")
+
+    S, W, N, E = fl.S, fl.W, fl.N, fl.E
+    mx, my = (W + E) / 2, (S + N) / 2
+    # ten greens in the WEST half of the bbox; the east half stands in for open water
+    cents = [(W + (mx - W) * (i + 0.5) / 10, my) for i in range(10)]
+
+    def tile(x0, x1, y0, y1):
+        return {"downloadURL": "https://x/Projects/P/LAZ/t.laz",
+                "boundingBox": {"minX": x0, "maxX": x1, "minY": y0, "maxY": y1}}
+
+    # recent survey: land only -- all 10 greens, but only half the bbox
+    recent = [tile(W, mx, S, N)]
+    # old survey: the whole bbox, water included
+    old = [tile(W, E, S, N)]
+
+    assert fl._green_coverage(recent, cents) == 1.0
+    assert fl._green_coverage(old, cents) == 1.0
+    assert fl._coverage(recent) < 0.6, "the land-only survey should score poorly on the bbox"
+    assert fl._coverage(old) > 0.95
+
+    # choose_project reads the bound course's real greens; substitute the synthetic ones. If it
+    # stopped consulting them at all it would fall back to bbox coverage and the assertions below
+    # would fail, which is the point.
+    real_cents = fl._green_centroids
+    fl._green_centroids = lambda: cents
+    try:
+        picked, scored, _ = fl.choose_project({"CA_New_2021_B21": recent,
+                                               "ARRA_CA_OLD_2010": old})
+        assert picked == "CA_New_2021_B21", \
+            (f"picked {picked}: the newer survey covers every green and lost on bbox coverage "
+             f"alone -- this is the Monarch Bay regression")
+
+        # a recent survey that misses MOST greens must still lose to the old one that covers them
+        clip = [tile(W, W + (mx - W) * 0.2, S, N)]
+        assert fl._green_coverage(clip, cents) < fl.GREEN_COVERAGE_GOOD
+        picked2, _, _ = fl.choose_project({"CA_New_2021_B21": clip, "ARRA_CA_OLD_2010": old})
+        assert picked2 == "ARRA_CA_OLD_2010", \
+            f"picked {picked2}: a survey reaching only 20% of the greens must not win on recency"
+
+        # an undated project must not be treated as ancient, and must not crash the ranking
+        picked3, _, _ = fl.choose_project({"CA_Unnamed_Survey": old, "CA_New_2021_B21": recent})
+        assert picked3 == "CA_New_2021_B21", picked3
+    finally:
+        fl._green_centroids = real_cents
 
 
 def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
