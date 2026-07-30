@@ -2019,20 +2019,28 @@ def test_each_card_footer_matches_its_own_map():
                      f"(slug, footer, drawn): {bad[:6]}")
 
 
-def test_multipolygon_relations_become_drawable_features():
+def test_multipolygon_relations_become_drawable_features(tmp_path):
     """On many courses the fairways are mapped as MULTIPOLYGON RELATIONS, not ways, and the course
     query only asked for way[...]. Measured live against Overpass: valley-hi has 18 fairway relations
     and 0 fairway ways, monarch-bay 36, the-reserve 18 -- so those books drew NO fairway at all while
     every card set's legend promises "fairway (green)". The largest feature of a golf hole was missing
     from the map.
 
-    Two things had to be right. Adding relation[...] to the main query is not sufficient: under
-    `out geom` Overpass answers a relation with bounds and tags only, so the reply contained 18
-    fairways with no geometry that every consumer then skipped -- which is exactly what happened on
-    the first attempt. The member rings need the recurse-down form `(._;>;); out geom;`.
+    Three things had to be right, and each was wrong in turn.
 
-    This tests the normalisation, offline: each OUTER ring becomes a way-shaped element carrying the
-    relation's tags, so nothing downstream needs to know about relations."""
+    1. Adding relation[...] to the main query is not sufficient: under `out geom` Overpass answers a
+       relation with bounds and tags only, so the reply held 18 fairways with no geometry that every
+       consumer skipped.
+    2. The recurse-down form `(._;>;); out geom;` does return member geometry, but it pulls every
+       member NODE and does not complete -- four attempts against valley-hi returned 504, 504, 429,
+       504. The working form asks for relation BODIES (tags + member refs) and separately for the
+       member WAYS with inline geometry, then joins them by way id: 1.3 s on the same bbox.
+    3. The flattened rings have to be WRITTEN BACK. fetch() saves osm_course.json before the relation
+       pass runs, so appending to the in-memory dict alone left the file unchanged -- the printed
+       feature counts said 18 fairways while the file every consumer reads had none. Caught by
+       diffing the written file's counts against its backup: identical, no 'fairway' key at all.
+
+    This tests the normalisation and the write-back, offline."""
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_osm"):
         sys.modules.pop(m, None)
@@ -2042,14 +2050,18 @@ def test_multipolygon_relations_become_drawable_features():
             {"lat": 40.001, "lon": -74.999}, {"lat": 40.0, "lon": -75.0}]
     inner = [{"lat": 40.0005, "lon": -74.9995}, {"lat": 40.0006, "lon": -74.9994},
              {"lat": 40.0007, "lon": -74.9995}, {"lat": 40.0005, "lon": -74.9995}]
+    # the shape the working query returns: relation bodies (member refs, NO geometry) plus the member
+    # ways with inline geometry
     els = [
-        {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring},
         {"type": "relation", "id": 555, "tags": {"golf": "fairway"}, "members": [
-            {"type": "way", "ref": 11, "role": "outer", "geometry": ring},
-            {"type": "way", "ref": 12, "role": "outer", "geometry": ring},
-            {"type": "way", "ref": 13, "role": "inner", "geometry": inner},
+            {"type": "way", "ref": 11, "role": "outer"},
+            {"type": "way", "ref": 12, "role": "outer"},
+            {"type": "way", "ref": 13, "role": "inner"},
         ]},
-        # the shape Overpass returns WITHOUT the recursion: bounds and tags, no members
+        {"type": "way", "id": 11, "geometry": ring},
+        {"type": "way", "id": 12, "geometry": ring},
+        {"type": "way", "id": 13, "geometry": inner},
+        # the shape Overpass returns for a relation with no members resolved: bounds and tags only
         {"type": "relation", "id": 556, "tags": {"golf": "fairway"}, "bounds": {}},
     ]
     out = fetch_osm._flatten_relations(els)
@@ -2064,20 +2076,39 @@ def test_multipolygon_relations_become_drawable_features():
     # the inner ring must NOT become fairway -- filling a hole in the polygon is worse than omitting
     assert not any(len(e.get("geometry") or []) and e["geometry"][0]["lat"] == 40.0005 for e in fw), \
         "inner rings must be skipped"
-    # the pre-existing way is untouched
-    assert any(e.get("id") == 1 for e in out), "non-relation elements must pass through"
 
-    # And the QUERY must use the recursion form. Checking the whole file for the string was a weak
-    # test: it appears twice in explanatory comments as well, so gutting the real query still passed.
-    # Look only at the query text between the relation selector and its out statement.
+    # a member way whose geometry never arrived must be reported, not silently dropped -- silence is
+    # how the fairways went missing in the first place
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fetch_osm._flatten_relations([els[0], els[1]])       # way 12 absent
+    assert "WARNING" in buf.getvalue(), \
+        f"a missing outer ring must warn; got: {buf.getvalue()!r}"
+
+    # and main() must write osm_course.json AFTER appending the flattened rings
     src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+    i = src.index("_flatten_relations(rel['elements'])")
+    tail = src[i:i + 900]
+    assert "os.replace" in tail and "osm_course.json" in tail, \
+        ("the flattened rings must be written back to osm_course.json; appending to the in-memory "
+         "dict alone left every consumer reading a file with no fairways")
+
+    # And the QUERY must actually retrieve member geometry. Checking the whole file for a substring
+    # was a weak test -- the forms appear in explanatory comments too, so gutting the real query still
+    # passed. Look only at the query text between the relation selector and its final out statement.
     assert 'relation["golf"]' in src, "the course fetch must ask for golf relations"
     i = src.index('relation["golf"]')
     j = src.index("out geom;", i)
     query = src[i:j]
-    assert "(._;>;)" in query, (
-        "the relation query must recurse down to its members, or Overpass returns bounds and tags "
-        f"only and every fairway arrives without geometry. Query was:\n{query}")
+    assert "out body;" in query and "way(r);" in query, (
+        "the relation query must fetch relation bodies (tags + member refs) AND their member ways "
+        "with geometry, or every fairway arrives without geometry and is skipped. Query was:\n"
+        + query)
+    assert "(._;>;)" not in query, (
+        "the recurse-down form pulls every member node and times out on real course bboxes -- "
+        "four attempts against valley-hi returned 504, 504, 429, 504. Query was:\n" + query)
 
 
 def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000.0,

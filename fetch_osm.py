@@ -56,35 +56,48 @@ def _flatten_relations(elements):
     monarch-bay 36, the-reserve 18 -- so those books drew no fairway at all while every card set's
     legend promises "fairway (green)". The largest feature of a golf hole was simply missing.
 
-    Adding relation[...] to the main query is not enough: Overpass answers a relation under
-    `out geom` with bounds and tags only. The member geometry needs the recurse-down form
-    `(._;>;); out geom;`, which is why relations are fetched separately.
+    Getting the member geometry needs care. Overpass answers a relation under `out geom` with bounds
+    and tags only. The recurse-down form `(._;>;); out geom;` does return it, but it pulls every
+    member NODE and times out on real course bboxes -- four attempts against valley-hi returned 504,
+    504, 429, 504. The cheap form asks for the relation BODIES (tags plus member refs, no geometry)
+    and separately for the member WAYS with inline geometry, then joins them by way id: 1.3 s on the
+    same bbox that would not answer at all.
 
     Each OUTER member ring becomes its own element carrying the relation's tags -- a fairway drawn as
     several filled rings looks the same as one mapped as several ways, which is how the way-mapped
     courses already render. Inner rings are skipped: filling a hole in the polygon with fairway green
     would be worse than leaving it out.
     """
+    ways = {e.get("id"): e for e in elements
+            if e.get("type") == "way" and e.get("geometry")}
     out = []
     added = 0
+    missing = []
     for e in elements:
         if e.get("type") != "relation":
-            out.append(e)
             continue
         tags = e.get("tags") or {}
         for i, m in enumerate(e.get("members") or []):
-            if m.get("type") != "way" or not m.get("geometry"):
+            if m.get("type") != "way" or (m.get("role") or "outer") != "outer":
                 continue
-            if (m.get("role") or "outer") != "outer":
+            w = ways.get(m.get("ref"))
+            if not w or not w.get("geometry"):
+                missing.append(f"{e.get('id')}/{m.get('ref')}")
                 continue
             out.append({"type": "way",
                         "id": -(abs(int(e.get("id", 0))) * 100 + i) - 1,
                         "tags": dict(tags),
-                        "geometry": m["geometry"],
+                        "geometry": w["geometry"],
                         "_from_relation": e.get("id")})
             added += 1
     if added:
         print(f"  flattened {added} outer ring(s) from multipolygon relations")
+    if missing:
+        # Silence here is how the fairways went missing in the first place: a relation whose rings we
+        # never received produces no feature and no error, and the book just draws less.
+        print(f"  WARNING {len(missing)} outer ring(s) had no geometry in the reply "
+              f"(relation/way {', '.join(missing[:6])}{' ...' if len(missing) > 6 else ''}).\n"
+              f"          Those parts of the course will not be drawn. Re-run.")
     return out
 
 
@@ -212,18 +225,35 @@ out geom tags;''', "osm_course.json")
 
     # Multipolygon relations need their OWN fetch. Under `out geom` a relation comes back as bounds
     # and tags only -- no members, no geometry -- so adding relation[...] to the query above yields
-    # 18 fairways that every consumer then skips for having no geometry. The member rings require the
-    # recurse-down form `(._;>;); out geom;`, which is kept separate so it does not pull member nodes
-    # for every way in the main query.
+    # 18 fairways that every consumer then skips for having no geometry.
+    #
+    # `out body` gives the relation's tags AND its member refs without geometry, and `way(r)` then
+    # returns those member ways with inline geometry. _flatten_relations joins the two by way id.
+    # The obvious alternative, `(._;>;); out geom;`, recurses down to every member NODE and does not
+    # complete: four attempts against valley-hi returned 504, 504, 429, 504. This form answers the
+    # same bbox in 1.3 s.
     rel = fetch(f'''[out:json][timeout:180];
 (
  relation["golf"]({BB});
  relation["natural"="water"]({BB});
  relation["building"]({BB});
 );
-(._;>;);
+out body;
+way(r);
 out geom;''', "osm_relations.json")
-    course['elements'] = course['elements'] + _flatten_relations(rel['elements'])
+    flat = _flatten_relations(rel['elements'])
+    course['elements'] = course['elements'] + flat
+    # WRITE IT BACK. fetch() saved osm_course.json before this relation pass ran, so appending to the
+    # in-memory dict alone changed nothing on disk: the feature counts printed below showed 18
+    # fairways while the file every consumer reads still had none. Verified by diffing the counts of
+    # the written file against its backup -- identical, no 'fairway' key at all.
+    cpath = os.path.join(config.COURSE_DIR, "osm_course.json")
+    tmp = cpath + ".part"
+    with open(tmp, "w") as f:
+        json.dump(course, f, indent=2)
+    os.replace(tmp, cpath)
+    if flat:
+        print(f"  osm_course.json rewritten with {len(flat)} flattened ring(s)")
     from collections import Counter
     c = Counter()
     for e in course['elements']:
