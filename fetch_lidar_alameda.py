@@ -21,7 +21,7 @@ Run:  COURSE=<slug> python3 fetch_lidar_alameda.py
 Then: COURSE=<slug> python3 fetch_dem_hd.py   # 0.4 m green surfaces
       COURSE=<slug> python3 fetch_trees.py    # canopy trees
 """
-import os, time, urllib.request
+import os, time, urllib.request, urllib.error
 from pyproj import Transformer
 import config
 
@@ -45,15 +45,44 @@ def covering_tiles(bbox, pad_ft=300):
     n0 = int((min(ns) - pad_ft) // 3000 * 3); n1 = int((max(ns) + pad_ft) // 3000 * 3)
     return [f"w{e}n{n}" for e in range(e0, e1 + 1, 3) for n in range(n0, n1 + 1, 3)]
 
-def head_size(url):
-    """Content-Length of a tile, or -1 if it doesn't exist in this sub-project."""
-    try:
-        r = urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30)
-        return int(r.headers.get("Content-Length", 0))
-    except Exception:
-        return -1
+ABSENT = -1        # the server says this tile is not in this sub-project (HTTP 404/403)
+UNKNOWN = -2       # we could not find out -- network error, timeout, 5xx
 
-def tile_copies(t):
+
+def head_size(url, tries=3):
+    """Content-Length of a tile; ABSENT if the server says it is not there, UNKNOWN if we could not
+    ask.
+
+    The distinction is the whole point. This used to swallow every exception and return -1, so a
+    transient timeout looked exactly like "this tile is not in this sub-project" -- the caller then
+    reported "edge of coverage, skip" and main() exited 0 having downloaded half a course. A green
+    with no ground returns under it is what the honesty gate now has to catch; better to fail the
+    fetch than to build on a gap that a network wobble invented.
+    """
+    last = None
+    for attempt in range(tries):
+        try:
+            r = urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30)
+            n = int(r.headers.get("Content-Length", 0))
+            if n > 0:
+                return n
+            # A 200 that carries no Content-Length is not an absence. Returning 0 here made the
+            # caller drop the copy exactly like an authoritative 404, which is the false "edge of
+            # coverage" claim this function was written to stop. We could not learn the size, so say
+            # so and let the run abort rather than invent a gap.
+            last = "HTTP 200 with no Content-Length"
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404, 410):
+                return ABSENT          # an authoritative "no such tile"
+            last = f"HTTP {e.code}"
+        except Exception as e:
+            last = type(e).__name__
+        if attempt < tries - 1:
+            time.sleep(4)
+    print(f"    HEAD failed for {os.path.basename(url)} after {tries} tries ({last})")
+    return UNKNOWN
+
+def tile_copies(t, unknown):
     """All sub-project copies of a geographic tile. The 3 Alameda sub-projects were
     flown separately, so a tile straddling a project boundary appears in MORE THAN
     ONE sub-project, each holding only the points collected in its own footprint —
@@ -63,29 +92,61 @@ def tile_copies(t):
     out = []
     for sub in SUBS:
         u = f"{BASE}/{sub}/LAZ/{PREFIX}_{t}.laz"
+        # Once one HEAD is UNKNOWN the run is already doomed -- main() raises on any unknown -- so
+        # stop asking. Callippe probes 25 cells x 3 sub-projects = 75 HEADs, and with 3 tries and two
+        # 4 s sleeps each a network outage cost up to two hours before printing the same "re-run"
+        # message. The verdict is unchanged; only the waiting is gone.
+        if unknown:
+            break
         sz = head_size(u)
-        if sz > 0:
+        if sz == UNKNOWN:
+            unknown.append(f"{t} [{sub[-9:]}]")
+        elif sz > 0:
             out.append((sub, u, sz))
     return out
 
 def main():
+    # Sweep stale .part files first -- a transfer killed outright leaves one that no handler removes.
+    import fetch_lidar
+    fetch_lidar.sweep_partials(f"{DIR}/laz")
     tiles = covering_tiles(config.COURSE["osm_bbox"])
     print(f"{len(tiles)} candidate tiles for {config.SLUG}")
     got = 0
+    used = set()      # every local filename chosen so far, so copy_suffix's collision loop is live
     failed = []
     absent = []
+    unknown = []
     for t in tiles:
-        copies = tile_copies(t)
+        if unknown:
+            break          # already doomed; see tile_copies
+        copies = tile_copies(t, unknown)
+        if not copies and unknown:
+            # We stopped probing mid-cell because a HEAD was unresolvable, so this cell's emptiness
+            # proves nothing. Saying "404, edge of coverage" here would be the exact false claim
+            # 08cb08d removed -- and the early exit added for speed had reintroduced it, since one
+            # failing sub-project now empties `copies` where previously all three had to 404.
+            print(f"  {t}: not probed -- a HEAD was unresolvable (see below); NOT treated as absent")
+            continue
         if not copies:
-            # genuinely absent, or a HEAD that failed -- head_size cannot tell those apart, so
-            # count them and report at the end rather than letting a network wobble look like the
-            # edge of the survey
+            # Genuinely absent: every sub-project answered an authoritative 404. A HEAD that
+            # merely FAILED landed in `unknown` instead and aborts the run below, so reaching here
+            # really does mean the edge of the survey.
             absent.append(t)
-            print(f"  {t}: no copy found on server (edge of coverage, or HEAD failed) -- skip")
+            print(f"  {t}: not in any sub-project (404) -- edge of coverage, skip")
             continue
         for i, (sub, url, sz) in enumerate(copies):
-            # first copy keeps the plain name; extra sub-project copies get a suffix
-            fn = f"{DIR}/laz/{PREFIX}_{t}.laz" if i == 0 else f"{DIR}/laz/{PREFIX}_{t}__{sub[-9:]}.laz"
+            # First copy keeps the plain name; extra sub-project copies get a `__Co<n>` suffix taken
+            # from the sub-project number. The suffix MUST end in digits: tools/gen_provenance.py
+            # reads the LiDAR project name off these filenames for the legal record and strips
+            # `__Co\d+$`. The previous suffix was the sub-project's last 9 characters
+            # (`__Co_3_2021`), which that strip does not match, so the generator published
+            # "CA_AlamedaCounty_2021_B21_w6162n2049__Co_3" as the project a book was built from.
+            if i == 0:
+                base = f"{PREFIX}_{t}.laz"
+            else:
+                base = fetch_lidar.copy_suffix(sub, i, f"{PREFIX}_{t}", ".laz", used)
+            used.add(base)
+            fn = f"{DIR}/laz/{base}"
             if os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024:
                 print(f"  cached {t} [{sub[-9:]}]"); got += 1; continue
             ok = False
@@ -105,11 +166,17 @@ def main():
                 if os.path.exists(fn + ".part"):
                     os.remove(fn + ".part")
     print(f"done -> {DIR}/laz  ({got} tile copies)")
-    if absent:
-        print(f"  NOTE {len(absent)} candidate tile(s) had no copy on the server: {', '.join(absent)}\n"
-              f"       If that is the edge of the survey, greens there will have no ground returns\n"
-              f"       and the honesty gate will leave them unread. If it was a network failure,\n"
-              f"       re-run: the check is a HEAD request and cannot distinguish the two.")
+    if absent and not unknown:
+        print(f"  NOTE {len(absent)} candidate tile(s) are not on the server (authoritative 404): "
+              f"{', '.join(absent)}\n"
+              f"       That is the edge of the survey. Greens there will have no ground returns and\n"
+              f"       the honesty gate will leave them unread rather than invent a surface.")
+    if unknown:
+        # This is the case that used to masquerade as "edge of coverage".
+        raise SystemExit(
+            f"could not determine whether {len(unknown)} tile(s) exist: {', '.join(unknown)}\n"
+            f"  These are network failures, not 404s, so the survey may well cover them. Building now\n"
+            f"  would leave greens with no ground returns for a reason that is not real. Re-run.")
     if failed:
         # Exiting 0 here would leave PARTIAL coverage. fetch_lidar.py raises for exactly this reason:
         # a green with no ground returns under it is what produced the fabricated-terrain cards the
@@ -118,6 +185,12 @@ def main():
                          f"  Coverage would be incomplete -- re-run rather than building on this.")
     if got == 0:
         raise SystemExit("no tiles downloaded")
+    # Check the DATA, not just the filenames: a tile can be present and correctly named and still
+    # hold no points where a green is. This is the module's own worst case -- Castlewood Hill's
+    # w6153n2055 copy on disk covers a 470-ft strip of a 3000-ft cell, and two greens fell in the
+    # gap. See lidar_coverage.py.
+    import lidar_coverage
+    lidar_coverage.report(config.COURSE_DIR)
 
 if __name__ == "__main__":
     main()

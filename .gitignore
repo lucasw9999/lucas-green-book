@@ -1,5 +1,9 @@
 # Per-course data & generated books are kept LOCAL, not in version control.
 courses/
+# ...and as a bare name too. A git worktree may reach the data through a SYMLINK named `courses`,
+# and the `courses/` pattern only matches a directory -- so the symlink showed up as untracked and
+# `git add -A` would have committed a machine-specific absolute path into a public repo.
+courses
 
 # Python
 __pycache__/

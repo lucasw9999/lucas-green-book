@@ -87,6 +87,43 @@ def vertical_scale(src):
 GREEN_BIND_MAX_M = 40.0
 
 
+def assert_one_green_per_hole(bound, label=""):
+    """Refuse if two holes bound to the SAME green. `bound` is {hole_number: green_element}.
+
+    The max_m cap in match_green catches a hole reaching for a FAR green -- bay-view h9 to h7's
+    green, 47.8 m -- but it cannot catch the near case, and the near case is the more likely one. If
+    a hole's own green disappears from the OSM extract while a neighbour's green sits inside the cap,
+    both holes bind there, both cards print that surface, and one of them is a confident read of the
+    wrong putting green. Nothing in match_green can see this: it is called once per hole and has no
+    view of the others.
+
+    Measured across all 11 built courses: 0 greens are bound to more than one hole today, and the
+    furthest legitimate bind is 11.1 m, so this only ever fires on a real fault.
+    """
+    seen = {}
+    clash = []
+    for hn in sorted(bound):
+        g = bound[hn]
+        # `g.get("id", id(g))` returned None when the key was PRESENT but null, collapsing every
+        # such green onto one key and inventing a clash. The default only covers an absent key.
+        gid = g.get("id")
+        key = gid if gid is not None else id(g)
+        if key in seen:
+            clash.append((seen[key], hn, key))
+        else:
+            seen[key] = hn
+    if clash:
+        lines = "\n".join(f"    green {k} is bound to BOTH hole {a} and hole {b}"
+                           for a, b, k in clash)
+        raise SystemExit(
+            f"{label or 'this course'}: {len(clash)} green(s) bound to more than one hole.\n"
+            f"{lines}\n"
+            f"  One of those cards would print a confident read of the wrong putting surface. A\n"
+            f"  hole's own green is probably missing from the OSM extract while a neighbour's sits\n"
+            f"  inside the {GREEN_BIND_MAX_M:.0f} m bind limit, so the distance cap cannot catch it.\n"
+            f"  Re-run fetch_osm.py, or add the missing green (tagged _digitized) before building.")
+
+
 def match_green(hole_line, greens, max_m=GREEN_BIND_MAX_M, label=""):
     """Bind a hole's centerline to its green: (green, green_end_point, tee_end_point).
 

@@ -153,7 +153,21 @@ MAX_PLAUSIBLE_RELIEF_M = 30.0   # 98 ft of fall inside one green outline is a da
 
 
 def render(hole, tournament=False):
-    meta = json.load(open(f"{DEM}/hole{hole:02d}.json"))
+    mp = f"{DEM}/hole{hole:02d}.json"
+    if not os.path.exists(mp):
+        # Every other stage in this pipeline explains itself; this one used to die with a bare
+        # FileNotFoundError from json.load, several frames deep, naming a path and nothing else.
+        # The situation is ordinary: fetch_dem_hd.py builds only the greens with usable LiDAR
+        # ground returns, and the ones it refuses need the 1 m seamless fallback. Monarch Bay has
+        # six such holes, so running generate.py without fetch_dem.py hits this every time.
+        raise SystemExit(
+            f"hole {hole} of {config.SLUG} has no green surface ({os.path.relpath(mp, config.ROOT)}).\n"
+            f"  fetch_dem_hd.py builds only greens with usable 0.4 m LiDAR ground returns; the rest\n"
+            f"  need the 1 m seamless fallback. Run both, then rebuild:\n"
+            f"    COURSE={config.SLUG} python3 fetch_dem_hd.py\n"
+            f"    COURSE={config.SLUG} python3 fetch_dem.py\n"
+            f"    COURSE={config.SLUG} python3 generate.py")
+    meta = json.load(open(mp))
     # Only refuse when there is genuinely NOTHING measured under the green (fetch_dem_hd.py
     # honesty gate) -- then there is no surface to draw at all. A green that was rebuilt AFTER
     # the flight still has real measured data; it is just possibly out of date, so we print the

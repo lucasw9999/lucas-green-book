@@ -28,6 +28,8 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import distribution  # noqa: E402
 OUT = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
 
 
@@ -46,7 +48,7 @@ def _tile_project(slug, dem_source=""):
         if not stem.startswith("USGS_LPC_"):
             continue                                   # bare tile id: carries no project name
         stem = stem[len("USGS_LPC_"):]
-        stem = re.sub(r"__Co\d+$", "", stem)           # tile_copies disambiguation suffix
+        stem = re.sub(r"__Co\d+$", "", stem)           # extra sub-project copy (fetch_lidar.copy_suffix)
         stem = re.sub(r"_w\d+n\d+$", "", stem)         # e.g. _w6153n2055
         stem = re.sub(r"_\d{2}[A-Z]{3}\d+$", "", stem)  # e.g. _18TVK474434
         stem = re.sub(r"_\d+$", "", stem)              # numeric tile id
@@ -89,12 +91,33 @@ def _digitized(slug):
 def _row(slug):
     j = json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
     name = j.get("name", slug)
-    yardage_mode = j.get("build_mode") == "yardage"
+    # Both from distribution.py, with the SAME normalisation, but they are different questions: the
+    # Status column is a policy verdict, "yardage mode: blank greens" is a fact about the data. They
+    # used to be derived separately -- this line was an exact `== "yardage"` match while Status asked
+    # distribution.py -- so a mis-cased or space-padded build_mode in a hand-edited course.json
+    # printed "Personal" in Status and a LiDAR density sentence in Green slope, in the same row.
+    # Deriving one FROM the other would be the mirror fault: the day a second reason makes a course
+    # non-distributable, the slope cell would claim yardage mode for a course not in it.
+    distributable, label, _why = distribution.distribution_status(j)
+    yardage_mode = distribution.is_yardage(j)
     proj, ntiles, from_names = _tile_project(slug, j.get('dem_source', ''))
     ngreens, dlo, dhi, seam, insuf = _greens(slug)
     dig = _digitized(slug)
     stale = sorted(j.get("greens_possibly_outdated", []))
-    flown = (j.get("lidar_flown") or {}).get("label")
+    flown_rec = j.get("lidar_flown") or {}
+    flown = flown_rec.get("label")
+    # A flight range is only as trustworthy as what it was measured over. tools/lidar_dates.py
+    # narrows the range to the points that actually lie over the greens and records that in `basis`;
+    # when it cannot -- no point over any green, or no green geometry to place -- it falls back to the
+    # union over WHOLE TILES and says so there. This table read only `label`, so that fallback would
+    # have been published as a flight date with no hint that a tile 1.3 km from any green may have set
+    # its extremes, which is the exact fault the lidar_dates change was made to fix. Qualify it here.
+    # Fail closed. A record with NO basis was written before that distinction existed, and its label
+    # WAS the union over whole tiles -- so an absent basis must read as the weaker claim, not the
+    # stronger one. Only a basis that positively says "points within ..." earns an unqualified date.
+    basis = flown_rec.get("basis") or ""
+    flown_note = "" if basis.startswith("points within") else \
+        " *(range measured over whole tiles, not only the points over the greens)*"
 
     geom = "OSM (ODbL)"
     if dig:
@@ -110,7 +133,7 @@ def _row(slug):
             bits.append(f"project `{proj}` ({ntiles} tiles)"
                         + ("" if from_names else " *(label recorded in course.json; these tiles\u2019 filenames carry no project name)*"))
         if flown:
-            bits.append(f"**flown {flown}**")
+            bits.append(f"**flown {flown}**{flown_note}")
         if dlo is not None:
             bits.append(f"{dlo:g}–{dhi:g} pts/m² over {ngreens} greens @0.4 m")
         if seam:
@@ -125,7 +148,9 @@ def _row(slug):
         notes.append(f"{insuf} green(s) had no usable point cloud and print no read")
     if dig:
         notes.append("hand-added greens were traced from public-domain USDA NAIP because OSM had none")
-    status = "Personal" if yardage_mode else "**Distributed ✅**"
+    # the SAME rule any publisher uses -- see distribution.py for why this is shared (resolved above,
+    # so the Status column and the slope text cannot disagree)
+    status = f"**{label} ✅**" if distributable else label
 
     # first sentence of the recorded scorecard provenance, so the table stays readable
     sc = (j.get("sources", {}) or {}).get("scorecard", "")

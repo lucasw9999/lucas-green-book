@@ -61,8 +61,11 @@ fetch_osm.py            # OpenStreetMap geometry (greens, holes, fairways, bunke
 fetch_lidar.py          # download USGS 3DEP LiDAR tiles covering the course (via The National Map)
 fetch_lidar_alameda.py  #   Alameda County 2021 tile-name decoder (when TNM naming needs it)
 fetch_dem_hd.py         # 0.4 m green surfaces from the raw LiDAR ground returns
-fetch_dem.py            #   OR USGS 3DEP seamless 1 m per green (fallback where no dense LiDAR)
+fetch_dem.py            #   THEN USGS 3DEP seamless 1 m for the greens it refused (fills gaps;
+                        #   OVERWRITE=1 to replace a good 0.4 m surface on purpose)
 fetch_trees.py          # trees from LiDAR canopy returns (never placed on greens/fairways/tees/bunkers)
+lidar_coverage.py       # checks the downloaded tiles' DATA actually reaches the greens & holes
+distribution.py         # one rule: may this book be handed out? (used by the legal record too)
 render_green.py         # green slope map (arrows, contours, slope %, 5-yard depth grid)
 render_hole.py          # tee -> green hole layout
 generate.py             # lays out the palm cards -> printable HTML/PDF

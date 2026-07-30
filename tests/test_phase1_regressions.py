@@ -312,10 +312,19 @@ def test_lidar_recency_uses_the_survey_year_not_the_publication_date():
     assert chosen == "CA_Foo_2019", f"picked {chosen}: prefer a survey whose date we actually know"
 
 
-def test_lidar_selection_prefers_coverage_over_recency():
-    """Round-1 finding: picking the NEWEST project chose CA_SanJoaquin_2021_A21 (published 2023,
-    90% of the bbox) over CA_UpperSouthAmerican_Eldorado_2019_B19 (2021, 100%), leaving the greens
-    outside the clip with no ground returns. Replayed offline against recorded TNM shapes."""
+def test_lidar_selection_prefers_green_coverage_over_recency():
+    """Round-1 finding: picking the NEWEST project chose CA_SanJoaquin_2021_A21 (published 2023, 90%
+    of the bbox) over CA_UpperSouthAmerican_Eldorado_2019_B19 (2021, 100%), "leaving the greens
+    outside the clip with no ground returns."
+
+    The harm named in that finding is about GREENS; bbox coverage was only a proxy for it, and a bad
+    one -- see test_project_choice_is_judged_on_the_greens_not_the_bounding_box, where a quarter of
+    Monarch Bay's bbox is open water and the proxy vetoed the 2021 survey the book is built on. So
+    this test now states the finding in its own terms: a newer survey that leaves greens unfed must
+    lose; a newer survey that feeds every green must win even though it covers less of the rectangle,
+    because the area beyond the greens is not what the green surfaces are built from.
+
+    Replayed offline against recorded TNM shapes."""
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar"):
         sys.modules.pop(m, None)
@@ -333,19 +342,44 @@ def test_lidar_selection_prefers_coverage_over_recency():
     projects = {}
     for it in items:
         projects.setdefault(fetch_lidar._project_of(it), []).append(it)
-    # call the ENGINE's selection, not a copy of it: the first version of this test re-implemented
-    # the four lines it was checking and so could not have failed
-    chosen, scored, _newest = fetch_lidar.choose_project(projects)
-    assert scored["CA_Eldorado_2019_B19"] > scored["CA_SanJoaquin_2021_A21"]
-    assert chosen == "CA_Eldorado_2019_B19", "coverage must outrank the newer partial project"
 
-    # and the tie-break still prefers the newer project when coverage is equal
-    items[1]["boundingBox"] = full
-    projects = {}
-    for it in items:
-        projects.setdefault(fetch_lidar._project_of(it), []).append(it)
-    chosen, _s, _n = fetch_lidar.choose_project(projects)
-    assert chosen == "CA_SanJoaquin_2021_A21", "equal coverage must fall through to recency"
+    # greens spread across the bbox, most of them BELOW the clip's south edge, so the newer project
+    # genuinely cannot feed them -- the situation the round-1 finding described
+    cents = [(W + (E - W) * 0.5, S + (N - S) * f) for f in (0.01, 0.02, 0.03, 0.04, 0.05, 0.5)]
+    real = fetch_lidar._green_centroids
+    fetch_lidar._green_centroids = lambda: cents
+    try:
+        assert fetch_lidar._green_coverage([items[1]], cents) < fetch_lidar.GREEN_COVERAGE_GOOD
+        # call the ENGINE's selection, not a copy of it: the first version of this test
+        # re-implemented the four lines it was checking and so could not have failed
+        chosen, scored, _newest = fetch_lidar.choose_project(projects)
+        assert scored["CA_Eldorado_2019_B19"] > scored["CA_SanJoaquin_2021_A21"]
+        assert chosen == "CA_Eldorado_2019_B19", \
+            "a newer survey that leaves most greens unfed must not win on recency"
+
+        # the tie-break still prefers the newer project when both feed every green
+        items[1]["boundingBox"] = full
+        projects = {}
+        for it in items:
+            projects.setdefault(fetch_lidar._project_of(it), []).append(it)
+        chosen, _s, _n = fetch_lidar.choose_project(projects)
+        assert chosen == "CA_SanJoaquin_2021_A21", "equal coverage must fall through to recency"
+
+        # and the case the bbox proxy got wrong: the newer survey feeds every green while covering
+        # less of the rectangle. It must win now -- this is the Monarch Bay situation in miniature.
+        items[1]["boundingBox"] = dict(minX=W - 0.01, maxX=W + (E - W) * 0.55,
+                                       minY=S - 0.01, maxY=N + 0.01)
+        projects = {}
+        for it in items:
+            projects.setdefault(fetch_lidar._project_of(it), []).append(it)
+        chosen, scored, _n = fetch_lidar.choose_project(projects)
+        assert scored["CA_SanJoaquin_2021_A21"] < scored["CA_Eldorado_2019_B19"], \
+            "the newer survey should cover less of the BBOX in this case"
+        assert fetch_lidar._green_coverage(projects["CA_SanJoaquin_2021_A21"], cents) == 1.0
+        assert chosen == "CA_SanJoaquin_2021_A21", \
+            "a newer survey that feeds every green must win despite less bbox coverage"
+    finally:
+        fetch_lidar._green_centroids = real
 
 
 def test_digitized_guard_refuses_malformed_cache(tmp_path):
@@ -1724,11 +1758,18 @@ def test_the_printed_flight_date_spans_every_point_not_just_the_first_few():
     Callippe's book said "flown 2021-06-21", a single day, for a survey that ran 2021-06-21 to
     2021-07-02. Castlewood Valley was wrong the same way. A full scan costs 6-8 s per course.
 
-    This re-derives the span from EVERY point, independently of the module, and requires each course's
-    printed label to cover it. Dates are the LOCAL flight day, not the UTC day: topographic LiDAR is
-    often flown at night, so bay-view's whole survey ran 20:39-21:55 local on 2020-04-14 while the UTC
-    date is the 15th. The zone is derived here from a CONUS longitude band rather than imported, so
-    the test does not inherit the module's own mapping."""
+    This re-derives the span from EVERY point OVER A GREEN, independently of the module, and requires
+    each course's printed label to cover it. Dates are the LOCAL flight day, not the UTC day:
+    topographic LiDAR is often flown at night, so bay-view's whole survey ran 20:39-21:55 local on
+    2020-04-14 while the UTC date is the 15th. The zone is derived here from a CONUS longitude band
+    rather than imported, so the test does not inherit the module's own mapping.
+
+    Restricted to points over the greens because the label is: the tile set is chosen by bbox overlap
+    with the whole course, so it includes neighbours that feed no green, and folding them in widened
+    the claim. The Reserve's t390135.laz spans 2017-12-16..2018-01-21 with no point within 60 m of a
+    green, and the book printed "flown 2017-12-15 to 2018-01-21" for greens flown on two days. The
+    green geometry and the padding are computed here rather than imported, for the same
+    independence reason. See test_flight_date_is_dated_from_the_points_under_the_greens."""
     import datetime as dt
     import laspy
     import numpy as np
@@ -1752,17 +1793,54 @@ def test_the_printed_flight_date_spans_every_point_not_just_the_first_few():
         tz = zone_of(loc.get("lat"), loc.get("lon"))
         if not tiles or not lab:
             continue
+        rings = []
+        try:
+            for e in json.load(open(os.path.join(ROOT, "courses", slug,
+                                                 "osm_geom.json")))["elements"]:
+                if e.get("geometry") and (e.get("tags") or {}).get("golf") == "green":
+                    rings.append([(q["lon"], q["lat"]) for q in e["geometry"]])
+        except Exception:
+            pass
+        if not rings:
+            continue
         lo = hi = None
-        for p in tiles[:2]:                    # two tiles is enough to catch a truncated span
+        # scan until two tiles have actually yielded points over a green; neighbours that cover no
+        # green would otherwise use up the budget and the check would silently pass on nothing
+        used = 0
+        for p in tiles:
+            if used >= 2:
+                break
             with laspy.open(p) as f:
                 if int(getattr(f.header.global_encoding, "gps_time_type", 0)) == 0:
                     continue
+                crs = f.header.parse_crs()
+                if crs is None:
+                    continue
+                from pyproj import Transformer
+                T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+                per_unit = (crs.axis_info[0].unit_conversion_factor if crs.axis_info else 1.0) or 1.0
+                pad = 30.0 / per_unit
+                boxes = []
+                for ring in rings:
+                    xy = [T.transform(lo_, la_) for lo_, la_ in ring]
+                    xs = [c[0] for c in xy]; ys = [c[1] for c in xy]
+                    boxes.append((min(xs) - pad, max(xs) + pad, min(ys) - pad, max(ys) + pad))
+                seen = False
                 for ch in f.chunk_iterator(2_000_000):
-                    t = np.asarray(ch.gps_time); t = t[t > 0]
-                    if len(t):
-                        a, b = float(t.min()), float(t.max())
+                    t = np.asarray(ch.gps_time)
+                    x = np.asarray(ch.x); y = np.asarray(ch.y)
+                    sel = np.zeros(len(t), dtype=bool)
+                    for x0, x1, y0, y1 in boxes:
+                        sel |= (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
+                    sel &= t > 0
+                    if sel.any():
+                        seen = True
+                        tv = t[sel]
+                        a, b = float(tv.min()), float(tv.max())
                         lo = a if lo is None else min(lo, a)
                         hi = b if hi is None else max(hi, b)
+                if seen:
+                    used += 1
         if lo is None:
             continue
         def f2d(v):
@@ -1906,43 +1984,1072 @@ def test_course_json_is_written_atomically():
 
 
 @needs_corpus
-def test_per_hole_bunker_and_water_counts_reconcile_with_the_course():
-    """Each card prints "2B 0W", which a reader takes as this hole's bunkers and water. It was
-    neither: the count came from a 40 m draw corridor, so a bunker between two parallel holes sat in
-    both corridors and was counted on BOTH cards, while one further out was counted on none. Summed
-    per-hole counts came to 168 bunkers on Merion's 122 and 35 on bay-view's 25, and Philadelphia
-    went the other way at 119 of 131.
+def test_each_card_footer_matches_its_own_map():
+    """Each hole card prints "5B 1W" directly under its map. A reader checks that against the shapes
+    on the same card, so the footer must describe THAT MAP.
 
-    Features are now assigned to the single NEAREST hole, within 90 m of it, and counted over the
-    whole course. So the per-hole numbers can never sum to MORE than the course holds, and a feature
-    that belongs to no hole -- a practice bunker, a boundary pond -- is counted nowhere rather than
-    attributed to whichever hole happens to be least far. That bound matters: without it Merion hole 4
-    gained 2W for water it has none of. Drawing still uses the corridor, because a neighbouring bunker
-    that is in play should stay visible."""
+    This test replaces one that asserted the wrong property. Wanting the per-hole counts to sum to no
+    more than the course total, I changed the count to "features whose nearest hole is this one,
+    within 90 m" while drawing still used the 40 m corridor -- and the footer stopped matching its own
+    map on 115 of 198 cards. Merion hole 3 printed "2B" beside eight drawn bunkers; 23 cards printed a
+    ZERO with the feature drawn; 15 printed more than the map showed. The sum is a number nobody
+    computes; the footer under the map is one a 12-year-old reads directly. So the footer counts what
+    is drawn, and a bunker between two parallel holes appears on both cards -- it is in play on both.
+
+    Measured on the shipped HTML rather than on the engine's return value, because the defect was
+    precisely a disagreement between the two."""
     bad = []
+    checked = 0
     for slug in CORPUS:
-        cfg, rh = _engine(slug)
-        cp = os.path.join(ROOT, "courses", slug, "osm_course.json")
-        if not os.path.exists(cp):
+        f = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        if not os.path.exists(f):
             continue
-        course = json.load(open(cp))["elements"]
-        tag = lambda e: e.get("tags") or {}
-        real_b = sum(1 for e in course if tag(e).get("golf") == "bunker" and e.get("geometry"))
-        real_w = sum(1 for e in course
-                     if (tag(e).get("golf") in ("water_hazard", "lateral_water_hazard")
-                         or tag(e).get("natural") == "water") and e.get("geometry"))
-        pb = pw = 0
-        for hn in cfg.HOLE_NUMS:
-            _svg, i = rh.render_hole(hn, cfg.HOLES)
-            pb += i["bunkers"]; pw += i["waters"]
-        # never MORE than the course holds (that is the double-counting defect)...
-        if pb > real_b or pw > real_w:
-            bad.append((slug, "over", pb, real_b, pw, real_w))
-        # ...and not so few that the assignment is dropping most features
-        if real_b and pb < 0.8 * real_b:
-            bad.append((slug, "under", pb, real_b, pw, real_w))
-    assert not bad, ("per-hole counts do not reconcile with the course "
-                     "(slug, kind, printed_bunkers, real, printed_water, real): " + str(bad))
+        html = open(f, encoding="utf-8").read()
+        for panel in re.findall(r'<div class="panel hole">.*?(?=<div class="panel|\Z)', html, re.S):
+            m = re.search(r"(\d+)B (\d+)W", panel)
+            if not m:
+                continue
+            checked += 1
+            footer = (int(m.group(1)), int(m.group(2)))
+            drawn = (panel.count('fill="#efe3b8"'), panel.count('fill="#a9d3ef"'))
+            if footer != drawn:
+                bad.append((slug, footer, drawn))
+    assert checked >= 150, f"only {checked} hole cards examined"
+    assert not bad, (f"{len(bad)} of {checked} cards print a count that contradicts their own map "
+                     f"(slug, footer, drawn): {bad[:6]}")
+
+
+def test_multipolygon_relations_become_drawable_features(tmp_path):
+    """On many courses the fairways are mapped as MULTIPOLYGON RELATIONS, not ways, and the course
+    query only asked for way[...]. Measured live against Overpass: valley-hi has 18 fairway relations
+    and 0 fairway ways, monarch-bay 36, the-reserve 18 -- so those books drew NO fairway at all while
+    every card set's legend promises "fairway (green)". The largest feature of a golf hole was missing
+    from the map.
+
+    Three things had to be right, and each was wrong in turn.
+
+    1. Adding relation[...] to the main query is not sufficient: under `out geom` Overpass answers a
+       relation with bounds and tags only, so the reply held 18 fairways with no geometry that every
+       consumer skipped.
+    2. The recurse-down form `(._;>;); out geom;` does return member geometry, but it pulls every
+       member NODE and does not complete -- four attempts against valley-hi returned 504, 504, 429,
+       504. The working form asks for relation BODIES (tags + member refs) and separately for the
+       member WAYS with inline geometry, then joins them by way id: 1.3 s on the same bbox.
+    3. The flattened rings have to be WRITTEN BACK. fetch() saves osm_course.json before the relation
+       pass runs, so appending to the in-memory dict alone left the file unchanged -- the printed
+       feature counts said 18 fairways while the file every consumer reads had none. Caught by
+       diffing the written file's counts against its backup: identical, no 'fairway' key at all.
+
+    This tests the normalisation and the write-back, offline."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_osm"):
+        sys.modules.pop(m, None)
+    import fetch_osm
+
+    ring = [{"lat": 40.0, "lon": -75.0}, {"lat": 40.0, "lon": -74.999},
+            {"lat": 40.001, "lon": -74.999}, {"lat": 40.0, "lon": -75.0}]
+    inner = [{"lat": 40.0005, "lon": -74.9995}, {"lat": 40.0006, "lon": -74.9994},
+             {"lat": 40.0007, "lon": -74.9995}, {"lat": 40.0005, "lon": -74.9995}]
+    # the shape the working query returns: relation bodies (member refs, NO geometry) plus the member
+    # ways with inline geometry
+    els = [
+        {"type": "relation", "id": 555, "tags": {"golf": "fairway"}, "members": [
+            {"type": "way", "ref": 11, "role": "outer"},
+            {"type": "way", "ref": 12, "role": "outer"},
+            {"type": "way", "ref": 13, "role": "inner"},
+        ]},
+        {"type": "way", "id": 11, "geometry": ring},
+        {"type": "way", "id": 12, "geometry": ring},
+        {"type": "way", "id": 13, "geometry": inner},
+        # the shape Overpass returns for a relation with no members resolved: bounds and tags only
+        {"type": "relation", "id": 556, "tags": {"golf": "fairway"}, "bounds": {}},
+    ]
+    out = fetch_osm._flatten_relations(els)
+
+    assert all(e.get("type") != "relation" for e in out), "no relation may survive flattening"
+    fw = [e for e in out if (e.get("tags") or {}).get("golf") == "fairway"]
+    assert len(fw) == 2, f"expected the 2 OUTER rings as separate ways, got {len(fw)}"
+    assert all(e.get("geometry") for e in fw), "a flattened ring must carry geometry"
+    assert all(e["tags"]["golf"] == "fairway" for e in fw), "the relation's tags must be inherited"
+    assert len({e["id"] for e in fw}) == 2, "each ring needs its own id"
+    assert all(e.get("_from_relation") == 555 for e in fw), "keep the trace back to the relation"
+    # the inner ring must NOT become fairway -- filling a hole in the polygon is worse than omitting
+    assert not any(len(e.get("geometry") or []) and e["geometry"][0]["lat"] == 40.0005 for e in fw), \
+        "inner rings must be skipped"
+
+    # a member way whose geometry never arrived must be reported, not silently dropped -- silence is
+    # how the fairways went missing in the first place
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fetch_osm._flatten_relations([els[0], els[1]])       # way 12 absent
+    assert "WARNING" in buf.getvalue(), \
+        f"a missing outer ring must warn; got: {buf.getvalue()!r}"
+
+    # and main() must write osm_course.json AFTER appending the flattened rings
+    src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+    i = src.index("_flatten_relations(rel['elements'])")
+    tail = src[i:i + 900]
+    assert "os.replace" in tail and "osm_course.json" in tail, \
+        ("the flattened rings must be written back to osm_course.json; appending to the in-memory "
+         "dict alone left every consumer reading a file with no fairways")
+
+    # And the QUERY must actually retrieve member geometry. Checking the whole file for a substring
+    # was a weak test -- the forms appear in explanatory comments too, so gutting the real query still
+    # passed. Look only at the query text between the relation selector and its final out statement.
+    assert 'relation["golf"]' in src, "the course fetch must ask for golf relations"
+    i = src.index('relation["golf"]')
+    j = src.index("out geom;", i)
+    query = src[i:j]
+    assert "out body;" in query and "way(r);" in query, (
+        "the relation query must fetch relation bodies (tags + member refs) AND their member ways "
+        "with geometry, or every fairway arrives without geometry and is skipped. Query was:\n"
+        + query)
+    assert "(._;>;)" not in query, (
+        "the recurse-down form pulls every member node and times out on real course bboxes -- "
+        "four attempts against valley-hi returned 504, 504, 429, 504. Query was:\n" + query)
+
+
+def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000.0,
+                   near_offset_m=0.0):
+    """A tiny LAZ whose points carry known gps_times: some at a green, some far away."""
+    import datetime as dt
+
+    import laspy
+    import numpy as np
+    from pyproj import CRS, Transformer
+
+    gps_epoch = dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)
+    to_gps = lambda d: (d - gps_epoch).total_seconds() + 18 - 1e9   # noqa: E731 - adjusted std GPS
+    crs = CRS.from_epsg(epsg)
+    per_unit = (crs.axis_info[0].unit_conversion_factor if crs.axis_info else 1.0) or 1.0
+    T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    cx = sum(T.transform(lo, la)[0] for lo, la in ring_lonlat) / len(ring_lonlat)
+    cy = sum(T.transform(lo, la)[1] for lo, la in ring_lonlat) / len(ring_lonlat)
+
+    h = laspy.LasHeader(version="1.4", point_format=6)
+    h.global_encoding.gps_time_type = 1            # adjusted standard GPS time
+    h.add_crs(crs)
+    las = laspy.LasData(h)
+    n = 100
+    off_near, off_far = near_offset_m / per_unit, far_offset_m / per_unit
+    las.x = np.concatenate([np.full(n, cx + off_near), np.full(n, cx + off_far)])
+    las.y = np.concatenate([np.full(n, cy), np.full(n, cy + off_far)])
+    las.z = np.zeros(2 * n)
+    las.gps_time = np.concatenate([np.full(n, to_gps(near_utc)), np.full(n, to_gps(far_utc))])
+    las.write(str(path))
+    return str(path)
+
+
+def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
+    """fetch_dem.py (1 m seamless) writes into the SAME dem_hd/ as fetch_dem_hd.py (0.4 m LiDAR) and
+    used to rewrite every hole it was given. So running it without ONLY= silently replaced every
+    0.4 m green with the coarse 1 m one, saying nothing about the better data it had just discarded.
+
+    The books stayed HONEST throughout -- each affected card prints "1 m data" -- but a whole course
+    quietly lost its precision, which is why no gate caught it. Found cold-building Monarch Bay:
+    3,889,124 bytes against the committed 4,973,620, with "1 m data" on greens that have real LiDAR.
+    Verified after the fix on a copy of that course: 12 LiDAR surfaces kept, only the 6 seamless
+    holes rewritten.
+
+    It now FILLS GAPS by default; OVERWRITE=1 is the explicit way to replace a good surface."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_dem as fd
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    def meta(name, **kw):
+        p = tmp_path / name
+        p.write_text(json.dumps(kw))
+        return str(p)
+
+    lidar = {"source": "USGS 3DEP LiDAR ground returns @0.4m", "insufficient": False}
+    # a good LiDAR surface must be kept
+    assert fd.keeps_existing_surface(meta("a.json", **lidar)) is True
+    # ...but not when it is the very gap this stage exists to fill
+    assert fd.keeps_existing_surface(
+        meta("b.json", source=lidar["source"], insufficient=True)) is False
+    # an existing seamless surface may be refreshed
+    assert fd.keeps_existing_surface(
+        meta("c.json", source="USGS 3DEP seamless 1 m @0.5m sampling", insufficient=False)) is False
+    # absent or unreadable: rebuilding is the repair
+    assert fd.keeps_existing_surface(str(tmp_path / "nope.json")) is False
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    assert fd.keeps_existing_surface(str(bad)) is False
+    # and the override must be explicit
+    assert fd.keeps_existing_surface(meta("d.json", **lidar), overwrite=True) is False
+
+    # the loop must actually consult it, or the guard is decoration
+    src = open(os.path.join(ROOT, "fetch_dem.py"), encoding="utf-8").read()
+    assert "keeps_existing_surface(" in src.split("def keeps_existing_surface", 1)[1], \
+        "fetch_dem.py defines the guard but never calls it"
+
+
+def test_a_missing_green_surface_explains_itself(tmp_path):
+    """render_green.render() died with a bare FileNotFoundError from json.load, several frames deep,
+    naming a path and nothing else. The situation it describes is ordinary, not exotic:
+    fetch_dem_hd.py builds only the greens with usable 0.4 m LiDAR ground returns, and the ones it
+    refuses need the 1 m seamless fallback from fetch_dem.py. Monarch Bay has six such holes, so
+    running generate.py without fetch_dem.py hits this every time -- which is how it was found,
+    cold-building that course.
+
+    Every other stage here explains itself and names the command to run; this one now does too."""
+    import shutil
+    import subprocess
+
+    slug = "_testmsg"
+    d = os.path.join(ROOT, "courses", slug)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(os.path.join(d, "dem_hd"))
+    try:
+        with open(os.path.join(ROOT, "courses", a_course(), "course.json"), encoding="utf-8") as f:
+            j = json.load(f)
+        j["slug"] = slug
+        with open(os.path.join(d, "course.json"), "w", encoding="utf-8") as f:
+            json.dump(j, f, indent=2)
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import os;os.environ['COURSE']=%r;import render_green;render_green.render(1)" % slug],
+            cwd=ROOT, capture_output=True, text=True)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, "a missing surface must not silently succeed"
+        assert "FileNotFoundError" not in out, f"still a raw traceback:\n{out[-600:]}"
+        assert "no green surface" in out, out[-600:]
+        # it must name the hole and both stages that produce a surface
+        assert "hole 1" in out and "fetch_dem_hd.py" in out and "fetch_dem.py" in out, out[-600:]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@needs_corpus
+def test_every_green_surface_records_its_gate_verdict():
+    """Each dem_hd meta must state what the honesty gate concluded -- nan_frac and insufficient --
+    not leave them absent.
+
+    Six of 198 did: Monarch Bay's seamless greens (holes 1, 9, 10, 16, 17, 18) carried neither key,
+    because they were written by a version of fetch_dem.py that predated the gate being added, and
+    were never regenerated after it was. `None` is falsy, so they rendered exactly as
+    insufficient=False would -- and independently recomputing the gate from the committed surfaces
+    confirms False is the right answer (nan_frac 0.0000 against a 0.02 limit). Nothing printed was
+    wrong, and no gate was bypassed either: render_green.py recomputes nan_frac from the surface
+    itself rather than trusting the meta.
+
+    But a record whose whole purpose is to say what was measured must not be silent about it -- an
+    auditor reading hole01.json would have found no verdict at all. Regenerating those six left all
+    18 surfaces byte-identical and the book identical at 4,973,620 bytes, which is what made the fix
+    safe to apply.
+    """
+    missing = []
+    checked = 0
+    for slug in CORPUS:
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            with open(p, encoding="utf-8") as f:
+                m = json.load(f)
+            checked += 1
+            for key in ("nan_frac", "insufficient"):
+                if m.get(key) is None:
+                    missing.append(f"{slug} hole {m.get('hole')}: {key} absent "
+                                   f"(source={str(m.get('source'))[:34]})")
+    assert checked, "no green surfaces to check"
+    assert not missing, (
+        f"{len(missing)} green surface(s) record no gate verdict -- regenerate them "
+        f"(fetch_dem_hd.py, then fetch_dem.py for the gaps):\n  " + "\n  ".join(missing[:12]))
+
+
+@needs_corpus
+def test_derived_artifacts_are_not_older_than_their_inputs():
+    """The pipeline is a chain -- osm_geom/osm_course -> dem_hd -> trees_lidar -> greenbook.html --
+    and re-running one stage without the ones downstream leaves a book built from mixed vintages.
+
+    That happened, and only the cold-build test caught it. Re-fetching OSM to recover the fairways
+    changed which polygons trees may sit on; the books were rebuilt but fetch_trees.py was not, so 7
+    courses drew trees that the new fairways should have dropped. Micke Grove was the measurable
+    case: 5,657 markers committed against 5,642 on a fresh run, exactly the 15 markers now falling on
+    newly-visible fairway.
+
+    Nothing printed was untrue -- those trees are really there -- but the artifacts no longer matched
+    their inputs, and byte-for-byte reproducibility is the property that makes the provenance claims
+    checkable. mtime is a weak signal (a copied or freshly checked-out tree rewrites it), so this
+    reports rather than asserts unless the ordering is violated by a wide margin."""
+    SLACK = 120          # seconds; tolerate same-run jitter between stages
+    chain = [
+        ("osm_course.json", "trees_lidar.json"),
+        ("osm_geom.json", "trees_lidar.json"),
+        ("osm_geom.json", "greenbook.html"),
+        ("trees_lidar.json", "greenbook.html"),
+    ]
+    problems = []
+    checked = 0
+    for slug in CORPUS:
+        cdir = os.path.join(ROOT, "courses", slug)
+        for src, derived in chain:
+            sp, dp = os.path.join(cdir, src), os.path.join(cdir, derived)
+            if not (os.path.isfile(sp) and os.path.isfile(dp)):
+                continue
+            checked += 1
+            lag = os.path.getmtime(sp) - os.path.getmtime(dp)
+            if lag > SLACK:
+                problems.append(f"{slug}: {derived} is {lag / 60:.0f} min older than {src}")
+    assert checked, "no course has both an input and a derived artifact to compare"
+    assert not problems, (
+        "derived artifacts predate their inputs -- re-run the downstream stages:\n  "
+        + "\n  ".join(problems)
+        + "\n  (osm -> fetch_dem_hd.py -> fetch_trees.py -> generate.py -> tools/export_pdf.py)")
+
+
+def test_no_green_is_bound_to_two_holes():
+    """geo.match_green caps how FAR a hole may reach for a green (40 m, after bay-view hole 9 bound
+    to hole 7's green 47.8 m away). It cannot catch the NEAR case, and the near case is likelier: if
+    a hole's own green drops out of the OSM extract while a neighbour's green sits inside the cap,
+    both holes bind there, both cards print that surface, and one is a confident read of the wrong
+    putting green. match_green is called once per hole and has no view of the others.
+
+    Measured across all 11 built courses: 0 greens bound to more than one hole, worst legitimate bind
+    11.1 m -- so the guard only ever fires on a real fault."""
+    for m in ("geo",):
+        sys.modules.pop(m, None)
+    import geo
+
+    g1 = {"id": 101, "geometry": [{"lat": 1.0, "lon": 2.0}]}
+    g2 = {"id": 102, "geometry": [{"lat": 1.0, "lon": 2.001}]}
+    geo.assert_one_green_per_hole({1: g1, 2: g2}, label="t")          # distinct -> quiet
+
+    with pytest.raises(SystemExit) as e:
+        geo.assert_one_green_per_hole({7: g1, 9: g1}, label="bay-view")
+    msg = str(e.value)
+    assert "hole 7" in msg and "hole 9" in msg and "101" in msg, msg
+    assert "wrong putting surface" in msg, "the message must say what the consequence is"
+
+    # greens with no id must still be told apart by identity, not silently collapsed
+    a, b = {"geometry": []}, {"geometry": []}
+    geo.assert_one_green_per_hole({1: a, 2: b})
+    with pytest.raises(SystemExit):
+        geo.assert_one_green_per_hole({1: a, 2: a})
+
+    # and the builders must actually call it, or the invariant is unenforced
+    for mod in ("fetch_dem_hd.py", "fetch_dem.py"):
+        src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
+        assert "assert_one_green_per_hole" in src, f"{mod} never checks for a shared green"
+
+    # fetch_dem.py used to name a local list `geo`, shadowing the module; it worked only because
+    # `import geo` sat inside the loop. Moving that import to the top -- the obvious tidy-up -- would
+    # have made geo.match_green() an AttributeError on a list from the second hole onward.
+    fd = open(os.path.join(ROOT, "fetch_dem.py"), encoding="utf-8").read()
+    assert "for p in geo]" not in fd, "a local named `geo` is shadowing the geo module again"
+
+    # the real corpus must satisfy it
+    for slug in CORPUS:
+        seen = {}
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            with open(p, encoding="utf-8") as f:
+                meta = json.load(f)
+            gid, hn = meta.get("green_id"), meta.get("hole")
+            if gid is None:
+                continue
+            assert gid not in seen, f"{slug}: green {gid} bound to holes {seen[gid]} and {hn}"
+            seen[gid] = hn
+
+
+@needs_corpus
+def test_each_tee_column_carries_the_right_tee_name():
+    """A card prints a yardage under a TEE NAME, and a junior picks their tee by that name. Two
+    separate structures have to agree for that to be true: `hole_cols` names the per-hole yardage
+    columns, and `tees` carries each set's total with its rating and slope. Nothing checked that the
+    column called "White" really is the White column.
+
+    The mapping is not positional, which is what makes this worth asserting: Philadelphia's per-hole
+    columns correspond to declared tee sets 0, 1, 2 and 4, and The Reserve's to 0, 1, 2, 4 and 6,
+    because both courses declare COMBO tees (Blu/Wht, Wht/Grn) that have a scorecard total but no
+    per-hole column. Mapping column i to tees[i] would therefore print "Green" over the Gold
+    yardages at Philadelphia. Measured across the corpus: 51 name-to-column pairs, all consistent.
+
+    Also checks featured_tee/secondary_tee -- the two names printed on every hole card -- actually
+    name per-hole columns, since config.py resolves them with TEES.index() and would otherwise be
+    reading a yardage from the wrong column."""
+    pairs = 0
+    problems = []
+    for slug in CORPUS:
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as f:
+            j = json.load(f)
+        holes = j.get("holes") or {}
+        cols = (j.get("hole_cols") or [])[2:]
+        tees = j.get("tees") or []
+        if not holes or not cols:
+            continue
+        ks = sorted(holes, key=lambda x: int(x))
+        ncol = min(len(holes[k]) for k in ks) - 2
+        if len(cols) != ncol:
+            problems.append(f"{slug}: hole_cols names {len(cols)} column(s), rows carry {ncol}")
+            continue
+        declared = {t.get("name"): t.get("yards") for t in tees}
+        for i, name in enumerate(cols):
+            total = sum(holes[k][2 + i] for k in ks)
+            if name not in declared:
+                problems.append(f"{slug}: column {name!r} is absent from the tee table")
+            elif isinstance(declared[name], int):
+                pairs += 1
+                if total != declared[name]:
+                    problems.append(
+                        f"{slug}: column {name!r} sums to {total} but the tee table says "
+                        f"{declared[name]} -- one of the two printed numbers is wrong")
+        for field in ("featured_tee", "secondary_tee"):
+            v = j.get(field)
+            if v is not None and v not in cols:
+                problems.append(f"{slug}: {field}={v!r} is not one of the per-hole columns {cols}")
+    assert not problems, "tee labelling disagrees with the tee table:\n  " + "\n  ".join(problems)
+    assert pairs >= 20, f"only {pairs} tee/column pairs checked -- the corpus should offer far more"
+
+
+def test_one_shared_rule_decides_what_may_be_distributed():
+    """legal/03_PROVENANCE_BY_COURSE.md marks each course Distributed or Personal, and its own legend
+    defines Personal as *do not distribute*; legal/00_SUMMARY_AND_VERDICT.md names Poppy Ridge as
+    personal-use only. That rule lived inside tools/gen_provenance.py, where it decided a table
+    column and nothing else -- so when a second publisher appeared (the iOS app's exporter) it
+    bundled every course it found, Poppy Ridge included, and would have shipped a book the project's
+    own legal record says must not be distributed.
+
+    It now lives in distribution.py and both the generator and any publisher ask it, so the two
+    cannot drift. An App Store build, a web download and a handed-out printout are all
+    distribution."""
+    for m in ("distribution",):
+        sys.modules.pop(m, None)
+    import distribution
+
+    ok, label, why = distribution.distribution_status({"slug": "x"})
+    assert ok is True and label == "Distributed" and why == ""
+    ok2, label2, why2 = distribution.distribution_status({"slug": "y", "build_mode": "yardage"})
+    assert ok2 is False and label2 == "Personal" and why2, "a Personal course needs a stated reason"
+    assert distribution.is_distributable({"slug": "x"}) is True
+    assert distribution.is_distributable({"slug": "y", "build_mode": "yardage"}) is False
+    assert distribution.is_distributable({}) is True, \
+        "an ordinary course with no build_mode is distributable; this documents the default"
+
+    # It must FAIL CLOSED, because this decides whether a book may be handed out.
+    # None means the course record could not be read -- an exact == "yardage" test answered
+    # "Distributed" for that, i.e. took a publish decision on no information at all.
+    assert distribution.is_distributable(None) is False, \
+        "an unreadable course record must not resolve to publishable"
+    # ...and the mode must be normalised. "YARDAGE" and " yardage" both answered "Distributed",
+    # so a stray capital or space in a HAND-EDITED course.json would have shipped a personal-use
+    # book. course.json is hand-edited: it holds the scorecard transcription.
+    for variant in ("YARDAGE", " yardage", "Yardage", "yardage\n", "\tYardage "):
+        assert distribution.is_distributable({"build_mode": variant}) is False, \
+            f"build_mode={variant!r} must still read as Personal"
+
+    # the generator must consult it rather than re-deriving the rule
+    src = open(os.path.join(ROOT, "tools", "gen_provenance.py"), encoding="utf-8").read()
+    assert "distribution.distribution_status" in src, \
+        "gen_provenance.py must use the shared rule, or the record can disagree with what ships"
+    assert 'status = "Personal" if' not in src, "the inline copy of the rule must be gone"
+
+    # and the real corpus must agree with the record: every course the generator calls Personal
+    # really is in yardage mode, and vice versa
+    if not CORPUS:
+        return
+    doc = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
+    if not os.path.isfile(doc):
+        return
+    rows = [ln for ln in open(doc, encoding="utf-8")
+            if ln.startswith("| ") and not ln.startswith("| Course |")]
+    n_personal_doc = sum(1 for ln in rows if "| Personal |" in ln)
+    n_personal_data = 0
+    for slug in sorted({os.path.basename(os.path.dirname(p))
+                        for p in glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))}):
+        if slug.startswith("_"):
+            continue
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as f:
+            if not distribution.is_distributable(json.load(f)):
+                n_personal_data += 1
+    assert n_personal_doc == n_personal_data, (
+        f"the record marks {n_personal_doc} course(s) Personal but the shared rule says "
+        f"{n_personal_data}")
+
+
+def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
+    """Nothing checked that a downloaded tile's DATA reaches the greens. A tile can be present,
+    correctly named, and hold no points where a green is -- and the green then silently falls back to
+    the 1 m seamless DEM even though 0.4 m LiDAR for it exists.
+
+    Castlewood Hill shipped holes 14 and 16 that way. Measured: both greens fall in grid cell
+    w6153n2055; the copy on disk (CA_AlamedaCo_1_2021, 30,648,617 bytes) has a data footprint of only
+    x 6153000..6153470 -- a 470-ft strip of a 3000-ft cell -- while the greens sit at x 6155652 and
+    x 6155938, some 2,200-2,500 ft east of that edge, and the next tile east starts at x 6156000.
+    CA_AlamedaCo_3_2021 holds a 689,926,608-byte copy of the same cell, 22x larger, which was skipped
+    as "cached" for sharing a filename.
+
+    The check reads each tile's HEADER bbox, which records the extent of the points actually in the
+    file rather than the nominal grid cell -- that distinction is the whole bug. It reports rather
+    than refuses: a bayside green over water genuinely has no returns, and the 1 m fallback with a
+    "1 m data" label is the honest outcome. What it stops is the silent version."""
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    import lidar_coverage as lc
+
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+
+    def ring(dlon=0.0, dlat=0.0, scale=1.0):
+        r = d * scale
+        return [{"lon": lon + dlon - r, "lat": lat + dlat - r},
+                {"lon": lon + dlon + r, "lat": lat + dlat - r},
+                {"lon": lon + dlon + r, "lat": lat + dlat + r},
+                {"lon": lon + dlon - r, "lat": lat + dlat + r}]
+
+    (tmp_path / "laz").mkdir()
+    # green 1 sits inside the tile's data. Green 2 is 3 km away, like Castlewood Hill's 14 and 16.
+    # Green 3 is the PARTIAL case -- its centroid is inside the data but its edges run past it, which
+    # is what Monarch Bay's green 689151368 looks like (29 of 95 nodes uncovered). A check that only
+    # tested centroids would call green 3 covered and print a read for ground it never measured.
+    (tmp_path / "osm_geom.json").write_text(json.dumps({"elements": [
+        {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring()},
+        {"type": "way", "id": 2, "tags": {"golf": "green"}, "geometry": ring(dlon=0.035)},
+        {"type": "way", "id": 3, "tags": {"golf": "green"}, "geometry": ring(scale=4.0)},
+    ]}))
+
+    # with no tiles at all the check must stay quiet rather than claim everything is missing
+    assert lc.uncovered_greens(str(tmp_path)) == []
+
+    def write_tile(path, ring_pts, pad_m):
+        """A LAZ whose points span ring_pts' bbox grown by pad_m -- so its HEADER footprint does."""
+        import laspy
+        import numpy as np
+        from pyproj import CRS, Transformer
+        crs = CRS.from_epsg(26910)
+        T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        xy = [T.transform(q["lon"], q["lat"]) for q in ring_pts]
+        x0 = min(c[0] for c in xy) - pad_m; x1 = max(c[0] for c in xy) + pad_m
+        y0 = min(c[1] for c in xy) - pad_m; y1 = max(c[1] for c in xy) + pad_m
+        h = laspy.LasHeader(version="1.4", point_format=6)
+        h.global_encoding.gps_time_type = 1
+        h.add_crs(crs)
+        las = laspy.LasData(h)
+        las.x = np.array([x0, x1, x0, x1]); las.y = np.array([y0, y0, y1, y1])
+        las.z = np.zeros(4)
+        las.gps_time = np.full(4, 1.32e9)
+        las.write(str(path))
+
+    write_tile(tmp_path / "laz" / "a.laz", ring(), 5.0)
+
+    bad = lc.uncovered_greens(str(tmp_path))
+    by_id = {gid: (o, t) for gid, o, t in bad}
+    assert set(by_id) == {2, 3}, (
+        f"flagged {sorted(by_id)}; expected green 2 (3 km away) and green 3 (partially outside), "
+        f"with green 1 inside the tile's data")
+    assert by_id[2][0] == by_id[2][1], f"green 2 is wholly outside: {by_id[2]}"
+    assert 0 < by_id[3][0] < by_id[3][1], (
+        f"green 3 is PARTIALLY outside: {by_id[3]}. Its centroid is inside the data, so a check that "
+        f"sampled only the centroid would pass it -- and print a read for unmeasured ground.")
+
+    # the footprint must come from the tile HEADER, i.e. where the points are -- not from a
+    # nominal cell. A header covering only a sliver must not vouch for the whole neighbourhood.
+    foot = lc.tile_footprints(str(tmp_path / "laz"))
+    assert len(foot) == 1
+    _name, _crs, x0, x1, y0, y1 = foot[0]
+    assert (x1 - x0) < 150 and (y1 - y0) < 150, \
+        (f"footprint {x1 - x0:.0f}x{y1 - y0:.0f} m is not the extent of the points written -- a "
+         f"nominal 3000-ft cell would be ~914 m, which is exactly the wrong answer")
+
+    # HOLE centrelines are checked too, not just greens. The greens-only check flagged Castlewood
+    # Hill's holes 14 and 16 but not 15 and 17, whose centrelines run through the same gap -- and the
+    # centreline is where fetch_trees.py looks for canopy returns, so those holes lose their trees
+    # with nothing said. Measured: 9 of 11 courses have every centreline node inside the data.
+    els = json.loads((tmp_path / "osm_geom.json").read_text())["elements"]
+    els.append({"type": "way", "id": 90, "tags": {"golf": "hole", "ref": "7"},
+                "geometry": [{"lon": lon, "lat": lat},                    # inside
+                             {"lon": lon + 0.035, "lat": lat}]})          # 3 km away, outside
+    els.append({"type": "way", "id": 91, "tags": {"golf": "hole", "ref": "8"},
+                "geometry": [{"lon": lon, "lat": lat}]})                  # wholly inside
+    (tmp_path / "osm_geom.json").write_text(json.dumps({"elements": els}))
+    hb = lc.uncovered_holes(str(tmp_path))
+    assert [r for r, _o, _t in hb] == ["7"], \
+        f"expected only hole 7 flagged, got {hb} -- hole 8 is entirely inside the data"
+    assert hb[0][1] == 1 and hb[0][2] == 2, f"hole 7 has 1 of 2 nodes outside, got {hb[0]}"
+
+    # and it must REPORT, not raise: a green over water legitimately has no returns
+    status, out, holes_out = lc.report(str(tmp_path))
+    assert status == "checked" and out == bad and holes_out == hb
+
+    # "nothing flagged" must never be reported as "verified covered" when NOTHING WAS CHECKED. With
+    # zero tiles on disk this printed "all 1 green(s) sit inside the downloaded tiles' data" and
+    # exited 0 -- asserting a coverage it had not looked at. Poppy Ridge reaches that path today (no
+    # LAZ at all), as would any course built purely on the 1 m seamless DEM.
+    empty = tmp_path / "empty"
+    (empty / "laz").mkdir(parents=True)
+    (empty / "osm_geom.json").write_text(json.dumps({"elements": [
+        {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring()}]}))
+    st, bad0, _ = lc.report(str(empty))
+    assert bad0 == [], bad0
+    assert st != "checked", \
+        f"status {st!r}: with no tiles on disk the check must say so, not imply coverage"
+    assert "tile" in st.lower(), st
+
+    # ...and the same when the greens cannot be placed
+    nogeom = tmp_path / "nogeom"
+    (nogeom / "laz").mkdir(parents=True)
+    write_tile(nogeom / "laz" / "a.laz", ring(), 5.0)
+    st2, _, _ = lc.report(str(nogeom))
+    assert st2 != "checked" and "green" in st2.lower(), st2
+
+    # both fetchers must run the check, or a missing tile copy goes unnoticed again
+    for mod in ("fetch_lidar.py", "fetch_lidar_alameda.py"):
+        src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
+        assert "lidar_coverage.report" in src, f"{mod} never verifies its tiles against the greens"
+        # ...and both must sweep stale .part files. A transfer killed outright leaves one that no
+        # exception handler runs to remove; observed for real when a Merion fetch was killed mid-tile
+        # and left a 26 MB .part sitting in laz/. It is never valid data -- a .part is only renamed
+        # into place after its size is checked against TNM.
+        assert "sweep_partials(" in src, \
+            f"{mod} must remove stale partial downloads before deciding what is cached"
+
+    # ...and the sweep itself must actually delete them. Asserting the source text of two
+    # byte-identical copies is what kept the duplication alive; test the behaviour once instead.
+    import fetch_lidar as _fl
+    d = tmp_path / "sweep"
+    d.mkdir()
+    (d / "a.laz.part").write_bytes(b"\0" * 2048)
+    (d / "keep.laz").write_bytes(b"\0" * 2048)
+    _fl.sweep_partials(str(d))
+    left = sorted(p.name for p in d.iterdir())
+    assert left == ["keep.laz"], f"sweep_partials left {left}"
+
+
+def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
+    """The printed flight range was the union over WHOLE LAZ tiles, and the tile set is chosen by
+    bbox overlap with the entire course -- so it routinely includes neighbours that cover no green.
+
+    Measured at The Reserve: t390135.laz spans 2017-12-16..2018-01-21 and holds NO point within 60 m
+    of any green (its nearest green is 1336 m from its earliest point and 1382 m from its latest),
+    while the three tiles that do feed greens span only 2017-12-16..2017-12-17. The book printed
+    "flown 2017-12-15 to 2018-01-21" -- 38 days -- for greens flown on two. That line is the one
+    claim the whole honesty argument rests on, so it has to describe the returns the surfaces were
+    actually built from.
+
+    Uses real synthetic LAZ tiles so the gps_time decode is exercised, not mocked."""
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    import datetime as dt
+
+    os.environ["COURSE"] = a_course()
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    for m in ("config", "lidar_dates"):
+        sys.modules.pop(m, None)
+    try:
+        import lidar_dates as ld
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+    ring = [(lon - d, lat - d), (lon + d, lat - d), (lon + d, lat + d), (lon - d, lat + d)]
+    near = dt.datetime(2017, 12, 16, 20, 0, tzinfo=dt.timezone.utc)
+    far = dt.datetime(2018, 1, 21, 20, 0, tzinfo=dt.timezone.utc)
+
+    # metric CRS: half the points sit on the green, half 2 km away on a much later day
+    f = _synthetic_laz(tmp_path / "mixed.laz", 26910, ring, near, far)
+
+    whole = ld.tile_dates(f)
+    assert whole is not None
+    assert whole[0].date() == near.date() and whole[1].date() == far.date(), \
+        "without green geometry the whole-tile range should still span both days"
+    assert whole[2] == 0, "no rings supplied -> no point is known to be over a green"
+
+    over = ld.tile_dates(f, [ring])
+    assert over is not None
+    first, last, npts, crs_ok, wfirst, wlast = over
+    assert npts == 100 and crs_ok is True, (npts, crs_ok)
+    # the WHOLE-tile range must still span both days even though first/last are narrowed to the
+    # green. main() builds its "over whole tiles the range would be" comparison from these, and it
+    # used to build it from the narrowed first/last -- understating the very range it contrasts with.
+    assert wfirst.date() == near.date() and wlast.date() == far.date(), (wfirst, wlast)
+    assert first.date() == near.date() and last.date() == near.date(), (first, last)
+    assert first.date() == near.date(), \
+        (f"dated {first.date()}..{last.date()}; the 2018-01-21 points are 2 km from the green and "
+         f"must not widen the range -- this is The Reserve's 38-day label")
+
+    # a tile that covers NO green must report near=False so the caller can exclude it entirely
+    far_ring = [(lon + 0.5 + a, lat + 0.5 + b) for a, b in
+                ((-d, -d), (d, -d), (d, d), (-d, d))]
+    none_over = ld.tile_dates(f, [far_ring])
+    assert none_over[2] == 0, "a tile with no points over a green must report none"
+    assert none_over[3] is True, "the greens WERE placeable here; only the points are absent"
+
+    # The pad must be converted into the CRS's own units. Callippe's tiles are in US survey feet, so
+    # treating 30 as feet shrinks the collar to 9.1 m and drops points genuinely on the green's
+    # collar. Use a TINY ring so the pad -- not the green's own extent -- decides: a point 20 m out
+    # is inside a 30 m collar and outside a 9.1 m one.
+    tiny = 0.00002
+    small_ring = [(lon - tiny, lat - tiny), (lon + tiny, lat - tiny),
+                  (lon + tiny, lat + tiny), (lon - tiny, lat + tiny)]
+    ft = _synthetic_laz(tmp_path / "ftus.laz", 2227, small_ring, near, far, near_offset_m=20.0)
+    r = ld.tile_dates(ft, [small_ring])
+    assert r[2] == 100, \
+        (f"found {r[2]} points 20 m from the green in a ftUS tile; the {ld.GREEN_PAD_M:g} m pad was "
+         f"probably not converted from metres")
+    assert r[0].date() == near.date() and r[1].date() == near.date()
+
+    # and a non-feeding tile must be dropped from the range, not folded into it
+    src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
+    i = src.index("if rings and not nnear:")
+    block = src[i:src.index("per_tile[name]", i)]   # scoped structurally, not by a character budget
+    assert "continue" in block and "NOT counted" in block, \
+        "a tile with no points over a green must be excluded from the printed flight range"
+
+
+def test_project_choice_is_judged_on_the_greens_not_the_bounding_box(tmp_path):
+    """Ranking surveys by how much of the rectangular bbox they cover punished exactly the surveys
+    we want. Monarch Bay is on San Francisco Bay, so about a quarter of its bbox is open water that
+    no land survey covers: CA_AlamedaCounty_2021_B21 scored 74.9% and was excluded by the 95% gate,
+    while ARRA_CA_SANFRANCOAST_2010 scored 100% and won. A rebuild would have fetched 2010 elevation
+    for a course whose book is built on the 2021 survey (flown 2019-08-14).
+
+    Coverage is now measured over the GREENS -- the thing the LiDAR exists to build -- and the gate
+    is a substantial majority rather than near-completeness, because the two failure modes are not
+    symmetric: a green the survey misses falls back to the 1 m seamless DEM and its card says
+    "1 m data", whereas a decade-old survey silently prints stale slope as current.
+
+    Built from synthetic geometry so it does not need the network."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar as fl
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    assert fl.GREEN_COVERAGE_GOOD <= 0.9, \
+        (f"the gate is {fl.GREEN_COVERAGE_GOOD}; Monarch Bay's 2021 survey reaches 18 of 20 greens "
+         f"(0.90), so a gate above that re-excludes it")
+
+    S, W, N, E = fl.S, fl.W, fl.N, fl.E
+    mx, my = (W + E) / 2, (S + N) / 2
+    # ten greens in the WEST half of the bbox; the east half stands in for open water
+    cents = [(W + (mx - W) * (i + 0.5) / 10, my) for i in range(10)]
+
+    def tile(x0, x1, y0, y1):
+        return {"downloadURL": "https://x/Projects/P/LAZ/t.laz",
+                "boundingBox": {"minX": x0, "maxX": x1, "minY": y0, "maxY": y1}}
+
+    # recent survey: land only -- all 10 greens, but only half the bbox
+    recent = [tile(W, mx, S, N)]
+    # old survey: the whole bbox, water included
+    old = [tile(W, E, S, N)]
+
+    assert fl._green_coverage(recent, cents) == 1.0
+    assert fl._green_coverage(old, cents) == 1.0
+    assert fl._coverage(recent) < 0.6, "the land-only survey should score poorly on the bbox"
+    assert fl._coverage(old) > 0.95
+
+    # choose_project reads the bound course's real greens; substitute the synthetic ones. If it
+    # stopped consulting them at all it would fall back to bbox coverage and the assertions below
+    # would fail, which is the point.
+    real_cents = fl._green_centroids
+    fl._green_centroids = lambda: cents
+    try:
+        picked, scored, _ = fl.choose_project({"CA_New_2021_B21": recent,
+                                               "ARRA_CA_OLD_2010": old})
+        assert picked == "CA_New_2021_B21", \
+            (f"picked {picked}: the newer survey covers every green and lost on bbox coverage "
+             f"alone -- this is the Monarch Bay regression")
+
+        # a recent survey that misses MOST greens must still lose to the old one that covers them
+        clip = [tile(W, W + (mx - W) * 0.2, S, N)]
+        assert fl._green_coverage(clip, cents) < fl.GREEN_COVERAGE_GOOD
+        picked2, _, _ = fl.choose_project({"CA_New_2021_B21": clip, "ARRA_CA_OLD_2010": old})
+        assert picked2 == "ARRA_CA_OLD_2010", \
+            f"picked {picked2}: a survey reaching only 20% of the greens must not win on recency"
+
+        # an undated project must not be treated as ancient, and must not crash the ranking
+        picked3, _, _ = fl.choose_project({"CA_Unnamed_Survey": old, "CA_New_2021_B21": recent})
+        assert picked3 == "CA_New_2021_B21", picked3
+
+        # SAME survey year, both above the floor: the tie-break must use the metric we ranked by.
+        # It used bbox coverage, so a survey feeding every green (greens 1.00, bbox 0.62) lost to one
+        # missing a green but filling the rectangle (greens 0.90, bbox 0.95) -- the same
+        # bbox-over-greens mistake the ranking was changed to stop making.
+        wide = [tile(W + (E - W) * 0.06, E, S, N)]
+        narrow = [tile(W, W + (E - W) * 0.62, S, N)]
+        spread = [(W + (E - W) * 0.6 * (i + 0.5) / 10, my) for i in range(10)]
+        fl._green_centroids = lambda: spread
+        gn, gw = fl._green_coverage(narrow, spread), fl._green_coverage(wide, spread)
+        bn, bw = fl._coverage(narrow), fl._coverage(wide)
+        assert gn > gw and bn < bw, (gn, gw, bn, bw)   # the conflict this test needs
+        assert gw >= fl.GREEN_COVERAGE_GOOD, "both must clear the floor or the tie-break never runs"
+        picked4, _, _ = fl.choose_project({"CA_Narrow_2021_B21": narrow, "CA_Wide_2021_B21": wide})
+        assert picked4 == "CA_Narrow_2021_B21", \
+            f"picked {picked4}: same year, so the tie-break must prefer the survey feeding more greens"
+    finally:
+        fl._green_centroids = real_cents
+
+
+def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
+    """One geographic cell can appear in several sub-projects of the same USGS project, flown
+    separately, each holding only the points in its own footprint. The download urls differ only in
+    the sub-project directory, so naming the local file by url basename gave both copies the SAME
+    name: the first downloaded, the second reported "cached" and thrown away.
+
+    Measured live at Callippe: 8 of 20 cells have two copies, and the two copies of w6168n2055 have
+    different bounding boxes (CA_AlamedaCo_3_2021 reaches west to -121.85963, CA_AlamedaCo_1_2021
+    east to -121.84912), so they are complementary strips -- 190,503,168 bytes of ground returns
+    dropped on the floor for that one cell.
+
+    Also asserts the cache is matched by SIZE, not by name: existing courses were fetched under an
+    older naming scheme, and re-downloading a copy that is already on disk under another name stores
+    it twice, which inflates the pts/m2 the legal provenance table publishes."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar as fl
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    base = "USGS_LPC_CA_X_2021_B21_w6168n2055.laz"
+    root = "https://x/Projects/CA_X_2021_B21"
+    tiles = [{"downloadURL": f"{root}/CA_XCo_3_2021/LAZ/{base}", "sizeInBytes": 190503168},
+             {"downloadURL": f"{root}/CA_XCo_1_2021/LAZ/{base}", "sizeInBytes": 91675672},
+             {"downloadURL": f"{root}/CA_XCo_1_2021/LAZ/USGS_LPC_CA_X_2021_B21_w6162n2052.laz",
+              "sizeInBytes": 317568432}]
+    laz = tmp_path / "laz"
+    laz.mkdir()
+
+    todo, cached = fl.plan_downloads(tiles, str(laz))
+    assert cached == 0
+    names = [n for _, n in todo]
+    assert len(names) == 3, f"every copy must be planned, got {names}"
+    assert len(set(names)) == 3, f"two copies of one cell collided on one filename: {names}"
+    # the two copies of the same cell must map to different files, and both must still be findable
+    same = sorted(n for _, n in todo if "w6168n2055" in n)
+    assert len(same) == 2 and same[0] != same[1], same
+    assert all(n.lower().endswith(".laz") for n in names), names
+
+    # size-based cache matching: write the two cell copies under the OTHER one's name.
+    # SPARSE -- plan_downloads only ever calls os.path.getsize, and materialising these for real
+    # cost ~572 MiB of tmpdir and a 317 MB peak allocation on every run.
+    for _, n in todo:
+        want = next(t["sizeInBytes"] for t, nn in todo if nn == n)
+        with open(laz / n, "wb") as fh:
+            fh.truncate(want)
+    todo2, cached2 = fl.plan_downloads(tiles, str(laz))
+    assert cached2 == 3 and not todo2, f"already-present copies re-scheduled: {todo2}"
+
+    # a file of the wrong size must NOT satisfy the cache -- that is a truncated download
+    with open(laz / same[0], "wb") as fh:
+        fh.truncate(12345)
+    todo3, _ = fl.plan_downloads(tiles, str(laz))
+    assert len(todo3) == 1, f"a truncated tile must be re-fetched, got {todo3}"
+
+    # a duplicate URL in the TNM listing is ONE file, not two copies of a cell. Grouping by basename
+    # gave the second entry a __CoN name and downloaded the identical tile twice, doubling its points
+    # -- which inflates the pts/m2 the legal provenance table publishes. Live TNM returns no
+    # duplicates today (10/40/9 urls, 0 repeats across three courses), so this is a latent guard
+    # against an API that has already surprised us with a 200-item cap and fiscal-year codes.
+    dupe = tmp_path / "dupe"
+    dupe.mkdir()
+    one = {"downloadURL": f"{root}/CA_XCo_1_2021/LAZ/{base}", "sizeInBytes": 91675672}
+    todo_d, cached_d = fl.plan_downloads([one, dict(one)], str(dupe))
+    assert len(todo_d) == 1, f"the same url twice must yield one download, got {[n for _, n in todo_d]}"
+    assert cached_d == 0
+
+    # nor may a file of the RIGHT size but a different cell. Sizes within one course's laz/ are all
+    # distinct in practice (the only duplicates on disk are the same tile shared by two neighbouring
+    # courses), but accepting a cross-cell match would silently drop a tile we need.
+    other = tmp_path / "other"
+    other.mkdir()
+    with open(other / "USGS_LPC_CA_X_2021_B21_w9999n9999.laz", "wb") as fh:
+        fh.truncate(317568432)
+    todo4, cached4 = fl.plan_downloads([tiles[2]], str(other))
+    assert cached4 == 0 and len(todo4) == 1, \
+        f"a same-size file for a DIFFERENT cell must not count as cached: {todo4}, {cached4}"
+
+    # and the suffix must remain strippable by the provenance generator
+    suffixed = [n for n in names if "__Co" in n]
+    assert suffixed, names
+    for n in suffixed:
+        assert re.search(r"__Co\d+\.laz$", n), \
+            f"{n} does not match tools/gen_provenance.py's __Co<digits> strip"
+
+    # The Alameda fetcher writes the same kind of name and must obey the same rule. It used to use
+    # the sub-project's last 9 characters (`__Co_3_2021`), which the strip below does not match, so
+    # gen_provenance.py published "CA_AlamedaCounty_2021_B21_w6162n2049__Co_3" as a book's LiDAR
+    # project in the legal record.
+    def strip_like_gen_provenance(name):
+        stem = re.sub(r"\.laz$", "", name)[len("USGS_LPC_"):]
+        for pat in (r"__Co\d+$", r"_w\d+n\d+$", r"_\d{2}[A-Z]{3}\d+$", r"_\d+$"):
+            stem = re.sub(pat, "", stem)
+        return stem
+
+    assert strip_like_gen_provenance(
+        "USGS_LPC_CA_AlamedaCounty_2021_B21_w6162n2049__Co3.laz") == "CA_AlamedaCounty_2021_B21"
+    assert strip_like_gen_provenance(
+        "USGS_LPC_CA_AlamedaCounty_2021_B21_w6162n2049__Co_3_2021.laz") != "CA_AlamedaCounty_2021_B21", \
+        "this is the naming that broke the legal record; the assertion below guards against it"
+    # Both fetchers must build the suffix with the SHARED helper -- it was encoded twice, with two
+    # different token regexes, one of them lacking collision handling.
+    ala = open(os.path.join(ROOT, "fetch_lidar_alameda.py"), encoding="utf-8").read()
+    fnlines = [ln.strip() for ln in ala.splitlines()
+               if re.match(r"fn\s*=", ln.strip()) or "copy_suffix" in ln]
+    joined = " ".join(fnlines)
+    assert "copy_suffix" in joined, f"expected the shared suffix helper, got: {joined}"
+    assert "sub[-9:]" not in joined, \
+        f"the sub-project slice in a FILENAME is what broke the provenance strip: {joined}"
+    # and the helper itself must yield __Co<digits> for every real Alameda sub-project
+    for sub, want in (("CA_AlamedaCo_1_2021", "1"), ("CA_AlamedaCo_2_2021", "2"),
+                      ("CA_AlamedaCo_3_2021", "3")):
+        got = fl.copy_suffix(sub, 1, "USGS_LPC_X_w1n1", ".laz", set())
+        assert got == f"USGS_LPC_X_w1n1__Co{want}.laz", (sub, got)
+        assert re.search(r"__Co\d+\.laz$", got), got
+
+
+def test_an_unresolvable_head_is_never_reported_as_the_edge_of_the_survey():
+    """The end-of-run NOTE asserts "not on the server (authoritative 404) ... That is the edge of the
+    survey." An early exit added for speed made that claim reachable for a tile nobody ever got an
+    answer about: tile_copies breaks at the top of its sub-project loop once anything is unresolved,
+    so `copies` comes back empty and main() fell into its "absent" branch. Before that early exit all
+    three sub-projects had to 404; afterwards one timeout was enough.
+
+    The run does still abort, so no book is built on the invented gap -- but the printed provenance
+    made exactly the false claim 08cb08d exists to prevent, two lines above the correct one. Reported
+    by four independent review passes and reproduced under a simulated outage.
+
+    Also covers head_size returning 0 for a 200 that carries no Content-Length: that is not an
+    absence either, and it used to be dropped exactly like a 404."""
+    import contextlib
+    import io
+
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar_alameda as fla
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    real = fla.urllib.request.urlopen
+    try:
+        fla.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(TimeoutError("outage"))
+        buf = io.StringIO()
+        exited = None
+        with contextlib.redirect_stdout(buf):
+            try:
+                fla.main()
+            except SystemExit as e:
+                exited = str(e)
+        out = buf.getvalue()
+        assert "authoritative 404" not in out, \
+            f"a total outage was reported as an authoritative 404:\n{out[-500:]}"
+        assert "edge of coverage, skip" not in out, \
+            f"a total outage was reported as the edge of coverage:\n{out[-500:]}"
+        assert exited and "could not determine" in exited, \
+            f"an unresolvable HEAD must still abort the run, got {exited!r}"
+
+        # a 200 with no Content-Length is UNKNOWN, not ABSENT
+        class _NoLen:
+            headers = {}
+        fla.urllib.request.urlopen = lambda *a, **k: _NoLen()
+        assert fla.head_size("https://x/t.laz", tries=1) == fla.UNKNOWN, \
+            "a 200 without Content-Length must not be read as 'this tile does not exist'"
+    finally:
+        fla.urllib.request.urlopen = real
+
+
+def test_the_book_discloses_a_weaker_flight_basis(tmp_path):
+    """tools/lidar_dates.py narrows the printed flight range to the points over the greens and records
+    that in `basis`; where it cannot, it falls back to the union over WHOLE TILES. The legal
+    provenance table qualifies such a range -- but the governing rule is about what the BOOK prints,
+    and generate.py printed the bare label either way.
+
+    A tile can span weeks while holding no point within a kilometre of any green: The Reserve's did,
+    which is how "flown 2017-12-15 to 2018-01-21" came to be printed for greens flown on two days.
+
+    Both surfaces also fail CLOSED on a MISSING basis, because a record written before the
+    distinction existed had a whole-tile label -- so silence must read as the weaker claim."""
+    for m in ("config", "generate"):
+        sys.modules.pop(m, None)
+    os.environ["COURSE"] = a_course()
+    import generate
+
+    saved = dict(generate.config.COURSE)
+    try:
+        for basis, want_qualified in [
+                (f"points within 30 m of a green", False),
+                ("whole tiles (no points found over any green)", True),
+                (None, True),                      # absent -> must read as the weaker claim
+        ]:
+            fl = {"label": "2017-12-16 to 2017-12-17"}
+            if basis is not None:
+                fl["basis"] = basis
+            generate.config.COURSE["lidar_flown"] = fl
+            line = generate._flown_line()
+            assert "2017-12-16 to 2017-12-17" in line, line
+            qualified = "covers whole survey tiles" in line
+            assert qualified == want_qualified, \
+                f"basis={basis!r}: qualified={qualified}, expected {want_qualified} -- {line}"
+    finally:
+        generate.config.COURSE.clear()
+        generate.config.COURSE.update(saved)
+
+
+def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
+    """head_size() swallowed every exception and returned -1, so a transient timeout looked exactly
+    like an authoritative "this tile is not in this sub-project". The caller printed "edge of
+    coverage, skip" and main() then exited 0 having downloaded half a course -- and a green with no
+    ground returns under it is precisely what the honesty gate now has to catch. A gap invented by a
+    network wobble is indistinguishable, after the fact, from the edge of a survey.
+
+    Now: an authoritative 403/404/410 means ABSENT, anything else means UNKNOWN, and UNKNOWN stops
+    the run instead of silently shrinking the coverage."""
+    import urllib.error
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar_alameda as fla
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    assert fla.ABSENT != fla.UNKNOWN, "the two outcomes must be distinguishable"
+
+    real = fla.urllib.request.urlopen
+    try:
+        # an authoritative 404 -> ABSENT, and no retrying
+        calls = {"n": 0}
+
+        def four_oh_four(*a, **k):
+            calls["n"] += 1
+            raise urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        fla.urllib.request.urlopen = four_oh_four
+        assert fla.head_size("https://x/t.laz") == fla.ABSENT
+        assert calls["n"] == 1, "a 404 is authoritative; it must not be retried"
+
+        # a timeout -> UNKNOWN, after retrying
+        calls["n"] = 0
+
+        def timeout(*a, **k):
+            calls["n"] += 1
+            raise TimeoutError("timed out")
+        fla.urllib.request.urlopen = timeout
+        assert fla.head_size("https://x/t.laz", tries=2) == fla.UNKNOWN
+        assert calls["n"] == 2, "a network error must be retried before giving up"
+
+        # a 5xx is also UNKNOWN, not absent
+        fla.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(
+            urllib.error.HTTPError("u", 503, "Service Unavailable", {}, None))
+        assert fla.head_size("https://x/t.laz", tries=1) == fla.UNKNOWN
+    finally:
+        fla.urllib.request.urlopen = real
+
+    # and an UNKNOWN must abort the run rather than shrink the tile set
+    src = open(os.path.join(ROOT, "fetch_lidar_alameda.py"), encoding="utf-8").read()
+    # scope to the REPORTING block in main(), not the early-exit `if unknown: break` that stops
+    # probing once the run is already doomed
+    i = src.index("could not determine whether")
+    assert "raise SystemExit" in src[max(0, i - 300):i + 200], \
+        "an undetermined tile must stop the fetch, not be treated as the edge of the survey"
 
 
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
@@ -2306,41 +3413,102 @@ def test_vertical_unit_refuses_rather_than_assuming_metres():
 
 @pytest.mark.skipif(not os.environ.get("COLD_BUILD"),
                     reason="set COLD_BUILD=1 to run: needs network and reprocesses ~300 MB of LiDAR")
-def test_cold_build_reproduces_an_existing_book_byte_for_byte():
-    """End-to-end determinism. Every other test checks one stage; this one runs the whole pipeline
-    from nothing but course.json + the cached LAZ tiles (fresh OSM fetch, fresh 0.4 m green
-    surfaces, fresh trees, fresh book) and requires the result to match the committed book EXACTLY.
+def test_cold_build_reproduces_every_book_byte_for_byte():
+    """End-to-end determinism, over the WHOLE corpus. Every other test checks one stage; this one
+    runs the pipeline from nothing but course.json and the cached LAZ (fresh OSM fetch, fresh
+    surfaces, fresh trees, fresh book) and requires each result to match the committed book EXACTLY.
 
-    That is the property that makes the provenance claims checkable: same inputs -> same book. It
-    also catches cross-stage breakage that per-stage tests cannot -- a stage-order dependency, or
-    OSM having drifted from the cached copy.
+    That property is what makes the provenance claims checkable: same inputs -> same book. It is also
+    the only thing that catches CROSS-STAGE breakage, and it has earned its keep twice:
 
-    Verified 2026-07-29 on micke-grove-golf-links: 37/837 OSM elements identical, all 18 dem_hd
-    surfaces byte-identical, 5657 tree markers, greenbook.html identical at 4,334,614 bytes.
+      * An OSM re-fetch changed which polygons a tree may sit on and the tree layers were not
+        rebuilt. Micke Grove: 5,657 markers committed against 5,642 fresh.
+      * fetch_dem.py rewrote every hole it was given instead of filling gaps, replacing good 0.4 m
+        LiDAR greens with the 1 m DEM. Monarch Bay: 3,889,124 bytes against 4,973,620.
+
+    It ran on ONE course until both of those were found by hand on others, so it now runs on all of
+    them. Verified 2026-07-30, byte-for-byte: micke-grove 4,334,614; castlewood-hill 4,483,840;
+    merion 5,878,513; monarch-bay 4,973,620; copper-valley 6,101,580; callippe 6,818,104;
+    castlewood-valley 5,855,370; philadelphia 4,617,612; the-reserve 5,136,961.
+
+    Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
+    meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
+    green traced from NAIP is simply absent. Both such courses (bay-view, valley-hi) must then
+    REFUSE to build -- geo.match_green's distance cap fires rather than binding a hole to a
+    neighbour's green. That is asserted here, not skipped silently.
 
     Run:  COLD_BUILD=1 python3 -m pytest tests/ -q -k cold_build
     """
-    import subprocess, shutil, hashlib, json
-    ref = "micke-grove-golf-links"
-    cold = "_coldtest"
-    src, dst = os.path.join(ROOT, "courses", ref), os.path.join(ROOT, "courses", cold)
-    if not os.path.exists(os.path.join(src, "greenbook.html")):
-        pytest.skip(f"{ref} is not built here")
-    shutil.rmtree(dst, ignore_errors=True)
-    os.makedirs(dst)
-    try:
-        j = json.load(open(os.path.join(src, "course.json")))
-        j["slug"] = cold
-        json.dump(j, open(os.path.join(dst, "course.json"), "w"), indent=2)
-        os.symlink(os.path.join(src, "laz"), os.path.join(dst, "laz"))
-        env = {**os.environ, "COURSE": cold}
-        for stage in ("fetch_osm.py", "fetch_dem_hd.py", "fetch_trees.py", "generate.py"):
-            r = subprocess.run([sys.executable, os.path.join(ROOT, stage)], cwd=ROOT,
-                               env=env, capture_output=True, text=True)
-            assert r.returncode == 0, f"{stage} failed:\n{r.stdout[-1500:]}{r.stderr[-1500:]}"
-        a = open(os.path.join(src, "greenbook.html"), encoding="utf-8").read()
-        b = open(os.path.join(dst, "greenbook.html"), encoding="utf-8").read()
-        assert a == b, (f"cold build differs from the committed book "
-                        f"({len(a)} vs {len(b)} bytes) -- the pipeline is not reproducible")
-    finally:
+    import shutil
+    import subprocess
+
+    reproduced, refused, problems = [], [], []
+    for ref in CORPUS:
+        src = os.path.join(ROOT, "courses", ref)
+        if not os.path.exists(os.path.join(src, "greenbook.html")):
+            continue
+        import distribution
+        with open(os.path.join(src, "course.json"), encoding="utf-8") as f:
+            if not distribution.is_distributable(json.load(f)):
+                continue    # yardage mode: no green surfaces to reproduce. Asks the SHARED rule
+                            # rather than re-testing build_mode == "yardage", which is the fragile
+                            # exact form distribution.py exists to replace.
+        try:
+            with open(os.path.join(src, "osm_geom.json"), encoding="utf-8") as f:
+                digitized = any("_digitized" in (e.get("tags") or {})
+                                for e in json.load(f)["elements"])
+        except Exception:
+            digitized = False
+
+        cold = "_cold_" + ref[:8]
+        dst = os.path.join(ROOT, "courses", cold)
         shutil.rmtree(dst, ignore_errors=True)
+        os.makedirs(dst)
+        try:
+            with open(os.path.join(src, "course.json"), encoding="utf-8") as f:
+                j = json.load(f)
+            j["slug"] = cold
+            with open(os.path.join(dst, "course.json"), "w", encoding="utf-8") as f:
+                json.dump(j, f, indent=2)
+            has_laz = os.path.isdir(os.path.join(src, "laz"))
+            if has_laz:
+                os.symlink(os.path.join(src, "laz"), os.path.join(dst, "laz"))
+            stages = (["fetch_osm.py", "fetch_dem_hd.py", "fetch_dem.py", "fetch_trees.py",
+                       "generate.py"] if has_laz else
+                      ["fetch_osm.py", "fetch_dem.py", "generate.py"])
+            env = {**os.environ, "COURSE": cold}
+            failed = None
+            for stage in stages:
+                r = subprocess.run([sys.executable, os.path.join(ROOT, stage)], cwd=ROOT,
+                                   env=env, capture_output=True, text=True)
+                if r.returncode != 0:
+                    failed = (stage, (r.stdout + r.stderr)[-900:])
+                    break
+            if digitized:
+                if failed is None:
+                    problems.append(f"{ref}: built without its hand-digitized geometry -- the bind "
+                                    f"cap should have refused")
+                elif "_digitized" not in failed[1] and "bind limit" not in failed[1]:
+                    problems.append(f"{ref}: failed at {failed[0]} for an unexpected reason: "
+                                    f"{failed[1][-250:]}")
+                else:
+                    refused.append(ref)
+                continue
+            if failed:
+                problems.append(f"{ref}: {failed[0]} failed: {failed[1][-250:]}")
+                continue
+            with open(os.path.join(src, "greenbook.html"), encoding="utf-8") as f:
+                a = f.read()
+            with open(os.path.join(dst, "greenbook.html"), encoding="utf-8") as f:
+                b = f.read()
+            if a == b:
+                reproduced.append((ref, len(a)))
+            else:
+                w = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+                problems.append(f"{ref}: differs ({len(a)} vs {len(b)} bytes), first at byte {w}: "
+                                f"a=...{a[max(0, w - 60):w + 30]!r} b=...{b[max(0, w - 60):w + 30]!r}")
+        finally:
+            shutil.rmtree(dst, ignore_errors=True)
+
+    assert reproduced, "no course was cold-built -- nothing was verified"
+    assert not problems, "cold build is not reproducible:\n  " + "\n  ".join(problems)

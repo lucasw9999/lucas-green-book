@@ -123,11 +123,13 @@ def build_targets():
     holes=list(best.values())
     gc=[(g,*centroid(g)) for g in greens]
     targets={}
+    bound={}          # hole -> green, so a green shared by two holes can be caught (see geo.py)
     for h in holes:
         ref=h['tags'].get('ref')
         if not(ref and ref.isdigit()):continue
         hn=int(ref); line=h['geometry']
         green,gend,_tend = geo.match_green(line, greens, label=f"hole {hn}")
+        bound[hn]=green
         prev = line[1] if gend is line[0] else line[-2]
         appr=bearing(prev['lat'],prev['lon'],gend['lat'],gend['lon'])
         gpoly=green['geometry']; lats=[p['lat'] for p in gpoly]; lons=[p['lon'] for p in gpoly]
@@ -149,6 +151,7 @@ def build_targets():
                          UX=UX,UY=UY,   # target sample points in UTM
                          uxmin=min(cx)-2,uxmax=max(cx)+2,uymin=min(cy)-2,uymax=max(cy)+2,
                          acc_x=[],acc_y=[],acc_z=[])
+    geo.assert_one_green_per_hole(bound, label=config.SLUG)
     return targets
 
 def main():
