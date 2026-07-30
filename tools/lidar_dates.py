@@ -45,6 +45,7 @@ LEAP_SECONDS = 18          # GPS - UTC since 2017-01-01; LiDAR here is all post-
 # Castlewood Valley was wrong the same way. A full scan of every tile costs 6-8 s per course and the
 # tool runs once per course, so there is nothing to buy with a prefix.
 CHUNK = 2_000_000
+MAX_TILE_SPAN_DAYS = 730   # a tile whose gps_time spans more than two years is not one acquisition
 
 
 def course_tz(lat, lon, override=None):
@@ -127,6 +128,16 @@ def tile_dates(path):
         # rests on; better to have no date than an invented one.
         if not plausible(first) or not plausible(last) or last < first:
             return None
+        # A single tile cannot span years. One junk-but-positive gps_time is enough to break the
+        # range: with adjusted time, 1.0 decodes to 1980-01-06 + 1e9 s = 2011-09-14, which IS inside
+        # the 2000-2040 window and so cannot be excluded by any plausibility filter -- it is
+        # indistinguishable from a genuine 2011 flight. What gives it away is the SPAN. A real
+        # acquisition is days; anything past a couple of years means the times in this tile are not
+        # all the same clock, and the honest answer is no date for it.
+        if (last - first) > dt.timedelta(days=MAX_TILE_SPAN_DAYS):
+            print(f"    {os.path.basename(path)}: gps_time spans {(last - first).days} days "
+                  f"({first.date()}..{last.date()}) -- not one acquisition; refusing to date it")
+            return None
         return first, last
 
 
@@ -179,7 +190,15 @@ def main():
         j = json.load(open(p))
         j["lidar_flown"] = {"first": d1.isoformat(), "last": d2.isoformat(),
                             "label": label, "tz": tzname, "tiles": per_tile}
-        json.dump(j, open(p, "w"), indent=2)
+        # Atomic: course.json is HAND-AUTHORED -- the scorecard transcription, the bbox, the tee
+        # table -- and nothing can regenerate it. Writing in place means a crash or a full disk
+        # truncates it, in a directory the project documents as unrecoverable. The dem_hd and
+        # trees_lidar metas are written in place deliberately: those are derived from the LAZ and a
+        # re-run rebuilds them.
+        tmp = p + ".part"
+        with open(tmp, "w") as f:
+            json.dump(j, f, indent=2)
+        os.replace(tmp, p)
         print(f"  wrote lidar_flown into {p}")
     return 0
 

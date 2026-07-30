@@ -1846,6 +1846,59 @@ def test_every_built_green_records_its_coverage():
     assert worst_dens >= 4.0, f"worst in-green density {worst_dens} is below the gate floor"
 
 
+def test_one_junk_gps_time_cannot_drag_a_whole_survey_back_eight_years():
+    """One junk-but-positive gps_time was enough to set a survey's first date. With adjusted time, 1.0
+    decodes to 1980-01-06 + 1e9 s = 2011-09-14, so a single bad value in a 100M-point tile would have
+    printed "flown 2011-09-14" for a 2021 survey.
+
+    My first fix was a per-value plausibility window, and this test proved it useless: 2011 IS inside
+    the 2000-2040 window and is indistinguishable from a genuine 2011 flight, so no filter on the
+    value can reject it. What gives it away is the SPAN -- a real acquisition is days, not a decade --
+    so a tile spanning more than two years is refused outright."""
+    import datetime as dt
+    import laspy
+    import numpy as np
+    import tempfile
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import lidar_dates as ld
+
+    inst = dt.datetime(2021, 6, 21, 19, 30, tzinfo=dt.timezone.utc)
+    standard = (inst - dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)).total_seconds() + 18
+    good = standard - 1e9
+
+    hdr = laspy.LasHeader(version="1.4", point_format=6)
+    hdr.global_encoding.gps_time_type = 1
+    las = laspy.LasData(hdr)
+    n = 128
+    las.x = np.linspace(0, 10, n); las.y = np.linspace(0, 10, n); las.z = np.zeros(n)
+    times = np.full(n, good)
+    times[0] = 1.0                     # junk, positive, decodes to 2011-09-14
+    times[1] = 0.5
+    las.gps_time = times
+    with tempfile.TemporaryDirectory() as td:
+        f = os.path.join(td, "junk.laz")
+        las.write(f)
+        got = ld.tile_dates(f)
+        assert got is None, (
+            f"a tile whose gps_time spans {inst.year} back to 2011 is not one acquisition and must "
+            f"be refused, got {got}")
+        # ...while a clean tile of the same points still dates correctly
+        las.gps_time = np.full(n, good)
+        f2 = os.path.join(td, "clean.laz")
+        las.write(f2)
+        ok = ld.tile_dates(f2)
+        assert ok and ok[0].date() == inst.date(), f"clean tile should date to {inst.date()}, got {ok}"
+
+
+def test_course_json_is_written_atomically():
+    """course.json is HAND-AUTHORED -- the scorecard transcription, the bbox, the tee table -- and
+    nothing regenerates it. tools/lidar_dates.py --write rewrote it in place, so a crash or a full
+    disk truncates it, in a directory the project documents as unrecoverable."""
+    src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
+    assert 'json.dump(j, open(p, "w")' not in src, "course.json must not be written in place"
+    assert "os.replace(tmp, p)" in src, "the write must be staged and renamed"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
