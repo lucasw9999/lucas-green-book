@@ -21,6 +21,7 @@ Run:  COURSE=<slug> python3 fetch_dem.py
 import urllib.request, json, math, io, time, os
 import numpy as np, tifffile
 import config
+import geo
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
@@ -94,6 +95,7 @@ def main():
     holes = list(best.values())
     gc = [(g, *centroid(g)) for g in greens]
     done = 0
+    bound = {}        # hole -> green, so a green shared by two holes is caught (see geo.py)
     for h in holes:
         ref = h['tags'].get('ref')
         if not (ref and ref.isdigit()):
@@ -101,12 +103,16 @@ def main():
         if only and int(ref) not in only:
             continue
         hn = int(ref); line = h['geometry']
-        import geo
         green, gend, _tend = geo.match_green(line, greens, label=f"hole {hn}")
+        bound[hn] = green
         prev = line[1] if gend is line[0] else line[-2]
         appr = bearing(prev['lat'], prev['lon'], gend['lat'], gend['lon'])
 
-        geo = green['geometry']; lats = [p['lat'] for p in geo]; lons = [p['lon'] for p in geo]
+        # NB: this list used to be called `geo`, shadowing the geo MODULE. It worked only because
+        # `import geo` sat inside the loop and rebound the name each iteration -- moving that import
+        # to the top, the obvious tidy-up, would have made geo.match_green() an AttributeError on a
+        # list from the second hole onward.
+        gpoly = green['geometry']; lats = [p['lat'] for p in gpoly]; lons = [p['lon'] for p in gpoly]
         clat, clon = centroid(green)
         mrg = 12.0; dlat = mrg/R_LAT; dlon = mrg/mlon(clat)
         xmin, xmax = min(lons)-dlon, max(lons)+dlon
@@ -134,7 +140,7 @@ def main():
         arr = np.where(np.isfinite(arr) & (np.abs(arr) < 1e30), arr, np.nan)   # NoData sentinels
         arr = np.where(arr <= -9998.0, np.nan, arr)                            # requested noData
         nan_frac, n_in, relief = _green_interior_stats(
-            arr, [xmin, ymin, xmax, ymax], W, H, [[p['lat'], p['lon']] for p in geo])
+            arr, [xmin, ymin, xmax, ymax], W, H, [[p['lat'], p['lon']] for p in gpoly])
         # Out of coverage, 3DEP's exportImage returns a CONSTANT raster (measured at St Andrews:
         # min 0.0, max 0.0, one unique value) rather than any NoData marker -- so a nan_frac test
         # alone reported insufficient=False for a green with no measurement at all, and the book
@@ -147,7 +153,7 @@ def main():
         np.save(f"{OUT}/hole{hn:02d}.npy", arr)
         json.dump(dict(hole=hn, approach_bearing=appr, bbox=[xmin, ymin, xmax, ymax], W=W, H=H,
                        green_id=green['id'], green_center=[clat, clon],
-                       polygon=[[p['lat'], p['lon']] for p in geo],
+                       polygon=[[p['lat'], p['lon']] for p in gpoly],
                        source="USGS 3DEP seamless 1 m @0.5m sampling",
                        nan_frac=nan_frac, insufficient=insufficient,
                        # A seamless raster has no point cloud, so there is no measured point
@@ -160,6 +166,7 @@ def main():
         done += 1
         print(f"hole {hn:2d}: green {green['id']} {arr.shape} approach {appr:.0f}deg")
         time.sleep(0.2)
+    geo.assert_one_green_per_hole(bound, label=config.SLUG)
     print(f"\nWrote {done} greens -> {OUT}")
 
 if __name__ == "__main__":

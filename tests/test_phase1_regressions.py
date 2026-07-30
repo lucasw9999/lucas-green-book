@@ -2142,6 +2142,59 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
     return str(path)
 
 
+def test_no_green_is_bound_to_two_holes():
+    """geo.match_green caps how FAR a hole may reach for a green (40 m, after bay-view hole 9 bound
+    to hole 7's green 47.8 m away). It cannot catch the NEAR case, and the near case is likelier: if
+    a hole's own green drops out of the OSM extract while a neighbour's green sits inside the cap,
+    both holes bind there, both cards print that surface, and one is a confident read of the wrong
+    putting green. match_green is called once per hole and has no view of the others.
+
+    Measured across all 11 built courses: 0 greens bound to more than one hole, worst legitimate bind
+    11.1 m -- so the guard only ever fires on a real fault."""
+    for m in ("geo",):
+        sys.modules.pop(m, None)
+    import geo
+
+    g1 = {"id": 101, "geometry": [{"lat": 1.0, "lon": 2.0}]}
+    g2 = {"id": 102, "geometry": [{"lat": 1.0, "lon": 2.001}]}
+    geo.assert_one_green_per_hole({1: g1, 2: g2}, label="t")          # distinct -> quiet
+
+    with pytest.raises(SystemExit) as e:
+        geo.assert_one_green_per_hole({7: g1, 9: g1}, label="bay-view")
+    msg = str(e.value)
+    assert "hole 7" in msg and "hole 9" in msg and "101" in msg, msg
+    assert "wrong putting surface" in msg, "the message must say what the consequence is"
+
+    # greens with no id must still be told apart by identity, not silently collapsed
+    a, b = {"geometry": []}, {"geometry": []}
+    geo.assert_one_green_per_hole({1: a, 2: b})
+    with pytest.raises(SystemExit):
+        geo.assert_one_green_per_hole({1: a, 2: a})
+
+    # and the builders must actually call it, or the invariant is unenforced
+    for mod in ("fetch_dem_hd.py", "fetch_dem.py"):
+        src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
+        assert "assert_one_green_per_hole" in src, f"{mod} never checks for a shared green"
+
+    # fetch_dem.py used to name a local list `geo`, shadowing the module; it worked only because
+    # `import geo` sat inside the loop. Moving that import to the top -- the obvious tidy-up -- would
+    # have made geo.match_green() an AttributeError on a list from the second hole onward.
+    fd = open(os.path.join(ROOT, "fetch_dem.py"), encoding="utf-8").read()
+    assert "for p in geo]" not in fd, "a local named `geo` is shadowing the geo module again"
+
+    # the real corpus must satisfy it
+    for slug in CORPUS:
+        seen = {}
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            with open(p, encoding="utf-8") as f:
+                meta = json.load(f)
+            gid, hn = meta.get("green_id"), meta.get("hole")
+            if gid is None:
+                continue
+            assert gid not in seen, f"{slug}: green {gid} bound to holes {seen[gid]} and {hn}"
+            seen[gid] = hn
+
+
 def test_each_tee_column_carries_the_right_tee_name():
     """A card prints a yardage under a TEE NAME, and a junior picks their tee by that name. Two
     separate structures have to agree for that to be true: `hole_cols` names the per-hole yardage
