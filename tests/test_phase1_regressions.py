@@ -2002,6 +2002,62 @@ def test_multipolygon_relations_become_drawable_features():
         f"only and every fairway arrives without geometry. Query was:\n{query}")
 
 
+def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
+    """head_size() swallowed every exception and returned -1, so a transient timeout looked exactly
+    like an authoritative "this tile is not in this sub-project". The caller printed "edge of
+    coverage, skip" and main() then exited 0 having downloaded half a course -- and a green with no
+    ground returns under it is precisely what the honesty gate now has to catch. A gap invented by a
+    network wobble is indistinguishable, after the fact, from the edge of a survey.
+
+    Now: an authoritative 403/404/410 means ABSENT, anything else means UNKNOWN, and UNKNOWN stops
+    the run instead of silently shrinking the coverage."""
+    import urllib.error
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar_alameda as fla
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    assert fla.ABSENT != fla.UNKNOWN, "the two outcomes must be distinguishable"
+
+    real = fla.urllib.request.urlopen
+    try:
+        # an authoritative 404 -> ABSENT, and no retrying
+        calls = {"n": 0}
+
+        def four_oh_four(*a, **k):
+            calls["n"] += 1
+            raise urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+        fla.urllib.request.urlopen = four_oh_four
+        assert fla.head_size("https://x/t.laz") == fla.ABSENT
+        assert calls["n"] == 1, "a 404 is authoritative; it must not be retried"
+
+        # a timeout -> UNKNOWN, after retrying
+        calls["n"] = 0
+
+        def timeout(*a, **k):
+            calls["n"] += 1
+            raise TimeoutError("timed out")
+        fla.urllib.request.urlopen = timeout
+        assert fla.head_size("https://x/t.laz", tries=2) == fla.UNKNOWN
+        assert calls["n"] == 2, "a network error must be retried before giving up"
+
+        # a 5xx is also UNKNOWN, not absent
+        fla.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(
+            urllib.error.HTTPError("u", 503, "Service Unavailable", {}, None))
+        assert fla.head_size("https://x/t.laz", tries=1) == fla.UNKNOWN
+    finally:
+        fla.urllib.request.urlopen = real
+
+    # and an UNKNOWN must abort the run rather than shrink the tile set
+    src = open(os.path.join(ROOT, "fetch_lidar_alameda.py"), encoding="utf-8").read()
+    i = src.index("if unknown:")
+    assert "raise SystemExit" in src[i:i + 400], \
+        "an undetermined tile must stop the fetch, not be treated as the edge of the survey"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
