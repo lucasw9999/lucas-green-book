@@ -906,18 +906,49 @@ def test_the_printed_pdf_is_not_older_than_the_html_it_came_from():
                           "\n  Re-export with: python3 tools/export_pdf.py")
 
 
-@pytest.mark.slow          # rasterises pages of every shipped PDF
+def _pdf_numbers(pdf):
+    """Every number actually drawn in a PDF, including Type3 glyph runs.
+
+    The book's SVG text becomes Type3 fonts, which do NOT come out of page.get_text("dict") -- a
+    plain text scan finds only the 5..45 depth ruler and looks clean. rawdict exposes the glyph
+    characters, which is where the slope labels and yardages live."""
+    import fitz
+    out = []
+    with fitz.open(pdf) as d:
+        for pg in d:
+            for blk in pg.get_text("rawdict")["blocks"]:
+                for ln in blk.get("lines", []):
+                    for sp in ln.get("spans", []):
+                        # Type3 ONLY. The book's SVG text becomes Type3 glyphs; ordinary HTML text
+                        # (hole numbers, par, page numbers, scorecard cells) becomes HelveticaNeue.
+                        # Mixing the two made the comparison meaningless -- the SVG-text side of the
+                        # HTML cannot contain a page number.
+                        if "Type3" not in sp.get("font", ""):
+                            continue
+                        txt = "".join(c.get("c", "") for c in sp.get("chars", []))
+                        if re.fullmatch(r"\d{1,3}", txt):
+                            out.append(int(txt))
+    return out
+
+
+@pytest.mark.slow          # reads the glyph runs of every shipped PDF
 @needs_corpus
-def test_no_shipped_pdf_prints_an_unputtable_slope():
-    """Staleness is a proxy; this reads the actual printed pages. The slope labels are drawn as
-    Type3 glyphs, so they do NOT come out of the PDF text layer (a text-layer scan finds only the
-    5..45 scale ruler and looks clean) -- they have to be found in the drawing operators."""
+def test_every_number_printed_in_a_pdf_exists_in_its_html():
+    """The PDF is the artifact; the HTML is not. This test reads the numbers actually DRAWN in each
+    shipped PDF and requires every one of them to exist in the HTML it was exported from.
+
+    Its predecessor was a lie by name: "test_no_shipped_pdf_prints_an_unputtable_slope" imported
+    fitz, never called it, and re-read the HTML. Proven by replacing Merion's 3.6 MB book with an
+    866-byte one-page PDF reading "THIS IS NOT THE BOOK -- 40% slope everywhere": it stayed green.
+    Only the card-size test, which genuinely opens the PDF, noticed.
+
+    Subset rather than equality: a page may legitimately draw a number the regex-scan of the HTML
+    misses. What must never happen is the PDF printing a number the HTML does not contain -- that is
+    precisely the stale-export defect that left a 40% slope label on paper for three commits."""
     try:
-        import fitz
+        import fitz          # noqa: F401
     except ImportError:
         pytest.skip("pymupdf not installed")
-    import render_green as _rg
-    cap = _rg.SLOPE_LABEL_MAX_PCT
     checked = 0
     for pdf in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
         if os.path.basename(os.path.dirname(pdf)).startswith("_"):
@@ -925,20 +956,56 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         html = os.path.splitext(pdf)[0] + ".html"
         if not os.path.exists(html):
             continue
-        # The HTML is the source of truth for what SHOULD print; require the PDF to have been
-        # exported FROM it (recorded hash), then trust the HTML's own label set.
-        sys.path.insert(0, os.path.join(ROOT, "tools"))
-        import export_pdf
-        stampf = export_pdf.stamp_path(pdf)
-        if os.path.exists(stampf):
-            assert open(stampf).read().strip() == export_pdf.src_hash(html), \
-                f"{os.path.relpath(pdf, ROOT)} was exported from a different HTML -- re-export"
-        labels = [int(v) for v in re.findall(
-            r'font-size="4\.6"[^>]*font-weight="700">(\d+)</text>', open(html).read())]
-        over = sorted({v for v in labels if v > cap})
-        assert not over, f"{os.path.relpath(html, ROOT)} would print slopes above {cap}%: {over}"
+        want = {int(v) for v in re.findall(r">(\d{1,3})</text>", open(html, encoding="utf-8").read())}
+        if not want:
+            continue      # a yardage-mode book (Poppy Ridge) draws no SVG numerals at all
+        got = _pdf_numbers(pdf)
+        assert len(got) > 100, (
+            f"{os.path.relpath(pdf, ROOT)} draws only {len(got)} numbers -- this is not the book")
+        extra = sorted(set(got) - want)
+        assert not extra, (
+            f"{os.path.relpath(pdf, ROOT)} prints {extra}, absent from its HTML -- the PDF is stale "
+            f"or was not exported from this book. Re-run tools/export_pdf.py")
         checked += 1
-    assert checked > 0, "no books to check"
+    if checked == 0:
+        pytest.skip("no book has both an HTML and an exported PDF here")
+
+
+@pytest.mark.slow          # reads the glyph runs of every shipped PDF
+@needs_corpus
+def test_no_shipped_pdf_prints_an_unputtable_slope():
+    """The printed slope labels, read from the PDF's own glyph runs. A putting surface has no 40%
+    slope; Merion's shipped PDF printed one for three commits while the HTML was already capped.
+
+    The bound is stated HERE, independent of render_green.SLOPE_LABEL_MAX_PCT, so raising the cap in
+    the code cannot move the test with it -- the previous version read its ceiling from the module it
+    was checking."""
+    try:
+        import fitz          # noqa: F401
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+    PUTTING_PLAUSIBLE_MAX_PCT = 12
+    checked = 0
+    for pdf in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
+        if os.path.basename(os.path.dirname(pdf)).startswith("_"):
+            continue
+        html = os.path.splitext(pdf)[0] + ".html"
+        if not os.path.exists(html):
+            continue
+        html_slopes = {int(v) for v in re.findall(
+            r'font-size="4\.6"[^>]*font-weight="700">(\d+)</text>', open(html, encoding="utf-8").read())}
+        if not html_slopes:
+            continue      # yardage-mode: the greens are deliberately blank, no slope labels exist
+        # slope labels are the 1-2 digit glyph runs; 3-digit runs are hole-map yardages
+        small = [v for v in _pdf_numbers(pdf) if v < 100]
+        # the depth ruler also prints multiples of 5 up to 45, so only flag a value that is BOTH
+        # above the putting bound and present as a slope label in this book's green SVGs
+        bad = sorted({v for v in small if v > PUTTING_PLAUSIBLE_MAX_PCT} & html_slopes)
+        assert not bad, f"{os.path.relpath(pdf, ROOT)} prints unputtable slope label(s) {bad}"
+        assert small, f"{os.path.relpath(pdf, ROOT)} draws no small numbers at all"
+        checked += 1
+    if checked == 0:
+        pytest.skip("no book has both an HTML and an exported PDF here")
 
 
 HONESTY_CASES = {
