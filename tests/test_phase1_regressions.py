@@ -1279,6 +1279,66 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
             f"{summ['feeds']!r} -- the fall vector is not being rotated into the card frame")
 
 
+def test_render_refuses_a_perfectly_flat_surface(gate_course):
+    """Out of coverage, 3DEP's exportImage returns a CONSTANT raster rather than any NoData marker.
+    The render-time gate claims in its own comment to verify the surface "independently of whoever
+    produced it", but it had no minimum-relief test -- blind to the single failure mode that producer
+    is documented to have. Demonstrated by zeroing a real green: the card printed
+    "feeds back (subtle) - 0.0%", a fabricated read on a green with no measurement at all.
+
+    fetch_dem.py grew MIN_RELIEF_M for this; the renderer needs it too, because 8 surfaces on disk
+    predate any producer gate and a future producer may forget again."""
+    import numpy as np
+    import render_green
+    # NB the 0.0 * r is load-bearing: a lambda that ignores r and c makes np.fromfunction return a
+    # 0-d array, and the engine then fails at `H, W = arr.shape` -- a broken test surface, not a bug.
+    _synth_green(gate_course, 8, lambda r, c: 100.0 + 0.0 * r, insufficient=False)  # perfectly flat
+    _svg, s = render_green.render(8)
+    assert s.get("insufficient") is True, "a constant surface must be refused, not read"
+    assert s["conf"] == "no data" and s["tilt_pct"] == 0.0
+    assert "0.0%" not in str(s.get("feeds", "")), "must not dress a zero-fill as a reading"
+    # ...but a real, gently sloping green must still be read
+    _synth_green(gate_course, 9, lambda r, c: 100.0 + 0.02 * r, insufficient=False)
+    _svg2, s2 = render_green.render(9)
+    assert not s2.get("insufficient"), "a genuine 2 cm/row green must still be read"
+
+
+def test_blank_card_depth_is_measured_in_the_approach_frame(gate_course):
+    """The "we could not measure this green" card printed depth from the raw LATITUDE extent --
+    north-to-south, whatever direction the hole plays -- while the measured card rotates the approach
+    to point up first. On an east-west hole those are the depth and the width SWAPPED. Corpus-wide the
+    disagreement reached 16 yd (two clubs), and on 36 of 90 greens the old value was closer to the
+    width than to the depth.
+
+    Nothing shipped hits it (no built green is blank), but the blank card exists precisely for a
+    course with no usable LiDAR, where it would fire on all 18 holes at once."""
+    import json as _json
+    import render_green
+    _synth_green(gate_course, 10, lambda r, c: 100.0 + 0.03 * r, insufficient=False)
+    mp = os.path.join(gate_course, "dem_hd", "hole10.json")
+
+    for appr in (0.0, 90.0, 200.0):
+        meta = _json.load(open(mp))
+        meta["approach_bearing"] = appr
+        _json.dump(meta, open(mp, "w"))
+        for m in ("render_green",):
+            sys.modules.pop(m, None)
+        import render_green as rg
+        _svg_ok, measured = rg.render(10)
+        meta2 = dict(_json.load(open(mp)), insufficient=True)
+        _json.dump(meta2, open(mp, "w"))
+        sys.modules.pop("render_green", None)
+        import render_green as rg2
+        _svg_blank, blank = rg2.render(10)
+        assert abs(blank["depth_yd"] - measured["depth_yd"]) <= 1, (
+            f"approach {appr} deg: blank card says {blank['depth_yd']}yd deep, measured card says "
+            f"{measured['depth_yd']}yd -- the blank path is using the wrong axis")
+        assert abs(blank["width_yd"] - measured["width_yd"]) <= 1, (
+            f"approach {appr} deg: width {blank['width_yd']} vs {measured['width_yd']}")
+        meta3 = dict(_json.load(open(mp))); meta3.pop("insufficient", None)
+        _json.dump(meta3, open(mp, "w"))
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
