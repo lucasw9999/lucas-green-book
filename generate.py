@@ -273,6 +273,18 @@ def _flown_line():
                 '<b>rebuilt after</b> that survey, so their green maps are marked '
                 '<b>&ldquo;pre-rebuild data&rdquo;</b> &mdash; the shapes and tiers may have '
                 'changed. Use them as a guide only and trust your own read.</span></div>\n')
+    # The other caveat a card can carry needs the same treatment. Six of Monarch Bay's greens print
+    # "GREEN - 1 m data" and the phrase appeared NOWHERE else in either edition -- a 12-year-old
+    # reading it learns nothing, and the whole point of the label is to tell him to trust that green
+    # a little less. Named per hole, exactly like the pre-rebuild wording.
+    coarse = sorted(h for h, (_svg, summ) in GREENS.items()
+                    if 'seamless' in str(summ.get('source', '')).lower())
+    if coarse:
+        holes = ", ".join(str(h) for h in coarse)
+        out += ('  <div class="legrow"><span><b>Holes ' + esc(holes) + '</b> had no usable point '
+                'cloud (tree cover or water), so their greens come from the coarser <b>1 m</b> '
+                'national elevation model and are marked <b>&ldquo;1 m data&rdquo;</b>. The tilt is '
+                'real, just less sharp &mdash; small tiers may be smoothed away.</span></div>\n')
     return out
 
 
