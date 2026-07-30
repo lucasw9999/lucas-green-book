@@ -130,6 +130,14 @@ def main():
     if not courses:
         print("no built books found"); return 0
 
+    # Bind COURSE to a course that EXISTS here before importing config. The card size is
+    # engine-wide, but config still refuses to import without a valid course, so this tool used to
+    # die on whatever COURSE happened to be in the environment -- inside the test suite that is
+    # whichever course ran last, which made the Rule 4.3 gate fail in any tree that did not happen
+    # to have that course built.
+    os.environ.setdefault("COURSE", courses[0])
+    if not os.path.exists(ROOT / "courses" / os.environ["COURSE"] / "course.json"):
+        os.environ["COURSE"] = courses[0]
     import config  # card size is engine-wide
     card_ok = config.CARD_W_IN <= CARD_LIMIT_W_IN and config.CARD_H_IN <= CARD_LIMIT_H_IN
     print(f"card size {config.CARD_W_IN} x {config.CARD_H_IN} in "
