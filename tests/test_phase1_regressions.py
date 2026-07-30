@@ -2142,6 +2142,60 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
     return str(path)
 
 
+def test_one_shared_rule_decides_what_may_be_distributed():
+    """legal/03_PROVENANCE_BY_COURSE.md marks each course Distributed or Personal, and its own legend
+    defines Personal as *do not distribute*; legal/00_SUMMARY_AND_VERDICT.md names Poppy Ridge as
+    personal-use only. That rule lived inside tools/gen_provenance.py, where it decided a table
+    column and nothing else -- so when a second publisher appeared (the iOS app's exporter) it
+    bundled every course it found, Poppy Ridge included, and would have shipped a book the project's
+    own legal record says must not be distributed.
+
+    It now lives in distribution.py and both the generator and any publisher ask it, so the two
+    cannot drift. An App Store build, a web download and a handed-out printout are all
+    distribution."""
+    for m in ("distribution",):
+        sys.modules.pop(m, None)
+    import distribution
+
+    ok, label, why = distribution.distribution_status({"slug": "x"})
+    assert ok is True and label == "Distributed" and why == ""
+    ok2, label2, why2 = distribution.distribution_status({"slug": "y", "build_mode": "yardage"})
+    assert ok2 is False and label2 == "Personal" and why2, "a Personal course needs a stated reason"
+    assert distribution.is_distributable({"slug": "x"}) is True
+    assert distribution.is_distributable({"slug": "y", "build_mode": "yardage"}) is False
+    # a missing/empty course record must not be assumed publishable by accident
+    assert distribution.is_distributable({}) is True, \
+        "an ordinary course with no build_mode is distributable; this documents the default"
+
+    # the generator must consult it rather than re-deriving the rule
+    src = open(os.path.join(ROOT, "tools", "gen_provenance.py"), encoding="utf-8").read()
+    assert "distribution.distribution_status" in src, \
+        "gen_provenance.py must use the shared rule, or the record can disagree with what ships"
+    assert 'status = "Personal" if' not in src, "the inline copy of the rule must be gone"
+
+    # and the real corpus must agree with the record: every course the generator calls Personal
+    # really is in yardage mode, and vice versa
+    if not CORPUS:
+        return
+    doc = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
+    if not os.path.isfile(doc):
+        return
+    rows = [ln for ln in open(doc, encoding="utf-8")
+            if ln.startswith("| ") and not ln.startswith("| Course |")]
+    n_personal_doc = sum(1 for ln in rows if "| Personal |" in ln)
+    n_personal_data = 0
+    for slug in sorted({os.path.basename(os.path.dirname(p))
+                        for p in glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))}):
+        if slug.startswith("_"):
+            continue
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as f:
+            if not distribution.is_distributable(json.load(f)):
+                n_personal_data += 1
+    assert n_personal_doc == n_personal_data, (
+        f"the record marks {n_personal_doc} course(s) Personal but the shared rule says "
+        f"{n_personal_data}")
+
+
 def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     """Nothing checked that a downloaded tile's DATA reaches the greens. A tile can be present,
     correctly named, and hold no points where a green is -- and the green then silently falls back to

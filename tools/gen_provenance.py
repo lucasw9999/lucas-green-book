@@ -28,6 +28,8 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import distribution  # noqa: E402
 OUT = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
 
 
@@ -125,7 +127,9 @@ def _row(slug):
         notes.append(f"{insuf} green(s) had no usable point cloud and print no read")
     if dig:
         notes.append("hand-added greens were traced from public-domain USDA NAIP because OSM had none")
-    status = "Personal" if yardage_mode else "**Distributed ✅**"
+    # the SAME rule any publisher uses -- see distribution.py for why this is shared
+    distributable, label, _why = distribution.distribution_status(j)
+    status = f"**{label} ✅**" if distributable else label
 
     # first sentence of the recorded scorecard provenance, so the table stays readable
     sc = (j.get("sources", {}) or {}).get("scorecard", "")
