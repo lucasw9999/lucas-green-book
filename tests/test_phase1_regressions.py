@@ -1899,6 +1899,46 @@ def test_course_json_is_written_atomically():
     assert "os.replace(tmp, p)" in src, "the write must be staged and renamed"
 
 
+@needs_corpus
+def test_per_hole_bunker_and_water_counts_reconcile_with_the_course():
+    """Each card prints "2B 0W", which a reader takes as this hole's bunkers and water. It was
+    neither: the count came from a 40 m draw corridor, so a bunker between two parallel holes sat in
+    both corridors and was counted on BOTH cards, while one further out was counted on none. Summed
+    per-hole counts came to 168 bunkers on Merion's 122 and 35 on bay-view's 25, and Philadelphia
+    went the other way at 119 of 131.
+
+    Features are now assigned to the single NEAREST hole, within 90 m of it, and counted over the
+    whole course. So the per-hole numbers can never sum to MORE than the course holds, and a feature
+    that belongs to no hole -- a practice bunker, a boundary pond -- is counted nowhere rather than
+    attributed to whichever hole happens to be least far. That bound matters: without it Merion hole 4
+    gained 2W for water it has none of. Drawing still uses the corridor, because a neighbouring bunker
+    that is in play should stay visible."""
+    bad = []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        cp = os.path.join(ROOT, "courses", slug, "osm_course.json")
+        if not os.path.exists(cp):
+            continue
+        course = json.load(open(cp))["elements"]
+        tag = lambda e: e.get("tags") or {}
+        real_b = sum(1 for e in course if tag(e).get("golf") == "bunker" and e.get("geometry"))
+        real_w = sum(1 for e in course
+                     if (tag(e).get("golf") in ("water_hazard", "lateral_water_hazard")
+                         or tag(e).get("natural") == "water") and e.get("geometry"))
+        pb = pw = 0
+        for hn in cfg.HOLE_NUMS:
+            _svg, i = rh.render_hole(hn, cfg.HOLES)
+            pb += i["bunkers"]; pw += i["waters"]
+        # never MORE than the course holds (that is the double-counting defect)...
+        if pb > real_b or pw > real_w:
+            bad.append((slug, "over", pb, real_b, pw, real_w))
+        # ...and not so few that the assignment is dropping most features
+        if real_b and pb < 0.8 * real_b:
+            bad.append((slug, "under", pb, real_b, pw, real_w))
+    assert not bad, ("per-hole counts do not reconcile with the course "
+                     "(slug, kind, printed_bunkers, real, printed_water, real): " + str(bad))
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
