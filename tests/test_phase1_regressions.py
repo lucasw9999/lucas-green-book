@@ -3257,41 +3257,99 @@ def test_vertical_unit_refuses_rather_than_assuming_metres():
 
 @pytest.mark.skipif(not os.environ.get("COLD_BUILD"),
                     reason="set COLD_BUILD=1 to run: needs network and reprocesses ~300 MB of LiDAR")
-def test_cold_build_reproduces_an_existing_book_byte_for_byte():
-    """End-to-end determinism. Every other test checks one stage; this one runs the whole pipeline
-    from nothing but course.json + the cached LAZ tiles (fresh OSM fetch, fresh 0.4 m green
-    surfaces, fresh trees, fresh book) and requires the result to match the committed book EXACTLY.
+def test_cold_build_reproduces_every_book_byte_for_byte():
+    """End-to-end determinism, over the WHOLE corpus. Every other test checks one stage; this one
+    runs the pipeline from nothing but course.json and the cached LAZ (fresh OSM fetch, fresh
+    surfaces, fresh trees, fresh book) and requires each result to match the committed book EXACTLY.
 
-    That is the property that makes the provenance claims checkable: same inputs -> same book. It
-    also catches cross-stage breakage that per-stage tests cannot -- a stage-order dependency, or
-    OSM having drifted from the cached copy.
+    That property is what makes the provenance claims checkable: same inputs -> same book. It is also
+    the only thing that catches CROSS-STAGE breakage, and it has earned its keep twice:
 
-    Verified 2026-07-29 on micke-grove-golf-links: 37/837 OSM elements identical, all 18 dem_hd
-    surfaces byte-identical, 5657 tree markers, greenbook.html identical at 4,334,614 bytes.
+      * An OSM re-fetch changed which polygons a tree may sit on and the tree layers were not
+        rebuilt. Micke Grove: 5,657 markers committed against 5,642 fresh.
+      * fetch_dem.py rewrote every hole it was given instead of filling gaps, replacing good 0.4 m
+        LiDAR greens with the 1 m DEM. Monarch Bay: 3,889,124 bytes against 4,973,620.
+
+    It ran on ONE course until both of those were found by hand on others, so it now runs on all of
+    them. Verified 2026-07-30, byte-for-byte: micke-grove 4,334,614; castlewood-hill 4,483,840;
+    merion 5,878,513; monarch-bay 4,973,620; copper-valley 6,101,580; callippe 6,818,104;
+    castlewood-valley 5,855,370; philadelphia 4,617,612; the-reserve 5,136,961.
+
+    Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
+    meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
+    green traced from NAIP is simply absent. Both such courses (bay-view, valley-hi) must then
+    REFUSE to build -- geo.match_green's distance cap fires rather than binding a hole to a
+    neighbour's green. That is asserted here, not skipped silently.
 
     Run:  COLD_BUILD=1 python3 -m pytest tests/ -q -k cold_build
     """
-    import subprocess, shutil, hashlib, json
-    ref = "micke-grove-golf-links"
-    cold = "_coldtest"
-    src, dst = os.path.join(ROOT, "courses", ref), os.path.join(ROOT, "courses", cold)
-    if not os.path.exists(os.path.join(src, "greenbook.html")):
-        pytest.skip(f"{ref} is not built here")
-    shutil.rmtree(dst, ignore_errors=True)
-    os.makedirs(dst)
-    try:
-        j = json.load(open(os.path.join(src, "course.json")))
-        j["slug"] = cold
-        json.dump(j, open(os.path.join(dst, "course.json"), "w"), indent=2)
-        os.symlink(os.path.join(src, "laz"), os.path.join(dst, "laz"))
-        env = {**os.environ, "COURSE": cold}
-        for stage in ("fetch_osm.py", "fetch_dem_hd.py", "fetch_trees.py", "generate.py"):
-            r = subprocess.run([sys.executable, os.path.join(ROOT, stage)], cwd=ROOT,
-                               env=env, capture_output=True, text=True)
-            assert r.returncode == 0, f"{stage} failed:\n{r.stdout[-1500:]}{r.stderr[-1500:]}"
-        a = open(os.path.join(src, "greenbook.html"), encoding="utf-8").read()
-        b = open(os.path.join(dst, "greenbook.html"), encoding="utf-8").read()
-        assert a == b, (f"cold build differs from the committed book "
-                        f"({len(a)} vs {len(b)} bytes) -- the pipeline is not reproducible")
-    finally:
+    import shutil
+    import subprocess
+
+    reproduced, refused, problems = [], [], []
+    for ref in CORPUS:
+        src = os.path.join(ROOT, "courses", ref)
+        if not os.path.exists(os.path.join(src, "greenbook.html")):
+            continue
+        with open(os.path.join(src, "course.json"), encoding="utf-8") as f:
+            if (json.load(f) or {}).get("build_mode") == "yardage":
+                continue                      # no green surfaces to reproduce
+        try:
+            with open(os.path.join(src, "osm_geom.json"), encoding="utf-8") as f:
+                digitized = any("_digitized" in (e.get("tags") or {})
+                                for e in json.load(f)["elements"])
+        except Exception:
+            digitized = False
+
+        cold = "_cold_" + ref[:8]
+        dst = os.path.join(ROOT, "courses", cold)
         shutil.rmtree(dst, ignore_errors=True)
+        os.makedirs(dst)
+        try:
+            with open(os.path.join(src, "course.json"), encoding="utf-8") as f:
+                j = json.load(f)
+            j["slug"] = cold
+            with open(os.path.join(dst, "course.json"), "w", encoding="utf-8") as f:
+                json.dump(j, f, indent=2)
+            has_laz = os.path.isdir(os.path.join(src, "laz"))
+            if has_laz:
+                os.symlink(os.path.join(src, "laz"), os.path.join(dst, "laz"))
+            stages = (["fetch_osm.py", "fetch_dem_hd.py", "fetch_dem.py", "fetch_trees.py",
+                       "generate.py"] if has_laz else
+                      ["fetch_osm.py", "fetch_dem.py", "generate.py"])
+            env = {**os.environ, "COURSE": cold}
+            failed = None
+            for stage in stages:
+                r = subprocess.run([sys.executable, os.path.join(ROOT, stage)], cwd=ROOT,
+                                   env=env, capture_output=True, text=True)
+                if r.returncode != 0:
+                    failed = (stage, (r.stdout + r.stderr)[-900:])
+                    break
+            if digitized:
+                if failed is None:
+                    problems.append(f"{ref}: built without its hand-digitized geometry -- the bind "
+                                    f"cap should have refused")
+                elif "_digitized" not in failed[1] and "bind limit" not in failed[1]:
+                    problems.append(f"{ref}: failed at {failed[0]} for an unexpected reason: "
+                                    f"{failed[1][-250:]}")
+                else:
+                    refused.append(ref)
+                continue
+            if failed:
+                problems.append(f"{ref}: {failed[0]} failed: {failed[1][-250:]}")
+                continue
+            with open(os.path.join(src, "greenbook.html"), encoding="utf-8") as f:
+                a = f.read()
+            with open(os.path.join(dst, "greenbook.html"), encoding="utf-8") as f:
+                b = f.read()
+            if a == b:
+                reproduced.append((ref, len(a)))
+            else:
+                w = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+                problems.append(f"{ref}: differs ({len(a)} vs {len(b)} bytes), first at byte {w}: "
+                                f"a=...{a[max(0, w - 60):w + 30]!r} b=...{b[max(0, w - 60):w + 30]!r}")
+        finally:
+            shutil.rmtree(dst, ignore_errors=True)
+
+    assert reproduced, "no course was cold-built -- nothing was verified"
+    assert not problems, "cold build is not reproducible:\n  " + "\n  ".join(problems)
