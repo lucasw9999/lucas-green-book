@@ -1341,6 +1341,12 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
             f"a plane falling toward bearing {bearing} deg (approach due north) must read "
             f"{want!r}, got {summ['feeds']!r} -- the card frame is rotated wrongly")
         assert summ["conf"] == "firm", f"a 3% plane should be firm, got {summ['conf']!r}"
+        # tilt % is the other number this card prints from the same plane fit, so pin it here where
+        # the answer is exact. Cross-checked on the corpus by re-fitting 108 greens with an
+        # independent Gaussian and least-squares: worst disagreement 0.05 percentage points, which is
+        # the 1-decimal rounding.
+        assert abs(summ["tilt_pct"] - 100.0 * k) < 0.15, (
+            f"a {100*k:.0f}% plane must print {100*k:.1f}%, got {summ['tilt_pct']}")
 
     # With the approach due NORTH the card rotation is the identity, so the cases above cannot tell
     # whether the rotation is applied at all -- skipping it entirely still passed them. Repeat with a
