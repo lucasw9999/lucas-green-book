@@ -358,15 +358,16 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
          f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
          f'{trow_svg}{tdot_svg}{rings}{labels}</svg>')
-    # Count over the WHOLE course, not the corridor-filtered draw list: a bunker further than the
-    # 40 m draw corridor from its own hole's line would otherwise be counted on no card at all
-    # (Philadelphia lost 32 of 131 that way). Assigning every feature to its nearest hole makes the
-    # per-hole counts sum to the course total by construction.
-    all_bunkers=[g for g in course if (g.get('tags') or {}).get('golf')=='bunker' and g.get('geometry')]
-    all_waters =[g for g in course if ((g.get('tags') or {}).get('golf') in ('water_hazard','lateral_water_hazard')
-                 or (g.get('tags') or {}).get('natural')=='water') and g.get('geometry')]
-    info=dict(bunkers=sum(1 for g in all_bunkers if belongs_here(g)),
-              waters=sum(1 for g in all_waters if belongs_here(g)),
+    # COUNT WHAT THIS CARD DRAWS. An earlier attempt counted "features whose nearest hole is this
+    # one, within 90 m" so that the per-hole numbers would sum to no more than the course holds --
+    # but drawing still uses the 40 m corridor, so the footer stopped matching its own map on 115 of
+    # 198 cards: Merion hole 3 printed "2B" beside eight drawn bunkers, 23 cards printed a ZERO with
+    # the feature drawn, and 15 printed more than the map showed. The sum is something nobody
+    # computes; the footer sitting under the map is something a 12-year-old reads directly. So the
+    # footer describes the map, and a bunker between two parallel holes legitimately appears on both
+    # cards -- it is in play on both.
+    info=dict(bunkers=len(bunkers),
+              waters=len(waters),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
               arc_yd=round(arc_yd), card_yd=total_yd, tee_ticks=tee_ok)
