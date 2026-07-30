@@ -169,7 +169,7 @@ def survey_year(project):
     return max(yrs) if yrs else None
 
 
-def choose_project(projects):
+def choose_project(projects, cents=None):
     """The project whose tiles best cover the course, preferring a RECENT survey.
 
     Two properties matter and they conflict. Coverage: a survey that merely clips the course corner
@@ -185,7 +185,10 @@ def choose_project(projects):
     # Judge coverage over the GREENS when we know where they are, and only fall back to the bbox
     # when OSM has not been fetched yet. See _green_coverage: a bayside course loses a quarter of its
     # bbox to open water, which no land survey covers, so bbox coverage vetoed the recent survey.
-    cents = _green_centroids()
+    # cents may be supplied so the caller reads osm_geom.json once; None means read it here. Passing
+    # it also lets the tests hand in synthetic greens instead of monkeypatching a module attribute.
+    if cents is None:
+        cents = _green_centroids()
     gcov = {p: _green_coverage(projects[p], cents) for p in projects}
     if cents and all(v is not None for v in gcov.values()):
         rank, floor = gcov, GREEN_COVERAGE_GOOD
@@ -214,6 +217,36 @@ def choose_project(projects):
     # bbox-over-greens mistake the ranking itself was changed to stop making.
     pick = max(pool, key=lambda p: (survey_year(p) or 0, rank[p], scored[p], len(projects[p])))
     return pick, scored, newest
+
+
+def sweep_partials(laz_dir):
+    """Remove stale .part files. Shared by both fetchers -- it was written twice, byte-identical.
+
+    A transfer killed outright (SIGKILL, a closed laptop, power) leaves one behind that no exception
+    handler ever runs to remove, and it then sits in laz/ looking like a tile forever. It is never
+    valid data: a .part is only renamed into place after its size is checked against TNM.
+    """
+    for stale in sorted(glob.glob(os.path.join(laz_dir, "*.part"))):
+        print(f"  removing stale partial download {os.path.basename(stale)} "
+              f"({os.path.getsize(stale)/1e6:.0f} MB)")
+        os.remove(stale)
+
+
+def copy_suffix(sub, i, stem, ext, used):
+    """Filename for an extra sub-project copy of one cell: `<stem>__Co<n><ext>`.
+
+    The suffix MUST end in digits -- tools/gen_provenance.py reads the LiDAR project name off these
+    filenames for the legal record and strips `__Co<digits>` -- and it was encoded twice, with two
+    different token regexes, one of which had no collision handling. Shared so a third spelling
+    cannot appear.
+    """
+    m = re.search(r"Co_?(\d+)", sub) or re.search(r"(\d+)", sub)
+    token = m.group(1) if m else str(50 + i)
+    fn = f"{stem}__Co{token}{ext}"
+    while fn in used:                # two sub-projects reducing to the same token
+        token += "0"
+        fn = f"{stem}__Co{token}{ext}"
+    return fn
 
 
 def _sub_project(u):
@@ -282,13 +315,7 @@ def plan_downloads(tiles, laz_dir):
                 # the first copy keeps the plain name: every existing cache on disk uses it
                 fn = base
             else:
-                sub = _sub_project(it["downloadURL"])
-                m = re.search(r"(\d+)", sub)
-                token = m.group(1) if m else str(50 + i)
-                fn = f"{stem}__Co{token}{ext}"
-                while fn in used:              # two sub-projects reducing to the same token
-                    token += "0"
-                    fn = f"{stem}__Co{token}{ext}"
+                fn = copy_suffix(_sub_project(it["downloadURL"]), i, stem, ext, used)
             used.add(fn)
             want = it.get("sizeInBytes") or 0
             if want and have.get(want):
@@ -339,6 +366,9 @@ def main():
     projects = {}
     for it in overlapping:
         projects.setdefault(_project_of(it), []).append(it)
+    # Read the green centroids ONCE here: choose_project ranks on them and the NOTE below reports
+    # against them, and each used to re-read osm_geom.json for itself.
+    cents_now = _green_centroids()
     pinned = config.COURSE.get("lidar_project")
     if pinned:
         if pinned not in projects:
@@ -348,13 +378,12 @@ def main():
             (lambda p: max((i.get("publicationDate", "") for i in projects[p]), default=""))
         print(f'project: {proj}  (PINNED by course.json)')
     else:
-        proj, scored, newest = choose_project(projects)
+        proj, scored, newest = choose_project(projects, cents_now)
     tiles = projects[proj]
     yr = survey_year(proj)
     if yr and yr < 2015:
         print(f"  WARNING: {proj} was surveyed around {yr}. Greens rebuilt since then would print\n"
               f"           stale slope. Check for a newer survey, or pin one with \"lidar_project\".")
-    cents_now = _green_centroids()
     ngreens = len(cents_now)
     gc = _green_coverage(tiles, cents_now)
     if gc is not None and gc < 1.0:
@@ -374,10 +403,7 @@ def main():
     # one behind that no exception handler ever runs to remove, and it then sits in laz/ looking like
     # a tile forever. It is never valid data: the code below only renames a .part into place after
     # checking its size against TNM.
-    for stale in glob.glob(f"{DIR}/laz/*.part"):
-        print(f"  removing stale partial download {os.path.basename(stale)} "
-              f"({os.path.getsize(stale)/1e6:.0f} MB)")
-        os.remove(stale)
+    sweep_partials(f"{DIR}/laz")
     todo, ncached = plan_downloads([t for t in tiles if t.get('downloadURL')], f"{DIR}/laz")
     print(f"  {ncached} tile copy(ies) already on disk, {len(todo)} to download")
     for it, name in todo:

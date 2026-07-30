@@ -2603,8 +2603,19 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
         # exception handler runs to remove; observed for real when a Merion fetch was killed mid-tile
         # and left a 26 MB .part sitting in laz/. It is never valid data -- a .part is only renamed
         # into place after its size is checked against TNM.
-        assert '*.part' in src and "os.remove(stale)" in src, \
+        assert "sweep_partials(" in src, \
             f"{mod} must remove stale partial downloads before deciding what is cached"
+
+    # ...and the sweep itself must actually delete them. Asserting the source text of two
+    # byte-identical copies is what kept the duplication alive; test the behaviour once instead.
+    import fetch_lidar as _fl
+    d = tmp_path / "sweep"
+    d.mkdir()
+    (d / "a.laz.part").write_bytes(b"\0" * 2048)
+    (d / "keep.laz").write_bytes(b"\0" * 2048)
+    _fl.sweep_partials(str(d))
+    left = sorted(p.name for p in d.iterdir())
+    assert left == ["keep.laz"], f"sweep_partials left {left}"
 
 
 def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
@@ -2645,12 +2656,12 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
     assert whole is not None
     assert whole[0].date() == near.date() and whole[1].date() == far.date(), \
         "without green geometry the whole-tile range should still span both days"
-    assert whole[2] is False, "no rings supplied -> nothing is known to be over a green"
+    assert whole[2] == 0, "no rings supplied -> no point is known to be over a green"
 
     over = ld.tile_dates(f, [ring])
     assert over is not None
-    first, last, is_near, npts = over
-    assert is_near is True and npts == 100, (is_near, npts)
+    first, last, npts, crs_ok = over
+    assert npts == 100 and crs_ok is True, (npts, crs_ok)
     assert first.date() == near.date() and last.date() == near.date(), \
         (f"dated {first.date()}..{last.date()}; the 2018-01-21 points are 2 km from the green and "
          f"must not widen the range -- this is The Reserve's 38-day label")
@@ -2659,7 +2670,8 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
     far_ring = [(lon + 0.5 + a, lat + 0.5 + b) for a, b in
                 ((-d, -d), (d, -d), (d, d), (-d, d))]
     none_over = ld.tile_dates(f, [far_ring])
-    assert none_over[2] is False, "a tile with no points over a green must say so"
+    assert none_over[2] == 0, "a tile with no points over a green must report none"
+    assert none_over[3] is True, "the greens WERE placeable here; only the points are absent"
 
     # The pad must be converted into the CRS's own units. Callippe's tiles are in US survey feet, so
     # treating 30 as feet shrinks the collar to 9.1 m and drops points genuinely on the green's
@@ -2670,15 +2682,15 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
                   (lon + tiny, lat + tiny), (lon - tiny, lat + tiny)]
     ft = _synthetic_laz(tmp_path / "ftus.laz", 2227, small_ring, near, far, near_offset_m=20.0)
     r = ld.tile_dates(ft, [small_ring])
-    assert r[2] is True and r[3] == 100, \
-        (f"found {r[3]} points 20 m from the green in a ftUS tile; the {ld.GREEN_PAD_M:g} m pad was "
+    assert r[2] == 100, \
+        (f"found {r[2]} points 20 m from the green in a ftUS tile; the {ld.GREEN_PAD_M:g} m pad was "
          f"probably not converted from metres")
     assert r[0].date() == near.date() and r[1].date() == near.date()
 
     # and a non-feeding tile must be dropped from the range, not folded into it
     src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
-    i = src.index("if rings and not near:")
-    block = src[i:src.index("nfeed += 1", i)]      # scoped structurally, not by a character budget
+    i = src.index("if rings and not nnear:")
+    block = src[i:src.index("per_tile[name]", i)]   # scoped structurally, not by a character budget
     assert "continue" in block and "NOT counted" in block, \
         "a tile with no points over a green must be excluded from the printed flight range"
 
@@ -2866,15 +2878,21 @@ def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
     assert strip_like_gen_provenance(
         "USGS_LPC_CA_AlamedaCounty_2021_B21_w6162n2049__Co_3_2021.laz") != "CA_AlamedaCounty_2021_B21", \
         "this is the naming that broke the legal record; the assertion below guards against it"
+    # Both fetchers must build the suffix with the SHARED helper -- it was encoded twice, with two
+    # different token regexes, one of them lacking collision handling.
     ala = open(os.path.join(ROOT, "fetch_lidar_alameda.py"), encoding="utf-8").read()
-    # scope to the FILENAME construction: sub[-9:] is fine in a progress label, not in a filename
     fnlines = [ln.strip() for ln in ala.splitlines()
-               if re.match(r"fn\s*=", ln.strip()) and "laz" in ln]
-    assert fnlines, "could not find the tile filename construction in fetch_lidar_alameda.py"
+               if re.match(r"fn\s*=", ln.strip()) or "copy_suffix" in ln]
     joined = " ".join(fnlines)
-    assert "__Co{tok}" in joined, f"expected a __Co<digits> suffix, got: {joined}"
+    assert "copy_suffix" in joined, f"expected the shared suffix helper, got: {joined}"
     assert "sub[-9:]" not in joined, \
         f"the sub-project slice in a FILENAME is what broke the provenance strip: {joined}"
+    # and the helper itself must yield __Co<digits> for every real Alameda sub-project
+    for sub, want in (("CA_AlamedaCo_1_2021", "1"), ("CA_AlamedaCo_2_2021", "2"),
+                      ("CA_AlamedaCo_3_2021", "3")):
+        got = fl.copy_suffix(sub, 1, "USGS_LPC_X_w1n1", ".laz", set())
+        assert got == f"USGS_LPC_X_w1n1__Co{want}.laz", (sub, got)
+        assert re.search(r"__Co\d+\.laz$", got), got
 
 
 def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
@@ -2928,8 +2946,10 @@ def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
 
     # and an UNKNOWN must abort the run rather than shrink the tile set
     src = open(os.path.join(ROOT, "fetch_lidar_alameda.py"), encoding="utf-8").read()
-    i = src.index("if unknown:")
-    assert "raise SystemExit" in src[i:i + 400], \
+    # scope to the REPORTING block in main(), not the early-exit `if unknown: break` that stops
+    # probing once the run is already doomed
+    i = src.index("could not determine whether")
+    assert "raise SystemExit" in src[max(0, i - 300):i + 200], \
         "an undetermined tile must stop the fetch, not be treated as the edge of the survey"
 
 

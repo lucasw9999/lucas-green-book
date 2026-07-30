@@ -50,16 +50,6 @@ MAX_TILE_SPAN_DAYS = 730   # a tile whose gps_time spans more than two years is 
 GREEN_PAD_M = 30.0         # collar around a green's own footprint; points inside it built the surface
 
 
-def tile_crs(path):
-    """The tile's CRS, or None if its header declares none."""
-    import laspy
-    try:
-        with laspy.open(path) as f:
-            return f.header.parse_crs()
-    except Exception:
-        return None
-
-
 def green_rings(course_dir):
     """Each green's outline as [(lon, lat), ...], from osm_geom.json. [] if OSM is not fetched."""
     try:
@@ -154,7 +144,27 @@ def tile_dates(path, rings=()):
                   f"(global_encoding bit 0 = 0); no absolute date is recoverable from it")
             return None
         adjusted = True
-        boxes = green_boxes(f.header.parse_crs(), rings) if rings else None
+        crs = f.header.parse_crs()
+        boxes = green_boxes(crs, rings) if rings else None
+        crs_ok = not rings or boxes is not None
+        # Reject the whole tile up front when its HEADER bbox cannot contain a single green point.
+        # A point inside a padded green box must lie inside the header bbox, so nothing is lost --
+        # this is the same header-extent fact lidar_coverage.py is built on. Without it, a
+        # neighbouring tile that feeds no green was fully decompressed and every chunk run through
+        # the per-green box arithmetic: measured across the corpus, 414M of 1,117M points (37%)
+        # decompressed for nothing. The Reserve's t390135.laz is exactly this case -- 26.8M points,
+        # zero over any green.
+        if boxes:
+            hb = f.header
+            if all(x1 < hb.x_min or x0 > hb.x_max or y1 < hb.y_min or y0 > hb.y_max
+                   for x0, x1, y0, y1 in boxes):
+                boxes = None
+        # union of the green boxes: one cheap mask before the per-green ones. Each green otherwise
+        # costs 8 full-length array ops on a 2M-point chunk -- 26 ms for 18 greens, 43 ms for 30,
+        # as expensive as decompressing the chunk. Any box hit implies a union hit, so the selection
+        # is identical.
+        ubox = (min(b[0] for b in boxes), max(b[1] for b in boxes),
+                min(b[2] for b in boxes), max(b[3] for b in boxes)) if boxes else None
         lo = hi = None            # over points near a green, when we can tell
         wlo = whi = None          # over the whole tile, always
         nnear = 0
@@ -163,18 +173,23 @@ def tile_dates(path, rings=()):
             keep = t > 0
             if not keep.any():
                 continue
-            wlo = min(wlo, float(t[keep].min())) if wlo is not None else float(t[keep].min())
-            whi = max(whi, float(t[keep].max())) if whi is not None else float(t[keep].max())
+            tk = t[keep]                      # one boolean-index copy, not two
+            wlo = min(wlo, float(tk.min())) if wlo is not None else float(tk.min())
+            whi = max(whi, float(tk.max())) if whi is not None else float(tk.max())
             if boxes is None:
                 continue
             x, y = np.asarray(chunk.x), np.asarray(chunk.y)
-            sel = np.zeros(len(t), dtype=bool)
+            cand = keep & (x >= ubox[0]) & (x <= ubox[1]) & (y >= ubox[2]) & (y <= ubox[3])
+            idx = np.flatnonzero(cand)
+            if not idx.size:
+                continue
+            xs, ys = x[idx], y[idx]
+            sel = np.zeros(idx.size, dtype=bool)
             for x0, x1, y0, y1 in boxes:
-                sel |= (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
-            sel &= keep
+                sel |= (xs >= x0) & (xs <= x1) & (ys >= y0) & (ys <= y1)
             if sel.any():
-                nnear += int(sel.sum())
-                tn = t[sel]
+                tn = t[idx[sel]]
+                nnear += int(tn.size)
                 lo = min(lo, float(tn.min())) if lo is not None else float(tn.min())
                 hi = max(hi, float(tn.max())) if hi is not None else float(tn.max())
         near = lo is not None
@@ -209,7 +224,7 @@ def tile_dates(path, rings=()):
             print(f"    {os.path.basename(path)}: gps_time spans {(last - first).days} days "
                   f"({first.date()}..{last.date()}) -- not one acquisition; refusing to date it")
             return None
-        return first, last, near, nnear
+        return first, last, nnear, crs_ok
 
 
 def main():
@@ -242,29 +257,29 @@ def main():
     allfirst = alllast = None
     wholefirst = wholelast = None
     per_tile = {}
-    nfeed = nskip = 0
+    nskip = 0
     for t in tiles:
         d = tile_dates(t, rings)
         name = os.path.basename(t)
         if not d:
             print(f"  {name}: no GPS time"); continue
-        first, last, near, nnear = d
+        first, last, nnear, crs_ok = d
         wholefirst = first if wholefirst is None else min(wholefirst, first)
         wholelast = last if wholelast is None else max(wholelast, last)
         span = "" if day(first) == day(last) else f" .. {day(last)}"
         lf = first.astimezone(tz) if tz else first
         ll = last.astimezone(tz) if tz else last
-        if rings and not near:
+        if rings and not nnear:
             nskip += 1
             # Distinguish the two reasons. "No points over a green" is a fact about the data; "could
             # not place the greens" is a fact about us, and reporting the second as the first would
-            # blame the survey for our own missing CRS.
+            # blame the survey for our own missing CRS. tile_dates already parsed the header, so it
+            # reports which case it hit rather than making us reopen the file to find out.
             why = ("no CRS in its header, so the greens cannot be placed in it"
-                   if tile_crs(t) is None else "no points over a green")
+                   if not crs_ok else "no points over a green")
             print(f"  {name}: {why} -- NOT counted in the flight range "
                   f"(whole tile {day(first)}{span})")
             continue
-        nfeed += 1
         per_tile[name] = [day(first).isoformat(), day(last).isoformat()]
         allfirst = first if allfirst is None else min(allfirst, first)
         alllast = last if alllast is None else max(alllast, last)

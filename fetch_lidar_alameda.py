@@ -85,6 +85,12 @@ def tile_copies(t, unknown):
     out = []
     for sub in SUBS:
         u = f"{BASE}/{sub}/LAZ/{PREFIX}_{t}.laz"
+        # Once one HEAD is UNKNOWN the run is already doomed -- main() raises on any unknown -- so
+        # stop asking. Callippe probes 25 cells x 3 sub-projects = 75 HEADs, and with 3 tries and two
+        # 4 s sleeps each a network outage cost up to two hours before printing the same "re-run"
+        # message. The verdict is unchanged; only the waiting is gone.
+        if unknown:
+            break
         sz = head_size(u)
         if sz == UNKNOWN:
             unknown.append(f"{t} [{sub[-9:]}]")
@@ -94,10 +100,8 @@ def tile_copies(t, unknown):
 
 def main():
     # Sweep stale .part files first -- a transfer killed outright leaves one that no handler removes.
-    for stale in glob.glob(f"{DIR}/laz/*.part"):
-        print(f"  removing stale partial download {os.path.basename(stale)} "
-              f"({os.path.getsize(stale)/1e6:.0f} MB)")
-        os.remove(stale)
+    import fetch_lidar
+    fetch_lidar.sweep_partials(f"{DIR}/laz")
     tiles = covering_tiles(config.COURSE["osm_bbox"])
     print(f"{len(tiles)} candidate tiles for {config.SLUG}")
     got = 0
@@ -105,6 +109,8 @@ def main():
     absent = []
     unknown = []
     for t in tiles:
+        if unknown:
+            break          # already doomed; see tile_copies
         copies = tile_copies(t, unknown)
         if not copies:
             # Genuinely absent: every sub-project answered an authoritative 404. A HEAD that
@@ -120,9 +126,8 @@ def main():
             # `__Co\d+$`. The previous suffix was the sub-project's last 9 characters
             # (`__Co_3_2021`), which that strip does not match, so the generator published
             # "CA_AlamedaCounty_2021_B21_w6162n2049__Co_3" as the project a book was built from.
-            m = re.search(r"Co_?(\d+)", sub)
-            tok = m.group(1) if m else str(50 + i)
-            fn = f"{DIR}/laz/{PREFIX}_{t}.laz" if i == 0 else f"{DIR}/laz/{PREFIX}_{t}__Co{tok}.laz"
+            fn = (f"{DIR}/laz/{PREFIX}_{t}.laz" if i == 0 else
+                  f"{DIR}/laz/" + fetch_lidar.copy_suffix(sub, i, f"{PREFIX}_{t}", ".laz", set()))
             if os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024:
                 print(f"  cached {t} [{sub[-9:]}]"); got += 1; continue
             ok = False
