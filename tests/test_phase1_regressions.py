@@ -209,6 +209,57 @@ def test_lidar_project_grouping_has_no_title_fallback():
             fetch_lidar._project_of(bad)
 
 
+def test_lidar_legacy_bucket_is_not_treated_as_one_project():
+    """USGS nests older surveys under a BUCKET, not a project:
+        .../Projects/CA_AlamedaCounty_2021_B21/LAZ/...        (modern)
+        .../Projects/legacy/ARRA_CA_SANFRANCOAST_2010/LAZ/... (older)
+    Taking the segment straight after "Projects" made every legacy survey one pseudo-project called
+    "legacy". Measured live on the Monarch Bay bbox: 19 tiles from ARRA_CA_SANFRANCOAST_2010,
+    CA_ALAMEDACO_2006 and CA_SANFRANBAY_2004 collapsed into a single 19-tile "legacy" whose
+    footprint then BEAT the real 2021 survey on coverage -- so a rebuild would have mixed three
+    surveys flown years apart into one green surface."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    import fetch_lidar
+
+    mk = lambda u: {"downloadURL": u, "title": "USGS_LPC_x_000267.laz"}
+    got = {fetch_lidar._project_of(mk(u)) for u in (
+        "https://x/Projects/legacy/ARRA_CA_SANFRANCOAST_2010/LAZ/a.laz",
+        "https://x/Projects/legacy/CA_ALAMEDACO_2006/LAZ/b.laz",
+        "https://x/Projects/CA_AlamedaCounty_2021_B21/LAZ/c.laz")}
+    assert got == {"ARRA_CA_SANFRANCOAST_2010", "CA_ALAMEDACO_2006",
+                   "CA_AlamedaCounty_2021_B21"}, got
+    assert "legacy" not in got, "the bucket must never be a project name"
+
+
+def test_lidar_recency_uses_the_survey_year_not_the_publication_date():
+    """TNM lists ARRA_CA_SANFRANCOAST_2010 with publicationDate 2023-04-13 -- thirteen years after
+    the flight. Ranking recency by publicationDate therefore made decade-old elevation look like the
+    newest data available, which is the same class of error as commit cf95110 (a USGS project name is
+    not a flight date)."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    import fetch_lidar
+
+    assert fetch_lidar.survey_year("CA_AlamedaCounty_2021_B21") == 2021
+    assert fetch_lidar.survey_year("ARRA_CA_SANFRANCOAST_2010") == 2010
+    assert fetch_lidar.survey_year("CA_ALAMEDACO_2006") == 2006
+    assert fetch_lidar.survey_year("no_year_here") == 0
+
+    # equal coverage -> the newer SURVEY wins, even though the older one publishes later
+    S, W, N, E = fetch_lidar.S, fetch_lidar.W, fetch_lidar.N, fetch_lidar.E
+    full = dict(minX=W - 0.01, maxX=E + 0.01, minY=S - 0.01, maxY=N + 0.01)
+    projects = {
+        "ARRA_CA_SANFRANCOAST_2010": [dict(publicationDate="2023-04-13", boundingBox=full)],
+        "CA_AlamedaCounty_2021_B21": [dict(publicationDate="2022-01-01", boundingBox=full)],
+    }
+    chosen, _s, _n = fetch_lidar.choose_project(projects)
+    assert chosen == "CA_AlamedaCounty_2021_B21", \
+        f"picked {chosen}: a 2023 publication of 2010 data outranked a 2021 survey"
+
+
 def test_lidar_selection_prefers_coverage_over_recency():
     """Round-1 finding: picking the NEWEST project chose CA_SanJoaquin_2021_A21 (published 2023,
     90% of the bbox) over CA_UpperSouthAmerican_Eldorado_2019_B19 (2021, 100%), leaving the greens

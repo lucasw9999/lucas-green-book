@@ -67,14 +67,26 @@ def _wrap(t, width=96):
     return "\n".join(out)
 
 
+def _books(pattern):
+    """Built books, excluding underscore-prefixed scratch/staging dirs.
+
+    gen_provenance.py and the test suite both filter these; this tool did not, so a throwaway
+    directory became a named distributed green book in a LEGAL record ("Variant A1 -- printed on 11
+    book(s): _ccrit_noloc, bay-view-golf-club, ...") and --check told you to regenerate, i.e. to
+    falsify the document."""
+    for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", pattern))):
+        if not os.path.basename(os.path.dirname(f)).startswith("_"):
+            yield f
+
+
 def build():
     books = {}                                   # printed text -> [course slugs]
-    for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+    for f in _books("greenbook.html"):
         slug = os.path.basename(os.path.dirname(f))
         for b in _abtxt_blocks(f):
             books.setdefault(b, []).append(slug)
     coach = {}
-    for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook_coach.html"))):
+    for f in _books("greenbook_coach.html"):
         slug = os.path.basename(os.path.dirname(f))
         for b in _abtxt_blocks(f):
             coach.setdefault(b, []).append(slug)
@@ -103,11 +115,11 @@ def build():
 
 
 def main():
-    if not glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html")):
+    if not list(_books("greenbook.html")):
         print("no built books found -- build at least one course first "
               "(COURSE=<slug> python3 generate.py)")
         return 1
-    if not glob.glob(os.path.join(ROOT, "courses", "*", "greenbook_coach.html")):
+    if not list(_books("greenbook_coach.html")):
         # Writing a legal record that silently omits a DISTRIBUTED variant is the exact drift this
         # generator exists to stop, so refuse rather than emit an incomplete one.
         print("no coach edition built -- the enlarged book is distributed too, so its disclaimer\n"

@@ -16,7 +16,7 @@ Then: COURSE=<slug> python3 fetch_dem_hd.py   # precision green surfaces
       COURSE=<slug> python3 fetch_trees.py    # trees from canopy returns
       COURSE=<slug> python3 generate.py
 """
-import os, json, time, urllib.request
+import os, re, json, time, urllib.request
 import config
 
 DIR = config.COURSE_DIR
@@ -39,6 +39,10 @@ def tnm_items(tries=8):
         time.sleep(10)
     return []
 
+# Path segments USGS uses as containers, never as a survey name.
+_BUCKETS = {'legacy', 'lpc', 'laz', 'metadata', 'projects'}
+
+
 def _project_of(it):
     """Stable project name for a TNM item. USGS stages LPC under
     .../Projects/<PROJECT>/... so the path segment after 'Projects' groups all tiles of one
@@ -52,8 +56,20 @@ def _project_of(it):
     parts = [p for p in (it.get('downloadURL') or '').split('/') if p]
     if 'Projects' in parts:
         i = parts.index('Projects')
-        if i + 1 < len(parts):
-            return parts[i + 1]
+        # USGS nests older surveys one level deeper, under a BUCKET rather than a project:
+        #   .../Projects/CA_AlamedaCounty_2021_B21/LAZ/...        (modern)
+        #   .../Projects/legacy/ARRA_CA_SANFRANCOAST_2010/LAZ/... (older)
+        # Taking the segment straight after "Projects" made every legacy survey one pseudo-project
+        # called "legacy". Measured live on the Monarch Bay bbox: 19 tiles from ARRA_CA_SANFRANCOAST
+        # _2010, CA_ALAMEDACO_2006 and others collapsed into "legacy", whose 19-tile footprint then
+        # BEAT the real CA_AlamedaCounty_2021_B21 (5 tiles) on coverage -- so a rebuild would have
+        # silently fetched 2006-2010 elevation for a course we hold 2021 data for, and mixed three
+        # surveys flown years apart into one green surface.
+        j = i + 1
+        while j < len(parts) and parts[j].lower() in _BUCKETS:
+            j += 1
+        if j < len(parts):
+            return parts[j]
     raise SystemExit(
         f"cannot determine the LiDAR project for a TNM item: {it.get('downloadURL')!r}\n"
         f"  Expected a .../Projects/<PROJECT>/... URL. Grouping by title instead would make every\n"
@@ -68,6 +84,9 @@ def _overlaps(bb):
         return bb['maxY'] > S and bb['minY'] < N and bb['maxX'] > W and bb['minX'] < E
     except (KeyError, TypeError):
         return False
+
+COVERAGE_GOOD = 0.95         # coverage at which a project is "good enough" to prefer recency
+
 
 def _coverage(items):
     """Fraction of the course bbox covered by the union of these tiles' bounding boxes.
@@ -93,17 +112,33 @@ def _coverage(items):
     return hit / (n * n)
 
 
-def choose_project(projects):
-    """The project whose tiles best cover the course: coverage first, recency second.
+def survey_year(project):
+    """The year the survey was FLOWN, from the project name, or 0 if it carries none.
 
-    Extracted from main() so it can be tested offline against recorded TNM shapes. Picking by DATE
-    alone chose a newer project that merely clipped the course corner, leaving greens with no
-    ground returns; coverage decides, and recency only breaks ties within 2%."""
+    publicationDate is not the survey epoch and can be a decade out: TNM lists
+    ARRA_CA_SANFRANCOAST_2010 with publicationDate 2023-04-13. Ranking recency by that made
+    ten-year-old elevation look like the newest data available. The project NAME carries the real
+    year (CA_AlamedaCounty_2021_B21, CA_ALAMEDACO_2006), so use it and fall back to nothing rather
+    than to a misleading number."""
+    yrs = [int(y) for y in re.findall(r'(19\d\d|20\d\d)', project or '')]
+    return max(yrs) if yrs else 0
+
+
+def choose_project(projects):
+    """The project whose tiles best cover the course, preferring a RECENT survey.
+
+    Two properties matter and they conflict. Coverage: a survey that merely clips the course corner
+    leaves greens with no ground returns at all. Recency: a green surveyed in 2006 may have been
+    rebuilt since, and we print its slope as current. So prefer the newest survey that covers the
+    course well; only drop to an older one when nothing recent covers enough, and say so out loud.
+    """
     scored = {p: _coverage(projects[p]) for p in projects}
     newest = lambda p: max((i.get('publicationDate', '') for i in projects[p]), default='')
     best_cov = max(scored.values())
-    finalists = [p for p in projects if scored[p] >= best_cov - 0.02]
-    return max(finalists, key=lambda p: (newest(p), len(projects[p]))), scored, newest
+    good = [p for p in projects if scored[p] >= min(best_cov, COVERAGE_GOOD) - 0.02]
+    # among adequately-covering projects, the newest SURVEY wins (not the newest publication)
+    pick = max(good, key=lambda p: (survey_year(p), scored[p], len(projects[p])))
+    return pick, scored, newest
 
 
 def main():
@@ -125,8 +160,24 @@ def main():
     projects = {}
     for it in overlapping:
         projects.setdefault(_project_of(it), []).append(it)
-    proj, scored, newest = choose_project(projects)
+    pinned = config.COURSE.get("lidar_project")
+    if pinned:
+        if pinned not in projects:
+            raise SystemExit(f'course.json pins "lidar_project": {pinned!r}, which TNM did not '
+                             f'return for this bbox. Available: {sorted(projects)}')
+        proj, scored, newest = pinned, {p: _coverage(projects[p]) for p in projects}, \
+            (lambda p: max((i.get("publicationDate", "") for i in projects[p]), default=""))
+        print(f'project: {proj}  (PINNED by course.json)')
+    else:
+        proj, scored, newest = choose_project(projects)
     tiles = projects[proj]
+    yr = survey_year(proj)
+    if yr and yr < 2015:
+        print(f"  WARNING: {proj} was surveyed around {yr}. Greens rebuilt since then would print\n"
+              f"           stale slope. Check for a newer survey, or pin one with \"lidar_project\".")
+    if scored[proj] < COVERAGE_GOOD:
+        print(f"  WARNING: {proj} covers only {scored[proj]*100:.0f}% of the course bbox; greens\n"
+              f"           outside it will have no ground returns and will not be read.")
     print(f"project: {proj}  ({len(tiles)} overlapping tiles, {newest(proj)}, "
           f"{scored[proj]*100:.0f}% bbox coverage)")
     for p in sorted(projects, key=lambda p: -scored[p]):

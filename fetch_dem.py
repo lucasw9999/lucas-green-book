@@ -35,6 +35,7 @@ def bearing(a_lat, a_lon, b_lat, b_lon):
     return (math.degrees(math.atan2(dE, dN)) + 360) % 360
 
 NAN_FRAC_MAX = 0.02          # matches fetch_dem_hd.py's gate
+MIN_RELIEF_M = 0.05          # 5 cm across a whole green patch: not a green, a zero-fill
 
 
 def _nan_frac_in_green(arr, bbox, W, H, polygon):
@@ -109,7 +110,8 @@ def main():
         W = max(48, int(wm/0.5)); H = max(48, int(hm/0.5))
         url = ("https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage"
                f"?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=4326&imageSR=4326&size={W},{H}"
-               "&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation&f=image")
+               "&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation"
+               "&noData=-9999&noDataInterpretation=esriNoDataMatchAny&f=image")
         arr = None
         for attempt in range(4):
             try:
@@ -125,9 +127,19 @@ def main():
         # could stop an unusable surface from being printed. This is the path a BRAND-NEW course
         # takes, which made it the least gated and most used producer.
         arr = np.where(np.isfinite(arr) & (np.abs(arr) < 1e30), arr, np.nan)   # NoData sentinels
+        arr = np.where(arr <= -9998.0, np.nan, arr)                            # requested noData
         nan_frac, n_in = _nan_frac_in_green(arr, [xmin, ymin, xmax, ymax], W, H,
                                             [[p['lat'], p['lon']] for p in geo])
-        insufficient = bool(n_in == 0 or nan_frac > NAN_FRAC_MAX)
+        # Out of coverage, 3DEP's exportImage returns a CONSTANT raster (measured at St Andrews:
+        # min 0.0, max 0.0, one unique value) rather than any NoData marker -- so a nan_frac test
+        # alone reported insufficient=False for a green with no measurement at all, and the book
+        # printed 18 cards of "feeds back (subtle) - 0.0%". A real green is never perfectly flat.
+        inside_vals = arr[np.isfinite(arr)]
+        flat = bool(inside_vals.size and float(np.nanmax(arr) - np.nanmin(arr)) < MIN_RELIEF_M)
+        insufficient = bool(n_in == 0 or nan_frac > NAN_FRAC_MAX or flat)
+        if flat:
+            print(f"hole {hn}: CONSTANT surface ({float(np.nanmin(arr)):.1f} m everywhere) -- "
+                  f"outside 3DEP coverage, not a flat green; no slope will be printed")
         np.save(f"{OUT}/hole{hn:02d}.npy", arr)
         json.dump(dict(hole=hn, approach_bearing=appr, bbox=[xmin, ymin, xmax, ymax], W=W, H=H,
                        green_id=green['id'], green_center=[clat, clon],

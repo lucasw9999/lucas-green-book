@@ -12,6 +12,7 @@ the green (with a hollow 'pin' ring you mark on the day), and yardage.
 
 Data: OpenStreetMap (ODbL) golf features in osm_course.json + osm_geom.json.
 """
+import glob
 import json, math, os
 import config
 DIR = config.COURSE_DIR
@@ -19,10 +20,28 @@ R_LAT = 111320.0
 
 _LIDAR_TREES = None
 def _lidar_trees():
-    """LiDAR-derived tree markers per hole (from fetch_trees.py), if available."""
+    """LiDAR-derived tree markers per hole (from fetch_trees.py), if available.
+
+    If the course HAS a point cloud but no trees_lidar.json, the map silently fell back to OSM tree
+    nodes -- which on Merion means 25 markers instead of 5086, so a tree-lined corridor printed as
+    open ground while the legend still promised "trees (dark green)". Nothing said a word. That got
+    easier to hit when fetch_trees.py gained hard stops (a course.json missing "location" now aborts
+    the tree stage, and generate.py would still produce a clean-looking 18-hole book).
+
+    A missing file when there is no LiDAR at all is fine -- OSM trees are then the honest best
+    available. Refusing only when the tiles EXIST keeps that distinction."""
     global _LIDAR_TREES
     if _LIDAR_TREES is None:
         p = os.path.join(config.COURSE_DIR, "trees_lidar.json")
+        if not os.path.exists(p) and glob.glob(os.path.join(config.COURSE_DIR, "laz", "*.laz")):
+            if not os.environ.get("ALLOW_OSM_TREES"):
+                raise SystemExit(
+                    "this course has LiDAR tiles but no trees_lidar.json, so the hole maps would\n"
+                    "  show only the handful of trees OSM happens to have (25 vs 5086 on Merion)\n"
+                    "  while the legend still promises trees. Run:\n"
+                    f"    COURSE={config.SLUG} python3 fetch_trees.py\n"
+                    "  Set ALLOW_OSM_TREES=1 to draw OSM trees anyway and accept a sparse map.")
+            print("  NOTE: ALLOW_OSM_TREES set -- drawing sparse OSM trees, not LiDAR canopy")
         _LIDAR_TREES = json.load(open(p)) if os.path.exists(p) else {}
     return _LIDAR_TREES
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
