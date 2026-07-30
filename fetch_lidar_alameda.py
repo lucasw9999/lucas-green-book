@@ -8,7 +8,10 @@ Download USGS Alameda County 2021 LiDAR (public domain) LAZ tiles covering a
 course, into COURSE_DIR/laz/. Solves the w####n#### tile-naming for the
 CA_AlamedaCounty_2021_B21 project (see memory: alameda-2021-lidar-tile-index).
 
-Tile naming: NAD83(2011) / California zone 3, US feet (EPSG:6419). The name
+Tile naming: NAD83(2011) / California zone 3. NOTE the projected CRS EPSG:6419 is the METRE
+variant -- the US-survey-foot variant is EPSG:6420 -- so the transform below returns metres and
+M2FT is required to reach the feet the tile names use. The tile HEADERS are in ftUS. Getting this
+backwards silently shifts every tile index by 3.28x, so do not "simplify" M2FT away. The name
 ..._w{E}n{N}.laz encodes the tile SW-corner easting/northing in *thousands* of
 US-feet on a 3000-ft grid. We transform the course bbox -> EPSG:6419, floor to
 the grid, enumerate covering tiles, find which of the 3 sub-projects holds each,
@@ -69,22 +72,50 @@ def main():
     tiles = covering_tiles(config.COURSE["osm_bbox"])
     print(f"{len(tiles)} candidate tiles for {config.SLUG}")
     got = 0
+    failed = []
+    absent = []
     for t in tiles:
         copies = tile_copies(t)
         if not copies:
-            print(f"  {t}: no tile on server (edge of coverage) -- skip"); continue
+            # genuinely absent, or a HEAD that failed -- head_size cannot tell those apart, so
+            # count them and report at the end rather than letting a network wobble look like the
+            # edge of the survey
+            absent.append(t)
+            print(f"  {t}: no copy found on server (edge of coverage, or HEAD failed) -- skip")
+            continue
         for i, (sub, url, sz) in enumerate(copies):
             # first copy keeps the plain name; extra sub-project copies get a suffix
             fn = f"{DIR}/laz/{PREFIX}_{t}.laz" if i == 0 else f"{DIR}/laz/{PREFIX}_{t}__{sub[-9:]}.laz"
             if os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024:
                 print(f"  cached {t} [{sub[-9:]}]"); got += 1; continue
+            ok = False
             for a in range(4):
                 try:
-                    urllib.request.urlretrieve(url, fn)
-                    print(f"  downloaded {t} [{sub[-9:]}] ({round(os.path.getsize(fn)/1e6)} MB)"); got += 1; break
+                    # stage as .part and rename, so an interrupted transfer cannot be mistaken for a
+                    # complete tile by the size check above on the next run. fetch_lidar.py was fixed
+                    # this way; this module still wrote straight to the final name.
+                    urllib.request.urlretrieve(url, fn + ".part")
+                    os.replace(fn + ".part", fn)
+                    print(f"  downloaded {t} [{sub[-9:]}] ({round(os.path.getsize(fn)/1e6)} MB)")
+                    got += 1; ok = True; break
                 except Exception as e:
                     print(f"  {t} [{sub[-9:]}] try {a+1} failed: {type(e).__name__}; retry"); time.sleep(3)
+            if not ok:
+                failed.append(f"{t} [{sub[-9:]}]")
+                if os.path.exists(fn + ".part"):
+                    os.remove(fn + ".part")
     print(f"done -> {DIR}/laz  ({got} tile copies)")
+    if absent:
+        print(f"  NOTE {len(absent)} candidate tile(s) had no copy on the server: {', '.join(absent)}\n"
+              f"       If that is the edge of the survey, greens there will have no ground returns\n"
+              f"       and the honesty gate will leave them unread. If it was a network failure,\n"
+              f"       re-run: the check is a HEAD request and cannot distinguish the two.")
+    if failed:
+        # Exiting 0 here would leave PARTIAL coverage. fetch_lidar.py raises for exactly this reason:
+        # a green with no ground returns under it is what produced the fabricated-terrain cards the
+        # honesty gate now has to catch.
+        raise SystemExit(f"FAILED to download {len(failed)} tile copy(ies): {', '.join(failed)}\n"
+                         f"  Coverage would be incomplete -- re-run rather than building on this.")
     if got == 0:
         raise SystemExit("no tiles downloaded")
 

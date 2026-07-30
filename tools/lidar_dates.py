@@ -29,14 +29,31 @@ import sys
 import laspy
 
 GPS_EPOCH = dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)
-LEAP_SECONDS = 18          # GPS - UTC since 2017-01-01; LiDAR here is all post-2017
-SAMPLE_POINTS = 2_000_000  # enough to bracket a flight without reading a 200 MB tile in full
+LEAP_SECONDS = 18          # GPS - UTC since 2017-01-01; LiDAR here is all post-2017.
+                           # A pre-2017 survey would need 17 (or 16 before 2015-07-01). The error is
+                           # ONE SECOND, so it can only change the printed DATE for a flight within a
+                           # second of midnight UTC -- checked, none of ours is. Revisit only if a
+                           # pre-2017 course is ever added.
+SAMPLE_POINTS = 2_000_000  # enough to bracket a flight without reading a 200 MB tile in full.
+                           # NOTE this samples the FIRST 2M points of a tile, so a tile flown over
+                           # more than one day can report a narrower range than the truth. That
+                           # understates uncertainty rather than overstating currency, and the
+                           # course label takes min/max across all tiles, which recovers most of it
+                           # (Philadelphia correctly reports "2024-12-17 to 2025-03-28").
 
 
 def gps_to_utc(gps_seconds, adjusted=True):
-    """Adjusted Standard GPS time (or raw standard GPS time) -> UTC datetime."""
+    """Adjusted Standard GPS time (or raw standard GPS time) -> UTC datetime, or None.
+
+    Returns None instead of raising for a value datetime cannot represent. A corrupt gps_time (or the
+    wrong interpretation of a valid one) can land tens of thousands of years out, and
+    timedelta/datetime raises OverflowError there -- which crashed the tool with a traceback rather
+    than reporting "no usable GPS time" for that tile."""
     standard = gps_seconds + 1_000_000_000 if adjusted else gps_seconds
-    return GPS_EPOCH + dt.timedelta(seconds=standard - LEAP_SECONDS)
+    try:
+        return GPS_EPOCH + dt.timedelta(seconds=standard - LEAP_SECONDS)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def tile_dates(path):
@@ -60,10 +77,19 @@ def tile_dates(path):
         if lo is None:
             return None
         # A tile with times spanning years is raw (unadjusted) GPS time; sanity-check the result.
+        def plausible(d):
+            return d is not None and (dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc) < d
+                                      < dt.datetime(2040, 1, 1, tzinfo=dt.timezone.utc))
         first, last = gps_to_utc(lo, adjusted), gps_to_utc(hi, adjusted)
-        if not (dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc) < first
-                < dt.datetime(2040, 1, 1, tzinfo=dt.timezone.utc)):
+        if not plausible(first):
             first, last = gps_to_utc(lo, not adjusted), gps_to_utc(hi, not adjusted)
+        # ...and if the OTHER interpretation is implausible too, refuse. This used to return the
+        # second result unchecked, so a tile with corrupt gps_time produced a nonsense date that was
+        # written into course.json by --write and PRINTED in every book as "Measured from public USGS
+        # 3DEP LiDAR flown <nonsense>". The provenance line is the one claim the honesty argument
+        # rests on; better to have no date than an invented one.
+        if not plausible(first) or not plausible(last) or last < first:
+            return None
         return first, last
 
 

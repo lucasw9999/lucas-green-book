@@ -1429,6 +1429,123 @@ def test_blank_card_depth_is_measured_in_the_approach_frame(gate_course):
         _json.dump(meta3, open(mp, "w"))
 
 
+def test_alameda_tile_names_decode_to_the_right_grid_cell():
+    """fetch_lidar_alameda.py had ZERO tests and ZERO findings across seven review rounds -- the one
+    finder assigned to it died. It decides which LiDAR an entire Alameda course is built from, so an
+    off-by-one in its grid arithmetic would feed a course tiles that miss its greens.
+
+    Two things are checked against ground truth read from real tile HEADERS:
+      * the grid: names encode the SW corner in THOUSANDS of ftUS on a 3000-ft grid, so a point must
+        map to the cell whose header bounds contain it;
+      * the units: EPSG:6419 is the METRE variant of California zone 3 (EPSG:6420 is the ftUS one),
+        so the transform returns metres and M2FT is load-bearing. Dropping it shifts every index by
+        3.28x -- and the module's docstring used to say 6419 was already in feet, inviting exactly
+        that "simplification"."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar_alameda as fla
+    except Exception as e:
+        pytest.skip(f"fetch_lidar_alameda not importable here: {type(e).__name__}")
+
+    # EPSG:6419 must be metres; if this ever flips, M2FT becomes wrong
+    from pyproj import CRS
+    assert CRS.from_user_input("EPSG:6419").axis_info[0].unit_name == "metre", \
+        "EPSG:6419 is expected to be the METRE variant; M2FT depends on it"
+
+    # Ground truth from a REAL tile: w6153n2055 in CA_AlamedaCo_3_2021 spans x 6153000..6156000,
+    # y 2055000..2058000 ftUS -- read by range-requesting its LAS public header, not assumed. Derive
+    # the test coordinate by inverse transform from a point inside that cell rather than guessing a
+    # lon/lat (my first attempt guessed one 1585 ft into the neighbouring cell).
+    from pyproj import Transformer
+    INV = Transformer.from_crs("EPSG:6419", "EPSG:4326", always_xy=True)
+    e_ft, n_ft = 6154500.0, 2056500.0                    # centre of the known real cell
+    lon, lat = INV.transform(e_ft / fla.M2FT, n_ft / fla.M2FT)
+
+    x, y = fla.T.transform(lon, lat)
+    assert abs(x * fla.M2FT - e_ft) < 1.0 and abs(y * fla.M2FT - n_ft) < 1.0, \
+        "round trip through EPSG:6419 did not preserve the point -- M2FT or the CRS is wrong"
+
+    names = fla.covering_tiles((lat - 0.0005, lon - 0.0005, lat + 0.0005, lon + 0.0005), pad_ft=0)
+    assert "w6153n2055" in names, f"the cell containing the test point was not enumerated: {names}"
+    # every name must be a multiple of 3 thousand feet -- the grid step
+    for nm in names:
+        e, n = nm[1:].split("n")
+        assert int(e) % 3 == 0 and int(n) % 3 == 0, f"{nm} is off the 3000-ft grid"
+    # and a bbox spanning two cells must enumerate both
+    wide = fla.covering_tiles((lat - 0.01, lon - 0.01, lat + 0.01, lon + 0.01), pad_ft=0)
+    assert len(wide) > len(names), "a larger bbox must cover more tiles"
+
+
+def test_gps_time_decodes_to_the_right_calendar_date():
+    """tools/lidar_dates.py had ZERO tests, and its output is the "Measured from public USGS 3DEP
+    LiDAR flown YYYY-MM-DD" line printed in EVERY book and recorded in legal/03 -- the provenance the
+    whole honesty argument rests on. A USGS project NAME is not a date and the LAS header's creation
+    date is the DELIVERY date; two of this project's own courses were mislabelled before this decoder
+    existed ("Alameda 2021" was flown 2019-08-14).
+
+    Checked against dates computed here from first principles, not from the module: GPS epoch
+    1980-01-06, Adjusted Standard GPS time = standard - 1e9, minus 18 leap seconds."""
+    import datetime as dt
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import lidar_dates as ld
+
+    EPOCH = dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)
+    LEAP = 18            # stated HERE, not read from the module: using ld.LEAP_SECONDS made the test
+                         # move with the code, so setting it to 0 left the test green
+    assert ld.LEAP_SECONDS == LEAP, f"module uses {ld.LEAP_SECONDS} leap seconds, test expects {LEAP}"
+    for target in (dt.datetime(2024, 12, 17, 15, 30, tzinfo=dt.timezone.utc),
+                   dt.datetime(2019, 8, 14, 18, 5, tzinfo=dt.timezone.utc),
+                   dt.datetime(2020, 4, 15, 20, 0, tzinfo=dt.timezone.utc)):
+        standard = (target - EPOCH).total_seconds() + LEAP
+        assert ld.gps_to_utc(standard - 1_000_000_000, adjusted=True) == target
+        assert ld.gps_to_utc(standard, adjusted=False) == target
+
+    # the 1e9 offset is what distinguishes the two encodings, and confusing them is a ~31-year error
+    adj = ld.gps_to_utc(0.0, adjusted=True)
+    raw = ld.gps_to_utc(0.0, adjusted=False)
+    assert abs((adj - raw).total_seconds() - 1_000_000_000) < 1e-6
+    assert adj.year == 2011 and raw.year == 1980, (adj, raw)
+
+
+def test_lidar_dates_refuses_an_implausible_date_rather_than_inventing_one():
+    """The out-of-range fallback used to return its second attempt UNCHECKED, so a tile with corrupt
+    gps_time produced a nonsense date -- which --write records into course.json and every book then
+    prints as its provenance. Better no date than an invented one."""
+    import datetime as dt
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import lidar_dates as ld
+
+    # both interpretations of a wildly wrong value must be rejected, and a value datetime cannot
+    # represent at all must come back as None rather than raising OverflowError -- which is what a
+    # corrupt tile used to do, crashing the tool with a traceback instead of skipping that tile
+    lo = dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc)
+    hi = dt.datetime(2040, 1, 1, tzinfo=dt.timezone.utc)
+    for bad in (-5e9, 5e11, 1e18, float("inf")):
+        for adj in (True, False):
+            got = ld.gps_to_utc(bad, adjusted=adj)
+            assert got is None or not (lo < got < hi), \
+                f"{bad} (adjusted={adj}) should be rejected, got {got}"
+    # Behavioural, not a source-text match: an inspect.getsource assertion still passed when the
+    # guard was replaced by `if False:`. Write a real LAZ whose gps_time is corrupt and require
+    # tile_dates to return None.
+    import laspy
+    import numpy as np
+    import tempfile
+    hdr = laspy.LasHeader(version="1.4", point_format=6)     # format 6 carries gps_time
+    hdr.global_encoding.gps_time_type = 1
+    las = laspy.LasData(hdr)
+    n = 200
+    las.x = np.linspace(0, 10, n); las.y = np.linspace(0, 10, n); las.z = np.zeros(n)
+    las.gps_time = np.full(n, 5e11)                          # implausible under either reading
+    with tempfile.TemporaryDirectory() as td:
+        f = os.path.join(td, "corrupt.laz")
+        las.write(f)
+        assert ld.tile_dates(f) is None, \
+            "a tile whose gps_time is implausible under BOTH readings must yield no date"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
