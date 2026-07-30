@@ -1773,6 +1773,79 @@ def test_the_printed_flight_date_spans_every_point_not_just_the_first_few():
     assert checked >= 2, f"only {checked} courses had tiles to check"
 
 
+def test_the_density_and_coverage_gate_measures_the_green_itself():
+    """Two blind spots in the gate that decides whether a green may be read at all.
+
+    nan_frac came from griddata's LINEAR pass, which returns NaN only OUTSIDE the point cloud's convex
+    hull -- so it answered "is the green inside the hull?", not "was the green measured?". An INTERIOR
+    void is inside the hull and gets spanned by the interpolation: deleting every return in a 6 m
+    circle at each green centre (about a quarter of a 450 m^2 green, the footprint of standing water,
+    which absorbs 1064 nm and returns nothing) still reported nan_frac=0.0000 and insufficient=False
+    while changing 7 of 18 printed reads. The gate now also requires a ground return within 1 m of
+    every green node.
+
+    And density divided a PADDED prefilter's point count by the UNPADDED bbox -- which itself includes
+    12 m of fairway and bunker -- so the figure was neither a green density nor consistent with its own
+    divisor, and gen_provenance publishes it as density "over N greens". It is now counted inside the
+    green ring over the ring's true area. Every published figure changed; the corpus worst is 4.7
+    pts/m^2 against a 4.0 floor."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem_hd"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_dem_hd as fdh
+    except Exception as e:
+        pytest.skip(f"fetch_dem_hd not importable: {type(e).__name__}")
+
+    # Ring area, against a square whose area is known in closed form. The square must sit at the
+    # BOUND course's location: fetch_dem_hd's TR transformer is module-level and fixed to that
+    # course's UTM zone, so a Pennsylvania square projected through California zone 10 measures
+    # 1330 m2 instead of 900 -- which is what my first attempt did.
+    import config as _cfg
+    lat0 = _cfg.COURSE["location"]["lat"]; lon0 = _cfg.COURSE["location"]["lon"]
+    side_m = 30.0
+    dlat = side_m / R_LAT
+    dlon = side_m / _mlon(lat0)
+    ring = [{"lat": lat0, "lon": lon0}, {"lat": lat0, "lon": lon0 + dlon},
+            {"lat": lat0 + dlat, "lon": lon0 + dlon}, {"lat": lat0 + dlat, "lon": lon0},
+            {"lat": lat0, "lon": lon0}]
+    got = fdh._ring_area_m2(ring)
+    assert abs(got - side_m * side_m) / (side_m * side_m) < 0.02, \
+        f"a {side_m}x{side_m} m ring should measure ~{side_m**2} m2, got {got:.1f}"
+
+    # the gate must consider coverage, not only hull membership
+    src = open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8").read()
+    assert "UNCOVERED_MAX" in src and "uncovered > UNCOVERED_MAX" in src, \
+        "the insufficient verdict must include the coverage test, not just nan_frac and density"
+    assert "cKDTree" in src, "coverage needs a nearest-return query"
+    assert 0 < fdh.COVER_R_M <= 2.0 and 0 < fdh.UNCOVERED_MAX <= 0.10
+
+
+@needs_corpus
+def test_every_built_green_records_its_coverage():
+    """The gate's inputs must be recorded in the meta, so a printed read can be audited after the
+    fact rather than taken on trust. Measured across the corpus: worst uncovered share 0.9%, worst
+    in-green density 4.7 pts/m^2 against a 4.0 floor."""
+    import json as _json
+    checked = 0
+    worst_unc = 0.0
+    worst_dens = 1e9
+    for mf in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        if os.path.basename(os.path.dirname(os.path.dirname(mf))).startswith("_"):
+            continue
+        m = _json.load(open(mf))
+        if "seamless" in str(m.get("source", "")).lower():
+            continue                       # the 1 m fallback path records its own keys
+        assert "uncovered" in m, f"{mf} has no coverage figure -- the gate's input is unrecorded"
+        assert m.get("density") is not None and m.get("nan_frac") is not None
+        worst_unc = max(worst_unc, float(m["uncovered"]))
+        worst_dens = min(worst_dens, float(m["density"]))
+        checked += 1
+    assert checked >= 150, f"only {checked} point-cloud greens found"
+    assert worst_unc <= 0.02, f"worst uncovered share {worst_unc:.3f} exceeds the gate"
+    assert worst_dens >= 4.0, f"worst in-green density {worst_dens} is below the gate floor"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
