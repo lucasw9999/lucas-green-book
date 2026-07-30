@@ -38,13 +38,20 @@ NAN_FRAC_MAX = 0.02          # matches fetch_dem_hd.py's gate
 MIN_RELIEF_M = 0.05          # 5 cm across a whole green patch: not a green, a zero-fill
 
 
-def _nan_frac_in_green(arr, bbox, W, H, polygon):
-    """(fraction of green-interior cells with no elevation, cells tested)."""
+def _green_interior_stats(arr, bbox, W, H, polygon):
+    """(nan fraction, cells tested, relief in m) over the GREEN INTERIOR only.
+
+    Everything here must be restricted to the interior. The patch carries a 12 m margin, so a
+    statistic taken over the whole raster describes mostly surround: a green sitting on the edge of
+    3DEP coverage can be entirely zero-filled while the margin outside it holds real elevation, and
+    a whole-patch relief test then reports a healthy range and lets the fabricated green through --
+    the exact case the test exists to catch."""
     xmin, ymin, xmax, ymax = bbox
     lats = [p[0] for p in polygon]; lons = [p[1] for p in polygon]
     px = [((lo - xmin) / (xmax - xmin) * W, (ymax - la) / (ymax - ymin) * H)
           for la, lo in zip(lats, lons)]
     n_in = 0; n_nan = 0
+    lo, hi = float("inf"), float("-inf")
     for r in range(H):
         yv = r + 0.5
         xs = []
@@ -61,7 +68,11 @@ def _nan_frac_in_green(arr, bbox, W, H, polygon):
                 seg = arr[r, a:b + 1]
                 n_in += seg.size
                 n_nan += int(np.isnan(seg).sum())
-    return (1.0 if n_in == 0 else n_nan / n_in), n_in
+                fin = seg[np.isfinite(seg)]
+                if fin.size:
+                    lo = min(lo, float(fin.min())); hi = max(hi, float(fin.max()))
+    relief = (hi - lo) if hi >= lo else 0.0
+    return (1.0 if n_in == 0 else n_nan / n_in), n_in, relief
 
 
 def main():
@@ -128,17 +139,16 @@ def main():
         # takes, which made it the least gated and most used producer.
         arr = np.where(np.isfinite(arr) & (np.abs(arr) < 1e30), arr, np.nan)   # NoData sentinels
         arr = np.where(arr <= -9998.0, np.nan, arr)                            # requested noData
-        nan_frac, n_in = _nan_frac_in_green(arr, [xmin, ymin, xmax, ymax], W, H,
-                                            [[p['lat'], p['lon']] for p in geo])
+        nan_frac, n_in, relief = _green_interior_stats(
+            arr, [xmin, ymin, xmax, ymax], W, H, [[p['lat'], p['lon']] for p in geo])
         # Out of coverage, 3DEP's exportImage returns a CONSTANT raster (measured at St Andrews:
         # min 0.0, max 0.0, one unique value) rather than any NoData marker -- so a nan_frac test
         # alone reported insufficient=False for a green with no measurement at all, and the book
         # printed 18 cards of "feeds back (subtle) - 0.0%". A real green is never perfectly flat.
-        inside_vals = arr[np.isfinite(arr)]
-        flat = bool(inside_vals.size and float(np.nanmax(arr) - np.nanmin(arr)) < MIN_RELIEF_M)
+        flat = bool(n_in and nan_frac < 1.0 and relief < MIN_RELIEF_M)
         insufficient = bool(n_in == 0 or nan_frac > NAN_FRAC_MAX or flat)
         if flat:
-            print(f"hole {hn}: CONSTANT surface ({float(np.nanmin(arr)):.1f} m everywhere) -- "
+            print(f"hole {hn}: CONSTANT surface across the green ({relief*100:.1f} cm of relief) -- "
                   f"outside 3DEP coverage, not a flat green; no slope will be printed")
         np.save(f"{OUT}/hole{hn:02d}.npy", arr)
         json.dump(dict(hole=hn, approach_bearing=appr, bbox=[xmin, ymin, xmax, ymax], W=W, H=H,

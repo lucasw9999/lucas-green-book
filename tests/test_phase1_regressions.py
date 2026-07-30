@@ -967,6 +967,42 @@ def test_both_editions_print_the_same_honesty_caveats():
                 assert "no slope printed" in html, f"{name}/{edition}: must say so explicitly"
 
 
+def test_fetch_dem_gate_measures_only_the_green_interior():
+    """3DEP's exportImage fills out-of-coverage ground with a CONSTANT value, not a NoData marker, so
+    the gate has to notice a flat surface. My first version of that check took the relief over the
+    WHOLE patch -- which carries a 12 m margin -- so a green sitting on the edge of coverage could be
+    entirely zero-filled while the margin outside it held real elevation, the whole-patch range
+    looked healthy, and the fabricated green went through. Exactly the case the check exists for."""
+    import importlib.util
+    import numpy as np
+    os.environ["COURSE"] = a_course()
+    spec = importlib.util.spec_from_file_location("fd", os.path.join(ROOT, "fetch_dem.py"))
+    fd = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(fd)
+    except SystemExit:
+        pytest.skip("fetch_dem could not import in this environment")
+
+    n = 60
+    lat0, lon0, d = 40.0, -75.0, 0.0004
+    poly = [[lat0 - d * .6, lon0 - d * .6], [lat0 - d * .6, lon0 + d * .6],
+            [lat0 + d * .6, lon0 + d * .6], [lat0 + d * .6, lon0 - d * .6],
+            [lat0 - d * .6, lon0 - d * .6]]
+    bbox = [lon0 - d, lat0 - d, lon0 + d, lat0 + d]
+    interior = np.fromfunction(lambda r, c: (abs(r - 30) < 19) & (abs(c - 30) < 19), (n, n))
+    slope = np.fromfunction(lambda r, c: 100.0 + 0.5 * r, (n, n), dtype=float)
+
+    def flat_of(arr):
+        nf, ni, rel = fd._green_interior_stats(arr, bbox, n, n, poly)
+        return bool(ni and nf < 1.0 and rel < fd.MIN_RELIEF_M)
+
+    assert flat_of(np.where(interior, 0.0, slope)), \
+        "green zero-filled with a real margin must still be refused"
+    assert flat_of(np.zeros((n, n))), "a wholly constant patch must be refused"
+    assert not flat_of(np.fromfunction(lambda r, c: 100.0 + 0.03 * r, (n, n), dtype=float)), \
+        "a real 3% green must be read"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
