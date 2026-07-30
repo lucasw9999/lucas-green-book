@@ -1050,6 +1050,54 @@ def test_duplex_imposition_puts_every_back_behind_its_own_front():
     assert checked > 0, "no built books to check"
 
 
+CARD_LIMIT_W_IN, CARD_LIMIT_H_IN = 4.25, 7.0     # USGA Clarification 4.3a/1 book-size limit
+
+
+@pytest.mark.slow          # opens every shipped PDF
+@needs_corpus
+def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
+    """Rule 4.3 caps the BOOK SIZE at 4.25 x 7 in, as well as the scale. tools/check_scale.py checks
+    the size against config.CARD_W_IN -- i.e. it trusts the constant rather than measuring the thing
+    that gets printed. That is the same class of error as the scale defect (15 greens printed over
+    the cap while every SVG attribute looked correct) and as the stale-PDF defect (the HTML was
+    right, the paper was wrong). A wrong @page rule or a scaled export would put a real book over
+    the legal size with every check still green.
+
+    Measured from the artifact: the crop ticks are 0.14 x 0.006 in boxes at the four corners of each
+    card, so the spacing between opposite ticks IS the printed card size."""
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+    checked = 0
+    for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
+        if os.path.basename(os.path.dirname(f)).startswith("_"):
+            continue
+        with fitz.open(f) as d:
+            rects = []
+            for dr in d[0].get_drawings():
+                for it in dr["items"]:
+                    if it[0] == "re":
+                        r = it[1]
+                        if (9.5 < r.width < 11 and r.height < 1.2) or \
+                           (r.width < 1.2 and 9.5 < r.height < 11):
+                            rects.append(r)
+        xs = sorted({round(r.x0, 2) for r in rects if r.width < 1.2})
+        ys = sorted({round(r.y0, 2) for r in rects if r.height < 1.2})
+        assert len(xs) >= 2 and len(ys) >= 2, f"{os.path.relpath(f, ROOT)}: no crop ticks found"
+        w_in, h_in = (xs[1] - xs[0]) / 72.0, (ys[1] - ys[0]) / 72.0
+        assert w_in <= CARD_LIMIT_W_IN and h_in <= CARD_LIMIT_H_IN, (
+            f"{os.path.relpath(f, ROOT)} prints a {w_in:.3f} x {h_in:.3f} in card, over the "
+            f"Rule 4.3 limit of {CARD_LIMIT_W_IN} x {CARD_LIMIT_H_IN} in")
+        # and it must match what the engine believes, or one of the two is lying
+        cfg, _rh = _engine(os.path.basename(os.path.dirname(f)))
+        assert abs(w_in - cfg.CARD_W_IN) < 0.02 and abs(h_in - cfg.CARD_H_IN) < 0.02, (
+            f"{os.path.relpath(f, ROOT)}: printed {w_in:.3f}x{h_in:.3f} in but config says "
+            f"{cfg.CARD_W_IN}x{cfg.CARD_H_IN} -- the export is not honouring the page rule")
+        checked += 1
+    assert checked > 0, "no shipped PDFs to measure"
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a
