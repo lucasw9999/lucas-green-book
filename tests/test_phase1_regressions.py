@@ -2226,6 +2226,42 @@ def test_a_missing_green_surface_explains_itself(tmp_path):
         shutil.rmtree(d, ignore_errors=True)
 
 
+@needs_corpus
+def test_every_green_surface_records_its_gate_verdict():
+    """Each dem_hd meta must state what the honesty gate concluded -- nan_frac and insufficient --
+    not leave them absent.
+
+    Six of 198 did: Monarch Bay's seamless greens (holes 1, 9, 10, 16, 17, 18) carried neither key,
+    because they were written by a version of fetch_dem.py that predated the gate being added, and
+    were never regenerated after it was. `None` is falsy, so they rendered exactly as
+    insufficient=False would -- and independently recomputing the gate from the committed surfaces
+    confirms False is the right answer (nan_frac 0.0000 against a 0.02 limit). Nothing printed was
+    wrong, and no gate was bypassed either: render_green.py recomputes nan_frac from the surface
+    itself rather than trusting the meta.
+
+    But a record whose whole purpose is to say what was measured must not be silent about it -- an
+    auditor reading hole01.json would have found no verdict at all. Regenerating those six left all
+    18 surfaces byte-identical and the book identical at 4,973,620 bytes, which is what made the fix
+    safe to apply.
+    """
+    missing = []
+    checked = 0
+    for slug in CORPUS:
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            with open(p, encoding="utf-8") as f:
+                m = json.load(f)
+            checked += 1
+            for key in ("nan_frac", "insufficient"):
+                if m.get(key) is None:
+                    missing.append(f"{slug} hole {m.get('hole')}: {key} absent "
+                                   f"(source={str(m.get('source'))[:34]})")
+    assert checked, "no green surfaces to check"
+    assert not missing, (
+        f"{len(missing)} green surface(s) record no gate verdict -- regenerate them "
+        f"(fetch_dem_hd.py, then fetch_dem.py for the gaps):\n  " + "\n  ".join(missing[:12]))
+
+
+@needs_corpus
 def test_derived_artifacts_are_not_older_than_their_inputs():
     """The pipeline is a chain -- osm_geom/osm_course -> dem_hd -> trees_lidar -> greenbook.html --
     and re-running one stage without the ones downstream leaves a book built from mixed vintages.
@@ -2319,6 +2355,7 @@ def test_no_green_is_bound_to_two_holes():
             seen[gid] = hn
 
 
+@needs_corpus
 def test_each_tee_column_carries_the_right_tee_name():
     """A card prints a yardage under a TEE NAME, and a junior picks their tee by that name. Two
     separate structures have to agree for that to be true: `hole_cols` names the per-hole yardage
