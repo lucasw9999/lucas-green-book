@@ -104,7 +104,10 @@ def assert_one_green_per_hole(bound, label=""):
     clash = []
     for hn in sorted(bound):
         g = bound[hn]
-        key = g.get("id", id(g))
+        # `g.get("id", id(g))` returned None when the key was PRESENT but null, collapsing every
+        # such green onto one key and inventing a clash. The default only covers an absent key.
+        gid = g.get("id")
+        key = gid if gid is not None else id(g)
         if key in seen:
             clash.append((seen[key], hn, key))
         else:

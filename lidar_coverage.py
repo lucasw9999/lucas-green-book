@@ -36,7 +36,13 @@ import os
 
 def tile_footprints(laz_dir):
     """[(name, crs, x0, x1, y0, y1)] over the tiles on disk, from their headers."""
-    import laspy
+    try:
+        import laspy
+    except ImportError:
+        # Raising here would surface at the very END of an otherwise successful fetch, after every
+        # download. Report and let the caller treat it as "could not check".
+        print("  ! laspy is not installed -- cannot read tile headers to check coverage")
+        return []
 
     out = []
     for p in sorted(glob.glob(os.path.join(laz_dir, "*.laz"))):
@@ -60,7 +66,10 @@ def _green_rings(course_dir, els=None):
 
 
 def _footprint_boxes(course_dir):
-    """([(transformer, x0, x1, y0, y1)], reason) -- reason is "" when boxes could be built.
+    """([(transformer, [(x0, x1, y0, y1), ...])], reason) -- reason is "" when boxes could be built.
+
+    Rectangles are GROUPED BY CRS so a sampled node is projected once per CRS rather than once per
+    tile; see _inside.
 
     An empty list is NOT the same as "everything is covered", and conflating the two made this module
     assert something it had not checked: with zero tiles on disk it printed "all 1 green(s) sit inside
@@ -72,9 +81,6 @@ def _footprint_boxes(course_dir):
         return [], "no readable LAZ tiles on disk"
     from pyproj import Transformer
 
-    # Resolve one transformer per tile up front. Doing it inside the point loop meant a to_wkt() and a
-    # dict lookup per sampled node per tile -- thousands of calls for no gain, since a course's tiles
-    # almost always share a CRS.
     # Group the rectangles BY CRS. Holding a flat list of (transformer, rect) meant _inside
     # re-projected the same node once per tile -- up to 9 scalar pyproj calls per node, the very cost
     # the transformer cache was added to avoid. A course's tiles almost always share one CRS, so this

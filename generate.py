@@ -258,13 +258,27 @@ def _flown_line():
 
     A green map is only as current as the flight beneath it, and a USGS project NAME is not a
     date (four of our courses were mislabelled by 2-12 years). The date is decoded from the LAZ
-    point records by tools/lidar_dates.py and stored in course.json as lidar_flown."""
+    point records by tools/lidar_dates.py and stored in course.json as lidar_flown.
+
+    The range is normally narrowed to the points lying OVER the greens; where that was not possible
+    tools/lidar_dates.py falls back to the union over whole tiles and records that in `basis`. The
+    legal provenance table qualifies such a range, and so must the card: the governing rule is about
+    what the BOOK prints, so the book is the one place the caveat must not be missing. A tile can
+    span weeks and hold no point within a kilometre of any green -- The Reserve's did, which is how
+    a 38-day range came to be printed for greens flown on two days."""
     fl = config.COURSE.get("lidar_flown") or {}
     label = fl.get("label")
     if not label:
         return ""
+    # Fail closed: a record with NO basis predates that distinction, and its label WAS the whole-tile
+    # union, so silence must read as the weaker claim rather than the stronger one.
+    basis = fl.get("basis")
+    over_greens = bool(basis) and basis.startswith("points within")
+    qual = ("" if over_greens else
+            " That range covers whole survey tiles, not only the points over these greens, so it may"
+            " be wider than the flight that actually built them.")
     out = ('  <div class="legrow"><span><b>Measured</b> from public USGS 3DEP LiDAR flown '
-           f'<b>{esc(label)}</b>. Greens rebuilt after that date will not match &mdash; '
+           f'<b>{esc(label)}</b>.{esc(qual)} Greens rebuilt after that date will not match &mdash; '
            'trust what you see on the ground.</span></div>\n')
     stale = sorted(config.COURSE.get("greens_possibly_outdated", []))
     if stale:

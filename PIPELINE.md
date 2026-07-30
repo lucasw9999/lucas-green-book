@@ -10,7 +10,8 @@ greenbook/
   fetch_lidar.py         # download USGS 3DEP LiDAR tiles (via The National Map) -> laz/
   fetch_lidar_alameda.py #   Alameda County 2021 tile-name decoder (grabs all complementary copies)
   fetch_dem_hd.py        # raw LiDAR ground returns -> 0.4 m surface per green -> dem_hd/
-  fetch_dem.py           #   OR seamless 1 m DEM per green (fallback where no dense LiDAR)
+  fetch_dem.py           #   THEN seamless 1 m DEM for the greens fetch_dem_hd.py refused
+                         #   (fills gaps; ONLY=/OVERWRITE=1 to narrow or force it)
   fetch_trees.py         # LiDAR canopy trees -> trees_lidar.json (off greens/fairways/tees/bunkers)
   render_green.py        # green slope map (arrows, contours, %, depth grid)
   render_hole.py         # tee->green layout (bunkers, water, trees, yardage)
@@ -53,8 +54,11 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    missing a green, digitize it from **public-domain NAIP** aerial and inject it — never guess.
 5. **Surfaces & trees.** `fetch_dem_hd.py` clips ground-classified returns to each green and
    interpolates a 0.4 m surface -> `dem_hd/`; `fetch_trees.py` extracts canopy trees ->
-   `trees_lidar.json`, dropping any that fall on a green/fairway/tee/bunker. Where no dense
-   LiDAR exists, `fetch_dem.py` provides a 1 m seamless fallback.
+   `trees_lidar.json`, dropping any that fall on a green/fairway/tee/bunker. Then `fetch_dem.py`
+   fills the gaps: it writes a 1 m seamless surface for each green `fetch_dem_hd.py` refused and
+   leaves the 0.4 m ones alone, so the two compose per GREEN. Those cards print `1 m data`.
+   `lidar_coverage.py` then checks the tiles' data footprint really reaches every green and hole
+   centreline -- a tile can be present, correctly named, and hold no points where a green is.
 6. **Build.** `generate.py` renders the combined cards -> `greenbook.html` (add `COACH=1` for the
    optional large-print edition), then `tools/export_pdf.py` -> `greenbook.pdf`. Always export with
    that tool, never by hand: hand-exported PDFs drifted three commits behind the engine once, and

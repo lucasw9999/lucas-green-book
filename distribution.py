@@ -55,3 +55,14 @@ def distribution_status(course):
 
 def is_distributable(course):
     return distribution_status(course)[0]
+
+
+def is_yardage(course):
+    """True when this course is built in YARDAGE MODE -- blank greens, verified yardages only.
+
+    A DATA fact, kept separate from the distribution verdict even though yardage mode is currently
+    the only reason a book is not distributable. Deriving one from the other means the moment a
+    second reason exists, anything that says "yardage mode: blank greens" would say it about a course
+    that is not in yardage mode -- an unsupported claim in the legal record. Same normalisation as
+    distribution_status, so a mis-cased build_mode reads the same way in both."""
+    return ((course or {}).get("build_mode") or "").strip().lower() == YARDAGE

@@ -48,7 +48,7 @@ def _tile_project(slug, dem_source=""):
         if not stem.startswith("USGS_LPC_"):
             continue                                   # bare tile id: carries no project name
         stem = stem[len("USGS_LPC_"):]
-        stem = re.sub(r"__Co\d+$", "", stem)           # tile_copies disambiguation suffix
+        stem = re.sub(r"__Co\d+$", "", stem)           # extra sub-project copy (fetch_lidar.copy_suffix)
         stem = re.sub(r"_w\d+n\d+$", "", stem)         # e.g. _w6153n2055
         stem = re.sub(r"_\d{2}[A-Z]{3}\d+$", "", stem)  # e.g. _18TVK474434
         stem = re.sub(r"_\d+$", "", stem)              # numeric tile id
@@ -91,13 +91,15 @@ def _digitized(slug):
 def _row(slug):
     j = json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
     name = j.get("name", slug)
-    # ONE rule, asked once. The Status column and the "yardage mode: blank greens" slope text are the
-    # same decision, and they used to be derived separately -- this line was an exact `== "yardage"`
-    # match while the Status column below asked distribution.py. A mis-cased or space-padded
-    # build_mode in a hand-edited course.json would therefore have printed "Personal" in Status and a
-    # LiDAR density sentence in Green slope, in the same row.
+    # Both from distribution.py, with the SAME normalisation, but they are different questions: the
+    # Status column is a policy verdict, "yardage mode: blank greens" is a fact about the data. They
+    # used to be derived separately -- this line was an exact `== "yardage"` match while Status asked
+    # distribution.py -- so a mis-cased or space-padded build_mode in a hand-edited course.json
+    # printed "Personal" in Status and a LiDAR density sentence in Green slope, in the same row.
+    # Deriving one FROM the other would be the mirror fault: the day a second reason makes a course
+    # non-distributable, the slope cell would claim yardage mode for a course not in it.
     distributable, label, _why = distribution.distribution_status(j)
-    yardage_mode = not distributable
+    yardage_mode = distribution.is_yardage(j)
     proj, ntiles, from_names = _tile_project(slug, j.get('dem_source', ''))
     ngreens, dlo, dhi, seam, insuf = _greens(slug)
     dig = _digitized(slug)
@@ -110,9 +112,12 @@ def _row(slug):
     # union over WHOLE TILES and says so there. This table read only `label`, so that fallback would
     # have been published as a flight date with no hint that a tile 1.3 km from any green may have set
     # its extremes, which is the exact fault the lidar_dates change was made to fix. Qualify it here.
+    # Fail closed. A record with NO basis was written before that distinction existed, and its label
+    # WAS the union over whole tiles -- so an absent basis must read as the weaker claim, not the
+    # stronger one. Only a basis that positively says "points within ..." earns an unqualified date.
     basis = flown_rec.get("basis") or ""
-    flown_note = " *(range measured over whole tiles, not the points over the greens)*" \
-        if basis.startswith("whole tiles") else ""
+    flown_note = "" if basis.startswith("points within") else \
+        " *(range measured over whole tiles, not only the points over the greens)*"
 
     geom = "OSM (ODbL)"
     if dig:

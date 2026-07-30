@@ -12,11 +12,17 @@ bearing), downloads a small DEM patch per green via the 3DEP exportImage service
 sampled at 0.5 m/px, and writes COURSE_DIR/dem_hd/holeNN.{npy,json} -- the same
 format render_green.py consumes.
 
-For the sharpest possible result on a specific course you can instead run the
-point-cloud path (fetch_dem_hd.py) if dense QL1/QL2 LiDAR is available; this
-seamless path is the robust default that works everywhere.
+Run it AFTER fetch_dem_hd.py, not instead of it. This stage FILLS GAPS: it shares dem_hd/ with
+fetch_dem_hd.py and skips any green that already holds a good 0.4 m LiDAR surface, so the two
+compose per GREEN rather than per course -- which is what a bayside course needs, where most
+greens have ground returns and a few over water have none. It used to rewrite every hole it was
+given, silently replacing 0.4 m greens with the coarse 1 m DEM (Monarch Bay: 3,889,124 bytes
+against 4,973,620).
 
-Run:  COURSE=<slug> python3 fetch_dem.py
+Run:  COURSE=<slug> python3 fetch_dem_hd.py     # first: 0.4 m where LiDAR allows
+      COURSE=<slug> python3 fetch_dem.py        # then: 1 m for the greens it refused
+      ONLY=14,16 ...                            # restrict to specific holes
+      OVERWRITE=1 ...                           # replace a good 0.4 m surface on purpose
 """
 import urllib.request, json, math, io, time, os
 import numpy as np, tifffile
@@ -120,8 +126,10 @@ def _green_interior_stats(arr, bbox, W, H, polygon):
 
 
 def main():
-    # ONLY=14,10 restricts the run to specific holes, so a coarse 1 m fallback can be applied to
-    # one green WITHOUT clobbering the sharp 0.4 m point-cloud surfaces of its neighbours.
+    # ONLY=14,10 restricts the run to specific holes. Protecting the neighbours' sharp 0.4 m
+    # surfaces is no longer its job -- keeps_existing_surface() does that unconditionally now, which
+    # also means ONLY= on a hole that already holds a good LiDAR surface writes nothing without
+    # OVERWRITE=1.
     only = {int(v) for v in os.environ.get("ONLY", "").replace(" ", "").split(",") if v.isdigit()}
     if only:
         print("ONLY holes:", sorted(only))

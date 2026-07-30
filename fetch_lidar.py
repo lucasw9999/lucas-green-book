@@ -205,7 +205,14 @@ def choose_project(projects, cents=None):
     # seamless DEM and the card prints "1 m data". A survey that is a decade stale is not -- it
     # prints slope for a green that may since have been rebuilt. So the bar for preferring the newer
     # survey is a substantial majority of greens, not near-complete coverage.
-    good = [p for p in projects if rank[p] >= min(best_cov, floor)]
+    # The 2% slack is deliberate and predates the green-coverage change (d2b0d10: "recency only
+    # among projects within 2% of the best"). Dropping it made the pool collapse to the single
+    # best-covering project whenever NOTHING reaches the floor, so recency could no longer break a
+    # near-tie -- replaying both rules on synthetic shapes, greens 0.71 (2011) vs 0.70 (2021) picked
+    # the 2011 survey, inverting this function's own stated principle that a small gap is preferable
+    # to a decade of staleness. Latent today (the worst real green coverage is Monarch Bay at 0.90,
+    # above the floor) but restored rather than left as an accident.
+    good = [p for p in projects if rank[p] >= min(best_cov, floor) - 0.02]
     # Among adequately-covering projects the newest SURVEY wins (not the newest publication). A
     # project whose name carries no year is ranked by coverage alone rather than being treated as the
     # oldest -- "unknown" is not "ancient", and guessing it was would pick genuinely old data.
@@ -223,8 +230,9 @@ def sweep_partials(laz_dir):
     """Remove stale .part files. Shared by both fetchers -- it was written twice, byte-identical.
 
     A transfer killed outright (SIGKILL, a closed laptop, power) leaves one behind that no exception
-    handler ever runs to remove, and it then sits in laz/ looking like a tile forever. It is never
-    valid data: a .part is only renamed into place after its size is checked against TNM.
+    handler ever runs to remove, and it then sits in laz/ looking like a tile forever. It is never a
+    complete tile: both callers only rename a .part into place after the transfer returns, and this
+    one additionally checks its size against TNM first.
     """
     for stale in sorted(glob.glob(os.path.join(laz_dir, "*.part"))):
         print(f"  removing stale partial download {os.path.basename(stale)} "

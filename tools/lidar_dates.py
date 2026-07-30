@@ -18,7 +18,8 @@ are Adjusted Standard GPS time (standard GPS seconds - 1e9), counted from the GP
 1980-01-06, which runs ahead of UTC by the accumulated leap seconds (18 s since 2017-01-01).
 
 Run:  COURSE=<slug> python3 tools/lidar_dates.py [--write]
-      --write records {"lidar_flown": {"first","last","tiles"}} into the course's course.json.
+      --write records {"lidar_flown": {"first","last","label","tz","basis","tiles"}} into
+      the course's course.json. `basis` names what the range was measured over.
 """
 import datetime as dt
 import glob
@@ -47,7 +48,13 @@ LEAP_SECONDS = 18          # GPS - UTC since 2017-01-01; LiDAR here is all post-
 # tool runs once per course, so there is nothing to buy with a prefix.
 CHUNK = 2_000_000
 MAX_TILE_SPAN_DAYS = 730   # a tile whose gps_time spans more than two years is not one acquisition
-GREEN_PAD_M = 30.0         # collar around a green's own footprint; points inside it built the surface
+# Collar around a green's own footprint, for deciding which points DATE it. Deliberately wider than
+# the 12 m margin fetch_dem_hd.py builds the surface from (MARGIN_M): the question here is "was this
+# tile flown over this green", and a flight line that clipped the collar is the same pass. Note the
+# consequence and do not overstate it -- a point 20 m out can widen the printed range without having
+# contributed to the surface, so `basis` says "points within 30 m of a green" rather than claiming
+# these are the returns the surface was built from.
+GREEN_PAD_M = 30.0
 
 
 def green_rings(course_dir):
@@ -72,8 +79,18 @@ def green_boxes(crs, rings):
     try:
         from pyproj import Transformer
         T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        per_unit = (crs.axis_info[0].unit_conversion_factor if crs.axis_info else 1.0) or 1.0
+        ax = crs.axis_info[0] if crs.axis_info else None
+        unit = ((getattr(ax, "unit_name", "") or "").lower() if ax else "")
+        per_unit = getattr(ax, "unit_conversion_factor", None) if ax else None
     except Exception:
+        return None
+    # The pad is in METRES, so the axis unit must be a LENGTH. Defaulting a missing or non-length
+    # factor to 1.0 is the guess geo.vertical_scale refuses to make for the same reason: a geographic
+    # CRS reports degrees, and a 30 m pad would become ~1719 units, so every point in the tile would
+    # count as "over a green" while `basis` still published "points within 30 m of a green". Refuse
+    # instead -- the caller reports the tile as unplaceable and records that in the basis.
+    if not per_unit or per_unit <= 0 or not any(
+            k in unit for k in ("met", "foot", "feet", "ft", "yard", "chain", "link", "mile")):
         return None
     pad = GREEN_PAD_M / per_unit
     out = []
@@ -127,7 +144,13 @@ def gps_to_utc(gps_seconds, adjusted=True):
 
 
 def tile_dates(path, rings=()):
-    """(first_utc, last_utc) for one LAZ tile, or None when it carries no usable GPS time.
+    """(first, last, n_over_greens, crs_placeable, whole_first, whole_last) for one LAZ tile, or
+    None when it carries no usable GPS time.
+
+    `first`/`last` are narrowed to the points lying over a green when `rings` is supplied and any
+    were found; `whole_first`/`whole_last` always span every point in the tile, so the caller can
+    contrast the two. `crs_placeable` is False when the tile declares no CRS, which is a fact about
+    us rather than about the survey.
 
     global_encoding bit 0 == 0 means GPS WEEK TIME: seconds since the start of the current GPS week,
     0..604800, with the week number recorded nowhere in the file. The absolute date is therefore NOT
@@ -147,13 +170,15 @@ def tile_dates(path, rings=()):
         crs = f.header.parse_crs()
         boxes = green_boxes(crs, rings) if rings else None
         crs_ok = not rings or boxes is not None
-        # Reject the whole tile up front when its HEADER bbox cannot contain a single green point.
+        # Skip the GREEN FILTERING for a tile whose HEADER bbox cannot contain a single green point.
         # A point inside a padded green box must lie inside the header bbox, so nothing is lost --
         # this is the same header-extent fact lidar_coverage.py is built on. Without it, a
-        # neighbouring tile that feeds no green was fully decompressed and every chunk run through
-        # the per-green box arithmetic: measured across the corpus, 414M of 1,117M points (37%)
-        # decompressed for nothing. The Reserve's t390135.laz is exactly this case -- 26.8M points,
-        # zero over any green.
+        # neighbouring tile that feeds no green had its x/y scaled and every chunk run through the
+        # per-green box arithmetic for a result that could only ever be empty. gps_time is still read
+        # for every chunk, because the whole-tile range is reported alongside -- so this saves the
+        # coordinate work, not the decompression. Measured end to end: castlewood-hill 16.6 s -> 11.8 s,
+        # the-reserve 4.0 s -> 2.6 s, same dates. The Reserve's t390135.laz is the case -- 26.8M
+        # points, zero over any green.
         if boxes:
             hb = f.header
             if all(x1 < hb.x_min or x0 > hb.x_max or y1 < hb.y_min or y0 > hb.y_max
@@ -206,7 +231,13 @@ def tile_dates(path, rings=()):
                                       < dt.datetime(2040, 1, 1, tzinfo=dt.timezone.utc))
         first, last = gps_to_utc(lo, adjusted), gps_to_utc(hi, adjusted)
         if not plausible(first):
-            first, last = gps_to_utc(lo, not adjusted), gps_to_utc(hi, not adjusted)
+            adjusted = not adjusted
+            first, last = gps_to_utc(lo, adjusted), gps_to_utc(hi, adjusted)
+        # The WHOLE-tile range, kept separate. main() used to build its "over whole tiles the range
+        # would be" comparison out of the returned first/last -- which for a feeding tile is already
+        # narrowed to the green points -- so the audit line understated the very range it exists to
+        # contrast against.
+        whole_first, whole_last = gps_to_utc(wlo, adjusted), gps_to_utc(whi, adjusted)
         # ...and if the OTHER interpretation is implausible too, refuse. This used to return the
         # second result unchecked, so a tile with corrupt gps_time produced a nonsense date that was
         # written into course.json by --write and PRINTED in every book as "Measured from public USGS
@@ -224,7 +255,7 @@ def tile_dates(path, rings=()):
             print(f"    {os.path.basename(path)}: gps_time spans {(last - first).days} days "
                   f"({first.date()}..{last.date()}) -- not one acquisition; refusing to date it")
             return None
-        return first, last, nnear, crs_ok
+        return first, last, nnear, crs_ok, whole_first, whole_last
 
 
 def main():
@@ -258,14 +289,16 @@ def main():
     wholefirst = wholelast = None
     per_tile = {}
     nskip = 0
+    unplaceable = []
     for t in tiles:
         d = tile_dates(t, rings)
         name = os.path.basename(t)
         if not d:
             print(f"  {name}: no GPS time"); continue
-        first, last, nnear, crs_ok = d
-        wholefirst = first if wholefirst is None else min(wholefirst, first)
-        wholelast = last if wholelast is None else max(wholelast, last)
+        first, last, nnear, crs_ok, wfirst, wlast = d
+        # accumulate the TRUE whole-tile range, not the green-narrowed one
+        wholefirst = wfirst if wholefirst is None else min(wholefirst, wfirst)
+        wholelast = wlast if wholelast is None else max(wholelast, wlast)
         span = "" if day(first) == day(last) else f" .. {day(last)}"
         lf = first.astimezone(tz) if tz else first
         ll = last.astimezone(tz) if tz else last
@@ -275,8 +308,11 @@ def main():
             # not place the greens" is a fact about us, and reporting the second as the first would
             # blame the survey for our own missing CRS. tile_dates already parsed the header, so it
             # reports which case it hit rather than making us reopen the file to find out.
-            why = ("no CRS in its header, so the greens cannot be placed in it"
-                   if not crs_ok else "no points over a green")
+            if not crs_ok:
+                why = "no CRS in its header, so the greens cannot be placed in it"
+                unplaceable.append(name)
+            else:
+                why = "no points over a green"
             print(f"  {name}: {why} -- NOT counted in the flight range "
                   f"(whole tile {day(first)}{span})")
             continue
@@ -288,6 +324,11 @@ def main():
               f"({lf:%H:%M}-{ll:%H:%M} {tzname.split('/')[-1]}{over})")
 
     basis = f"points within {GREEN_PAD_M:g} m of a green"
+    if unplaceable:
+        # A green-feeding tile excluded because WE could not read its CRS narrows the printed range
+        # for our own reason, not the survey's. Say so in the record rather than letting `basis` claim
+        # the range was measured over the greens when some tiles never got the chance.
+        basis += f"; {len(unplaceable)} tile(s) excluded for declaring no CRS ({', '.join(unplaceable)})"
     if allfirst is None:
         if wholefirst is None:
             print("  no acquisition dates recoverable"); return 1

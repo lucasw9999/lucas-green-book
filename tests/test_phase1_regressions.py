@@ -2660,9 +2660,14 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
 
     over = ld.tile_dates(f, [ring])
     assert over is not None
-    first, last, npts, crs_ok = over
+    first, last, npts, crs_ok, wfirst, wlast = over
     assert npts == 100 and crs_ok is True, (npts, crs_ok)
-    assert first.date() == near.date() and last.date() == near.date(), \
+    # the WHOLE-tile range must still span both days even though first/last are narrowed to the
+    # green. main() builds its "over whole tiles the range would be" comparison from these, and it
+    # used to build it from the narrowed first/last -- understating the very range it contrasts with.
+    assert wfirst.date() == near.date() and wlast.date() == far.date(), (wfirst, wlast)
+    assert first.date() == near.date() and last.date() == near.date(), (first, last)
+    assert first.date() == near.date(), \
         (f"dated {first.date()}..{last.date()}; the 2018-01-21 points are 2 km from the green and "
          f"must not widen the range -- this is The Reserve's 38-day label")
 
@@ -2822,15 +2827,19 @@ def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
     assert len(same) == 2 and same[0] != same[1], same
     assert all(n.lower().endswith(".laz") for n in names), names
 
-    # size-based cache matching: write the two cell copies under the OTHER one's name
+    # size-based cache matching: write the two cell copies under the OTHER one's name.
+    # SPARSE -- plan_downloads only ever calls os.path.getsize, and materialising these for real
+    # cost ~572 MiB of tmpdir and a 317 MB peak allocation on every run.
     for _, n in todo:
         want = next(t["sizeInBytes"] for t, nn in todo if nn == n)
-        (laz / n).write_bytes(b"\0" * want)
+        with open(laz / n, "wb") as fh:
+            fh.truncate(want)
     todo2, cached2 = fl.plan_downloads(tiles, str(laz))
     assert cached2 == 3 and not todo2, f"already-present copies re-scheduled: {todo2}"
 
     # a file of the wrong size must NOT satisfy the cache -- that is a truncated download
-    (laz / same[0]).write_bytes(b"\0" * 12345)
+    with open(laz / same[0], "wb") as fh:
+        fh.truncate(12345)
     todo3, _ = fl.plan_downloads(tiles, str(laz))
     assert len(todo3) == 1, f"a truncated tile must be re-fetched, got {todo3}"
 
@@ -2851,7 +2860,8 @@ def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
     # courses), but accepting a cross-cell match would silently drop a tile we need.
     other = tmp_path / "other"
     other.mkdir()
-    (other / "USGS_LPC_CA_X_2021_B21_w9999n9999.laz").write_bytes(b"\0" * 317568432)
+    with open(other / "USGS_LPC_CA_X_2021_B21_w9999n9999.laz", "wb") as fh:
+        fh.truncate(317568432)
     todo4, cached4 = fl.plan_downloads([tiles[2]], str(other))
     assert cached4 == 0 and len(todo4) == 1, \
         f"a same-size file for a DIFFERENT cell must not count as cached: {todo4}, {cached4}"
@@ -2893,6 +2903,95 @@ def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
         got = fl.copy_suffix(sub, 1, "USGS_LPC_X_w1n1", ".laz", set())
         assert got == f"USGS_LPC_X_w1n1__Co{want}.laz", (sub, got)
         assert re.search(r"__Co\d+\.laz$", got), got
+
+
+def test_an_unresolvable_head_is_never_reported_as_the_edge_of_the_survey():
+    """The end-of-run NOTE asserts "not on the server (authoritative 404) ... That is the edge of the
+    survey." An early exit added for speed made that claim reachable for a tile nobody ever got an
+    answer about: tile_copies breaks at the top of its sub-project loop once anything is unresolved,
+    so `copies` comes back empty and main() fell into its "absent" branch. Before that early exit all
+    three sub-projects had to 404; afterwards one timeout was enough.
+
+    The run does still abort, so no book is built on the invented gap -- but the printed provenance
+    made exactly the false claim 08cb08d exists to prevent, two lines above the correct one. Reported
+    by four independent review passes and reproduced under a simulated outage.
+
+    Also covers head_size returning 0 for a 200 that carries no Content-Length: that is not an
+    absence either, and it used to be dropped exactly like a 404."""
+    import contextlib
+    import io
+
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar_alameda as fla
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    real = fla.urllib.request.urlopen
+    try:
+        fla.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(TimeoutError("outage"))
+        buf = io.StringIO()
+        exited = None
+        with contextlib.redirect_stdout(buf):
+            try:
+                fla.main()
+            except SystemExit as e:
+                exited = str(e)
+        out = buf.getvalue()
+        assert "authoritative 404" not in out, \
+            f"a total outage was reported as an authoritative 404:\n{out[-500:]}"
+        assert "edge of coverage, skip" not in out, \
+            f"a total outage was reported as the edge of coverage:\n{out[-500:]}"
+        assert exited and "could not determine" in exited, \
+            f"an unresolvable HEAD must still abort the run, got {exited!r}"
+
+        # a 200 with no Content-Length is UNKNOWN, not ABSENT
+        class _NoLen:
+            headers = {}
+        fla.urllib.request.urlopen = lambda *a, **k: _NoLen()
+        assert fla.head_size("https://x/t.laz", tries=1) == fla.UNKNOWN, \
+            "a 200 without Content-Length must not be read as 'this tile does not exist'"
+    finally:
+        fla.urllib.request.urlopen = real
+
+
+def test_the_book_discloses_a_weaker_flight_basis(tmp_path):
+    """tools/lidar_dates.py narrows the printed flight range to the points over the greens and records
+    that in `basis`; where it cannot, it falls back to the union over WHOLE TILES. The legal
+    provenance table qualifies such a range -- but the governing rule is about what the BOOK prints,
+    and generate.py printed the bare label either way.
+
+    A tile can span weeks while holding no point within a kilometre of any green: The Reserve's did,
+    which is how "flown 2017-12-15 to 2018-01-21" came to be printed for greens flown on two days.
+
+    Both surfaces also fail CLOSED on a MISSING basis, because a record written before the
+    distinction existed had a whole-tile label -- so silence must read as the weaker claim."""
+    for m in ("config", "generate"):
+        sys.modules.pop(m, None)
+    os.environ["COURSE"] = a_course()
+    import generate
+
+    saved = dict(generate.config.COURSE)
+    try:
+        for basis, want_qualified in [
+                (f"points within 30 m of a green", False),
+                ("whole tiles (no points found over any green)", True),
+                (None, True),                      # absent -> must read as the weaker claim
+        ]:
+            fl = {"label": "2017-12-16 to 2017-12-17"}
+            if basis is not None:
+                fl["basis"] = basis
+            generate.config.COURSE["lidar_flown"] = fl
+            line = generate._flown_line()
+            assert "2017-12-16 to 2017-12-17" in line, line
+            qualified = "covers whole survey tiles" in line
+            assert qualified == want_qualified, \
+                f"basis={basis!r}: qualified={qualified}, expected {want_qualified} -- {line}"
+    finally:
+        generate.config.COURSE.clear()
+        generate.config.COURSE.update(saved)
 
 
 def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():

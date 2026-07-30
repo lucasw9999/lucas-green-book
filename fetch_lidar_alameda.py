@@ -21,7 +21,7 @@ Run:  COURSE=<slug> python3 fetch_lidar_alameda.py
 Then: COURSE=<slug> python3 fetch_dem_hd.py   # 0.4 m green surfaces
       COURSE=<slug> python3 fetch_trees.py    # canopy trees
 """
-import glob, os, re, time, urllib.request, urllib.error
+import os, time, urllib.request, urllib.error
 from pyproj import Transformer
 import config
 
@@ -63,7 +63,14 @@ def head_size(url, tries=3):
     for attempt in range(tries):
         try:
             r = urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30)
-            return int(r.headers.get("Content-Length", 0))
+            n = int(r.headers.get("Content-Length", 0))
+            if n > 0:
+                return n
+            # A 200 that carries no Content-Length is not an absence. Returning 0 here made the
+            # caller drop the copy exactly like an authoritative 404, which is the false "edge of
+            # coverage" claim this function was written to stop. We could not learn the size, so say
+            # so and let the run abort rather than invent a gap.
+            last = "HTTP 200 with no Content-Length"
         except urllib.error.HTTPError as e:
             if e.code in (403, 404, 410):
                 return ABSENT          # an authoritative "no such tile"
@@ -105,6 +112,7 @@ def main():
     tiles = covering_tiles(config.COURSE["osm_bbox"])
     print(f"{len(tiles)} candidate tiles for {config.SLUG}")
     got = 0
+    used = set()      # every local filename chosen so far, so copy_suffix's collision loop is live
     failed = []
     absent = []
     unknown = []
@@ -112,6 +120,13 @@ def main():
         if unknown:
             break          # already doomed; see tile_copies
         copies = tile_copies(t, unknown)
+        if not copies and unknown:
+            # We stopped probing mid-cell because a HEAD was unresolvable, so this cell's emptiness
+            # proves nothing. Saying "404, edge of coverage" here would be the exact false claim
+            # 08cb08d removed -- and the early exit added for speed had reintroduced it, since one
+            # failing sub-project now empties `copies` where previously all three had to 404.
+            print(f"  {t}: not probed -- a HEAD was unresolvable (see below); NOT treated as absent")
+            continue
         if not copies:
             # Genuinely absent: every sub-project answered an authoritative 404. A HEAD that
             # merely FAILED landed in `unknown` instead and aborts the run below, so reaching here
@@ -126,8 +141,12 @@ def main():
             # `__Co\d+$`. The previous suffix was the sub-project's last 9 characters
             # (`__Co_3_2021`), which that strip does not match, so the generator published
             # "CA_AlamedaCounty_2021_B21_w6162n2049__Co_3" as the project a book was built from.
-            fn = (f"{DIR}/laz/{PREFIX}_{t}.laz" if i == 0 else
-                  f"{DIR}/laz/" + fetch_lidar.copy_suffix(sub, i, f"{PREFIX}_{t}", ".laz", set()))
+            if i == 0:
+                base = f"{PREFIX}_{t}.laz"
+            else:
+                base = fetch_lidar.copy_suffix(sub, i, f"{PREFIX}_{t}", ".laz", used)
+            used.add(base)
+            fn = f"{DIR}/laz/{base}"
             if os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024:
                 print(f"  cached {t} [{sub[-9:]}]"); got += 1; continue
             ok = False
@@ -147,7 +166,7 @@ def main():
                 if os.path.exists(fn + ".part"):
                     os.remove(fn + ".part")
     print(f"done -> {DIR}/laz  ({got} tile copies)")
-    if absent:
+    if absent and not unknown:
         print(f"  NOTE {len(absent)} candidate tile(s) are not on the server (authoritative 404): "
               f"{', '.join(absent)}\n"
               f"       That is the edge of the survey. Greens there will have no ground returns and\n"

@@ -6,7 +6,9 @@
 """
 Generic OSM fetch for a course (reads config.osm_bbox, writes into COURSE_DIR):
   osm_geom.json   -- golf=green polygons + golf=hole centerlines (with geometry)
-  osm_course.json -- golf features + water (tees, bunkers, water) for layouts
+  osm_course.json -- golf features + water (tees, bunkers, water) for layouts, INCLUDING outer
+                     rings flattened out of multipolygon relations
+  osm_relations.json -- the raw relation reply those rings are flattened from
 Run:  COURSE=<slug> python3 fetch_osm.py
 """
 import urllib.parse, urllib.request, json, time, os, math
