@@ -156,6 +156,12 @@ def main():
                          f"  Coverage would be incomplete -- re-run rather than building on this.")
     if got == 0:
         raise SystemExit("no tiles downloaded")
+    # Check the DATA, not just the filenames: a tile can be present and correctly named and still
+    # hold no points where a green is. This is the module's own worst case -- Castlewood Hill's
+    # w6153n2055 copy on disk covers a 470-ft strip of a 3000-ft cell, and two greens fell in the
+    # gap. See lidar_coverage.py.
+    import lidar_coverage
+    lidar_coverage.report(config.COURSE_DIR, config.SLUG)
 
 if __name__ == "__main__":
     main()

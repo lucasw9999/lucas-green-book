@@ -364,6 +364,10 @@ def main():
         raise SystemExit(f"FAILED to download {len(failed)} tile(s): {', '.join(failed)}\n"
                          f"  Coverage would be incomplete -- re-run rather than building on this.")
     print("done ->", f"{DIR}/laz")
+    # Check the DATA, not just the filenames: a tile can be present and correctly named and still
+    # hold no points where a green is. See lidar_coverage.py for the two greens this cost us.
+    import lidar_coverage
+    lidar_coverage.report(config.COURSE_DIR, config.SLUG)
 
 if __name__ == "__main__":
     main()

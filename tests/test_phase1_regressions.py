@@ -2111,6 +2111,100 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
     return str(path)
 
 
+def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
+    """Nothing checked that a downloaded tile's DATA reaches the greens. A tile can be present,
+    correctly named, and hold no points where a green is -- and the green then silently falls back to
+    the 1 m seamless DEM even though 0.4 m LiDAR for it exists.
+
+    Castlewood Hill shipped holes 14 and 16 that way. Measured: both greens fall in grid cell
+    w6153n2055; the copy on disk (CA_AlamedaCo_1_2021, 30,648,617 bytes) has a data footprint of only
+    x 6153000..6153470 -- a 470-ft strip of a 3000-ft cell -- while the greens sit at x 6155652 and
+    x 6155938, some 2,200-2,500 ft east of that edge, and the next tile east starts at x 6156000.
+    CA_AlamedaCo_3_2021 holds a 689,926,608-byte copy of the same cell, 22x larger, which was skipped
+    as "cached" for sharing a filename.
+
+    The check reads each tile's HEADER bbox, which records the extent of the points actually in the
+    file rather than the nominal grid cell -- that distinction is the whole bug. It reports rather
+    than refuses: a bayside green over water genuinely has no returns, and the 1 m fallback with a
+    "1 m data" label is the honest outcome. What it stops is the silent version."""
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    import lidar_coverage as lc
+
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+
+    def ring(dlon=0.0, dlat=0.0, scale=1.0):
+        r = d * scale
+        return [{"lon": lon + dlon - r, "lat": lat + dlat - r},
+                {"lon": lon + dlon + r, "lat": lat + dlat - r},
+                {"lon": lon + dlon + r, "lat": lat + dlat + r},
+                {"lon": lon + dlon - r, "lat": lat + dlat + r}]
+
+    (tmp_path / "laz").mkdir()
+    # green 1 sits inside the tile's data. Green 2 is 3 km away, like Castlewood Hill's 14 and 16.
+    # Green 3 is the PARTIAL case -- its centroid is inside the data but its edges run past it, which
+    # is what Monarch Bay's green 689151368 looks like (29 of 95 nodes uncovered). A check that only
+    # tested centroids would call green 3 covered and print a read for ground it never measured.
+    (tmp_path / "osm_geom.json").write_text(json.dumps({"elements": [
+        {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring()},
+        {"type": "way", "id": 2, "tags": {"golf": "green"}, "geometry": ring(dlon=0.035)},
+        {"type": "way", "id": 3, "tags": {"golf": "green"}, "geometry": ring(scale=4.0)},
+    ]}))
+
+    # with no tiles at all the check must stay quiet rather than claim everything is missing
+    assert lc.uncovered_greens(str(tmp_path)) == []
+
+    def write_tile(path, ring_pts, pad_m):
+        """A LAZ whose points span ring_pts' bbox grown by pad_m -- so its HEADER footprint does."""
+        import laspy
+        import numpy as np
+        from pyproj import CRS, Transformer
+        crs = CRS.from_epsg(26910)
+        T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        xy = [T.transform(q["lon"], q["lat"]) for q in ring_pts]
+        x0 = min(c[0] for c in xy) - pad_m; x1 = max(c[0] for c in xy) + pad_m
+        y0 = min(c[1] for c in xy) - pad_m; y1 = max(c[1] for c in xy) + pad_m
+        h = laspy.LasHeader(version="1.4", point_format=6)
+        h.global_encoding.gps_time_type = 1
+        h.add_crs(crs)
+        las = laspy.LasData(h)
+        las.x = np.array([x0, x1, x0, x1]); las.y = np.array([y0, y0, y1, y1])
+        las.z = np.zeros(4)
+        las.gps_time = np.full(4, 1.32e9)
+        las.write(str(path))
+
+    write_tile(tmp_path / "laz" / "a.laz", ring(), 5.0)
+
+    bad = lc.uncovered_greens(str(tmp_path))
+    by_id = {gid: (o, t) for gid, o, t in bad}
+    assert set(by_id) == {2, 3}, (
+        f"flagged {sorted(by_id)}; expected green 2 (3 km away) and green 3 (partially outside), "
+        f"with green 1 inside the tile's data")
+    assert by_id[2][0] == by_id[2][1], f"green 2 is wholly outside: {by_id[2]}"
+    assert 0 < by_id[3][0] < by_id[3][1], (
+        f"green 3 is PARTIALLY outside: {by_id[3]}. Its centroid is inside the data, so a check that "
+        f"sampled only the centroid would pass it -- and print a read for unmeasured ground.")
+
+    # the footprint must come from the tile HEADER, i.e. where the points are -- not from a
+    # nominal cell. A header covering only a sliver must not vouch for the whole neighbourhood.
+    foot = lc.tile_footprints(str(tmp_path / "laz"))
+    assert len(foot) == 1
+    _name, _crs, x0, x1, y0, y1 = foot[0]
+    assert (x1 - x0) < 150 and (y1 - y0) < 150, \
+        (f"footprint {x1 - x0:.0f}x{y1 - y0:.0f} m is not the extent of the points written -- a "
+         f"nominal 3000-ft cell would be ~914 m, which is exactly the wrong answer")
+
+    # and it must REPORT, not raise: a green over water legitimately has no returns
+    out = lc.report(str(tmp_path))
+    assert out == bad
+
+    # both fetchers must run the check, or a missing tile copy goes unnoticed again
+    for mod in ("fetch_lidar.py", "fetch_lidar_alameda.py"):
+        src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
+        assert "lidar_coverage.report" in src, f"{mod} never verifies its tiles against the greens"
+
+
 def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
     """The printed flight range was the union over WHOLE LAZ tiles, and the tile set is chosen by
     bbox overlap with the entire course -- so it routinely includes neighbours that cover no green.
