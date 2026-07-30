@@ -2297,8 +2297,29 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     assert hb[0][1] == 1 and hb[0][2] == 2, f"hole 7 has 1 of 2 nodes outside, got {hb[0]}"
 
     # and it must REPORT, not raise: a green over water legitimately has no returns
-    out = lc.report(str(tmp_path))
-    assert out == bad
+    status, out = lc.report(str(tmp_path))
+    assert status == "checked" and out == bad
+
+    # "nothing flagged" must never be reported as "verified covered" when NOTHING WAS CHECKED. With
+    # zero tiles on disk this printed "all 1 green(s) sit inside the downloaded tiles' data" and
+    # exited 0 -- asserting a coverage it had not looked at. Poppy Ridge reaches that path today (no
+    # LAZ at all), as would any course built purely on the 1 m seamless DEM.
+    empty = tmp_path / "empty"
+    (empty / "laz").mkdir(parents=True)
+    (empty / "osm_geom.json").write_text(json.dumps({"elements": [
+        {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring()}]}))
+    st, bad0 = lc.report(str(empty))
+    assert bad0 == [], bad0
+    assert st != "checked", \
+        f"status {st!r}: with no tiles on disk the check must say so, not imply coverage"
+    assert "tile" in st.lower(), st
+
+    # ...and the same when the greens cannot be placed
+    nogeom = tmp_path / "nogeom"
+    (nogeom / "laz").mkdir(parents=True)
+    write_tile(nogeom / "laz" / "a.laz", ring(), 5.0)
+    st2, _ = lc.report(str(nogeom))
+    assert st2 != "checked" and "green" in st2.lower(), st2
 
     # both fetchers must run the check, or a missing tile copy goes unnoticed again
     for mod in ("fetch_lidar.py", "fetch_lidar_alameda.py"):

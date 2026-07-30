@@ -62,10 +62,16 @@ def _green_rings(course_dir):
 
 
 def _footprint_boxes(course_dir):
-    """[(transformer, x0, x1, y0, y1)] for the tiles on disk, or [] if none can be placed."""
+    """([(transformer, x0, x1, y0, y1)], reason) -- reason is "" when boxes could be built.
+
+    An empty list is NOT the same as "everything is covered", and conflating the two made this module
+    assert something it had not checked: with zero tiles on disk it printed "all 1 green(s) sit inside
+    the downloaded tiles' data" and exited 0. Poppy Ridge reaches that path today (it has no LAZ at
+    all), as would any course built purely on the 1 m seamless DEM.
+    """
     foot = tile_footprints(os.path.join(course_dir, "laz"))
     if not foot:
-        return []
+        return [], "no readable LAZ tiles on disk"
     from pyproj import Transformer
 
     # Resolve one transformer per tile up front. Doing it inside the point loop meant a to_wkt() and a
@@ -80,8 +86,8 @@ def _footprint_boxes(course_dir):
             cache[key] = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
         boxes.append((cache[key], x0, x1, y0, y1))
     if not boxes:
-        print("  ! no tile declares a CRS -- cannot check the course against the point data")
-    return boxes
+        return [], f"{len(foot)} tile(s) on disk but none declares a CRS"
+    return boxes, ""
 
 
 def _inside(boxes, lon, lat):
@@ -89,7 +95,7 @@ def _inside(boxes, lon, lat):
                for T, x0, x1, y0, y1 in boxes)
 
 
-def uncovered_holes(course_dir):
+def uncovered_holes(course_dir, boxes=None):
     """[(hole_ref, n_outside, n_nodes)] for holes whose centreline leaves the point data.
 
     The greens check alone is not enough. At Castlewood Hill it flagged holes 14 and 16 but not 15
@@ -105,7 +111,8 @@ def uncovered_holes(course_dir):
         return []
     holes = [e for e in els
              if e.get("geometry") and (e.get("tags") or {}).get("golf") == "hole"]
-    boxes = _footprint_boxes(course_dir)
+    if boxes is None:
+        boxes, _why = _footprint_boxes(course_dir)
     if not boxes or not holes:
         return []
     bad = []
@@ -117,7 +124,7 @@ def uncovered_holes(course_dir):
     return sorted(bad, key=lambda r: int(r[0]) if (r[0] or "").isdigit() else 99)
 
 
-def uncovered_greens(course_dir):
+def uncovered_greens(course_dir, boxes=None):
     """[(green_id, n_nodes_outside, n_nodes)] for greens the tile data does not fully reach.
 
     A green's own nodes plus its centroid must each fall inside some tile's data footprint. Sampling
@@ -127,7 +134,8 @@ def uncovered_greens(course_dir):
     rings = _green_rings(course_dir)
     if not rings:
         return []
-    boxes = _footprint_boxes(course_dir)
+    if boxes is None:
+        boxes, _why = _footprint_boxes(course_dir)
     if not boxes:
         return []
     bad = []
@@ -141,19 +149,32 @@ def uncovered_greens(course_dir):
 
 
 def report(course_dir):
-    """Print the coverage verdict. Returns the uncovered greens."""
-    holes = uncovered_holes(course_dir)
+    """Print the coverage verdict. Returns (status, uncovered_greens).
+
+    status is "checked", or a reason why nothing could be checked. Callers must not read an empty
+    green list as "covered" without looking at the status -- that conflation is what let this module
+    claim full coverage for a course with no point cloud at all.
+    """
+    boxes, why = _footprint_boxes(course_dir)
+    rings = _green_rings(course_dir)
+    if not boxes:
+        print(f"  coverage NOT CHECKED: {why}. Greens here are read from the 1 m seamless DEM (or\n"
+              f"     not at all); nothing has been verified against a point cloud.")
+        return why, []
+    if not rings:
+        print("  coverage NOT CHECKED: no green geometry in osm_geom.json -- run fetch_osm.py first.")
+        return "no green geometry", []
+    holes = uncovered_holes(course_dir, boxes)
     if holes:
         n = sum(o for _r, o, _t in holes)
         print(f"  !! {len(holes)} hole(s) have centreline outside the point data "
               f"({n} node(s) total): " + ", ".join(f"h{r}({o}/{t})" for r, o, t in holes))
         print("     Trees along those stretches come from canopy returns and will be missing.")
-    bad = uncovered_greens(course_dir)
+    bad = uncovered_greens(course_dir, boxes)
     if not bad:
-        rings = _green_rings(course_dir)
-        if rings:
-            print(f"  coverage: all {len(rings)} green(s) sit inside the downloaded tiles' data")
-        return bad
+        print(f"  coverage: all {len(rings)} green(s) sit inside the downloaded tiles' data "
+              f"({len(boxes)} tile(s) checked)")
+        return "checked", bad
     print(f"  !! {len(bad)} green(s) are NOT fully covered by the point data on disk:")
     for gid, out, tot in bad:
         print(f"       green {gid}: {out} of {tot} sampled node(s) have no returns over them")
@@ -163,15 +184,19 @@ def report(course_dir):
           "     is not simply missing: one geographic cell can exist in several sub-projects, each\n"
           "     holding only its own strip, and Castlewood Hill lost two greens' 0.4 m reads that\n"
           "     way. Re-run the fetch; it now keeps every sub-project copy under its own name.")
-    return bad
+    return "checked", bad
 
 
 def main():
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import config
-    bad = report(config.COURSE_DIR)
-    return 1 if bad else 0
+    status, bad = report(config.COURSE_DIR)
+    if status != "checked":
+        return 2          # could not check -- same convention as tools/gen_provenance.py
+    # holes count too: a course can have every green covered while a centreline leaves the data, and
+    # that is where fetch_trees.py looks for canopy returns
+    return 1 if (bad or uncovered_holes(config.COURSE_DIR)) else 0
 
 
 if __name__ == "__main__":
