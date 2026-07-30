@@ -1941,6 +1941,67 @@ def test_each_card_footer_matches_its_own_map():
                      f"(slug, footer, drawn): {bad[:6]}")
 
 
+def test_multipolygon_relations_become_drawable_features():
+    """On many courses the fairways are mapped as MULTIPOLYGON RELATIONS, not ways, and the course
+    query only asked for way[...]. Measured live against Overpass: valley-hi has 18 fairway relations
+    and 0 fairway ways, monarch-bay 36, the-reserve 18 -- so those books drew NO fairway at all while
+    every card set's legend promises "fairway (green)". The largest feature of a golf hole was missing
+    from the map.
+
+    Two things had to be right. Adding relation[...] to the main query is not sufficient: under
+    `out geom` Overpass answers a relation with bounds and tags only, so the reply contained 18
+    fairways with no geometry that every consumer then skipped -- which is exactly what happened on
+    the first attempt. The member rings need the recurse-down form `(._;>;); out geom;`.
+
+    This tests the normalisation, offline: each OUTER ring becomes a way-shaped element carrying the
+    relation's tags, so nothing downstream needs to know about relations."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_osm"):
+        sys.modules.pop(m, None)
+    import fetch_osm
+
+    ring = [{"lat": 40.0, "lon": -75.0}, {"lat": 40.0, "lon": -74.999},
+            {"lat": 40.001, "lon": -74.999}, {"lat": 40.0, "lon": -75.0}]
+    inner = [{"lat": 40.0005, "lon": -74.9995}, {"lat": 40.0006, "lon": -74.9994},
+             {"lat": 40.0007, "lon": -74.9995}, {"lat": 40.0005, "lon": -74.9995}]
+    els = [
+        {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring},
+        {"type": "relation", "id": 555, "tags": {"golf": "fairway"}, "members": [
+            {"type": "way", "ref": 11, "role": "outer", "geometry": ring},
+            {"type": "way", "ref": 12, "role": "outer", "geometry": ring},
+            {"type": "way", "ref": 13, "role": "inner", "geometry": inner},
+        ]},
+        # the shape Overpass returns WITHOUT the recursion: bounds and tags, no members
+        {"type": "relation", "id": 556, "tags": {"golf": "fairway"}, "bounds": {}},
+    ]
+    out = fetch_osm._flatten_relations(els)
+
+    assert all(e.get("type") != "relation" for e in out), "no relation may survive flattening"
+    fw = [e for e in out if (e.get("tags") or {}).get("golf") == "fairway"]
+    assert len(fw) == 2, f"expected the 2 OUTER rings as separate ways, got {len(fw)}"
+    assert all(e.get("geometry") for e in fw), "a flattened ring must carry geometry"
+    assert all(e["tags"]["golf"] == "fairway" for e in fw), "the relation's tags must be inherited"
+    assert len({e["id"] for e in fw}) == 2, "each ring needs its own id"
+    assert all(e.get("_from_relation") == 555 for e in fw), "keep the trace back to the relation"
+    # the inner ring must NOT become fairway -- filling a hole in the polygon is worse than omitting
+    assert not any(len(e.get("geometry") or []) and e["geometry"][0]["lat"] == 40.0005 for e in fw), \
+        "inner rings must be skipped"
+    # the pre-existing way is untouched
+    assert any(e.get("id") == 1 for e in out), "non-relation elements must pass through"
+
+    # And the QUERY must use the recursion form. Checking the whole file for the string was a weak
+    # test: it appears twice in explanatory comments as well, so gutting the real query still passed.
+    # Look only at the query text between the relation selector and its out statement.
+    src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+    assert 'relation["golf"]' in src, "the course fetch must ask for golf relations"
+    i = src.index('relation["golf"]')
+    j = src.index("out geom;", i)
+    query = src[i:j]
+    assert "(._;>;)" in query, (
+        "the relation query must recurse down to its members, or Overpass returns bounds and tags "
+        f"only and every fairway arrives without geometry. Query was:\n{query}")
+
+
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
     """Unit test for the classifier the corpus scan can only observe second-hand. Two live
     subtleties: `building=no` means NOT a building (it must not become a surface at all), and a

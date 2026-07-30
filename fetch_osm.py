@@ -48,6 +48,46 @@ def _digitized_of(path):
     return [e for e in j['elements'] if '_digitized' in (e.get('tags') or {})]
 
 
+def _flatten_relations(elements):
+    """Turn multipolygon relations into way-shaped elements so nothing downstream needs to change.
+
+    The course query only asked for way[...], and on many courses the fairways are mapped as
+    MULTIPOLYGON RELATIONS. Measured live: valley-hi has 18 fairway relations and 0 fairway ways,
+    monarch-bay 36, the-reserve 18 -- so those books drew no fairway at all while every card set's
+    legend promises "fairway (green)". The largest feature of a golf hole was simply missing.
+
+    Adding relation[...] to the main query is not enough: Overpass answers a relation under
+    `out geom` with bounds and tags only. The member geometry needs the recurse-down form
+    `(._;>;); out geom;`, which is why relations are fetched separately.
+
+    Each OUTER member ring becomes its own element carrying the relation's tags -- a fairway drawn as
+    several filled rings looks the same as one mapped as several ways, which is how the way-mapped
+    courses already render. Inner rings are skipped: filling a hole in the polygon with fairway green
+    would be worse than leaving it out.
+    """
+    out = []
+    added = 0
+    for e in elements:
+        if e.get("type") != "relation":
+            out.append(e)
+            continue
+        tags = e.get("tags") or {}
+        for i, m in enumerate(e.get("members") or []):
+            if m.get("type") != "way" or not m.get("geometry"):
+                continue
+            if (m.get("role") or "outer") != "outer":
+                continue
+            out.append({"type": "way",
+                        "id": -(abs(int(e.get("id", 0))) * 100 + i) - 1,
+                        "tags": dict(tags),
+                        "geometry": m["geometry"],
+                        "_from_relation": e.get("id")})
+            added += 1
+    if added:
+        print(f"  flattened {added} outer ring(s) from multipolygon relations")
+    return out
+
+
 def _check_response(j, path, out):
     """Validate the INCOMING Overpass reply before it is allowed to replace a good cache.
 
@@ -169,6 +209,21 @@ def main():
  node["natural"="stone"]({BB});
 );
 out geom tags;''', "osm_course.json")
+
+    # Multipolygon relations need their OWN fetch. Under `out geom` a relation comes back as bounds
+    # and tags only -- no members, no geometry -- so adding relation[...] to the query above yields
+    # 18 fairways that every consumer then skips for having no geometry. The member rings require the
+    # recurse-down form `(._;>;); out geom;`, which is kept separate so it does not pull member nodes
+    # for every way in the main query.
+    rel = fetch(f'''[out:json][timeout:180];
+(
+ relation["golf"]({BB});
+ relation["natural"="water"]({BB});
+ relation["building"]({BB});
+);
+(._;>;);
+out geom;''', "osm_relations.json")
+    course['elements'] = course['elements'] + _flatten_relations(rel['elements'])
     from collections import Counter
     c = Counter()
     for e in course['elements']:
