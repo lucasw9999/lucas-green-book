@@ -585,6 +585,113 @@ def _arc_yd_for(ref, panel_html):
 
 
 @needs_corpus
+def test_nothing_is_drawn_off_the_putting_surface():
+    """Every mark on a green map claims something about ground you can putt on. Verify it is.
+
+    Three placements, each meaningless or misleading if it strays outside the outline:
+      * downhill ARROWS. One poking past the edge says the ball rolls that way off a surface that is
+        not green -- a bank or a bunker face. render_green already tests the tip plus a forward head
+        allowance, so this re-tests the ARTIFACT: 12,317 drawn arrows, tips and all three arrowhead
+        vertices, against the outline drawn beside them.
+      * the HOLE map's pin ring, placed at the green's CENTROID. A centroid is not guaranteed to lie
+        inside its own polygon -- a strongly kidney-shaped green can put it on the apron -- so this is
+        a real geometric risk rather than a hypothetical one. 198 of 198 are inside.
+      * the GREEN panel's dashed pin ring, at the mid-depth point. Same question, different frame: it
+        is emitted AFTER the rotated group closes, so it is in screen space while the outline is not.
+        The outline is rotated here before comparing, which is the only way the two are comparable.
+
+    Frames are the whole difficulty in this check and getting one wrong produces confident nonsense: a
+    first pass matched the hole map's r=2.6 pin against the green panel's outline and reported 63 of
+    198 pins off the surface. Both radii and both frames are pinned explicitly for that reason.
+    """
+    import math
+
+    def inside(px, py, poly):
+        c, n = False, len(poly)
+        for i in range(n):
+            x1, y1 = poly[i]
+            x2, y2 = poly[(i + 1) % n]
+            if (y1 > py) != (y2 > py) and px < x1 + (py - y1) * (x2 - x1) / ((y2 - y1) or 1e-12):
+                c = not c
+        return c
+
+    def rot(x, y, cx, cy, deg):
+        a = math.radians(deg)
+        ca, sa = math.cos(a), math.sin(a)
+        dx, dy = x - cx, y - cy
+        return (cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
+
+    arrows = hole_pins = green_pins = 0
+    problems, seen = [], set()
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        for blk in re.split(r'<div class="panel ', html)[1:]:
+            if not re.match(r'hole[\s"]', blk):
+                continue
+            hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            if not hn:
+                continue
+            seen.add(ref)
+
+            # --- arrows and the green outline share ONE rotated frame ---
+            g = re.search(r'<g transform="rotate\((-?[\d.]+) ([\d.]+) ([\d.]+)\)">(.*?)'
+                          r'<path d="(M [^"]*)" fill="none" stroke="#20402a"[^>]*/></g>', blk, re.S)
+            if g:
+                raw = [(float(x), float(y))
+                       for x, y in re.findall(r"([\d.-]+),([\d.-]+)", g.group(5))]
+                if len(raw) >= 3:
+                    ag = re.search(r'<g stroke="#15271b"[^>]*>(.*?)</g>', g.group(4), re.S)
+                    if ag:
+                        for m in re.finditer(
+                                r'<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" '
+                                r'y2="([\d.-]+)"/><polygon points="([^"]+)"', ag.group(1)):
+                            arrows += 1
+                            pts = [(float(m.group(3)), float(m.group(4)))]
+                            pts += [(float(a), float(b))
+                                    for a, b in re.findall(r"([\d.-]+),([\d.-]+)", m.group(5))]
+                            for px, py in pts:
+                                if not inside(px, py, raw):
+                                    problems.append(f"{ref} hole {hn.group(1)}: an arrow reaches "
+                                                    f"({px:.1f},{py:.1f}), outside the green outline")
+                                    break
+                    # --- the green panel's dashed pin, in SCREEN space ---
+                    gpin = re.search(r'<circle cx="([\d.-]+)" cy="([\d.-]+)" r="1\.4" '
+                                     r'fill="none" stroke="#c0392b"', blk)
+                    if gpin:
+                        th, cx, cy = float(g.group(1)), float(g.group(2)), float(g.group(3))
+                        screen = [rot(x, y, cx, cy, th) for x, y in raw]
+                        green_pins += 1
+                        if not inside(float(gpin.group(1)), float(gpin.group(2)), screen):
+                            problems.append(f"{ref} hole {hn.group(1)}: the green panel's pin ring is "
+                                            f"outside the putting surface it marks")
+
+            # --- the hole map's pin, at the green centroid ---
+            hm = re.search(r'<div class="lay"><div class="minilab">HOLE</div>(<svg.*?</svg>)',
+                           blk, re.S)
+            if hm:
+                gp = re.search(r'<path d="(M [^"]*)" fill="#7cc45a"', hm.group(1))
+                pin = re.search(r'<circle cx="([\d.-]+)" cy="([\d.-]+)" r="2\.6"', hm.group(1))
+                if gp and pin:
+                    poly = [(float(x), float(y))
+                            for x, y in re.findall(r"([\d.-]+),([\d.-]+)", gp.group(1))]
+                    hole_pins += 1
+                    if not inside(float(pin.group(1)), float(pin.group(2)), poly):
+                        problems.append(f"{ref} hole {hn.group(1)}: the hole map's pin ring sits off "
+                                        f"the green -- its centroid falls outside its own polygon")
+
+    assert arrows > 5000, f"only {arrows} arrows examined -- the sweep found almost nothing"
+    assert hole_pins >= 150 and green_pins >= 150, \
+        f"only {hole_pins} hole pins and {green_pins} green pins examined"
+    assert_no_course_skipped(seen, "test_nothing_is_drawn_off_the_putting_surface")
+    assert not problems, ("marks are drawn off the putting surface they describe:\n  "
+                          + "\n  ".join(problems[:8]))
+
+
+@needs_corpus
 def test_the_contour_interval_is_the_one_the_legend_states():
     """The card says "Contours join equal height (15 cm each)". That is a measurement, so verify it.
 
