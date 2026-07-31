@@ -93,6 +93,17 @@ python3 -m pytest tests/ -q          # regression tests (skip cleanly with no co
 python3 tools/check_scale.py         # measures the LAID-OUT green scale against Rule 4.3
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
+Run the suite in a **shuffled order** now and then, not just as collected. This file rebinds
+`COURSE` and drops modules from `sys.modules` at 69 sites, so a test can silently reconfigure the next
+one, and file order alone will never show it — a real `IndexError` in `render_hole` hid behind that for
+its whole life and only appeared under shuffling:
+```bash
+python3 -m pytest tests/ -q --collect-only | grep '^tests/' | sed 's/ .*//' | sort -R > /tmp/ids
+python3 -m pytest $(tr '\n' ' ' < /tmp/ids) -q      # shuffled
+```
+An autouse fixture now restores the `COURSE` binding after every test, so leakage should be structurally
+impossible; the shuffle is how you find out it still is.
+
 `tools/check_scale.py` is the important one. It lays each book out in a real browser under print
 media and measures the drawn green there, rather than trusting the SVG's own attributes — a
 stylesheet can override those, which is exactly how 15 greens once printed over the legal scale

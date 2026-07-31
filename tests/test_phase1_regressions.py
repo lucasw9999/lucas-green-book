@@ -271,10 +271,33 @@ def _bind_a_course():
     an earlier test left -- or, run singly, config.py's hardcoded default. That default happens to be
     built on this machine, so the crash was invisible here: on a tree without
     the-reserve-at-spanos-park, `pytest -k contours_join` died with SystemExit and looked like a real
-    defect. Binding it here makes single-test and randomised-order runs behave like a full run."""
-    if CORPUS and not os.environ.get("COURSE"):
+    defect. Binding it here makes single-test and randomised-order runs behave like a full run.
+
+    It now also RESTORES the binding afterwards, so every test starts from the same course whatever the
+    one before it did. Binding without restoring left the suite order-dependent by construction: 69
+    sites in this file rebind COURSE and pop config/render_* out of sys.modules, so a test that ends
+    bound to a 5-tee course silently reconfigured the next one. That is not hypothetical -- running the
+    suite shuffled found a real IndexError in render_hole where a synthetic 2-tee fixture inherited a
+    5-tee binding, a bug production could not reach. File order and reverse order were both green.
+
+    Restoring here makes the isolation structural rather than something to remember. Verified after the
+    change: file order, reverse order, three shuffle seeds, and all 137 tests each in their own process.
+    """
+    prev = os.environ.get("COURSE")
+    if CORPUS and not prev:
         os.environ["COURSE"] = CORPUS[0]
-    yield
+    try:
+        yield
+    finally:
+        # back to what this test started with, and drop the course-bound modules so the next import
+        # re-reads the env rather than reusing a module bound to someone else's course
+        if prev is None:
+            os.environ.pop("COURSE", None)
+        else:
+            os.environ["COURSE"] = prev
+        for m in ("config", "render_hole", "render_green", "geo",
+                  "fetch_trees", "fetch_hole_elev", "fetch_dem", "fetch_dem_hd"):
+            sys.modules.pop(m, None)
 
 
 def a_course():
