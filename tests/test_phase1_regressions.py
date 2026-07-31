@@ -2057,6 +2057,77 @@ def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
         pytest.skip("no book has been exported to PDF here (run tools/export_pdf.py)")
 
 
+def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
+    """Each green states which way the ball rolls TWICE, and the two must not disagree.
+
+    The footer names it in words -- "feeds front-left" -- from a least-squares plane fitted over the
+    green core. The map shows it as arrows, each the local negative gradient of the denoised surface.
+    Two independent derivations of the one claim the book exists to make. If either grew a sign error,
+    a swapped axis, or lost the approach rotation, one of them would point the wrong way and only a
+    reader standing on the green would ever find out.
+
+    Bounded at 90 degrees, deliberately, because the two answer different questions and are SUPPOSED
+    to differ a little: a plane fit describes the whole surface's tilt while the arrows follow every
+    tier and hollow, so on an undulating green they diverge. Measured across the corpus the gap runs
+    to a median 11.3 deg and a 90th percentile of 26.3 deg, and only 2 of 198 exceed one 45 deg
+    octant -- monarch-bay 12 and the-reserve 8, whose plane tilt is 0.5% and 0.4%, flat enough that
+    the tilt direction is barely more than noise. Both cards mark those "(subtle)" and print the
+    measured percentage beside the word, so the book already tells the reader not to lean on them.
+
+    90 deg is therefore not a quality bar, it is a CONTRADICTION bar: past it the words and the
+    picture are telling a golfer to play opposite breaks. Nothing in the corpus is above 68.8 deg.
+
+    Arrows are weighted by their own length, which is how the legend defines them ("longer =
+    steeper"), and rotated by the group transform the card applies, so both quantities are compared
+    in the frame the reader actually sees.
+    """
+    import math
+    import render_green
+    dirs = render_green.DIRS
+    checked, worst, problems = 0, (0.0, None), []
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        for blk in re.split(r'<div class="panel hole">', html)[1:]:
+            hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            said = re.search(r"feeds <b>([a-z-]+)</b>", blk)
+            grp = re.search(r'<g transform="rotate\((-?[\d.]+) [\d.]+ [\d.]+\)">(.*?)'
+                            r'<path d="M [^"]*" fill="none" stroke="#20402a"', blk, re.S)
+            if not (hn and said and grp):
+                continue
+            th = math.radians(float(grp.group(1)))
+            ca, sa = math.cos(th), math.sin(th)
+            vx = vy = 0.0
+            for x1, y1, x2, y2 in re.findall(
+                    r'<line x1="([\d.-]+)" y1="([\d.-]+)" x2="([\d.-]+)" y2="([\d.-]+)"/><polygon',
+                    grp.group(2)):
+                dx, dy = float(x2)-float(x1), float(y2)-float(y1)
+                L = math.hypot(dx, dy) or 1.0
+                a, b = dx/L, dy/L
+                vx += (a*ca - b*sa) * L                 # rotate into the card frame, weight by steepness
+                vy += (a*sa + b*ca) * L
+            n = math.hypot(vx, vy)
+            if n == 0:
+                continue
+            sx, sy = next((x, y) for x, y, w in dirs if w == said.group(1))
+            cos = (vx*sx + vy*sy) / (n * math.hypot(sx, sy))
+            gap = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+            checked += 1
+            if gap > worst[0]:
+                worst = (gap, f"{ref} hole {hn.group(1)}")
+            if gap > 90.0:
+                problems.append(f"{ref} hole {hn.group(1)}: the footer says 'feeds {said.group(1)}' "
+                                f"but the green's own arrows resolve {gap:.0f} deg away -- the words "
+                                f"and the map are giving opposite breaks")
+    assert checked >= 100, f"only {checked} greens cross-checked -- build the books first"
+    assert not problems, ("the printed feed direction contradicts the drawn arrows:\n  "
+                          + "\n  ".join(problems[:10]))
+    assert worst[0] <= 90.0, f"worst divergence {worst[0]:.1f} deg at {worst[1]}"
+
+
 def test_every_duplex_back_lands_behind_its_own_front():
     """The one defect that would ruin every PHYSICAL copy while every digital check stayed green.
 
