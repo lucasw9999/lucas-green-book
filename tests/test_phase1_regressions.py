@@ -2057,6 +2057,98 @@ def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
         pytest.skip("no book has been exported to PDF here (run tools/export_pdf.py)")
 
 
+def test_each_green_is_turned_the_way_the_card_promises():
+    """"Approach at the bottom" is the promise every green map is read through. Verify the chain.
+
+    A green is rotated by theta = -90 - atan2(-cos B, sin B), where B is the approach bearing, so the
+    player is looking up the page from where they stand. Get B or theta wrong and NOTHING looks
+    broken: the outline is still a green, the arrows still point somewhere, the slope numbers are
+    still right. The map is just turned relative to the golfer, so every break they read is wrong by
+    that angle -- and on a 180 error it is exactly backwards. No existing check touches it.
+
+    Three links, each verified against the one before rather than against a restatement of itself:
+
+      1. B is re-derived from the artifacts -- the OSM hole line chosen by geo.hole_lines, its green
+         matched by geo.match_green, and the bearing of the last segment INTO the green end. If
+         fetch_dem_hd ever picked a different line or the other end of it, this diverges. It
+         reproduces to 0.001 deg across the corpus.
+      2. theta is recomputed from B by the formula above.
+      3. The printed compass needle is read back out of the built book and compared with theta. The
+         compass is drawn OUTSIDE the rotated group from the same theta, so it is an independent
+         witness to the rotation actually applied to the map -- not a copy of the input.
+
+    Bounded at 3 deg only because SVG coordinates are written to one decimal and the needle is 4
+    units long, which is worth about 1.5 deg of rounding; the worst in the corpus is 1.49. A sign
+    error or a swapped axis lands 90 or 180 deg away, nowhere near the bound.
+    """
+    import math
+    checked, problems = 0, []
+    for ref in CORPUS:
+        book = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        geom_p = os.path.join(ROOT, "courses", ref, "osm_geom.json")
+        if not (os.path.exists(book) and os.path.exists(geom_p)):
+            continue
+        cfg, _rh = _engine(ref)
+        import geo
+        with open(geom_p, encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        with open(book, encoding="utf-8") as fh:
+            html = fh.read()
+        for blk in re.split(r'<div class="panel hole">', html)[1:]:
+            hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            cm = re.search(r'<g stroke="#666" fill="#666"><line x1="([\d.-]+)" y1="([\d.-]+)" '
+                           r'x2="([\d.-]+)" y2="([\d.-]+)"', blk)
+            if not (hm and cm):
+                continue
+            hn = int(hm.group(1))
+            meta_p = os.path.join(ROOT, "courses", ref, "dem_hd", f"hole{hn:02d}.json")
+            if hn not in lines or not os.path.exists(meta_p):
+                continue
+            with open(meta_p, encoding="utf-8") as fh:
+                recorded = json.load(fh)["approach_bearing"]
+
+            # link 1: the bearing, re-derived from the geometry the card is drawn from
+            line = lines[hn]["geometry"]
+            _green, gend, _tend = geo.match_green(line, greens, label=f"hole {hn}")
+            prev = line[1] if gend is line[0] else line[-2]
+            p1, p2 = math.radians(prev["lat"]), math.radians(gend["lat"])
+            dl = math.radians(gend["lon"] - prev["lon"])
+            indep = (math.degrees(math.atan2(
+                math.sin(dl)*math.cos(p2),
+                math.cos(p1)*math.sin(p2) - math.sin(p1)*math.cos(p2)*math.cos(dl))) + 360) % 360
+            gap = abs((indep - recorded + 180) % 360 - 180)
+            if gap > 1.0:
+                problems.append(f"{ref} hole {hn}: recorded approach bearing {recorded:.1f} deg but "
+                                f"the hole line into the green runs {indep:.1f} deg -- the green is "
+                                f"turned to a direction the course does not have")
+
+            # links 2+3: theta, and the needle the book actually printed from it
+            a = math.degrees(math.atan2(-math.cos(math.radians(recorded)),
+                                        math.sin(math.radians(recorded))))
+            th = math.radians(-90.0 - a)
+            ex, ey = math.sin(th), -math.cos(th)
+            x1, y1, x2, y2 = (float(v) for v in cm.groups())
+            px, py = x2 - x1, y2 - y1
+            n = math.hypot(px, py)
+            checked += 1
+            if n == 0:
+                problems.append(f"{ref} hole {hn}: the north needle has zero length")
+                continue
+            off = math.degrees(math.acos(max(-1.0, min(1.0, (px/n)*ex + (py/n)*ey))))
+            if off > 3.0:
+                problems.append(f"{ref} hole {hn}: the printed north arrow sits {off:.0f} deg from "
+                                f"where an approach bearing of {recorded:.0f} deg puts it -- the "
+                                f"green is not turned the way \"approach at the bottom\" promises")
+    assert checked >= 100, f"only {checked} greens checked -- build the books first"
+    assert not problems, "green orientation is wrong:\n  " + "\n  ".join(problems[:10])
+
+
 def test_every_tee_name_prints_dark_enough_to_read():
     """A tee's ink matches its NAME, and the match must not cost the reader the name.
 
