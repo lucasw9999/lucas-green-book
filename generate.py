@@ -299,6 +299,8 @@ def cover_panel():
         f'<path d="M-20 {30+i*40} C 90 {30+i*40-26}, 200 {30+i*40+30}, 370 {30+i*40-14}" '
         f'fill="none" stroke="#c8a24a" stroke-width="1.1" opacity="0.06"/>' for i in range(13))
     G = "#c8a24a"        # gold
+    badge_text, badge_stroke, badge_fill, badge_size = (
+        _cover_badge()[k] for k in ("badge_text", "badge_stroke", "badge_fill", "badge_size"))
     return f'''<div class="panel cover"><svg viewBox="0 0 350 500" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
   <defs><linearGradient id="cg" x1="0" y1="0" x2="0.35" y2="1">
     <stop offset="0" stop-color="#12492f"/><stop offset="0.55" stop-color="#0a3a24"/><stop offset="1" stop-color="#04170f"/>
@@ -318,11 +320,31 @@ def cover_panel():
   <rect x="171" y="240.5" width="7" height="7" fill="{G}" transform="rotate(45 175 244)"/>
   <text x="175" y="{cy0:.1f}" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="{fst:.1f}" fill="#f5eddd">{tspans}</text>
   <text x="175" y="{addr_y:.1f}" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" letter-spacing="1" fill="#9fb4a3">{esc(ADDR).upper()}</text>
-  <rect x="70" y="426" width="210" height="18" rx="9" fill="none" stroke="#b9973f" stroke-width="0.8"/>
-  <text x="175" y="438" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="7.0" letter-spacing="1.0" fill="#dcc27f">DESIGNED TO CONFORM &#183; RULE 4.3</text>
+  <rect x="70" y="426" width="210" height="18" rx="9" fill="none" stroke="{badge_stroke}" stroke-width="0.8"/>
+  <text x="175" y="438" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="{badge_size}" letter-spacing="1.0" fill="{badge_fill}">{badge_text}</text>
   <text x="175" y="462" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="8" letter-spacing="3" fill="#7f9484">JUNIOR GOLF EDITION</text>
   <text x="175" y="474" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.2" letter-spacing="0.5" fill="#6f8676">&#169; 2026 Lucas Wu &#183; Lucas Green Book&#8482;</text>
 </svg></div>'''
+
+
+def _cover_badge():
+    """The cover's one-line badge: the Rule 4.3 claim, or a do-not-share mark when it may not be shared.
+
+    A non-distributable book had an identical cover to a distributable one -- "DESIGNED TO CONFORM *
+    RULE 4.3 / JUNIOR GOLF EDITION" -- and page 1 is what anyone receiving the PDF sees first. The
+    personal-use notice added to the About text sits four cards deep. Poppy Ridge is that book: rebuilt in
+    2025 with no post-construction survey, so its greens are deliberately blank and it is personal-use
+    only.
+
+    On a blank-green book the Rule 4.3 badge is also beside the point. The rule limits GREEN-READING
+    material; a book that prints none conforms trivially, so leading with that claim emphasises the one
+    thing the book is not doing. The do-not-share mark is the fact a reader actually needs.
+    """
+    if DISTRIBUTABLE:
+        return dict(badge_text="DESIGNED TO CONFORM &#183; RULE 4.3", badge_stroke="#b9973f",
+                    badge_fill="#dcc27f", badge_size="7.0")
+    return dict(badge_text="PERSONAL USE ONLY &#183; PLEASE DO NOT SHARE", badge_stroke="#c08a4a",
+                badge_fill="#e8b478", badge_size="6.4")
 
 
 def _naip_line():

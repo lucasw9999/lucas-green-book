@@ -920,7 +920,18 @@ def test_a_book_that_may_not_be_shared_says_so_on_the_page():
         if shareable:
             assert "free to share, not for sale" in html, f"{slug} is distributable but says otherwise"
             assert "personal use only" not in html, f"{slug} is distributable but warns against sharing"
+            assert "DESIGNED TO CONFORM" in html, f"{slug} lost its Rule 4.3 cover badge"
         else:
+            # THE COVER, not just the About text. Page 1 is what anyone receiving the PDF sees first,
+            # and a non-distributable book used to carry an identical cover to a distributable one --
+            # "DESIGNED TO CONFORM * RULE 4.3 / JUNIOR GOLF EDITION" -- with the personal-use notice
+            # four cards deep. On a blank-green book that badge is also beside the point: Rule 4.3 limits
+            # green-reading material, and a book printing none conforms trivially.
+            assert "PERSONAL USE ONLY" in html, (
+                f"{slug} may not be shared and its COVER does not say so")
+            assert "DESIGNED TO CONFORM" not in html, (
+                f"{slug} prints no green maps, so leading its cover with a Rule 4.3 claim emphasises "
+                f"the one thing it is not doing")
             assert "free to share, not for sale" not in html, (
                 f"{slug} is {distribution.distribution_status(j)[1]} but its book invites sharing")
             assert "personal use only" in html, (
