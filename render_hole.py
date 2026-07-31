@@ -354,7 +354,14 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     start_at_tee_m = min((dist_to_poly_m(pts_em[0], t, em) for t in tees), default=1e9)
     fwd_tee = (not tee_ok and line_runs_from_a_forward_tee(
         arc_yd, total_yd,
-        [HOLES[hnum][2+i] for i in range(len(_cfg.TEES)) if 2+i != _cfg.BACK_I], start_at_tee_m))
+        # Row length from the ROW, not from len(_cfg.TEES). This function takes HOLES as an argument
+        # but reads BACK_I and the tee names from the module-global config, so a caller whose HOLES has
+        # fewer tee columns than the bound course crashed with IndexError -- found by running the suite
+        # in a shuffled order, where a synthetic 2-tee fixture inherited a real 5-tee binding left
+        # behind by an earlier test. Production never hit it because generate.py passes the HOLES of the
+        # course it has bound, but nothing said the two must agree, and the argument is the honest
+        # source for its own width.
+        [HOLES[hnum][i] for i in range(2, len(HOLES[hnum])) if i != _cfg.BACK_I], start_at_tee_m))
     # The mirror case: a line traced PAST the tee. Same conclusion -- the length difference is at the
     # tee end -- so the same signed shift and the same from-tee derivation apply.
     past_tee = not tee_ok and line_traced_past_the_tee(arc_yd, total_yd, L/0.9144)

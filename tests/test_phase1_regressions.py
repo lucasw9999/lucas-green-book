@@ -640,6 +640,49 @@ def test_no_hole_grouping_uses_a_golf_term_with_the_wrong_meaning():
     assert checked >= 10, f"only {checked} books checked -- build them first"
 
 
+def test_render_hole_reads_its_tee_columns_from_the_row_it_was_given():
+    """render_hole takes HOLES as an argument. It must not size that argument using global state.
+
+    The function is passed HOLES and reads BACK_I and the tee names from the module-global config, so
+    the two have to describe the same course. Nothing said so. One line iterated
+    `range(len(_cfg.TEES))` while indexing `HOLES[hnum]`, so a caller whose row had fewer tee columns
+    than the bound course raised IndexError deep inside the from-tee derivation.
+
+    Production never hit it -- generate.py passes the HOLES of the course it has just bound -- which is
+    why it survived. It surfaced only when the suite ran in a SHUFFLED order: a synthetic 2-tee fixture
+    inherited a real 5-tee binding left behind by whichever test happened to run before it. In file
+    order and in reverse order the suite was green; two of three shuffles failed. That is the shape of
+    a bug that hides for years and then appears as a mystery on someone else's machine.
+
+    Tested two ways, because either alone is weak. A 2-column row is rendered while a 5-column course is
+    bound, which is the exact failing configuration. And the source is checked for the pattern, since
+    the fixture only exercises one arity and the next such line might involve a different one.
+    """
+    src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
+    bad = re.findall(r"range\(len\(_cfg\.TEES\)\)", src)
+    assert not bad, ("render_hole sizes a HOLES row from the global config's tee count again. The row's "
+                     "own length is the only honest source: a caller whose row is narrower than the "
+                     "bound course gets IndexError, and nothing declares they must match.")
+
+    # ...and prove it by doing exactly what broke: narrow row, wide binding.
+    slug = a_course()
+    cfg, rh = _engine(slug)
+    if len(cfg.TEES) < 3:
+        pytest.skip(f"{slug} has only {len(cfg.TEES)} tee columns; need a wider course to narrow")
+    wide = len(cfg.TEES)
+    hn = sorted(cfg.HOLES)[0]
+    row = cfg.HOLES[hn]
+    narrow = {h: tuple(cfg.HOLES[h][:4]) for h in cfg.HOLES}      # par, hcp, two tees
+    assert len(narrow[hn]) < 2 + wide, "the narrowed row is not actually narrower"
+    try:
+        rh.render_hole(hn, narrow)
+    except IndexError as e:
+        pytest.fail(f"render_hole({hn}, <4-column row>) raised IndexError with a {wide}-tee course "
+                    f"bound: {e}. It is reading the row's width from config instead of the row.")
+    except Exception:
+        pass          # any OTHER failure is about the synthetic row's content, not this bug
+
+
 def test_the_qr_code_says_where_it_goes():
     """A QR sits under "VISIT lucasgreenbook.org" and does NOT go there. It must say so.
 
