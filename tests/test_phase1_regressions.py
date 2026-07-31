@@ -187,6 +187,67 @@ def _books():
 BOOKS = _books()
 
 
+_EXPECTED_GEOM_HOLES = None
+
+
+def geometry_courses():
+    """The SET of slugs with geometry on disk. Filesystem-derived, independent of CORPUS."""
+    out = set()
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        d = os.path.join(ROOT, "courses", slug)
+        if all(os.path.exists(os.path.join(d, f))
+               for f in ("osm_geom.json", "osm_course.json")):
+            out.add(slug)
+    return out
+
+
+def assert_no_course_skipped(seen, what):
+    """Every course with geometry must have contributed something.
+
+    A COUNT floor cannot express this. Derived from CORPUS it falls with the count, so dropping a
+    course keeps the test green; derived from the filesystem with a one-course slack it still keeps
+    it green, because the slack is exactly the thing being lost. Both were tried and both passed a
+    mutation that hid valley-hi inside _courses(). The set is the honest assertion: per-item totals
+    vary legitimately (a green too shallow for three ladder rungs, a hole with no from-tee number),
+    but a course contributing NOTHING is always a skip.
+    """
+    missing = sorted(geometry_courses() - set(seen))
+    assert not missing, (f"{what}: these courses have geometry on disk but contributed nothing -- "
+                         f"they are being skipped: {missing}")
+
+
+def expected_geometry_holes():
+    """Holes across every course that HAS geometry on disk -- computed from the filesystem, never
+    from CORPUS.
+
+    This distinction is the whole point. expected_holes() sums over CORPUS, so if a course silently
+    drops OUT of CORPUS the floor falls with the count and the test still passes -- which is exactly
+    how poppy-ridge stayed invisible. Verified by mutation: hiding valley-hi inside _courses() left
+    all 119 tests green while a CORPUS-derived floor was in place, and fails here.
+
+    Still derived, so it scales for someone who has built two courses instead of twelve. It counts
+    what is on disk, not what this machine happens to have.
+    """
+    global _EXPECTED_GEOM_HOLES
+    if _EXPECTED_GEOM_HOLES is None:
+        n = 0
+        for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+            slug = os.path.basename(os.path.dirname(cj))
+            if slug.startswith("_"):
+                continue
+            d = os.path.join(ROOT, "courses", slug)
+            if not all(os.path.exists(os.path.join(d, f))
+                       for f in ("osm_geom.json", "osm_course.json")):
+                continue
+            with open(cj, encoding="utf-8") as fh:
+                n += len(json.load(fh).get("holes") or {})
+        _EXPECTED_GEOM_HOLES = n
+    return _EXPECTED_GEOM_HOLES
+
+
 def _expected_cards():
     """How many hole cards the built books SHOULD have, from the files themselves.
 
@@ -451,7 +512,9 @@ def test_every_printed_caveat_matches_the_data_behind_it():
     test was written after chasing.
     """
     checked, problems = 0, []
+    seen_courses = set()
     for ref in CORPUS:
+        seen_courses.add(ref)
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -497,7 +560,10 @@ def test_every_printed_caveat_matches_the_data_behind_it():
                                 f"prints a slope -- a number the data does not support")
             if no_slope and re.search(r"&middot; \d+\.\d%", blk):
                 problems.append(f"{ref} hole {hn}: card says no slope printed, yet prints one")
-    assert checked >= 150, f"only {checked} cards checked -- build the books first"
+    assert checked >= expected_geometry_holes() - 18, (
+        f"only {checked} cards checked of {expected_geometry_holes()} holes with geometry -- a course is being "
+        f"skipped")
+    assert_no_course_skipped(seen_courses, "test_every_printed_caveat_matches_the_data_behind_it")
     assert not problems, ("a printed caveat does not match its data:\n  "
                           + "\n  ".join(problems[:10]))
 
@@ -653,7 +719,9 @@ def test_a_printed_carry_never_overstates_what_it_clears():
     import math
     IN_LINE_M = 15.0
     checked, problems = 0, []
+    seen_courses = set()
     for ref in CORPUS:
+        seen_courses.add(ref)
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(book):
             continue
@@ -720,6 +788,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
                         f"{ref} hole {hn}: prints carry {near} but sand in the ball's path starts at "
                         f"{in_line:.0f} yd -- the card claims room the hole does not give")
     assert checked >= 50, f"only {checked} carries checked -- build the books first"
+    assert_no_course_skipped(seen_courses, "test_a_printed_carry_never_overstates_what_it_clears")
     assert not problems, "a printed carry overstates what it clears:\n  " + "\n  ".join(problems[:8])
 
 
@@ -802,6 +871,11 @@ def test_the_elevation_word_matches_the_elevation_sign():
             elif truth is not None:
                 level += 1
     assert printed >= 50, f"only {printed} elevation phrases checked -- build the books first"
+    # 60 of 177 records fall under the 3 ft level threshold, so the printed count is ~2/3 of the
+    # records; a floor on the RECORDS is what catches a skipped course.
+    assert printed + level >= 150, (
+        f"only {printed + level} elevation records reached ({printed} printed, {level} level) -- "
+        f"a course is being skipped")
     assert level >= 10, f"only {level} holes exercised the level threshold"
     assert not problems, "the elevation figure and its word disagree:\n  " + "\n  ".join(problems[:10])
 
@@ -828,7 +902,9 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         book is broken.
     """
     checked, problems = 0, []
+    seen_courses = set()
     for ref in CORPUS:
+        seen_courses.add(ref)
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -877,7 +953,11 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                     problems.append(f"{ref}: a row reads {v['L']} + {v['R']} = {v['L']+v['R']} "
                                     f"against a card of {card} and a drawn line of {arc} yd -- past "
                                     f"both, so one of the two is measuring more than the hole")
-    assert checked >= 500, f"only {checked} gutter rows checked -- build the books first"
+    # ~4 rows a hole, so scale with the corpus rather than pinning 500 against an actual 830.
+    assert checked >= 2 * expected_geometry_holes(), (
+        f"only {checked} gutter rows checked across {expected_geometry_holes()} holes -- at under two rows a "
+        f"hole, cards are being skipped")
+    assert_no_course_skipped(seen_courses, "test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are")
     assert not problems, "the gutter numbers are not what the card says:\n  " + "\n  ".join(problems[:8])
 
 
@@ -908,7 +988,9 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
     ladder stepped in metres -- all of which miss by more than one rung on most holes.
     """
     checked, problems = 0, []
+    seen_courses = set()
     for ref in CORPUS:
+        seen_courses.add(ref)
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -937,7 +1019,10 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
             if sorted(rungs) != list(range(5, deepest + 1, 5)):
                 problems.append(f"{ref} hole {hm.group(1)}: ladder rungs {sorted(rungs)} are not "
                                 f"every 5 yd from the front edge")
-    assert checked >= 150, f"only {checked} cards checked -- build the books first"
+    assert checked >= expected_geometry_holes() - 18, (
+        f"only {checked} cards checked of {expected_geometry_holes()} holes with geometry -- a course is being "
+        f"skipped")
+    assert_no_course_skipped(seen_courses, "test_the_stated_green_depth_and_its_ladder_are_the_same_measurement")
     assert not problems, ("the printed depth and the depth ladder disagree:\n  "
                           + "\n  ".join(problems[:8]))
 
@@ -969,7 +1054,9 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
         pytest.skip("pymupdf not installed")
     import statistics
     checked, problems = 0, []
+    seen_courses = set()
     for ref in CORPUS:
+        seen_courses.add(ref)
         pdf = os.path.join(ROOT, "courses", ref, "greenbook.pdf")
         if not os.path.exists(pdf):
             continue
@@ -1021,7 +1108,10 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
                             f"5 yd at {lad:.1f} pt ({off:.0f}% apart) -- either Rule 4.3 is being "
                             f"certified against a ruler the map does not obey, or the ladder a "
                             f"golfer paces off is wrong")
-    assert checked >= 100, f"only {checked} greens compared -- export the books first"
+    assert checked >= expected_geometry_holes() - 36, (
+        f"only {checked} greens compared of {expected_geometry_holes()} holes with geometry -- yardage-mode books "
+        f"print no scale bar, but two courses' worth of absence means something is being skipped")
+    assert_no_course_skipped(seen_courses, "test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard")
     assert not problems, "the card's two scale statements disagree:\n  " + "\n  ".join(problems[:8])
 
 
@@ -3123,7 +3213,9 @@ def test_each_green_is_turned_the_way_the_card_promises():
     """
     import math
     checked, problems = 0, []
+    seen_courses = set()
     for ref in CORPUS:
+        seen_courses.add(ref)
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
         geom_p = os.path.join(ROOT, "courses", ref, "osm_geom.json")
         if not (os.path.exists(book) and os.path.exists(geom_p)):
@@ -3185,7 +3277,12 @@ def test_each_green_is_turned_the_way_the_card_promises():
                 problems.append(f"{ref} hole {hn}: the printed north arrow sits {off:.0f} deg from "
                                 f"where an approach bearing of {recorded:.0f} deg puts it -- the "
                                 f"green is not turned the way \"approach at the bottom\" promises")
-    assert checked >= 100, f"only {checked} greens checked -- build the books first"
+    # Derived, not a magic number: a floor of 100 against 198 greens let a whole course vanish
+    # unnoticed (see the poppy-ridge coverage gap). expected_holes() scales with whatever is built.
+    assert checked >= expected_geometry_holes() - 18, (
+        f"only {checked} greens checked of {expected_geometry_holes()} holes with geometry -- a course is being "
+        f"skipped")
+    assert_no_course_skipped(seen_courses, "test_each_green_is_turned_the_way_the_card_promises")
     assert not problems, "green orientation is wrong:\n  " + "\n  ".join(problems[:10])
 
 
@@ -3300,7 +3397,9 @@ def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
     import render_green
     dirs = render_green.DIRS
     checked, worst, problems = 0, (0.0, None), []
+    seen_courses = set()
     for ref in CORPUS:
+        seen_courses.add(ref)
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -3337,7 +3436,9 @@ def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
                 problems.append(f"{ref} hole {hn.group(1)}: the footer says 'feeds {said.group(1)}' "
                                 f"but the green's own arrows resolve {gap:.0f} deg away -- the words "
                                 f"and the map are giving opposite breaks")
-    assert checked >= 100, f"only {checked} greens cross-checked -- build the books first"
+    assert checked >= expected_geometry_holes() - 18, (
+        f"only {checked} greens cross-checked of {expected_geometry_holes()} with geometry -- a course is missing")
+    assert_no_course_skipped(seen_courses, "test_the_feed_word_never_contradicts_the_green_s_own_arrows")
     assert not problems, ("the printed feed direction contradicts the drawn arrows:\n  "
                           + "\n  ".join(problems[:10]))
     assert worst[0] <= 90.0, f"worst divergence {worst[0]:.1f} deg at {worst[1]}"
@@ -4675,7 +4776,8 @@ def test_no_built_green_surface_is_shared_by_two_holes():
             checked += 1
             assert gid not in seen, f"{slug}: green {gid} bound to holes {seen[gid]} and {hn}"
             seen[gid] = hn
-    assert checked >= 100, f"only {checked} built green surfaces examined"
+    assert checked >= expected_geometry_holes() - 18, (
+        f"only {checked} built green surfaces examined of {expected_geometry_holes()} holes with geometry")
 
 
 @needs_corpus
