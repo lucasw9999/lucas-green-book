@@ -82,18 +82,23 @@ def esc(s):
 
 def tee_color(name):
     """Print-legible ink color matching the tee NAME (a "Black" tee prints in black,
-    not gold). White/yellow get a readable dark substitute since they'd vanish on paper."""
+    not gold). White/yellow get a readable dark substitute since they'd vanish on paper.
+
+    Every ink here clears 4.5:1 on white at the 7pt this prints at. The old gold (#b8860b, 3.25:1)
+    did not, and it is not a rare case: it is the DEFAULT, so it inked every tee whose name is not a
+    colour -- Championship, Middle, Forward, Blu/Wht, Wht/Grn -- which is the back-tee name on the
+    headline of every Merion card. Darkened while keeping the hue: a Gold tee still prints gold."""
     return {
         "black":  "#111111",
         "blue":   "#1c4e8a",
         "white":  "#555555",
         "red":    "#b02418",
-        "gold":   "#b8860b",
+        "gold":   "#8f6809",
         "green":  "#2b6a2b",
-        "orange": "#c8641e",
+        "orange": "#a44f16",
         "silver": "#6b7683",
-        "yellow": "#a98600",
-    }.get((name or "").strip().lower(), "#b8860b")   # default: the house gold
+        "yellow": "#856a00",
+    }.get((name or "").strip().lower(), "#8f6809")   # default: the house gold
 
 # ---------------------------------------------------------------------------
 # PANELS
@@ -623,7 +628,7 @@ def main():
   .hyd {{ margin-left: auto; text-align: right; line-height: 1.05; }}
   .ymain {{ font-size: 17pt; font-weight: 800; color: #b8860b; }}
   .ylab {{ font-size: 7pt; color: #b8860b; }}
-  .yalt {{ display: block; font-size: 7.5pt; color: #9a9a9a; }}   /* front tee: light gray like the footer, secondary to the back tee */
+  .yalt {{ display: block; font-size: 7.5pt; color: #767676; }}   /* front tee: secondary to the back tee, but it IS a yardage -- 4.5:1 */
   .body {{ flex: 1; min-height: 0; display: flex; gap: 1px; margin: 1px 0 0; }}
   .lay {{ flex: 1.6; min-width: 0; position: relative; }}
   .grn {{ flex: 2.4; min-width: 0; position: relative; }}
@@ -644,10 +649,12 @@ def main():
      "other" tees make the right span 44 characters), and without these it broke MID-PHRASE --
      monarch-bay orphaned "3.1%" on its own line and split "Gol403 / Gre338 /" from "Red288".
      The same fault the playline had. Wrapping BETWEEN the two spans is fine; inside one is not. */
+  /* #999 was 2.85:1 on white -- below the 4.5:1 needed at this size, and this row carries the
+     feed direction, the tilt %, the green depth and the bunker count. Secondary, not faint. */
   .foot {{ display: flex; flex-wrap: wrap; justify-content: space-between; font-size: 7.5pt;
-           color: #999; margin-top: 1px; }}}}
+           color: #767676; margin-top: 1px; }}}}
   .foot span {{{{ white-space: nowrap; }}}}
-  .playline {{ font-size: 7.5pt; color: #777; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
+  .playline {{ font-size: 7.5pt; color: #666; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .sheettab {{ position: absolute; top: 2px; right: 5px; font-size: 7pt; color: #bbb; }}
 
   .cover {{ position: relative; overflow: hidden; padding: 0;
@@ -994,7 +1001,7 @@ def build_coach(coach_name=""):
   .hyd {{ margin-left: auto; text-align: right; line-height: 1.05; }}
   .ymain {{ font-size: 19pt; font-weight: 800; color: #b8860b; }}
   .ylab {{ font-size: 8pt; color: #b8860b; }}
-  .yalt {{ display: block; font-size: 8.5pt; color: #9a9a9a; }}   /* front tee: light gray */
+  .yalt {{ display: block; font-size: 8.5pt; color: #767676; }}   /* front tee: secondary, still a yardage */
   .cmap {{ flex: 1; min-height: 0; position: relative; margin: 2px 0; }}
   .cmap svg {{ width: 100%; height: 100%; }}
   .minilab {{ position: absolute; top: 0; left: 1px; font-size: 7pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
@@ -1003,9 +1010,9 @@ def build_coach(coach_name=""):
      monarch-bay orphaned "3.1%" on its own line and split "Gol403 / Gre338 /" from "Red288".
      The same fault the playline had. Wrapping BETWEEN the two spans is fine; inside one is not. */
   .foot {{ display: flex; flex-wrap: wrap; justify-content: space-between; font-size: 8pt;
-           color: #999; margin-top: 1px; }}}}
+           color: #767676; margin-top: 1px; }}}}
   .foot span {{{{ white-space: nowrap; }}}}
-  .playline {{ font-size: 8pt; color: #777; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
+  .playline {{ font-size: 8pt; color: #666; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .cover {{ position: relative; overflow: hidden; padding: 0; }}
   .gtitle, .cardtitle {{ font-size: 12pt; font-weight: 800; color: #2b6a2b; border-bottom: 2px solid #2b6a2b; padding-bottom: 2px; margin-bottom: 4px; }}
   .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 8pt; line-height: 1.3; margin-bottom: 5px; }}

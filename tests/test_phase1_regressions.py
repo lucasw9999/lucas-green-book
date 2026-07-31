@@ -2057,6 +2057,87 @@ def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
         pytest.skip("no book has been exported to PDF here (run tools/export_pdf.py)")
 
 
+def test_every_tee_name_prints_dark_enough_to_read():
+    """A tee's ink matches its NAME, and the match must not cost the reader the name.
+
+    tee_color() inks a Black tee black and a Gold tee gold, which is the right instinct -- and it
+    already knew the trap, since White and Yellow get dark substitutes so they do not vanish. The
+    gold did not get the same treatment: #b8860b is 3.25:1 on white, below the 4.5:1 a 7pt label
+    needs. That is not an edge case, because gold is also the FALLBACK for any name that is not a
+    colour -- Championship, Middle, Forward, Blu/Wht, Wht/Grn -- so it inked the back-tee name on the
+    headline of every Merion and Philadelphia card, next to the largest number on the page.
+
+    Checked as a pure function over the names the corpus actually uses plus the fallback, so it holds
+    for a course added later whose tees are named something new.
+    """
+    def contrast_on_white(hexc):
+        def lin(c):
+            c = c / 255.0
+            return c/12.92 if c <= 0.04045 else ((c+0.055)/1.055)**2.4
+        r, g, b = (int(hexc[i:i+2], 16) for i in (1, 3, 5))
+        return 1.05 / (0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b) + 0.05)
+
+    import generate
+    names = {"__no_such_tee__"}          # forces the fallback ink through the same bar
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "course.json")
+        if not os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            for t in (json.load(fh).get("tees") or []):
+                if t.get("name"):
+                    names.add(t["name"].strip())
+    faint = []
+    for n in sorted(names):
+        ink = generate.tee_color(n)
+        c = contrast_on_white(ink)
+        if c < 4.5:
+            faint.append(f"tee {n!r} inks {ink} at {c:.2f}:1 on white -- under 4.5:1 for 7pt text")
+    assert len(names) > 5, "no tee names were checked"
+    assert not faint, "tee names too faint to read on a home-printed card:\n  " + "\n  ".join(faint)
+
+
+def test_the_information_carrying_greys_are_readable_on_paper():
+    """The footer is secondary, not faint: it carries numbers a golfer plays a shot on.
+
+    `.foot` holds the feed direction, the tilt %, the green depth and the bunker/water count;
+    `.playline` holds the measured elevation change and the carries; `.yalt` holds another tee's
+    yardage for the hole. They are deliberately quieter than the headline, and that is right -- but
+    they were #999 and #9a9a9a, 2.85:1 and 2.81:1 on white, well under the 4.5:1 a 7.5pt line needs.
+    Quiet is a hierarchy choice; too faint to read on a home inkjet is a defect, and this book's
+    whole point is that a junior golfer prints it themselves.
+
+    Both stylesheets are checked, because the pocket book and the enlarged one each carry their own
+    copy and only one of them getting fixed is exactly the drift this suite exists to stop.
+    """
+    def contrast_on_white(hexc):
+        h = hexc.lstrip("#")
+        if len(h) == 3:
+            h = "".join(ch*2 for ch in h)
+        def lin(c):
+            c = c / 255.0
+            return c/12.92 if c <= 0.04045 else ((c+0.055)/1.055)**2.4
+        r, g, b = (int(h[i:i+2], 16) for i in (0, 2, 4))
+        return 1.05 / (0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b) + 0.05)
+
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    faint, found = [], 0
+    for cls in (".foot", ".playline", ".yalt"):
+        rules = re.findall(re.escape(cls) + r" \{\{(.*?)\}\}", src, re.S)
+        rules = [r for r in rules if "color:" in r]
+        assert rules, f"no {cls} rule with a colour found -- the check would pass vacuously"
+        for body in rules:
+            col = re.search(r"color:\s*(#[0-9a-fA-F]{3,6})", body).group(1)
+            found += 1
+            c = contrast_on_white(col)
+            if c < 4.5:
+                faint.append(f"{cls} inks {col} at {c:.2f}:1 -- it carries playing numbers, "
+                             f"and 7.5pt needs 4.5:1")
+    assert found >= 6, f"only {found} rules checked; both stylesheets must be covered"
+    assert not faint, "information-carrying text is too faint to print:\n  " + "\n  ".join(faint)
+
+
 def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
     """Each green states which way the ball rolls TWICE, and the two must not disagree.
 
