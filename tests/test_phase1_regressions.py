@@ -193,6 +193,60 @@ def a_course():
 # ---------------------------------------------------------------------------
 # Pure-function / source tests -- always run
 # ---------------------------------------------------------------------------
+def test_a_fresh_clone_gets_a_clean_suite():
+    """The README promises `pytest tests/` "skip cleanly with no course data". Enforce that promise.
+
+    courses/ is gitignored, so a stranger who clones this repo has the engine and none of the data.
+    If the suite greets them with failures, the repo looks broken through no fault of theirs, and
+    they cannot tell our red from their red. That mattered enough that gen_provenance.py carries the
+    same fix ("no courses is not the same as stale") and this file already has needs_corpus, a_course()
+    and an autouse COURSE binder -- whose docstring records this exact crash happening before.
+
+    It regressed anyway: 8 tests failed on an empty tree, 4 of them added in the same session that
+    was auditing for this class of fault. Four hit their own anti-vacuous floors ("only 0 greens
+    checked"), which is the floor doing its job in the wrong situation. The other four died with
+    SystemExit naming a course the stranger has never heard of, because without CORPUS the autouse
+    fixture cannot bind COURSE and config.py falls back to a hardcoded default.
+
+    So the rule is checked mechanically instead of remembered: a test that reads the corpus must
+    either carry @needs_corpus or route through a_course(), both of which skip. Guarding coverage
+    with an assert and guarding availability with a skip are different jobs, and a test needs both.
+    """
+    import ast
+    with open(__file__, encoding="utf-8") as fh:
+        src = fh.read()
+    tree = ast.parse(src)
+    lines = src.splitlines()
+    unguarded = []
+    for node in tree.body:
+        if not (isinstance(node, ast.FunctionDef) and node.name.startswith("test_")):
+            continue
+        if node.name == "test_a_fresh_clone_gets_a_clean_suite":
+            continue
+        # ast gives the decorators exactly, with no line-walking to get wrong
+        decs = " ".join(ast.unparse(d) for d in node.decorator_list)
+        if "needs_corpus" in decs or "skipif" in decs:
+            continue
+        body = "\n".join(lines[node.lineno - 1:node.end_lineno])
+        # Not every pytest.skip saves the test: the common one here is "pymupdf not installed",
+        # which fires first but says nothing about DATA. A test that skips on a missing library and
+        # then calls _engine() still raises SystemExit on an empty tree. Only a_course() -- which
+        # exists precisely to skip on an absent corpus -- counts as the escape hatch.
+        if "a_course()" in body:
+            continue
+        if re.search(r"if CORPUS|if not CORPUS|CORPUS else", body):
+            continue                      # handles the empty case itself
+        # What is never safe on an empty tree is BINDING a course: config.py then falls back to a
+        # hardcoded slug and raises SystemExit. Iterating an empty CORPUS is merely a no-op, but it
+        # still needs the marker, because these tests assert a coverage floor that 0 cannot meet.
+        if re.search(r"_engine\(|CORPUS\[|for \w+ in CORPUS\b", body):
+            unguarded.append(node.name)
+    assert not unguarded, (
+        "these tests read per-course data but do not skip when there is none, so a fresh clone "
+        "sees failures instead of skips -- add @needs_corpus or use a_course():\n  "
+        + "\n  ".join(unguarded))
+
+
 def test_no_homoglyphs_in_printed_strings():
     """Round 1: two U+0434 CYRILLIC SMALL LETTER DE shipped as 'yd' on the instruction card of
     all 11 books. Only the em-dash is allowed to be non-ASCII in the engine sources."""
@@ -1119,6 +1173,7 @@ def test_every_green_has_its_own_printed_scale_bar():
     assert checked >= 10, f"only {checked} books measured"
 
 
+@needs_corpus
 def test_the_card_footer_cannot_break_mid_phrase():
     """The footer must wrap BETWEEN its two spans, never inside one.
 
@@ -1147,6 +1202,7 @@ def test_the_card_footer_cannot_break_mid_phrase():
     assert checked >= 10, f"only {checked} books checked"
 
 
+@needs_corpus
 def test_both_editions_share_one_playline_definition():
     """The pocket and enlarged cards must build the tee-shot row from the SAME code.
 
@@ -2098,6 +2154,7 @@ def test_one_hole_line_chooser_for_the_whole_pipeline():
         assert "hole_lines(" in src, f"{name} no longer uses the shared hole-line chooser"
 
 
+@needs_corpus
 def test_each_green_is_turned_the_way_the_card_promises():
     """"Approach at the bottom" is the promise every green map is read through. Verify the chain.
 
@@ -2190,6 +2247,7 @@ def test_each_green_is_turned_the_way_the_card_promises():
     assert not problems, "green orientation is wrong:\n  " + "\n  ".join(problems[:10])
 
 
+@needs_corpus
 def test_every_tee_name_prints_dark_enough_to_read():
     """A tee's ink matches its NAME, and the match must not cost the reader the name.
 
@@ -2271,6 +2329,7 @@ def test_the_information_carrying_greys_are_readable_on_paper():
     assert not faint, "information-carrying text is too faint to print:\n  " + "\n  ".join(faint)
 
 
+@needs_corpus
 def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
     """Each green states which way the ball rolls TWICE, and the two must not disagree.
 
@@ -2342,6 +2401,7 @@ def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
     assert worst[0] <= 90.0, f"worst divergence {worst[0]:.1f} deg at {worst[1]}"
 
 
+@needs_corpus
 def test_every_duplex_back_lands_behind_its_own_front():
     """The one defect that would ruin every PHYSICAL copy while every digital check stayed green.
 
@@ -2431,6 +2491,7 @@ def test_every_duplex_back_lands_behind_its_own_front():
                           + "\n  ".join(problems[:10]))
 
 
+@needs_corpus
 def test_the_enlarged_edition_never_drops_half_a_ladder_row():
     """The big-print book may drop a whole row for spacing; it may NOT drop one number OF a row.
 
@@ -2491,6 +2552,7 @@ def test_the_enlarged_edition_never_drops_half_a_ladder_row():
                           f"edition but lose the from-tee number beside it")
 
 
+@needs_corpus
 def test_no_printed_words_fall_outside_the_card_they_belong_to():
     """Every word on the paper must sit inside a card, because the paper gets CUT along the ticks.
 
@@ -3648,7 +3710,18 @@ def test_no_green_is_bound_to_two_holes():
     fd = open(os.path.join(ROOT, "fetch_dem.py"), encoding="utf-8").read()
     assert "for p in geo]" not in fd, "a local named `geo` is shadowing the geo module again"
 
-    # the real corpus must satisfy it
+
+
+@needs_corpus
+def test_no_built_green_surface_is_shared_by_two_holes():
+    """The corpus half of the rule above: no green actually built is bound to two holes.
+
+    Split out so each half keeps its own guarantee. The rule itself is a pure function and must be
+    tested wherever the engine runs, including a fresh clone with no data; THIS is an assertion about
+    built artifacts and has to skip when there are none. Left together, the corpus loop silently
+    iterated nothing on an empty tree while the test still reported green.
+    """
+    checked = 0
     for slug in CORPUS:
         seen = {}
         for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
@@ -3657,8 +3730,10 @@ def test_no_green_is_bound_to_two_holes():
             gid, hn = meta.get("green_id"), meta.get("hole")
             if gid is None:
                 continue
+            checked += 1
             assert gid not in seen, f"{slug}: green {gid} bound to holes {seen[gid]} and {hn}"
             seen[gid] = hn
+    assert checked >= 100, f"only {checked} built green surfaces examined"
 
 
 @needs_corpus
@@ -3776,6 +3851,7 @@ def test_one_shared_rule_decides_what_may_be_distributed():
         f"{n_personal_data}")
 
 
+@needs_corpus
 def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     """Nothing checked that a downloaded tile's DATA reaches the greens. A tile can be present,
     correctly named, and hold no points where a green is -- and the green then silently falls back to
