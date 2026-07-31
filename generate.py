@@ -466,8 +466,14 @@ def guide_panel():
 
 
 def scorecard_panel():
-    fl, sl = config.FEATURED, config.SECONDARY
-    fi, si = config.FI, config.SI
+    # BACK first, then FRONT -- not FEATURED/SECONDARY. config.BACK_I exists precisely because the
+    # book is built on ONE tee, and FEATURED is only whichever of the pair course.json happens to
+    # name first: on 6 of 12 courses it is the FORWARD tee. So the scorecard led with White 6015 on
+    # callippe while every hole card headlined Black 6749, and the reader had to notice the title had
+    # swapped order relative to the cards to find the column their book is actually built on.
+    # Same drift the BACK_I comment in config.py describes, in the one panel that had not been moved.
+    fl, sl = config.BACK_NAME, config.FRONT_NAME
+    fi, si = config.BACK_I, config.FRONT_I
     nums = config.HOLE_NUMS
     def row(h):
         r = HOLES[h]

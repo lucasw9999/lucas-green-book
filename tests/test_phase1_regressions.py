@@ -479,6 +479,73 @@ def _arc_yd_for(ref, panel_html):
 
 
 @needs_corpus
+def test_the_scorecard_panel_agrees_with_every_hole_card():
+    """Par, stroke index and yardage appear TWICE in each book -- on the hole card and in the
+    scorecard panel -- and a junior allocates strokes off the scorecard while playing off the card.
+
+    They came from different places. Every hole card headlines config.BACK_I, the tee the book is
+    actually built on; scorecard_panel used config.FEATURED, which is only whichever of the pair
+    course.json happens to name first. On 6 of 12 courses that is the FORWARD tee, so callippe's
+    scorecard led "White / Black" with White's 6015 in the first column while every one of its cards
+    headlined Black 6749 -- a 734 yd difference between two panels of one book. The title did name the
+    order, so nothing was false; the reader simply had to notice the columns had swapped relative to
+    the cards to find the one their book is built on.
+
+    This is the same drift config.py's BACK_I comment describes -- one card is built on ONE tee -- in
+    the last panel that had not been moved onto it.
+
+    Checked field by field on the shipped HTML, because the defect was precisely a disagreement
+    between two renderings of the same numbers.
+    """
+    checked, problems = 0, []
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(p):
+            continue
+        cfg, _rh = _engine(ref)
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        cm = re.search(r'<div class="panel card">(.*?)(?=<div class="panel|\Z)', html, re.S)
+        assert cm, f"{ref}: no scorecard panel in the book"
+        title = re.search(r"Scorecard &mdash; ([^<]*)", cm.group(1))
+        assert title, f"{ref}: the scorecard panel has no title naming its columns"
+        lead = title.group(1).split("/")[0].strip()
+        assert lead == cfg.BACK_NAME, (
+            f"{ref}: the scorecard leads with {lead!r} but every hole card headlines "
+            f"{cfg.BACK_NAME!r} -- two panels of one book disagree on which tee it is for")
+        rows = {}
+        for r in re.findall(r"<tr>(.*?)</tr>", cm.group(1), re.S):
+            cells = [re.sub(r"<[^>]+>", "", c).strip()
+                     for c in re.findall(r"<td[^>]*>(.*?)</td>", r, re.S)]
+            if len(cells) >= 4 and cells[0].isdigit():
+                rows[int(cells[0])] = cells
+        for blk in re.split(r'<div class="panel ', html)[1:]:
+            if not blk.startswith('hole"'):
+                continue
+            hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            pm = re.search(r'<div class="par">PAR (\d+)</div>', blk)
+            im = re.search(r'<div class="si">HCP (\d+)</div>', blk)
+            ym = re.search(r'class="ymain"[^>]*>(\d+)</span>', blk)
+            if not (hm and pm and im and ym):
+                continue
+            hn = int(hm.group(1))
+            row = rows.get(hn)
+            if not row:
+                problems.append(f"{ref} hole {hn}: has a card but no row in the scorecard panel")
+                continue
+            checked += 1
+            for label, card_val, sc_val in (("par", pm.group(1), row[1]),
+                                            ("stroke index", im.group(1), row[2]),
+                                            ("yardage", ym.group(1), row[3])):
+                if card_val != sc_val:
+                    problems.append(f"{ref} hole {hn}: the card says {label} {card_val}, the "
+                                    f"scorecard panel says {sc_val}")
+    assert checked >= 150, f"only {checked} cards checked -- build the books first"
+    assert not problems, ("the scorecard panel contradicts the hole cards:\n  "
+                          + "\n  ".join(problems[:10]))
+
+
+@needs_corpus
 def test_a_printed_carry_never_overstates_what_it_clears():
     """"carry 224" is a number a junior clubs against off the tee, so it must err SHORT, never long.
 
