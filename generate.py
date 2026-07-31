@@ -136,7 +136,7 @@ def yardage_guide_panel():
   <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> yardage book for junior golfers, <b>not for sale</b>. Par,
-      yardage &amp; handicap are <b>facts</b> from the published scorecard. This course was <b>rebuilt in
+      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. This course was <b>rebuilt in
       2025 with new greens</b>, and accurate post-construction green-surface data is not yet publicly
       available &mdash; so rather than print slope maps that could be wrong, the greens are left <b>blank
       to mark your own read</b>. (Our other books compute slope from public-domain USGS 3DEP elevation;
@@ -446,7 +446,7 @@ def guide_panel():
       contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright); slope, contours, arrows &amp; <b>elevation
       change</b> are computed by the
       maker from <b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work); par, yardage &amp;
-      handicap are <b>facts</b> from the published scorecard.''' + _naip_line() + ''' Every map is <b>independently created</b>:
+      handicap (<b>HCP</b> = the <b>men&rsquo;s</b> stroke index) are <b>facts</b> from the published scorecard.''' + _naip_line() + ''' Every map is <b>independently created</b>:
       <b>no proprietary data, image, symbol set, page layout or trade dress of any commercial green-reading
       product was used, copied, referenced or reverse-engineered</b>, and this book references no third-party
       brand and is not a substitute for any product. Built <b>entirely from remote public data, without
@@ -887,7 +887,7 @@ def coach_about_card():
       Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>);
       slope, contours, arrows &amp; <b>elevation change</b> are computed by the maker from
       <b>public-domain USGS&nbsp;3DEP</b> LiDAR; par,
-      yardage &amp; handicap are <b>facts</b> from the published scorecard. <b>No proprietary data, image, symbol
+      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. <b>No proprietary data, image, symbol
       set, layout or trade dress of any commercial green-reading product was used, copied or referenced.</b>
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
       trademarks belong to their owners and identify the course only &mdash; contact the maker for removal.

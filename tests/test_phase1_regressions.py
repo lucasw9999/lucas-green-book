@@ -479,6 +479,41 @@ def _arc_yd_for(ref, panel_html):
 
 
 @needs_corpus
+def test_the_book_says_which_stroke_index_it_prints():
+    """"HCP 15" appears on every card and decides where a player takes their handicap strokes.
+
+    The data column is literally named mens_hcp, and the book printed "HCP" 19 times per copy without
+    ever saying so. Many courses publish a DIFFERENT women's stroke index, so a girl using this book
+    -- and this is a junior golf book, so half the intended readership -- would take her strokes on
+    the wrong holes and not know it. Nothing was false; something necessary was simply unsaid, which
+    is the same failure as the carry sentence and the dogleg sums.
+
+    Fixed in prose that already existed, because the guide card is full: the About block already said
+    "par, yardage & handicap are facts from the published scorecard", so it now names which handicap.
+
+    Checked on the shipped HTML of BOTH editions -- the pocket and enlarged books carry separate legal
+    blocks and only one of them getting the label is exactly how they have drifted before.
+    """
+    books = 0
+    for ref in CORPUS:
+        for name in ("greenbook.html", "greenbook_coach.html"):
+            p = os.path.join(ROOT, "courses", ref, name)
+            if not os.path.exists(p):
+                continue
+            with open(p, encoding="utf-8") as fh:
+                html = fh.read()
+            if "HCP" not in html:
+                continue                        # a book with no stroke index has nothing to label
+            books += 1
+            assert "stroke index" in html, (
+                f"{ref}/{name} prints HCP on its cards but never says it is the MEN'S stroke index -- "
+                f"a girl reading this book takes her strokes on the wrong holes")
+            assert re.search(r"men.{0,8}s(</b>)? stroke index", html), (
+                f"{ref}/{name} mentions a stroke index without saying whose")
+    assert books >= 10, f"only {books} books checked -- build them first"
+
+
+@needs_corpus
 def test_the_scorecard_panel_agrees_with_every_hole_card():
     """Par, stroke index and yardage appear TWICE in each book -- on the hole card and in the
     scorecard panel -- and a junior allocates strokes off the scorecard while playing off the card.
