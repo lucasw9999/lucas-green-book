@@ -480,7 +480,17 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # fairway bunker far up a long hole from reading as a driving decision (Merion 18's pair at
     # 401-429 on a 502 yd hole). Both ends chosen for the reader, not the data.
     CARRY_MIN_YD, CARRY_MAX_YD = 80.0, 300.0
-    CARRY_OFF_M  = 30.0        # further off the line than this is not this hole's problem
+    # Offset is measured from the straight tee-to-green CHORD, not from the drawn polyline that the
+    # 45 m drawing corridor uses. That INCONSISTENCY is deliberate, and it is conservative: 68 bunkers
+    # across 43 holes lie within 30 m of the drawn line yet more than 30 m off the chord, so they are
+    # drawn on the map but not quantified in the footer. Switching the test to the polyline was
+    # prototyped and rejected -- it moves the printed carries on 37 holes in BOTH directions (merion 7
+    # loses its only one, monarch-bay 5 goes from 85 to 254), because chord and polyline diverge each
+    # way on a dogleg, and the bunkers it admits sit 40-100 m off the chord where the along-chord
+    # projection understates the real carry. Doing it properly means also redefining the printed number
+    # as the straight-line tee-to-edge distance. Until that is measured and validated, under-reporting a
+    # hazard the map still shows beats printing a distance that is wrong as a carry.
+    CARRY_OFF_M  = 30.0        # further off the CHORD than this is not quantified
     # Every along-line distance here is measured from where the LINE starts, and on a forward-tee hole
     # that is not the back tee. Left unshifted, merion 5 printed "carry 173" for sand that is nearer
     # 276 from the Championship tee -- a 103 yd understatement of the one number a player actually
