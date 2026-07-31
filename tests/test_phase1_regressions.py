@@ -653,6 +653,53 @@ def test_carries_are_measured_from_the_back_tee():
 
 
 @needs_corpus
+def test_a_tee_with_no_hole_by_hole_yardages_is_marked():
+    """A tee row the book cannot break down must say so.
+
+    Tees are listed from course.json's `tees`; per-hole yardages come from `hole_cols`, and the sets
+    differ on two courses. philadelphia lists a Green tee at 5819 yd with a 69.3/128 rating and has no
+    Green column; the-reserve lists two COMBINATION tees (Blu/Wht, Wht/Grn) which by nature have none.
+    Nothing printed is false -- they are published facts about real tees -- but a junior playing one would
+    search all 18 cards for a yardage that is not in the book, and philadelphia's Green also sits outside
+    the four tees its own sources cross-verified."""
+    marked = plain = 0
+    for slug in CORPUS + [s_ for s_ in
+                          (os.path.basename(os.path.dirname(p_)) for p_ in
+                           glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html")))
+                          if s_ not in CORPUS and not s_.startswith("_")]:
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        if not os.path.isfile(book):
+            continue
+        for m in ("config", "render_hole", "render_green", "generate"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = slug
+        import config
+        html = open(book, encoding="utf-8").read()
+        tbl = re.search(r'<table class="tt".*?</table>', html, re.S)
+        if not tbl:
+            continue
+        per_hole = set(config.TEES)
+        cells = re.findall(r'<tr><td>([^<]*)(<sup>&dagger;</sup>)?</td>', tbl.group(0))
+        for name, dag in cells:
+            if name in ("Tee",):
+                continue
+            full = next((t["name"] for t in config.TEE_TABLE if t["name"][:7] == name), name)
+            backed = full in per_hole
+            if backed:
+                plain += 1
+                assert not dag, f"{slug}: {full} HAS per-hole yardages but is marked unsupported"
+            else:
+                marked += 1
+                assert dag, (f"{slug}: {full} has no per-hole column and is not marked -- a reader will "
+                             f"hunt 18 cards for a yardage that is not in the book")
+                assert "no hole-by-hole yardages in this book" in html, (
+                    f"{slug}: a tee is daggered but the panel never explains the mark")
+    assert plain >= 30, f"only {plain} backed tee rows checked"
+    assert marked >= 3, (f"only {marked} unbacked tee rows found -- philadelphia Green plus "
+                         f"the-reserve's two combination tees were expected")
+
+
+@needs_corpus
 def test_one_card_is_built_on_one_tee():
     """The tee marker, the from-tee gutter, the carries and the elevation must all be the tee the card
     headlines.

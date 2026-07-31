@@ -469,11 +469,28 @@ def scorecard_panel():
 </div>'''
 
 def tees_panel():
+    """Every published tee with its length and rating -- and a mark on the ones this book cannot break
+    down hole by hole.
+
+    A tee appears here from course.json's `tees` list, but per-hole yardages come from `hole_cols`, and the
+    two are not always the same set. philadelphia lists a Green tee at 5819 yd with a 69.3/128 rating and
+    has no Green column; the-reserve lists two COMBINATION tees (Blu/Wht, Wht/Grn) that by nature have
+    none. Nothing printed is false -- these are published facts about real tees -- but a junior who plays
+    one of them would search all 18 cards for a yardage that is not in the book, and philadelphia's Green
+    is also outside the four tees its sources cross-verified. So say which rows the book supports.
+    """
     def cell(v):
         return "&mdash;" if v is None or v == "" else esc(v)
+    per_hole = set(config.TEES)
+    unbacked = [t for t in config.TEE_TABLE if t.get("name") not in per_hole]
     rows = "".join(
-        f'<tr><td>{esc(t["name"][:7])}</td><td>{cell(t["yards"])}</td><td>{cell(t.get("rating"))}</td><td>{cell(t.get("slope"))}</td></tr>'
+        f'<tr><td>{esc(t["name"][:7])}'
+        + ("<sup>&dagger;</sup>" if t.get("name") not in per_hole else "")
+        + f'</td><td>{cell(t["yards"])}</td><td>{cell(t.get("rating"))}</td><td>{cell(t.get("slope"))}</td></tr>'
         for t in config.TEE_TABLE)
+    note = ("" if not unbacked else
+            " <b>&dagger;</b> published tee with <b>no hole-by-hole yardages in this book</b> &mdash; "
+            "the scorecard pages cover the other tees.")
     return f'''<div class="panel info">
   <div class="cardtitle">Tees &middot; Rating / Slope</div>
   <table class="tt">
@@ -481,7 +498,7 @@ def tees_panel():
     {rows}
   </table>
   <div class="gsmall">Yardages from the official scorecard. Rating &amp; slope as published for the
-    course &mdash; see the provenance record for each course's source.</div>
+    course &mdash; see the provenance record for each course's source.{note}</div>
 </div>'''
 
 def legend_panel():
