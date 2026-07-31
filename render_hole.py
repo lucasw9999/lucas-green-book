@@ -309,7 +309,20 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # along the line the tick actually is -- not by whether its from-tee label is printable,
         # which is what previously discarded perfectly good to-green numbers on holes whose
         # centerline does not span the card.
-        if arc_from_tee / 0.9144 < 25.0:
+        # A from-tee figure is worth printing down to 30 yd -- but 30 yd is noise on a 500-yd hole
+        # and a fifth of a 128-yd one, where "28 from the tee" is real information. Scale it, which
+        # only loosens below 150 yd.
+        ft_floor = min(30.0, 0.20*total_yd)
+        if par3_straight:
+            # The exact from-tee distance is known here, so ONE threshold governs the row: keep it
+            # only if its from-tee number is printable. Judging the row on the drawn line instead
+            # left merion 13 with no gutter numbers at all (its only tick sits 18 yd along a line
+            # 10 yd shy of the card, though it is 28 yd from the real tee); judging the row and the
+            # number by DIFFERENT thresholds instead added a to-green tick on philadelphia 15 whose
+            # brown partner was then suppressed, i.e. a new half-empty row.
+            if total_yd - yd < ft_floor:
+                continue
+        elif arc_from_tee / 0.9144 < 25.0:
             continue
         # From-tee label: on a straight par 3 it is exact (see par3_straight above). Otherwise scale
         # the card yardage by how far along the drawn line this point is -- only meaningful when the
@@ -318,7 +331,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             ft = round(total_yd - yd)
         else:
             ft = round(total_yd * arc_from_tee / arc_m) if tee_ok else None
-        if ft is not None and ft < 30:
+        if ft is not None and ft < ft_floor:
             ft = None          # keep the row: its to-green number is still true and is the one a
                                # golfer clubs off -- only the from-tee figure is not worth printing
         sx, sy = proj(la, lo)

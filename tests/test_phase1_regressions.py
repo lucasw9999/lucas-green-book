@@ -575,6 +575,29 @@ def test_par3_exact_from_tee_rule():
 
 
 @needs_corpus
+def test_short_par3_still_gets_its_gutter_numbers():
+    """A hole under 150 yd must still carry a to-green/from-tee pair.
+
+    Merion 13 (128 yd) printed NOTHING in either gutter: its only tick sits 18 yd along a line 10 yd
+    shy of the card, under the 25-yd clutter cut, and its from-tee figure of 28 yd was under a flat
+    30-yd floor. Both thresholds were absolute, so they scaled wrongly -- 30 yd is noise on a 500-yd
+    hole and a fifth of this one. Pinned as an OUTPUT because reverting the scaled floor breaks no
+    invariant: it just quietly empties this card again, and every consistency check still passes."""
+    if "merion-golf-club" not in CORPUS:
+        pytest.skip("merion-golf-club not built")
+    config, render_hole = _engine("merion-golf-club")
+    svg, _ = render_hole.render_hole(13, config.HOLES)
+    card = config.HOLES[13][2]
+    assert card == 128, f"this test is pinned to merion 13 at 128 yd, card now says {card}"
+    lefts = [int(x) for x in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg)]
+    rights = [int(x) for x in re.findall(r'<text x="91"[^>]*>(\d+)</text>', svg)]
+    assert lefts and rights, f"merion 13 has empty gutters again: {lefts} / {rights}"
+    assert len(lefts) == len(rights), f"unmatched rows: {lefts} / {rights}"
+    for l, r in zip(lefts, rights):
+        assert l + r == card, f"par-3 pair {l}+{r} != {card}"
+
+
+@needs_corpus
 def test_from_tee_labels_are_bounded_and_ordered():
     """Round 2: the from-tee number was card_total - yd while yd had become a straight-line radius,
     mixing two measures (max +54 yd wrong). It must now be >= 30, <= the hole's card yardage, and
@@ -611,13 +634,26 @@ def test_from_tee_labels_are_bounded_and_ordered():
             card = config.HOLES[hn][2]
             rights = [int(x) for x in re.findall(r'<text x="91"[^>]*>(\d+)</text>', svg)]
             lefts = [int(x) for x in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg)]
+            # Floor is scaled: 30 yd is noise on a 500-yd hole but a fifth of a 128-yd one, where a
+            # 28-yd figure is real information. Recomputed here rather than imported so a change to
+            # the engine's floor has to be restated deliberately.
+            ft_floor = min(30.0, 0.20 * card)
             for r in rights:
-                if r < 30 or r > card:
+                if r < ft_floor or r > card:
                     bad.append((slug, hn, "out of range", r, card))
             if rights != sorted(rights, reverse=True):
                 bad.append((slug, hn, "from-tee not monotonic", rights, card))
             if lefts != sorted(lefts):
                 bad.append((slug, hn, "to-green not monotonic", lefts, card))
+            # On a STRAIGHT PAR 3 both gutter numbers are known exactly, so every row must carry the
+            # pair. A row with only the green number reads as a missing number rather than as a
+            # refusal -- the complaint that prompted this -- and it happened because the row and its
+            # from-tee figure were gated by two different thresholds. One threshold now governs both.
+            if config.HOLES[hn][0] == 3 and len(lefts) != len(rights):
+                _svg, _info = render_hole.render_hole(hn, config.HOLES)
+                if _info["par3_straight"]:
+                    bad.append((slug, hn, "straight par 3 has an unmatched gutter row",
+                                lefts, rights))
 
             # --- value check, independent of the engine ---
             pairs = re.findall(r'<text x="9" y="([0-9.]+)"[^>]*>(\d+)</text>', svg)
