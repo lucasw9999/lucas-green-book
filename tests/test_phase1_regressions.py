@@ -162,6 +162,43 @@ def _dist_to_poly(pt, poly, em):
 
 
 CORPUS = _courses()
+
+
+def _books():
+    """Slugs with a BUILT BOOK, whether or not they have OSM geometry.
+
+    CORPUS requires osm_geom.json + osm_course.json because the hole maps cannot be rendered without
+    them. poppy-ridge has neither: it is yardage mode, built from the scorecard alone with blank
+    greens and a separate aerial. That is correct for geometry tests and wrong for every test that
+    only reads the shipped HTML -- so its 18 cards, its scorecard panel and its legal text were
+    outside the reach of EVERY corpus test in this file. The one book least like the others was the
+    one nothing checked.
+    """
+    out = []
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        if os.path.exists(os.path.join(ROOT, "courses", slug, "greenbook.html")):
+            out.append(slug)
+    return out
+
+
+BOOKS = _books()
+
+
+def _expected_cards():
+    """How many hole cards the built books SHOULD have, from the files themselves.
+
+    Derived, never hardcoded: an absolute floor punishes anyone who has built two courses instead of
+    twelve, which is the same defect as the fresh-clone failures. But it must be derived from what is
+    PRESENT rather than from what a loop happens to visit, or a skipped course lowers the bar it was
+    supposed to trip."""
+    n = 0
+    for slug in BOOKS:
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
+            n += len(json.load(fh).get("holes") or {})
+    return n
 needs_corpus = pytest.mark.skipif(not CORPUS, reason="per-course data is gitignored; nothing to measure")
 
 
@@ -424,7 +461,10 @@ def test_every_printed_caveat_matches_the_data_behind_it():
         with open(cj, encoding="utf-8") as fh:
             stale = set(json.load(fh).get("greens_possibly_outdated") or [])
         for blk in re.split(r'<div class="panel ', html)[1:]:
-            if not blk.startswith('hole"'):
+            if not re.match(r'hole[\s"]', blk):
+                # `hole ycard` too. poppy-ridge's yardage edition uses class="panel hole ycard", so
+                # a startswith('hole"') filter silently skipped its 18 cards -- and it is the course
+                # LEAST like the others, which is exactly where a check is worth most.
                 continue
             hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
             if not hm:
@@ -495,7 +535,7 @@ def test_the_book_says_which_stroke_index_it_prints():
     blocks and only one of them getting the label is exactly how they have drifted before.
     """
     books = 0
-    for ref in CORPUS:
+    for ref in BOOKS:                      # BOOKS: poppy prints HCP too, and CORPUS excludes it
         for name in ("greenbook.html", "greenbook_coach.html"):
             p = os.path.join(ROOT, "courses", ref, name)
             if not os.path.exists(p):
@@ -533,7 +573,7 @@ def test_the_scorecard_panel_agrees_with_every_hole_card():
     between two renderings of the same numbers.
     """
     checked, problems = 0, []
-    for ref in CORPUS:
+    for ref in BOOKS:                      # BOOKS, not CORPUS: this reads HTML, not geometry
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -555,7 +595,10 @@ def test_the_scorecard_panel_agrees_with_every_hole_card():
             if len(cells) >= 4 and cells[0].isdigit():
                 rows[int(cells[0])] = cells
         for blk in re.split(r'<div class="panel ', html)[1:]:
-            if not blk.startswith('hole"'):
+            if not re.match(r'hole[\s"]', blk):
+                # `hole ycard` too. poppy-ridge's yardage edition uses class="panel hole ycard", so
+                # a startswith('hole"') filter silently skipped its 18 cards -- and it is the course
+                # LEAST like the others, which is exactly where a check is worth most.
                 continue
             hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
             pm = re.search(r'<div class="par">PAR (\d+)</div>', blk)
@@ -575,7 +618,11 @@ def test_the_scorecard_panel_agrees_with_every_hole_card():
                 if card_val != sc_val:
                     problems.append(f"{ref} hole {hn}: the card says {label} {card_val}, the "
                                     f"scorecard panel says {sc_val}")
-    assert checked >= 150, f"only {checked} cards checked -- build the books first"
+    # 216 = 12 courses x 18 holes. A floor of 150 passed happily while poppy-ridge's 18 cards were
+    # being skipped by a too-narrow panel filter, so the floor now names the whole corpus.
+    want = _expected_cards()
+    assert checked == want, (f"{checked} cards checked but the built books hold {want} -- a course "
+                             f"or a panel class is being skipped")
     assert not problems, ("the scorecard panel contradicts the hole cards:\n  "
                           + "\n  ".join(problems[:10]))
 
@@ -721,7 +768,10 @@ def test_the_elevation_word_matches_the_elevation_sign():
         with open(book, encoding="utf-8") as fh:
             html = fh.read()
         for blk in re.split(r'<div class="panel ', html)[1:]:
-            if not blk.startswith('hole"'):
+            if not re.match(r'hole[\s"]', blk):
+                # `hole ycard` too. poppy-ridge's yardage edition uses class="panel hole ycard", so
+                # a startswith('hole"') filter silently skipped its 18 cards -- and it is the course
+                # LEAST like the others, which is exactly where a check is worth most.
                 continue
             hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
             if not hm:
@@ -788,7 +838,10 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
             f"{ref}: the guide card no longer explains why the two gutter numbers do not sum -- "
             f"a reader who adds them finds up to 54 yd of unexplained discrepancy")
         for blk in re.split(r'<div class="panel ', html)[1:]:
-            if not blk.startswith('hole"'):
+            if not re.match(r'hole[\s"]', blk):
+                # `hole ycard` too. poppy-ridge's yardage edition uses class="panel hole ycard", so
+                # a startswith('hole"') filter silently skipped its 18 cards -- and it is the course
+                # LEAST like the others, which is exactly where a check is worth most.
                 continue
             ym = re.search(r'class="ymain"[^>]*>(\d+)</span>', blk)
             sm = re.search(r'<div class="lay"><div class="minilab">HOLE</div>(<svg.*?</svg>)',
@@ -862,7 +915,10 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
         with open(p, encoding="utf-8") as fh:
             html = fh.read()
         for blk in re.split(r'<div class="panel ', html)[1:]:
-            if not blk.startswith('hole"'):
+            if not re.match(r'hole[\s"]', blk):
+                # `hole ycard` too. poppy-ridge's yardage edition uses class="panel hole ycard", so
+                # a startswith('hole"') filter silently skipped its 18 cards -- and it is the course
+                # LEAST like the others, which is exactly where a check is worth most.
                 continue
             hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
             dm = re.search(r"(\d+)yd deep", blk)
