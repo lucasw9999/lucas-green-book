@@ -718,7 +718,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
         dx, dy = x - cx, y - cy
         return (cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
 
-    arrows = hole_pins = green_pins = 0
+    arrows = hole_pins = green_pins = slope_labels = 0
     problems, seen = [], set()
     for ref in CORPUS:
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
@@ -766,6 +766,26 @@ def test_nothing_is_drawn_off_the_putting_surface():
                             problems.append(f"{ref} hole {hn.group(1)}: the green panel's pin ring is "
                                             f"outside the putting surface it marks")
 
+            # --- slope % labels, also in screen space ---
+            # Left out of the first version of this test, which is why they are called out here: they
+            # are clamped to the FRAME (VBx+2.5 .. VBx+VBw-2.5), not to the polygon, so a label staying
+            # on the green is a property of where the candidates are picked rather than of the clamp.
+            # 1,323 of them are inside today; nothing makes that structural.
+            if g:
+                raw2 = [(float(x), float(y))
+                        for x, y in re.findall(r"([\d.-]+),([\d.-]+)", g.group(5))]
+                if len(raw2) >= 3:
+                    th, cx, cy = float(g.group(1)), float(g.group(2)), float(g.group(3))
+                    screen2 = [rot(x, y, cx, cy, th) for x, y in raw2]
+                    for sx, sy, val in re.findall(
+                            r'<text x="([\d.-]+)" y="([\d.-]+)" font-size="4\.6"[^>]*>(\d+)</text>',
+                            blk):
+                        slope_labels += 1
+                        if not inside(float(sx), float(sy), screen2):
+                            problems.append(f"{ref} hole {hn.group(1)}: the slope label \"{val}%\" "
+                                            f"sits off the green, so it describes ground that is not "
+                                            f"putting surface")
+
             # --- the hole map's pin, at the green centroid ---
             hm = re.search(r'<div class="lay"><div class="minilab">HOLE</div>(<svg.*?</svg>)',
                            blk, re.S)
@@ -783,6 +803,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
     assert arrows > 5000, f"only {arrows} arrows examined -- the sweep found almost nothing"
     assert hole_pins >= 150 and green_pins >= 150, \
         f"only {hole_pins} hole pins and {green_pins} green pins examined"
+    assert slope_labels > 500, f"only {slope_labels} slope labels examined"
     assert_no_course_skipped(seen, "test_nothing_is_drawn_off_the_putting_surface")
     assert not problems, ("marks are drawn off the putting surface they describe:\n  "
                           + "\n  ".join(problems[:8]))

@@ -269,6 +269,17 @@ def render(hole, tournament=False):
     # confidence: is the dominant tilt above the LiDAR noise floor over the green?
     span_m = max(math.hypot(Xe.max()-Xe.min(), Yn.max()-Yn.min()), 1.0) if len(Xe) else 1.0
     rise_ft = tilt_pct/100.0*span_m*3.28084
+    # Tested against the UNROUNDED tilt, while the card prints it to one decimal. So six of 198 greens
+    # print "1.2%" -- three "(firm)", three "(subtle)" -- and a reader cannot see why: the difference is
+    # a true tilt of 1.24 against 1.16, plus the rise test, neither of which the card shows. 1.2% is the
+    # only printed value in the corpus that carries both words.
+    #
+    # Do NOT "fix" that by comparing round(tilt_pct, 1) >= 1.2. It looks like consistency and is a
+    # loosening: the effective floor becomes 1.15%, and this threshold exists because below it the plane
+    # fit is inside the LiDAR noise. The gate being more precise than the display is the right way round
+    # for a book whose rule is never to print a read the data does not support. The qualifier is also not
+    # a function of the printed number at all -- it depends on the FALL as well as the tilt -- so tying it
+    # to one decimal would make it less informative to look more tidy.
     conf = "firm" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "subtle"
 
     # rotation so approach bearing points UP on screen
