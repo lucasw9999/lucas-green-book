@@ -599,6 +599,61 @@ def test_a_fresh_clone_gets_a_clean_suite():
         + "\n  ".join(unguarded))
 
 
+def test_nothing_tracked_carries_a_work_identity_or_a_home_path():
+    """This repo is PUBLIC. Nothing in it may carry a work identity, an employer domain, or a path
+    that only exists on one laptop.
+
+    Two of the three have already happened on this project: a work email reached two public repos and
+    had to be scrubbed out of their history, and a `courses` SYMLINK created by a git worktree slipped
+    past the `courses/` ignore rule -- which matches a directory, not a link -- so `git add -A` would
+    have committed a machine-specific absolute path. Both were caught by hand. History rewrites and
+    support tickets are the expensive way to find this; a test is the cheap way.
+
+    An absolute home path is not only an identity leak, it is a bug: a tool that hardcodes one cannot
+    run on anyone else's machine, and this repo is meant to be cloned.
+
+    Scans TRACKED files only, so it follows .gitignore rather than duplicating it -- courses/ and
+    local scratch stay out of scope by definition.
+    """
+    import subprocess
+    try:
+        listing = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                                 capture_output=True, text=True, timeout=60)
+    except Exception as e:                       # not a git checkout (tarball, vendored copy)
+        pytest.skip(f"git unavailable: {e}")
+    if listing.returncode != 0:
+        pytest.skip("not a git checkout")
+    files = [f for f in listing.stdout.split("\0") if f]
+    assert len(files) > 10, f"only {len(files)} tracked files -- the scan would prove nothing"
+
+    patterns = [
+        (re.compile(r"/Users/[A-Za-z0-9_.-]+"), "an absolute home path (also unrunnable elsewhere)"),
+        (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]*apple\.com", re.I), "a work email address"),
+        (re.compile(r"\b(?:luyao[a-z_]*|lu9999|luyao-wu)\b", re.I), "a work username"),
+        (re.compile(r"\b[a-z0-9.-]*\.apple\.com\b", re.I), "an internal hostname"),
+    ]
+    problems = []
+    for rel in files:
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            continue                              # a submodule or a broken link
+        try:
+            with open(path, encoding="utf-8") as fh:
+                body = fh.read()
+        except (UnicodeDecodeError, OSError):
+            continue                              # binary asset
+        if os.path.abspath(path) == os.path.abspath(__file__):
+            # This file necessarily SPELLS the things it hunts for. Skipping it entirely would be a
+            # hole, so instead drop only the lines that build the pattern list, and scan the rest.
+            body = "\n".join(ln for ln in body.splitlines() if "re.compile(" not in ln)
+        for rx, what in patterns:
+            for hit in sorted(set(rx.findall(body)))[:3]:
+                if "@apple.com" in hit.lower() or not hit.lower().endswith("example.com"):
+                    problems.append(f"{rel}: {what} -- {hit!r}")
+    assert not problems, ("tracked files in a PUBLIC repo carry identity or machine-specific "
+                          "details:\n  " + "\n  ".join(sorted(set(problems))[:12]))
+
+
 def test_no_homoglyphs_in_printed_strings():
     """Round 1: two U+0434 CYRILLIC SMALL LETTER DE shipped as 'yd' on the instruction card of
     all 11 books. Only the em-dash is allowed to be non-ASCII in the engine sources."""
