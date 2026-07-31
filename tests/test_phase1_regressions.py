@@ -5137,7 +5137,11 @@ def test_the_density_and_coverage_gate_measures_the_green_itself():
     src = open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8").read()
     assert "UNCOVERED_MAX" in src and "uncovered > UNCOVERED_MAX" in src, \
         "the insufficient verdict must include the coverage test, not just nan_frac and density"
-    assert "cKDTree" in src, "coverage needs a nearest-return query"
+    # after the import, so removing the query while keeping `from scipy.spatial import cKDTree`
+    # cannot satisfy this -- the same import-vs-use hole that let a proxy string stand in for the
+    # scorecard's nine-hole branch elsewhere in this file
+    assert "cKDTree(" in src.split("import cKDTree", 1)[1], \
+        "coverage needs a nearest-return query, not just the import"
     assert 0 < fdh.COVER_R_M <= 2.0 and 0 < fdh.UNCOVERED_MAX <= 0.10
 
 
