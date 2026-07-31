@@ -263,6 +263,57 @@ def test_no_real_course_carries_a_key_the_template_never_mentions():
                          + "\n  ".join(sorted(set(missing))))
 
 
+def test_a_null_tee_preference_is_not_a_crash():
+    """`"secondary_tee": null` means "no preference", not "index the list with None".
+
+    dict.get returns its default only when the key is ABSENT. A course.json carrying the key with an
+    explicit null -- which is exactly how the-reserve-at-spanos-park was written -- got None, and
+    TEES.index(None) raised ValueError. The whole build died on a file that is valid JSON saying
+    nothing unusual. A null and a missing key mean the same thing here, so they behave the same.
+
+    A tee NAME that is not a column is the opposite case and must be loud: silently defaulting a
+    typo would build the entire book on the wrong tee.
+    """
+    src = open(os.path.join(ROOT, "config.py"), encoding="utf-8").read()
+    assert 'COURSE.get("featured_tee") or' in src and 'COURSE.get("secondary_tee") or' in src, \
+        "a present-but-null tee preference must fall back, not become None"
+    assert "is not one of this course's tee columns" in src, \
+        "a tee name that is not a scorecard column must be refused, not silently mis-indexed"
+
+
+@needs_corpus
+def test_no_book_quietly_headlines_a_shorter_tee():
+    """The headline yardage must be the longest tee on the card, or the course must say it is on purpose.
+
+    BACK_I picks the longer of the FEATURED/SECONDARY pair, which is not the same as the longest tee
+    on the scorecard. the-reserve-at-spanos-park left secondary_tee null, so SECONDARY fell back to
+    TEES[-1] (Green, 5246 yd), the pair became Gold-vs-Green, and Black -- the real tips at 7173 yd
+    -- sat in OTHERS as a footnote where it could never win. The book headlined Gold, 274 yd shorter,
+    and every derived number followed it: tee marker, from-tee gutter yardages, carries, elevation.
+    Black and Gold differ on 10 of that course's 18 holes, by up to 46 yd on hole 12.
+
+    A junior 15 or over plays the longest tee they are given, so a book that quietly headlines a
+    shorter one misstates the distance all day. The opt-out exists because which tee a book is FOR
+    is a real editorial choice -- a forward-tee junior edition is legitimate -- but it has to be
+    written down rather than fallen into.
+    """
+    offenders = []
+    for ref in CORPUS:
+        cfg, _rh = _engine(ref)
+        totals = {t: sum(cfg.HOLES[h][2 + i] for h in cfg.HOLES)
+                  for i, t in enumerate(cfg.TEES)}
+        if not totals:
+            continue
+        longest = max(totals, key=totals.get)
+        if longest == cfg.BACK_NAME or cfg.COURSE.get("shorter_tee_is_deliberate"):
+            continue
+        offenders.append(f"{ref}: headlines {cfg.BACK_NAME} ({totals[cfg.BACK_NAME]} yd) but "
+                         f"{longest} ({totals[longest]} yd) is longer -- the map, gutters, carries "
+                         f"and elevation are all measured from the shorter tee")
+    assert not offenders, ("a book is built on a shorter tee without saying so:\n  "
+                           + "\n  ".join(offenders))
+
+
 @needs_corpus
 def test_every_printed_caveat_matches_the_data_behind_it():
     """The governing rule of this project, checked against the shipped books rather than a fixture.

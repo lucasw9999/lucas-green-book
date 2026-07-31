@@ -55,6 +55,12 @@
     }
   ],
   "_featured_tee": "REQUIRED: the big number on each hole card. secondary_tee is the small one.",
+  "_shorter_tee_is_deliberate": [
+    "OPTIONAL: set true only if this book is meant for a tee that is NOT the longest column",
+    "on the scorecard -- e.g. a forward-tee junior edition. Without it the build prints a",
+    "loud NOTE, because every derived number (tee marker, from-tee yardages, carries,",
+    "elevation) is measured from the headline tee, so a wrong one misstates the hole all day."
+  ],
   "featured_tee": "Black",
   "secondary_tee": "White",
   "_hole_cols": [

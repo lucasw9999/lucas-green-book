@@ -73,8 +73,17 @@ BUILD_MODE = COURSE.get("build_mode", "full")   # "full" = slope maps; "yardage"
 
 # tee columns (labels) start at index 2 of each hole tuple
 TEES = COURSE["hole_cols"][2:]
-FEATURED = COURSE.get("featured_tee", TEES[0])
-SECONDARY = COURSE.get("secondary_tee", TEES[-1])
+# `or TEES[x]`, not `.get(k, TEES[x])`: dict.get returns the DEFAULT only when the key is ABSENT,
+# and a course.json may carry the key with an explicit null -- which is how the-reserve was written.
+# Then SECONDARY became None and TEES.index(None) raised ValueError, so the whole build died on a
+# file that is perfectly valid JSON meaning "no preference". A null and a missing key mean the same
+# thing here, so treat them the same.
+FEATURED = COURSE.get("featured_tee") or TEES[0]
+SECONDARY = COURSE.get("secondary_tee") or TEES[-1]
+if FEATURED not in TEES:
+    raise SystemExit(f"featured_tee {FEATURED!r} is not one of this course's tee columns {TEES}")
+if SECONDARY not in TEES:
+    raise SystemExit(f"secondary_tee {SECONDARY!r} is not one of this course's tee columns {TEES}")
 FI = 2 + TEES.index(FEATURED)                     # featured yardage index
 SI = 2 + TEES.index(SECONDARY)                    # secondary yardage index
 OTHERS = [(t, 2 + i) for i, t in enumerate(TEES) if t not in (FEATURED, SECONDARY)]
@@ -91,3 +100,27 @@ TEE_TABLE = COURSE.get("tees", [])
 _LONGEST_OF_PAIR_IS_SECONDARY = (sum(HOLES[h][SI] for h in HOLES) >= sum(HOLES[h][FI] for h in HOLES))
 BACK_I, BACK_NAME = ((SI, SECONDARY) if _LONGEST_OF_PAIR_IS_SECONDARY else (FI, FEATURED))
 FRONT_I, FRONT_NAME = ((FI, FEATURED) if _LONGEST_OF_PAIR_IS_SECONDARY else (SI, SECONDARY))
+
+# ...and BACK_I is only the longest of the FEATURED/SECONDARY pair, which is not the same thing as
+# the longest tee on the scorecard. the-reserve-at-spanos-park left secondary_tee unset, so SECONDARY
+# fell back to TEES[-1] (Green, 5246 yd) and the pair became Gold-vs-Green: Black, the real tips at
+# 7173 yd, sat in OTHERS as a footnote and could never win. The book headlined Gold, 274 yd shorter,
+# and every derived number -- tee marker, from-tee gutters, carries, elevation -- was measured from
+# it, on a course whose Black and Gold differ on 10 of 18 holes by up to 46 yd.
+#
+# A junior 15 or over plays the longest tee they are given, so a book that quietly headlines a
+# shorter one is telling them the wrong distance all day. Warn rather than refuse: which tee a book
+# is FOR is a real editorial choice (a 9-hole junior edition on a forward tee is legitimate), so this
+# must not block a deliberate decision -- only make an accidental one impossible to miss.
+_ALL_TOTALS = {t: sum(HOLES[h][2 + i] for h in HOLES) for i, t in enumerate(TEES)} if HOLES else {}
+_LONGEST_TEE = max(_ALL_TOTALS, key=_ALL_TOTALS.get) if _ALL_TOTALS else None
+SHORTER_TEE_IS_DELIBERATE = bool(COURSE.get("shorter_tee_is_deliberate"))
+if (_LONGEST_TEE and _LONGEST_TEE != BACK_NAME and not SHORTER_TEE_IS_DELIBERATE
+        and not os.environ.get("QUIET_TEE_CHECK")):
+    import sys as _sys
+    print(f"  NOTE: this book headlines {BACK_NAME} ({_ALL_TOTALS[BACK_NAME]} yd), but "
+          f"{_LONGEST_TEE} ({_ALL_TOTALS[_LONGEST_TEE]} yd) is longer.\n"
+          f"        Every derived number -- tee marker, from-tee yardages, carries, elevation --\n"
+          f"        is measured from {BACK_NAME}. Set featured_tee/secondary_tee to build on\n"
+          f"        {_LONGEST_TEE}, or add \"shorter_tee_is_deliberate\": true to silence this.",
+          file=_sys.stderr)
