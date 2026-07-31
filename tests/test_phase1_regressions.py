@@ -652,6 +652,70 @@ def test_carries_are_measured_from_the_back_tee():
             f"merion 1 carries look shifted: {i1['carries']} (expected a near edge around 172)"
 
 
+@needs_corpus
+def test_hole_line_choice_does_not_depend_on_element_order():
+    """Which OSM way IS a given hole must not depend on the order Overpass serialised the response.
+
+    Every reader chose `max(candidates, key=len(geometry))` -- most vertices. At Castlewood two 18-hole
+    courses share one OSM area, so every Valley ref has a Hill way with the same ref, and Valley hole 1's
+    two candidates BOTH have 3 vertices, 513 m apart. Shuffling the element list flipped the answer
+    between them, so a re-fetch could silently put the Hill course's first hole -- its map, its green, its
+    slope, its yardage ticks -- on a Valley card. Length is no tie-breaker either: the way that must be
+    REJECTED (425.8 yd) matches Valley's 429 card better than the right one (444.3 yd) does.
+
+    Seven call sites made this choice separately. They must agree: a green surface built for one way and a
+    map drawn from another is a card that is internally wrong with no visible symptom."""
+    import random
+    import geo
+    for slug in CORPUS:
+        p_geom = os.path.join(ROOT, "courses", slug, "osm_geom.json")
+        if not os.path.isfile(p_geom):
+            continue
+        els = json.load(open(p_geom))["elements"]
+        loc = json.load(open(os.path.join(ROOT, "courses", slug, "course.json"))).get("location") or {}
+        assert loc.get("lat") is not None, f"{slug}: course.json has no location to disambiguate refs"
+        base = {hn: w["id"] for hn, w in geo.hole_lines(els, loc["lat"], loc["lon"]).items()}
+        for seed in (1, 2, 3):
+            shuf = list(els)
+            random.Random(seed).shuffle(shuf)
+            got = {hn: w["id"] for hn, w in geo.hole_lines(shuf, loc["lat"], loc["lon"]).items()}
+            assert got == base, f"{slug}: hole choice changed with element order (seed {seed})"
+
+    # the ambiguous case, pinned: Valley must keep ITS holes, not the Hill course's
+    if "castlewood-valley-course" in CORPUS:
+        els = json.load(open(os.path.join(ROOT, "courses", "castlewood-valley-course",
+                                          "osm_geom.json")))["elements"]
+        loc = json.load(open(os.path.join(ROOT, "courses", "castlewood-valley-course",
+                                         "course.json")))["location"]
+        picked = geo.hole_lines(els, loc["lat"], loc["lon"])
+        assert picked[1]["id"] == 690943804, f"Valley hole 1 should be way 690943804, got {picked[1]['id']}"
+        assert picked[9]["id"] == 690943812, f"Valley hole 9 should be way 690943812, got {picked[9]['id']}"
+        cands = sum(1 for e in els if (e.get("tags") or {}).get("ref") == "1"
+                    and (e.get("tags") or {}).get("golf") == "hole" and e.get("geometry"))
+        assert cands > 1, "this pin assumes hole 1 is ambiguous; it no longer is"
+
+    # and with NO centre, an ambiguous ref must REFUSE rather than pick by order
+    two = [{"id": 1, "tags": {"golf": "hole", "ref": "1"},
+            "geometry": [{"lat": 37.0, "lon": -121.0}, {"lat": 37.001, "lon": -121.0}]},
+           {"id": 2, "tags": {"golf": "hole", "ref": "1"},
+            "geometry": [{"lat": 38.0, "lon": -122.0}, {"lat": 38.001, "lon": -122.0}]}]
+    with pytest.raises(SystemExit):
+        geo.hole_lines(two, None, None)
+    one = geo.hole_lines(two[:1], None, None)          # unambiguous: no centre needed
+    assert one[1]["id"] == 1
+
+    # EXACTLY equidistant candidates: the distance cannot decide, so the id must, or the answer is once
+    # again whatever order the list happened to be in. No corpus hole ties to the millimetre, so this is
+    # the only thing exercising that tie-break.
+    tie = [{"id": 99, "tags": {"golf": "hole", "ref": "4"},
+            "geometry": [{"lat": 37.01, "lon": -121.0}, {"lat": 37.01, "lon": -121.0}]},
+           {"id": 11, "tags": {"golf": "hole", "ref": "4"},
+            "geometry": [{"lat": 36.99, "lon": -121.0}, {"lat": 36.99, "lon": -121.0}]}]
+    chosen = {geo.hole_lines(list(reversed(tie)) if flip else tie, 37.0, -121.0)[4]["id"]
+              for flip in (False, True)}
+    assert chosen == {11}, f"equidistant candidates resolved by order, not by id: {chosen}"
+
+
 def test_both_editions_share_one_playline_definition():
     """The pocket and enlarged cards must build the tee-shot row from the SAME code.
 
@@ -813,6 +877,9 @@ def test_from_tee_labels_are_bounded_and_ordered():
         geom = json.load(open(os.path.join(ROOT, "courses", slug, "osm_geom.json")))["elements"]
         greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
         holes = [e for e in geom if (e.get("tags") or {}).get("golf") == "hole" and e.get("geometry")]
+        import geo as _geo
+        _loc = json.load(open(os.path.join(ROOT, "courses", slug, "course.json"))).get("location") or {}
+        hole_lines = _geo.hole_lines(geom, _loc.get("lat"), _loc.get("lon"))
         _cj = json.load(open(os.path.join(ROOT, "courses", slug, "osm_course.json")))["elements"]
         course_tees = [e for e in _cj
                        if (e.get("tags") or {}).get("golf") == "tee" and e.get("geometry")]
@@ -851,10 +918,9 @@ def test_from_tee_labels_are_bounded_and_ordered():
             rmap = dict(re.findall(r'<text x="91" y="([0-9.]+)"[^>]*>(\d+)</text>', svg))
             if not rmap:
                 continue
-            cand = [h for h in holes if (h.get("tags") or {}).get("ref") == str(hn)]
-            if not cand:
+            if hn not in hole_lines:
                 continue
-            line = max(cand, key=lambda h: len(h["geometry"]))["geometry"]
+            line = hole_lines[hn]["geometry"]
             g, gend, tend = render_hole.match_green(line, greens)
             gla = sum(p["lat"] for p in g["geometry"]) / len(g["geometry"])
             glo = sum(p["lon"] for p in g["geometry"]) / len(g["geometry"])
@@ -987,11 +1053,13 @@ def test_to_green_label_is_a_true_straight_line_distance():
         geom = json.load(open(os.path.join(ROOT, "courses", slug, "osm_geom.json")))["elements"]
         greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
         holes = [e for e in geom if (e.get("tags") or {}).get("golf") == "hole" and e.get("geometry")]
+        import geo as _geo
+        _loc = json.load(open(os.path.join(ROOT, "courses", slug, "course.json"))).get("location") or {}
+        hole_lines = _geo.hole_lines(geom, _loc.get("lat"), _loc.get("lon"))
         for hn in config.HOLE_NUMS:
-            cand = [h for h in holes if (h.get("tags") or {}).get("ref") == str(hn)]
-            if not cand:
+            if hn not in hole_lines:
                 continue
-            line = max(cand, key=lambda h: len(h["geometry"]))["geometry"]
+            line = hole_lines[hn]["geometry"]
             g, _gend, _tend = render_hole.match_green(line, greens)
             gla = sum(p["lat"] for p in g["geometry"]) / len(g["geometry"])
             glo = sum(p["lon"] for p in g["geometry"]) / len(g["geometry"])

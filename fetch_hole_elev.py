@@ -214,15 +214,8 @@ def main():
               f"to measure against.")
         return 0
     els = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
-    holes = {}
-    for e in els:
-        t = e.get("tags") or {}
-        if t.get("golf") != "hole" or not e.get("geometry"):
-            continue
-        ref = t.get("ref")
-        if ref and ref.isdigit() and len(e["geometry"]) > len(
-                holes.get(int(ref), {}).get("geometry", [])):
-            holes[int(ref)] = e            # longest centreline per ref, as every other reader does
+    _loc = config.COURSE.get("location") or {}
+    holes = geo.hole_lines(els, _loc.get("lat"), _loc.get("lon"))   # one shared, deterministic choice
     if not holes:
         print("no hole centrelines in osm_geom.json"); return 1
 

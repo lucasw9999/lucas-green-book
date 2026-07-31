@@ -172,8 +172,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     course, geom = load()
     greens=[e for e in geom if e.get('tags',{}).get('golf')=='green' and e.get('geometry')]
     holes =[e for e in geom if e.get('tags',{}).get('golf')=='hole'  and e.get('geometry')]
-    hole=max((h for h in holes if h['tags'].get('ref')==str(hnum)),
-             key=lambda h: len(h.get('geometry') or []))   # longest centerline if dup refs
+    _loc = config.COURSE.get('location') or {}
+    hole = geo.hole_lines(geom, _loc.get('lat'), _loc.get('lon'))[hnum]   # see geo.hole_lines
     line=hole['geometry']
     green, green_end, tee_end = match_green(line, greens)
 

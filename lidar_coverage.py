@@ -32,6 +32,10 @@ the file, not the nominal grid cell -- that distinction is the whole point above
 import glob
 import json
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import geo  # noqa: E402
 
 
 def tile_footprints(laz_dir):
@@ -129,19 +133,15 @@ def uncovered_holes(course_dir, boxes=None, els=None):
     """
     if els is None:
         els = _elements(course_dir)
-    # Keep only the LONGEST centreline per hole ref, exactly as fetch_dem.py, fetch_dem_hd.py,
-    # render_hole.py and fetch_trees.py all do -- OSM carries duplicate and fragment ways where a
-    # neighbouring course pokes into the bbox. This was the fifth hole reader and the only one
-    # omitting it, so a fragment from next door could be reported as an uncovered hole and a ref
-    # could appear twice in the output.
-    best = {}
-    for e in els:
-        if not (e.get("geometry") and (e.get("tags") or {}).get("golf") == "hole"):
-            continue
-        ref = (e.get("tags") or {}).get("ref")
-        if ref and ref.isdigit() and len(e["geometry"]) > len(best.get(ref, {}).get("geometry", [])):
-            best[ref] = e
-    holes = list(best.values())
+    # ONE centreline per hole ref, via the shared chooser -- OSM carries duplicate ways where a
+    # neighbouring course pokes into the bbox, and at Castlewood two 18-hole courses share the area, so
+    # every ref has a twin. This was the fifth hole reader and the only one omitting the dedupe, so a
+    # way from next door could be reported as an uncovered hole and a ref could appear twice.
+    # The course centre comes from course.json, read here rather than from a module global because this
+    # function is deliberately course-agnostic (it takes course_dir).
+    _cjp = os.path.join(course_dir, "course.json")
+    _loc = (json.load(open(_cjp)).get("location") or {}) if os.path.isfile(_cjp) else {}
+    holes = list(geo.hole_lines(els, _loc.get("lat"), _loc.get("lon")).values())
     if boxes is None:
         boxes, _why = _footprint_boxes(course_dir)
     if not boxes or not holes:

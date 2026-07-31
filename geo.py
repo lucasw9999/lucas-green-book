@@ -161,3 +161,55 @@ def match_green(hole_line, greens, max_m=GREEN_BIND_MAX_M, label=""):
             f"  extract, and binding anyway would print a confident read of the WRONG putting surface.\n"
             f"  Re-run fetch_osm.py, or add the green (tagged _digitized) before building.")
     return g, gend, tend
+
+
+def hole_lines(elements, course_lat, course_lon):
+    """{hole_number: the ONE way that is this course's hole}, chosen DETERMINISTICALLY.
+
+    Every reader used to do this itself as `max(candidates, key=len(geometry))` -- most vertices wins.
+    Two faults in that, and they compound:
+
+      * It is not deterministic. When two candidates tie on vertex count, max() returns whichever came
+        first, i.e. whatever order Overpass happened to serialise. Verified: shuffling castlewood-valley
+        hole 1's candidates flips the answer between two different ways.
+      * At Castlewood, two 18-hole courses share one OSM area, so EVERY Valley ref has a Hill way with
+        the same ref. Valley hole 1's two candidates both have 3 vertices, 513 m apart. So a re-fetch
+        could silently put the HILL course's first hole -- its map, its green, its slope, its yardage
+        ticks -- on a Valley card, with nothing to say so. Length is no help either: the way it must
+        REJECT (425.8 yd) matches Valley's 429 card better than the right one (444.3 yd) does.
+
+    Nearest the course's own centre wins, which is the question actually being asked, and exact ties
+    break on the OSM id so the result can never depend on element order. Seven call sites did this
+    separately; they must agree, because a green surface built for one way and a map drawn from another
+    is a card that is internally wrong with no symptom.
+    """
+    by_ref = {}
+    for e in elements:
+        t = e.get("tags") or {}
+        if t.get("golf") != "hole" or not e.get("geometry"):
+            continue
+        ref = t.get("ref")
+        if not (ref and str(ref).isdigit()):
+            continue
+        by_ref.setdefault(int(ref), []).append(e)
+
+    # The centre is needed only to BREAK ambiguity, so it is demanded only when there is ambiguity to
+    # break. That keeps callers with no course.json (the synthetic fixtures) working, while a real
+    # two-course club without a recorded centre fails loudly instead of picking by element order.
+    if course_lat is None or course_lon is None:
+        ambiguous = sorted(hn for hn, ws in by_ref.items() if len(ws) > 1)
+        if ambiguous:
+            raise SystemExit(
+                f"hole ref(s) {ambiguous} have more than one OSM way, and no course centre was given\n"
+                f"  to tell them apart (course.json \"location\"). Choosing by element order is how the\n"
+                f"  WRONG course's hole ends up on a card at a club with two courses.")
+        return {hn: ws[0] for hn, ws in by_ref.items()}
+
+    def score(w):
+        g = w["geometry"]
+        la = sum(p["lat"] for p in g) / len(g)
+        lo = sum(p["lon"] for p in g) / len(g)
+        d = math.hypot((lo - course_lon) * mlon(la), (la - course_lat) * R_LAT)
+        return (round(d, 3), w.get("id") or 0)
+
+    return {hn: min(ws, key=score) for hn, ws in by_ref.items()}

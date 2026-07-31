@@ -114,13 +114,8 @@ def check_course(slug):
     rec = json.load(open(p))["holes"]
     els = json.load(open(f"{config.COURSE_DIR}/osm_geom.json"))["elements"]
     greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
-    holes = {}
-    for e in els:
-        t = e.get("tags") or {}
-        if t.get("golf") == "hole" and e.get("geometry"):
-            r = t.get("ref")
-            if r and r.isdigit() and len(e["geometry"]) > len(holes.get(int(r), {}).get("geometry", [])):
-                holes[int(r)] = e
+    _loc = config.COURSE.get("location") or {}
+    holes = geo.hole_lines(els, _loc.get("lat"), _loc.get("lon"))
 
     print(f"{slug}  (independent check against the 3DEP seamless DEM, tolerance {TOL_FT:g} ft)")
     diffs, unreachable = [], 0
