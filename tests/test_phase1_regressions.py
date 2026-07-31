@@ -789,6 +789,60 @@ def test_nothing_is_drawn_off_the_putting_surface():
 
 
 @needs_corpus
+def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
+    """The legend prints three swatches and the number 5%. Both must come from the ramp, not beside it.
+
+    A reader matches a patch of green against the swatch to read steepness, so the swatch has to BE the
+    ramp's colour. If the ramp were retuned -- a different red, a midpoint moved -- the legend would go
+    on showing the old squares and every colour read would be off by however much it drifted, silently,
+    on every card. Nothing connected the two: the legend hardcodes three rgb() literals in generate.py
+    and the ramp lives in render_green.heat_color.
+
+    So the swatches are compared against heat_color(0), heat_color(2.5) and heat_color(5.0) -- the ramp
+    evaluated, not copied. All 11 books match exactly today.
+
+    The "(>=5%)" in the legend text is checked too, because it is the one number in the sentence: the
+    ramp saturates at 5% by construction (t = slope/5, clamped), so 5% and 50% draw the identical red.
+    That is what makes the claim true, and a change to the divisor would falsify the printed number
+    while every colour still looked plausible.
+
+    NOT asserted, having measured it: that "longer = steeper" holds for every arrow. Length is
+    2.2 + 3.4*min(slope/smax, 1) against a 92nd-percentile smax, so the steepest arrows share one
+    length -- 3.2% of 12,317 arrows sit at their green's cap, median 2.8% per green, worst 8.5%. The cap
+    is right rather than wrong: without it a single outlier pixel would shrink every other arrow to
+    nothing. The legend is a fair simplification of the ordinary case, and the card carries slope
+    numbers and colour as well, so the tail is not unreadable -- just not distinguishable by length.
+    """
+    cfg, _rh = _engine(a_course())
+    import render_green
+    want = [render_green.heat_color(0.0), render_green.heat_color(2.5), render_green.heat_color(5.0)]
+    assert len(set(want)) == 3, f"the ramp no longer has three distinct stops: {want}"
+
+    checked = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        g = re.search(r'<div class="legrow"><svg width="28" height="14">((?:<rect[^>]*/>){3})', html)
+        if not g:
+            continue                      # a yardage-mode book prints no colour legend
+        checked += 1
+        got = [c.replace(" ", "") for c in re.findall(r'fill="(rgb\([\d, ]+\))"', g.group(1))]
+        assert got == want, (
+            f"{ref}/{os.path.basename(p)}: the legend shows {got} but the map's ramp is {want} -- a "
+            f"reader matching a patch to a swatch would misread the slope")
+        # the sentence's own number must be where the ramp actually saturates
+        assert re.search(r"red \(&ge;5%\)|red \(\u22655%\)", html), (
+            f"{ref}/{os.path.basename(p)}: the colour legend no longer states the 5% saturation point")
+    assert checked >= 10, f"only {checked} colour legends checked -- build the books first"
+    # and the ramp really does saturate at 5, or the printed number is wrong
+    assert render_green.heat_color(5.0) == render_green.heat_color(50.0), \
+        "the legend says red at >=5% but the ramp keeps changing above 5"
+
+
+@needs_corpus
 def test_the_contour_interval_is_the_one_the_legend_states():
     """The card says "Contours join equal height (15 cm each)". That is a measurement, so verify it.
 
