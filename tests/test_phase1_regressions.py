@@ -193,6 +193,76 @@ def a_course():
 # ---------------------------------------------------------------------------
 # Pure-function / source tests -- always run
 # ---------------------------------------------------------------------------
+def test_the_course_template_documents_every_key_the_engine_reads():
+    """examples/course.json is the ONLY course data this repo ships, and a stranger's whole map of
+
+    the format. courses/ is gitignored, so nobody outside can look at a real one to see what a field
+    should contain -- the template is it. A key the engine reads but the template never mentions is
+    therefore invisible: you find out it existed when a build behaves oddly, or never.
+
+    It had drifted. `dem_source` is carried by 11 of the 12 real courses and read in 8 places, and
+    the template did not mention it. `greens_outdated_basis` is REQUIRED whenever
+    greens_possibly_outdated is set -- a test enforces exactly that -- and the template documented
+    the trigger without the obligation, so following it landed you on a failing suite.
+
+    The template documents a key either by carrying it or by describing it under a leading
+    underscore, which is its own convention for "optional, here is what it means". Both count.
+    """
+    p = os.path.join(ROOT, "examples", "course.json")
+    if not os.path.exists(p):
+        pytest.skip("no examples/course.json")
+    with open(p, encoding="utf-8") as fh:
+        ex = json.load(fh)
+    known = {k.lstrip("_") for k in ex}
+
+    # what the engine actually asks a course.json for
+    reads = set()
+    for f in (sorted(glob.glob(os.path.join(ROOT, "*.py")))
+              + sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))):
+        with open(f, encoding="utf-8") as fh:
+            src = fh.read()
+        reads |= set(re.findall(r'COURSE\.get\(["\'](\w+)["\']', src))
+        reads |= set(re.findall(r'COURSE\[["\'](\w+)["\']\]', src))
+    # keys that exist only to be written by a fetch stage, not authored by a person
+    DERIVED = {"lidar", "lidar_project"}
+    undocumented = sorted(k for k in reads - known - DERIVED)
+    assert not undocumented, (
+        "the engine reads these course.json keys but examples/course.json neither carries nor "
+        "documents them, so nobody outside this machine can learn they exist:\n  "
+        + "\n  ".join(undocumented))
+
+
+
+@needs_corpus
+def test_no_real_course_carries_a_key_the_template_never_mentions():
+    """The other direction: a field in use locally must be described in the shipped template.
+
+    This is how `dem_source` went missing -- 11 of 12 courses carry it, the engine reads it in 8
+    places, and a stranger had no way to learn it exists. Separate from the engine-side check
+    because it reads the gitignored corpus and must skip without it, while the engine-side half has
+    to run on a fresh clone, which is precisely where it matters.
+    """
+    p = os.path.join(ROOT, "examples", "course.json")
+    if not os.path.exists(p):
+        pytest.skip("no examples/course.json")
+    with open(p, encoding="utf-8") as fh:
+        known = {k.lstrip("_") for k in json.load(fh)}
+    DERIVED = {"lidar", "lidar_project"}     # written by a fetch stage, never authored by hand
+    missing, checked = [], 0
+    for slug in CORPUS:
+        cj = os.path.join(ROOT, "courses", slug, "course.json")
+        if not os.path.exists(cj):
+            continue
+        checked += 1
+        with open(cj, encoding="utf-8") as fh:
+            for k in json.load(fh):
+                if k.lstrip("_") not in known and k.lstrip("_") not in DERIVED:
+                    missing.append(f"{k} (in {slug})")
+    assert checked >= 5, f"only {checked} course.json files examined"
+    assert not missing, ("real courses carry keys the template never mentions:\n  "
+                         + "\n  ".join(sorted(set(missing))))
+
+
 def test_a_fresh_clone_gets_a_clean_suite():
     """The README promises `pytest tests/` "skip cleanly with no course data". Enforce that promise.
 
