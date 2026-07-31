@@ -739,6 +739,11 @@ def coach_cover_panel(coach_name):
 def coach_map_card(hole):
     row = HOLES[hole]; par, hcp = row[0], row[1]
     lsvg, i = LAYOUTS[hole]
+    # The enlarged edition must carry the SAME tee-shot facts as the pocket card. It did not, while
+    # coach_about_card explained both -- a legend describing content that is not on the cards. This is
+    # the drift the two editions keep having: honesty rules, then the footer, and now these.
+    extras = " &middot; ".join(x for x in (elev_phrase(hole), carry_phrase(i)) if x)
+    playline = f'<div class="playline">{extras}</div>' if extras else ''
     return f'''<div class="panel hole">
   <div class="etag">ENLARGED</div>
   <div class="hhead">
@@ -749,6 +754,7 @@ def coach_map_card(hole):
   </div>
   <div class="cmap"><div class="minilab">HOLE &middot; tee &rarr; green</div>{lsvg}</div>
   <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water</span><span>course layout</span></div>
+  {playline}
 </div>'''
 
 def coach_green_card(hole):
