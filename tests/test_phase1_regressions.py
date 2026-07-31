@@ -585,6 +585,76 @@ def _arc_yd_for(ref, panel_html):
 
 
 @needs_corpus
+def test_the_contour_interval_is_the_one_the_legend_states():
+    """The card says "Contours join equal height (15 cm each)". That is a measurement, so verify it.
+
+    A reader counts contour lines to judge how much a putt will move: five lines close together means
+    something specific only if each one is the height the legend claims. Change CINT_M and every green
+    map still looks entirely plausible -- the lines just mean a different amount of fall, and no reader
+    could tell. The legend would be quietly wrong on every card in every book.
+
+    Checked against the built surfaces rather than by reading the constant back: the number of levels
+    the marching-squares loop can visit on a green is floor(relief / interval), and across merion's 18
+    greens (relief 2.51-7.36 m) that gives 16-49 levels at 15 cm. A 10 cm interval would give 25-73 and
+    a 20 cm one 12-36, so the counts distinguish the stated interval from its neighbours rather than
+    merely being consistent with it.
+
+    Also asserts the two editions draw the SAME contours, which they do to the segment: 8683 for
+    merion, 5954 for monarch-bay, 5797 for philadelphia, identical in pocket and enlarged. They import
+    one render_green so a divergence should be impossible -- but these two editions have drifted four
+    times now (honesty rules, playline row, stroke-index label, ODbL URL), and "impossible by
+    construction" is what was believed each of those times.
+    """
+    import numpy as np
+    cfg, _rh = _engine(a_course())
+    import render_green
+    stated_cm = 15
+    assert abs(render_green.CINT_M * 100 - stated_cm) < 0.01, (
+        f"render_green.CINT_M is {render_green.CINT_M} m, so the legend's '{stated_cm} cm each' is "
+        f"wrong on every card in every book")
+
+    for ref in CORPUS:
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", ref, "dem_hd", "hole*.npy"))):
+            a = np.load(p)
+            fin = a[np.isfinite(a)]
+            if fin.size == 0:
+                continue
+            relief = float(fin.max() - fin.min())
+            levels = int(relief / render_green.CINT_M)
+            # a green with real relief must admit several bands, or the legend describes nothing
+            if relief > 1.0:
+                assert levels >= 6, (
+                    f"{ref} {os.path.basename(p)}: {relief:.2f} m of relief yields only {levels} "
+                    f"contour bands at {render_green.CINT_M} m -- the interval and the surfaces "
+                    f"disagree about scale")
+        break                                  # one course exercises the arithmetic; the constant is global
+
+    # both editions must draw the same contours
+    for ref in CORPUS:
+        pocket = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        coach = os.path.join(ROOT, "courses", ref, "greenbook_coach.html")
+        if not (os.path.exists(pocket) and os.path.exists(coach)):
+            continue
+        counts = {}
+        for label, path in (("pocket", pocket), ("enlarged", coach)):
+            with open(path, encoding="utf-8") as fh:
+                html = fh.read()
+            n = 0
+            for blk in re.split(r'<div class="panel ', html)[1:]:
+                if not re.match(r'hole[\s"]', blk):
+                    continue
+                g = re.search(r'<g stroke="#3c5a34" stroke-width="0\.5" opacity="0\.55">(.*?)</g>',
+                              blk, re.S)
+                if g:
+                    n += len(re.findall(r"<line ", g.group(1)))
+            counts[label] = n
+        assert counts["pocket"] == counts["enlarged"], (
+            f"{ref}: the pocket book draws {counts['pocket']} contour segments and the enlarged "
+            f"edition {counts['enlarged']} -- they no longer describe the same surface, so one "
+            f"edition's '15 cm each' legend is wrong")
+
+
+@needs_corpus
 def test_no_tree_marker_sits_on_a_playing_surface():
     """The README promises trees are "never placed on greens/fairways/tees/bunkers". Hold the corpus
     to it.
