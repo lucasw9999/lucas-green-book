@@ -584,6 +584,59 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+@needs_corpus
+def test_the_hand_written_verdict_matches_the_machine_verdict():
+    """legal/00 names, by hand, every book that is safe to hand out. That list has drifted twice.
+
+    The document says so itself: an earlier revision listed Poppy Ridge among the distributed books
+    and then called them "safe to hand out", contradicting the generated provenance table; another
+    said "ELEVEN" while listing six courses. It closes by telling the reader to prefer the generated
+    table if the two disagree -- which is the right instinct and an admission that they can.
+
+    They should not be able to. distribution.py is the single rule, gen_provenance.py renders it, and
+    the summary is prose over the top. So this asserts the prose against the rule: every course the
+    rule calls Distributed must be named in the verdict list, and any course it calls Personal must
+    NOT be. Getting that wrong in the direction that happened before -- a personal-use book listed as
+    safe to hand out -- is the one error in this repo with a real-world cost outside the code.
+
+    Matched on a distinctive token from each course name rather than the full string, because the
+    summary legitimately abbreviates ("Merion (East)" for "Merion Golf Club — East Course"). Scoped to
+    the verdict LIST only: Poppy Ridge is discussed at length elsewhere in the same document, which is
+    exactly where it should be.
+    """
+    p = os.path.join(ROOT, "legal", "00_SUMMARY_AND_VERDICT.md")
+    if not os.path.exists(p):
+        pytest.skip("no legal/00 summary")
+    with open(p, encoding="utf-8") as fh:
+        doc = fh.read()
+    m = re.search(r"distributed books are CLEAN\s*\n(.*?)\n\s*\n", doc, re.S)
+    assert m, "legal/00 no longer has a parsable list of distributed books under its verdict heading"
+    listed = " ".join(m.group(1).split())
+
+    import distribution
+    wrong = []
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            course = json.load(fh)
+        ok, _label, why = distribution.distribution_status(course)
+        name = course.get("name", slug)
+        # a token long enough to be distinctive, skipping generic words
+        GENERIC = {"golf", "club", "course", "country", "the", "at", "preserve", "links", "and"}
+        tokens = [w.strip("—-·,()") for w in name.split()]
+        key = next((w for w in tokens if len(w) > 3 and w.lower() not in GENERIC), tokens[0])
+        present = key.lower() in listed.lower()
+        if ok and not present:
+            wrong.append(f"{name} is Distributed but is not named in the verdict list")
+        if not ok and present:
+            wrong.append(f"{name} is PERSONAL ({why[:60]}...) but the verdict list names it among the "
+                         f"books that are safe to hand out")
+    assert not wrong, ("legal/00's hand-written verdict contradicts distribution.py, the rule that "
+                       "actually decides:\n  " + "\n  ".join(wrong))
+
+
 def test_only_the_conforming_edition_claims_to_conform():
     """One edition is built to Rule 4.3 and one deliberately is not. Neither may be mistaken for the
     other.
