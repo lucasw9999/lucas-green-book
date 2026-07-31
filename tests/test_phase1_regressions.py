@@ -653,6 +653,53 @@ def test_carries_are_measured_from_the_back_tee():
 
 
 @needs_corpus
+def test_built_books_still_match_the_engine_and_the_data():
+    """Every tee-shot row in every built book must equal what the engine produces from today's data.
+
+    Nothing else checks this. `export_pdf --check` compares the PDF with the HTML, `gen_provenance` and
+    `gen_disclaimers --check` compare their docs with the HTML -- every gate compares artifacts against
+    OTHER artifacts, so a book built before a data or engine change stays "consistent" forever.
+    Demonstrated: setting one recorded change_ft to 99.9 ft left all four checks and the whole suite
+    green. It is also how the enlarged edition's legal text sat stale in legal/05 unnoticed.
+
+    Re-rendering is cheap because the surfaces are already on disk, and it catches stale data and a
+    stale engine with the same assertion."""
+    stale, compared = [], 0
+    for slug in CORPUS:
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        if not os.path.isfile(book):
+            continue
+        for m in ("config", "render_hole", "render_green", "generate"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = slug
+        import config
+        import generate
+        import render_hole
+        html = open(book, encoding="utf-8").read()
+        for card in re.split(r'(?=<div class="panel hole)', html):
+            mh = re.search(r'<div class="hnum">(\d+)</div>', card)
+            if not mh:
+                continue
+            hn = int(mh.group(1))
+            if hn not in config.HOLES:
+                continue
+            mp = re.search(r'<div class="playline">(.*?)</div>', card, re.S)
+            printed = (mp.group(1).strip() if mp else "")
+            try:
+                _svg, info = render_hole.render_hole(hn, config.HOLES)
+            except Exception:
+                continue                      # yardage-mode course: no hole map, no playline
+            fresh = re.sub(r'</?div[^>]*>', '', generate.playline_html(hn, info)).strip()
+            compared += 1
+            if printed != fresh:
+                stale.append(f"{slug} h{hn}: book has {printed!r}, engine+data say {fresh!r}")
+    # A sweep that examines nothing passes vacuously, which is the failure mode this file keeps hitting.
+    assert compared >= 150, f"only {compared} playlines compared; expected the whole corpus"
+    assert not stale, ("built books are stale against the engine or the data:\n  "
+                       + "\n  ".join(stale[:8]) + (" ..." if len(stale) > 8 else ""))
+
+
+@needs_corpus
 def test_hole_line_choice_does_not_depend_on_element_order():
     """Which OSM way IS a given hole must not depend on the order Overpass serialised the response.
 
@@ -4049,16 +4096,31 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
             has_laz = os.path.isdir(os.path.join(src, "laz"))
             if has_laz:
                 os.symlink(os.path.join(src, "laz"), os.path.join(dst, "laz"))
-            stages = (["fetch_osm.py", "fetch_dem_hd.py", "fetch_dem.py", "fetch_trees.py",
-                       "generate.py"] if has_laz else
-                      ["fetch_osm.py", "fetch_dem.py", "generate.py"])
+            # (script, extra args, extra env). fetch_hole_elev.py MUST be here: it was added after
+            # this test was written, so the cold book came out with no elevation lines at all while the
+            # committed one had 12 -- the byte-for-byte claim was quietly false for every course with a
+            # point cloud. A new stage that writes into COURSE_DIR has to join this list or the
+            # reproducibility guarantee silently stops covering the book it produces.
+            stages = ([("fetch_osm.py", [], {}), ("fetch_dem_hd.py", [], {}),
+                       ("fetch_dem.py", [], {}), ("fetch_trees.py", [], {}),
+                       ("fetch_hole_elev.py", ["--write"], {}), ("generate.py", [], {})]
+                      if has_laz else
+                      [("fetch_osm.py", [], {}), ("fetch_dem.py", [], {}), ("generate.py", [], {})])
+            # ...and the ENLARGED edition, for the courses that ship one. It is gated behind COACH=1, so
+            # no normal build touches it and it sat outside every reproducibility guarantee the project
+            # has -- which is how its legal text went stale in legal/05 unnoticed.
+            has_coach = os.path.exists(os.path.join(src, "greenbook_coach.html"))
+            if has_coach:
+                stages.append(("generate.py", [], {"COACH": "1"}))
             env = {**os.environ, "COURSE": cold}
             failed = None
-            for stage in stages:
-                r = subprocess.run([sys.executable, os.path.join(ROOT, stage)], cwd=ROOT,
-                                   env=env, capture_output=True, text=True)
+            for stage, args, extra in stages:
+                r = subprocess.run([sys.executable, os.path.join(ROOT, stage)] + args, cwd=ROOT,
+                                   env={**env, **extra}, capture_output=True, text=True)
                 if r.returncode != 0:
-                    failed = (stage, (r.stdout + r.stderr)[-900:])
+                    failed = (stage + (" " + " ".join(args) if args else "")
+                              + (" COACH=1" if extra.get("COACH") else ""),
+                              (r.stdout + r.stderr)[-900:])
                     break
             if digitized:
                 if failed is None:
@@ -4073,18 +4135,35 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
             if failed:
                 problems.append(f"{ref}: {failed[0]} failed: {failed[1][-250:]}")
                 continue
-            with open(os.path.join(src, "greenbook.html"), encoding="utf-8") as f:
-                a = f.read()
-            with open(os.path.join(dst, "greenbook.html"), encoding="utf-8") as f:
-                b = f.read()
-            if a == b:
-                reproduced.append((ref, len(a)))
-            else:
-                w = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
-                problems.append(f"{ref}: differs ({len(a)} vs {len(b)} bytes), first at byte {w}: "
-                                f"a=...{a[max(0, w - 60):w + 30]!r} b=...{b[max(0, w - 60):w + 30]!r}")
+            books = ["greenbook.html"] + (["greenbook_coach.html"] if has_coach else [])
+            for book in books:
+                with open(os.path.join(src, book), encoding="utf-8") as f:
+                    a = f.read()
+                cold_book = os.path.join(dst, book)
+                if not os.path.exists(cold_book):
+                    problems.append(f"{ref}: {book} was not produced by the cold build")
+                    continue
+                with open(cold_book, encoding="utf-8") as f:
+                    b = f.read()
+                if a == b:
+                    reproduced.append((f"{ref}/{book}", len(a)))
+                else:
+                    w = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y),
+                             min(len(a), len(b)))
+                    problems.append(
+                        f"{ref} {book}: differs ({len(a)} vs {len(b)} bytes), first at byte {w}: "
+                        f"a=...{a[max(0, w - 60):w + 30]!r} b=...{b[max(0, w - 60):w + 30]!r}")
         finally:
             shutil.rmtree(dst, ignore_errors=True)
 
     assert reproduced, "no course was cold-built -- nothing was verified"
+    # A silent skip would pass this test while verifying less than it claims, which is exactly how the
+    # enlarged edition stayed outside the guarantee in the first place. So name what MUST have been
+    # compared: every course that ships an enlarged book.
+    want_coach = {f"{ref}/greenbook_coach.html" for ref in CORPUS
+                  if os.path.exists(os.path.join(ROOT, "courses", ref, "greenbook_coach.html"))
+                  and ref not in refused}
+    got = {name for name, _ in reproduced}
+    missed = sorted(want_coach - got)
+    assert not missed, f"enlarged book(s) never compared by the cold build: {missed}"
     assert not problems, "cold build is not reproducible:\n  " + "\n  ".join(problems)

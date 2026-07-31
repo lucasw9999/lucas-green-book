@@ -13,6 +13,7 @@ greenbook/
   fetch_dem.py           #   THEN seamless 1 m DEM for the greens fetch_dem_hd.py refused
                          #   (fills gaps; ONLY=/OVERWRITE=1 to narrow or force it)
   fetch_trees.py         # LiDAR canopy trees -> trees_lidar.json (off greens/fairways/tees/bunkers)
+  fetch_hole_elev.py     # tee-to-green height from the same LiDAR -> hole_elev.json (--write)
   render_green.py        # green slope map (arrows, contours, %, depth grid)
   render_hole.py         # tee->green layout (bunkers, water, trees, yardage)
   generate.py            # lays out the palm cards -> greenbook.html  (COACH=1 -> large-print edition)
@@ -59,12 +60,18 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    leaves the 0.4 m ones alone, so the two compose per GREEN. Those cards print `1 m data`.
    `lidar_coverage.py` then checks the tiles' data footprint really reaches every green and hole
    centreline -- a tile can be present, correctly named, and hold no points where a green is.
-6. **Build.** `generate.py` renders the combined cards -> `greenbook.html` (add `COACH=1` for the
+6. **Elevation.** `fetch_hole_elev.py --write` measures each hole's tee-to-green height change from the
+   same ground returns -- median Z at the back tee against the median of the green's own surface -- into
+   `hole_elev.json`. Run it AFTER the surfaces exist, since it reads them. Skipping it is silent: the
+   cards simply print no height line, which is also what a hole whose tee cannot be located does, so
+   there is nothing on the page to tell a missing stage from an honest refusal. `tools/verify_elevation.py`
+   cross-checks the result against the independent 3DEP seamless DEM; run it when adding a course.
+7. **Build.** `generate.py` renders the combined cards -> `greenbook.html` (add `COACH=1` for the
    optional large-print edition), then `tools/export_pdf.py` -> `greenbook.pdf`. Always export with
    that tool, never by hand: hand-exported PDFs drifted three commits behind the engine once, and
    the printed book still showed a 40% slope label the code had already stopped emitting. The tool
    records a hash of the source HTML beside each PDF so `--check` can prove they match.
-7. **Verify (never skip).** Eyeball each green (golf-plausible slope % and feed
+8. **Verify (never skip).** Eyeball each green (golf-plausible slope % and feed
    direction; near-flat greens flagged "subtle"), confirm hole layouts match
    satellite, and that yardages equal the scorecard.
 
