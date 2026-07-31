@@ -77,16 +77,16 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 ## B. Coach / ENLARGED edition "About & legal"
 ### Variant B1 -- printed on 3 book(s): merion-golf-club, monarch-bay-golf-club, philadelphia-country-club
 > A free, independent green book. Hole & green shapes, and the carry distances measured from
-> them, are a Produced Work from OpenStreetMap data (© OpenStreetMap contributors, ODbL 1.0);
-> slope, contours, arrows & elevation change are computed by the maker from public-domain USGS
-> 3DEP LiDAR; par, yardage & handicap (HCP = men’s stroke index) are facts from the published
-> scorecard. No proprietary data, image, symbol set, layout or trade dress of any commercial
-> green-reading product was used, copied or referenced. Not affiliated with, endorsed or
-> sponsored by any course, club, association or product; names & trademarks belong to their
-> owners and identify the course only — contact the maker for removal. Provided as-is, no
-> warranty; maps show general tilt, not exact break — trust your own read. lucasgreenbook.org ·
-> contact info@lucasgreenbook.org. © 2026 Lucas Wu · Lucas Green Book™. This book: free to
-> share, not for sale — CC BY-NC-ND 4.0.
+> them, are a Produced Work from OpenStreetMap data (© OpenStreetMap contributors, ODbL 1.0,
+> osm.org/copyright); slope, contours, arrows & elevation change are computed by the maker from
+> public-domain USGS 3DEP LiDAR; par, yardage & handicap (HCP = men’s stroke index) are facts
+> from the published scorecard. No proprietary data, image, symbol set, layout or trade dress
+> of any commercial green-reading product was used, copied or referenced. Not affiliated with,
+> endorsed or sponsored by any course, club, association or product; names & trademarks belong
+> to their owners and identify the course only — contact the maker for removal. Provided as-is,
+> no warranty; maps show general tilt, not exact break — trust your own read.
+> lucasgreenbook.org · contact info@lucasgreenbook.org. © 2026 Lucas Wu · Lucas Green Book™.
+> This book: free to share, not for sale — CC BY-NC-ND 4.0.
 
 ## Why this text covers the risks
 - **Independent / open-data provenance** -> copyright + trade-dress defense.

@@ -584,6 +584,52 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+def test_every_osm_using_book_carries_the_attribution_odbl_requires():
+    """ODbL attribution is a LICENCE OBLIGATION, not a courtesy, and legal/02 states what it is.
+
+    Any book whose maps come from OpenStreetMap is a Produced Work under ODbL 1.0, and the licence
+    requires the attribution to travel with it. legal/02_ATTRIBUTIONS.md fixes the canonical string as
+    "(c) OpenStreetMap contributors" + the licence named + openstreetmap.org/copyright. The pocket book
+    carried all three. The ENLARGED edition carried the first two and dropped the URL -- the fourth
+    time these two editions have drifted, after the green honesty rules, the playline row and the
+    men's-stroke-index label, and the only one of the four that is a licence question rather than a
+    quality one. All three enlarged books are marked Distributed.
+
+    Scoped by USE, not by course: a book is only asked for OSM attribution if it actually contains OSM
+    data. poppy-ridge is yardage mode -- no osm_geom.json, no hole maps, no green maps -- so it names
+    OpenStreetMap nowhere and owes nothing. Requiring the string unconditionally would have forced a
+    false credit onto a book built entirely from a scorecard and public-domain NAIP, which is its own
+    kind of dishonesty.
+    """
+    ELEMENTS = {
+        "the contributors credit": r"OpenStreetMap\s*(?:&nbsp;|\s)*contributors",
+        "the licence by name": r"ODbL|Open\s*Database\s*Licen[cs]e",
+        "the copyright URL": r"osm\.org/copyright|openstreetmap\.org/copyright",
+        "the USGS credit": r"USGS(?:&nbsp;|\s)*3DEP",
+    }
+    checked, problems = 0, []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        if "OpenStreetMap" not in html:
+            # No OSM data in this book. Confirm that is really why, rather than a lost credit.
+            assert not re.search(r'minilab">(HOLE|GREEN)', html), (
+                f"{ref}/{os.path.basename(p)} draws maps but never names OpenStreetMap -- if those "
+                f"maps are OSM-derived this is an ODbL breach, not an omission")
+            continue
+        checked += 1
+        for what, pat in ELEMENTS.items():
+            if not re.search(pat, html, re.I):
+                problems.append(f"{ref}/{os.path.basename(p)} is a Produced Work from OSM data but "
+                                f"is missing {what}")
+    assert checked >= 10, f"only {checked} OSM-using books checked -- build them first"
+    assert not problems, ("ODbL attribution is incomplete in a distributed book:\n  "
+                          + "\n  ".join(problems))
+
+
 def test_the_esri_imagery_incident_stays_resolved():
     """legal/07 records that licensed Esri/Maxar imagery was removed from this project. Enforce it.
 

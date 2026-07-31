@@ -884,7 +884,7 @@ def coach_about_card():
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes, and the <b>carry</b>
       distances measured from them, are a
-      Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>);
+      Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright);
       slope, contours, arrows &amp; <b>elevation change</b> are computed by the maker from
       <b>public-domain USGS&nbsp;3DEP</b> LiDAR; par,
       yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. <b>No proprietary data, image, symbol
