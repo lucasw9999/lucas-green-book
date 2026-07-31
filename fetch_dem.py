@@ -136,14 +136,16 @@ def main():
     d = json.load(open(f"{DIR}/osm_geom.json"))
     els = d['elements']
     greens = [e for e in els if e.get('tags', {}).get('golf') == 'green' and e.get('geometry')]
-    holes  = [e for e in els if e.get('tags', {}).get('golf') == 'hole'  and e.get('geometry')]
-    # keep only the longest centerline per hole ref (OSM sometimes has dup/fragment ways)
-    best = {}
-    for h in holes:
-        ref = h['tags'].get('ref')
-        if ref and ref.isdigit() and len(h['geometry']) > len(best.get(ref, {}).get('geometry', [])):
-            best[ref] = h
-    holes = list(best.values())
+    # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,
+    # first-wins on a tie -- the exact heuristic geo.hole_lines was written to replace after it
+    # flipped under element reordering on castlewood-valley (two candidates 513 m apart, both
+    # 3 vertices). Three fetch scripts still carried their own copy of it, so the tree corridors,
+    # the green surfaces and the gap-fill DEM could each have been placed on a DIFFERENT line
+    # from the one render_hole draws and fetch_hole_elev measures against. They all agreed on all
+    # 198 holes only because the cached element order happened to favour it. geo.hole_lines picks
+    # by distance to the course centre and REFUSES a near-tie rather than guessing.
+    _loc = config.COURSE.get('location') or {}
+    holes = list(geo.hole_lines(els, _loc.get('lat'), _loc.get('lon')).values())
     gc = [(g, *centroid(g)) for g in greens]
 
     # Bind EVERY hole to its green and check the invariant BEFORE deciding what to write. Building

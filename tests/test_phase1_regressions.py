@@ -2057,6 +2057,47 @@ def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
         pytest.skip("no book has been exported to PDF here (run tools/export_pdf.py)")
 
 
+def test_one_hole_line_chooser_for_the_whole_pipeline():
+    """Every stage must place its data on the SAME hole line, so no stage can drift off the others.
+
+    geo.hole_lines exists because "longest way per ref, first wins on a tie" is order-dependent: on
+    castlewood-valley hole 1 two candidate ways sit 513 m apart and the answer flips when the element
+    list is reordered. That was fixed in render_hole -- and three fetch scripts quietly kept their own
+    verbatim copy of the old rule. fetch_dem_hd places the green SURFACES, fetch_trees places the tree
+    corridors, fetch_dem places the gap-fill DEM. Each could have bound to a different line from the
+    one render_hole draws and fetch_hole_elev measures the tee against, and the book would look
+    entirely normal: a real green, real trees, real elevation -- belonging to the wrong hole.
+
+    They agreed on all 198 holes only because the cached element order happened to favour it. A
+    re-fetch reorders elements, so this was one Overpass call away from a silent split.
+
+    Asserted as "no module re-implements the rule", not as "the outputs happen to match today",
+    because matching today is exactly the state that hid it.
+    """
+    import glob as _glob
+    offenders = []
+    for path in sorted(_glob.glob(os.path.join(ROOT, "*.py"))
+                       + _glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        name = os.path.basename(path)
+        if name == "geo.py":
+            continue                      # the one legitimate home for the rule
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        code = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+        # the shape of the old heuristic: keep the longest geometry per ref
+        if re.search(r"len\(\s*h\[[\'\"]geometry[\'\"]\]\s*\)\s*>\s*len\(", code):
+            offenders.append(f"{name} re-implements longest-way-per-ref instead of calling "
+                             f"geo.hole_lines -- it can bind to a different line than the map draws")
+    assert not offenders, "the hole-line rule has been duplicated again:\n  " + "\n  ".join(offenders)
+
+    # and every stage that places data by hole must actually go through the shared chooser
+    for name in ("fetch_dem_hd.py", "fetch_dem.py", "fetch_trees.py", "render_hole.py",
+                 "fetch_hole_elev.py"):
+        with open(os.path.join(ROOT, name), encoding="utf-8") as fh:
+            src = fh.read()
+        assert "hole_lines(" in src, f"{name} no longer uses the shared hole-line chooser"
+
+
 def test_each_green_is_turned_the_way_the_card_promises():
     """"Approach at the bottom" is the promise every green map is read through. Verify the chain.
 

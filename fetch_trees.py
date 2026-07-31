@@ -136,18 +136,18 @@ def main():
         print("WARNING: ALLOW_NO_BUILDINGS set -- building footprint test DISABLED; "
               "roofs may be drawn as trees")
     geom = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
-    holes = [e for e in geom if e.get('tags',{}).get('golf')=='hole' and e.get('geometry')]
-    # hole centerlines as UTM segment lists -- keep the LONGEST way per ref (OSM has
-    # dup/fragment ways where a neighbouring course pokes into the bbox); matches
-    # render_hole / fetch_dem so trees are collected around the correct hole.
-    best={}
-    for h in holes:
-        ref=h['tags'].get('ref')
-        if ref and ref.isdigit() and len(h['geometry'])>len(best.get(ref,{}).get('geometry',[])):
-            best[ref]=h
-    hlines={}
-    for ref,h in best.items():
-        hlines[int(ref)]=[FWD.transform(p['lon'],p['lat']) for p in h['geometry']]
+    # hole centrelines as UTM segment lists.
+    # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,
+    # first-wins on a tie -- the exact heuristic geo.hole_lines was written to replace after it
+    # flipped under element reordering on castlewood-valley (two candidates 513 m apart, both
+    # 3 vertices). Three fetch scripts still carried their own copy of it, so the tree corridors,
+    # the green surfaces and the gap-fill DEM could each have been placed on a DIFFERENT line
+    # from the one render_hole draws and fetch_hole_elev measures against. They all agreed on all
+    # 198 holes only because the cached element order happened to favour it. geo.hole_lines picks
+    # by distance to the course centre and REFUSES a near-tie rather than guessing.
+    _loc = config.COURSE.get('location') or {}
+    hlines={hn: [FWD.transform(p['lon'], p['lat']) for p in h['geometry']]
+            for hn, h in geo.hole_lines(geom, _loc.get('lat'), _loc.get('lon')).items()}
     BUF=42.0                      # metres either side of the centerline
     CELL=5.0                      # thinning grid (m) -> ~one marker per clump
     GC=4.0                        # ground grid cell (m) for height-above-ground
