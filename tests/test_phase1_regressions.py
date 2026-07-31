@@ -4332,9 +4332,14 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
-    green traced from NAIP is simply absent. Both such courses (bay-view, valley-hi) must then
-    REFUSE to build -- geo.match_green's distance cap fires rather than binding a hole to a
-    neighbour's green. That is asserted here, not skipped silently.
+    green traced from NAIP is simply absent. Such a course must then REFUSE to build --
+    geo.match_green's distance cap fires rather than binding a hole to a neighbour's green. That is
+    asserted here, not skipped silently. Which courses those are is read from the data, not listed:
+    valley-hi was one until its osm_bbox was found to be ~46 m too tight, and widening it turned up
+    the REAL OSM green its tracing had duplicated (1.3 m away, 33 vertices against 17) plus the real
+    centreline for hole 17. With both placeholders removed it carries no digitized geometry and is
+    cold-buildable. bay-view's box is fully covered, so its two traced greens are genuinely absent
+    from OSM.
 
     Run:  COLD_BUILD=1 python3 -m pytest tests/ -q -k cold_build
     """
