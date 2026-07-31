@@ -810,6 +810,61 @@ def test_nothing_is_drawn_off_the_putting_surface():
 
 
 @needs_corpus
+def test_the_printed_flight_date_still_matches_the_tiles_on_disk():
+    """The guide card prints "flown 2024-12-17". That is a claim about a file, so check the file.
+
+    A USGS project name is not a flight date -- monarch-bay's tiles are named
+    CA_AlamedaCounty_2021_B21 and its points were flown 2019-08-14, two years earlier -- which is why
+    the date is decoded from GPS time in the point records rather than read off a label. Four courses
+    were mislabelled by 2-12 years before that was done.
+
+    But the decode is cached in course.json, and the CARD prints the cache. So a re-fetch that brought
+    down different tiles, or a tile deleted to save space, would leave the book asserting a flight date
+    the data on disk no longer supports -- and nothing would notice, because every other check reads
+    the same cached value.
+
+    Two links, both against the filesystem rather than the cache:
+      * every tile named in lidar_flown["tiles"] still exists in laz/. All 11 courses pass; the tiles on
+        disk that are NOT in the record are correctly absent, being the ones with no points over a
+        green, which is the whole point of narrowing the range to the greens.
+      * the basis must be the strong one. lidar_dates falls back to a union over WHOLE TILES when no
+        point lies over a green, and a tile 1.3 km away can then set the extremes. All 11 record
+        "points within 30 m of a green"; anything weaker has to be visible, not silent.
+
+    Re-decoding the dates themselves needs to read every point record, so it is a tool
+    (tools/lidar_dates.py) rather than a test. Run against all 11 courses while writing this: every
+    label reproduced exactly, including monarch-bay's 2019 date under a 2021 project name and
+    philadelphia's 2024-12-17 to 2025-03-27 range.
+    """
+    checked, problems = 0, []
+    for ref in CORPUS:
+        cj = os.path.join(ROOT, "courses", ref, "course.json")
+        if not os.path.exists(cj):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            flown = (json.load(fh).get("lidar_flown") or {})
+        recorded = flown.get("tiles") or {}
+        if not recorded:
+            continue                          # a course with no point cloud claims no flight date
+        checked += 1
+        laz = {os.path.basename(x)
+               for x in glob.glob(os.path.join(ROOT, "courses", ref, "laz", "*.laz"))}
+        gone = sorted(set(recorded) - laz)
+        if gone:
+            problems.append(f"{ref}: the printed flight date rests on {len(gone)} tile(s) that are no "
+                            f"longer in laz/ -- {gone[:3]} -- so the card cites data that is not there")
+        basis = str(flown.get("basis") or "")
+        if not basis.startswith("points within"):
+            problems.append(f"{ref}: flight date basis is {basis!r}, not a points-over-the-greens "
+                            f"measurement -- a tile far from any green may be setting the range, and "
+                            f"the provenance table must say so rather than print a bare date")
+        assert flown.get("label"), f"{ref}: records tiles and dates but no printed label"
+    assert checked >= 10, f"only {checked} courses carry a flight-date record"
+    assert not problems, ("the printed flight date no longer matches the tiles on disk:\n  "
+                          + "\n  ".join(problems))
+
+
+@needs_corpus
 def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
     """The legend prints three swatches and the number 5%. Both must come from the ramp, not beside it.
 
