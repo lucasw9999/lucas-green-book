@@ -482,7 +482,8 @@ def tees_panel():
     <tr class="th"><td>Tee</td><td>Yds</td><td>Rate</td><td>Slp</td></tr>
     {rows}
   </table>
-  <div class="gsmall">All yardages from the official scorecard.</div>
+  <div class="gsmall">Yardages from the official scorecard. Rating &amp; slope as published for the
+    course &mdash; see the provenance record for each course's source.</div>
 </div>'''
 
 def legend_panel():

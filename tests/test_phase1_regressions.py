@@ -653,6 +653,46 @@ def test_carries_are_measured_from_the_back_tee():
 
 
 @needs_corpus
+def test_every_printed_rating_is_either_cited_or_visibly_uncited():
+    """The Rating/Slope table is printed on every card; legal/03 must say where each course's came from.
+
+    It was the only printed number whose source this project did not report, and 7 of 12 courses have
+    none recorded. Worse, the panel's own note read "All yardages from the official scorecard" -- true
+    of the Yds column, silent about the two columns beside it, and a reader takes it as covering the
+    table.
+
+    This test does NOT demand a citation: 7 courses genuinely have none, and inventing one would be the
+    real failure. It demands that the absence be STATED, so an uncited number is visibly uncited and can
+    be filled in later, rather than reading like the cross-checked yardages next to it."""
+    doc = open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")).read()
+    cited = uncited = 0
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        j = json.load(open(cj))
+        if not any(t.get("rating") is not None for t in (j.get("tees") or [])):
+            continue
+        name = j.get("name", slug)
+        line = next((l for l in doc.splitlines() if l.startswith("| " + name + " |")), None)
+        assert line, f"{name} prints rating/slope but has no provenance row"
+        assert "tee rating/slope" in line, (
+            f"{name} prints a rating/slope table and legal/03 says nothing about where it came from")
+        if "NOT recorded" in line:
+            uncited += 1
+        else:
+            cited += 1
+            src = " ".join(str((j.get("sources") or {}).get("rating") or "").split())
+            assert src, f"{name}: legal/03 claims a rating source that course.json does not record"
+            assert " ".join(src.split()[:5]) in " ".join(line.split()), (
+                f"{name}: the recorded rating source does not reach legal/03")
+    assert cited + uncited >= 10, f"only {cited + uncited} rating tables checked"
+    assert cited, "no course cites a rating source, so the cited branch is untested"
+    assert uncited, ("no course lacks a rating source -- if that is now true, delete this test's "
+                     "uncited branch rather than leaving it unexercised")
+
+
+@needs_corpus
 def test_a_pre_rebuild_caveat_carries_its_basis():
     """"Rebuilt after the flight" is an assertion about real cards; it must cite why.
 

@@ -196,6 +196,14 @@ def _row(slug):
         notes.append(f"{insuf} green(s) had no usable point cloud and print no read")
     if dig:
         notes.append("hand-added greens were traced from public-domain USDA NAIP because OSM had none")
+    # Every card prints a Rating/Slope table. Those are the only printed numbers whose source this table
+    # did not report, and 7 of 12 courses have none recorded -- while the panel's own note said "All
+    # yardages from the official scorecard", which a reader takes as covering the columns beside them.
+    # Report the gap rather than let it stay invisible; an uncited number should be visibly uncited.
+    rating_src = re.sub(r"\s+", " ", str((j.get("sources") or {}).get("rating") or "")).strip()
+    if any(t.get("rating") is not None for t in (j.get("tees") or [])):
+        notes.append(f"tee rating/slope: {rating_src}" if rating_src else
+                     "**tee rating/slope source NOT recorded** — the cards print them; nothing cites them")
     # the SAME rule any publisher uses -- see distribution.py for why this is shared (resolved above,
     # so the Status column and the slope text cannot disagree)
     status = f"**{label} ✅**" if distributable else label
