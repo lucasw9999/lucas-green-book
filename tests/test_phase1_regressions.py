@@ -653,6 +653,45 @@ def test_carries_are_measured_from_the_back_tee():
 
 
 @needs_corpus
+def test_a_book_that_may_not_be_shared_says_so_on_the_page():
+    """A non-distributable book must not print a free-to-share licence.
+
+    distribution.py has always classed Poppy Ridge personal-use only -- rebuilt in 2025, no
+    post-construction survey, greens deliberately blank -- and legal/03 has always said so. The BOOK
+    printed the same "free to share, not for sale -- CC BY-NC-ND 4.0" as every distributable one. The
+    verdict lived in the policy and the paperwork; the artifact invited the opposite, and a PDF that
+    leaves this machine carries no trace of either.
+
+    Asks the shared rule, not build_mode, so this cannot drift from the Status column in legal/03."""
+    import distribution
+    # NOT CORPUS: that requires osm_geom.json, which a yardage-mode course has none of -- so the only
+    # non-distributable book in the tree was excluded and every assertion below passed vacuously. Scan
+    # built books instead, which is the population this claim is actually about.
+    slugs = sorted(os.path.basename(os.path.dirname(p_))
+                   for p_ in glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))
+                   if not os.path.basename(os.path.dirname(p_)).startswith("_"))
+    checked = 0
+    for slug in slugs:
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        j = json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
+        html = open(book, encoding="utf-8").read()
+        shareable = distribution.is_distributable(j)
+        checked += 1
+        if shareable:
+            assert "free to share, not for sale" in html, f"{slug} is distributable but says otherwise"
+            assert "personal use only" not in html, f"{slug} is distributable but warns against sharing"
+        else:
+            assert "free to share, not for sale" not in html, (
+                f"{slug} is {distribution.distribution_status(j)[1]} but its book invites sharing")
+            assert "personal use only" in html, (
+                f"{slug} may not be shared and its book does not say so")
+    assert checked >= 10, f"only {checked} books checked; expected every built book"
+    assert any(not distribution.is_distributable(
+        json.load(open(os.path.join(ROOT, "courses", s, "course.json")))) for s in slugs), \
+        "no non-distributable book in the tree, so the branch that matters is untested"
+
+
+@needs_corpus
 def test_built_books_still_match_the_engine_and_the_data():
     """Every tee-shot row in every built book must equal what the engine produces from today's data.
 

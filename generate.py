@@ -21,6 +21,7 @@ import base64
 import render_green
 import render_hole
 import config
+import distribution
 from config import HOLES, NAME as COURSE, ADDRESS as ADDR, COURSE_DIR
 
 GREENS = {}    # hole -> (svg, summary)
@@ -53,6 +54,29 @@ def _data_uri(path):
         return f"data:image/{ext};base64," + base64.b64encode(f.read()).decode()
 
 IG_QR = _data_uri(os.path.join(ROOT, "lucaswu.golf_qr_small.png"))
+
+
+DISTRIBUTABLE, _DIST_LABEL, _DIST_WHY = distribution.distribution_status(config.COURSE)
+
+
+def sharing_line():
+    """The licence sentence -- and for a book that may NOT be shared, a licence that says so.
+
+    distribution.py has always known Poppy Ridge is personal-use only, and legal/03 has always printed
+    it, but the BOOK carried the same free-to-share CC BY-NC-ND line as a distributable one. The verdict
+    lived in the policy and the paperwork while the artifact invited the opposite, and a PDF that leaves
+    this machine carries no trace of either. That course was rebuilt in 2025 with no post-construction
+    survey, so its greens are deliberately blank -- and a reader who receives the file cannot know that.
+
+    Asks distribution.py rather than re-testing build_mode, for the same reason gen_provenance does: one
+    rule, so the page and the paperwork cannot disagree.
+    """
+    if DISTRIBUTABLE:
+        return ("This book: free to share, not for sale &mdash; "
+                "CC&nbsp;BY-NC-ND&nbsp;4.0.")
+    return ("<b>This copy is for personal use only &mdash; please do not share or redistribute "
+            "it</b>, because its greens are blank for want of trustworthy survey data and a reader "
+            "elsewhere cannot know that. Not for sale. All rights reserved.")
 
 
 def esc(s):
@@ -120,7 +144,7 @@ def yardage_guide_panel():
       course &mdash; if a course would prefer not to be included, contact the maker for removal. Provided
       <b>free and as-is, with no warranty of any kind</b>; use at your own risk. Confirm materials/equipment
       rules with your Committee before competition. <b>lucasgreenbook.org</b> &middot; contact/removal <b>info@lucasgreenbook.org</b>.
-      &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. This book: free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
+      &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. ''' + sharing_line() + '''</div>
   </div>
 </div>'''
 
@@ -410,7 +434,7 @@ def guide_panel():
       (accuracy, fitness or rules conformance): maps show general tilt &amp; tiers, not exact break, and may
       contain errors &mdash; <b>use at your own risk and trust your own read</b>. To the fullest extent
       permitted by law the maker is not liable for any loss, penalty or damage from use of this book.
-      Learn more at <b>lucasgreenbook.org</b>; contact / removal requests: <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. This book: free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
+      Learn more at <b>lucasgreenbook.org</b>; contact / removal requests: <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. ''' + sharing_line() + '''</div>
   </div>
 </div>'''
 
@@ -810,7 +834,7 @@ def coach_about_card():
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
       trademarks belong to their owners and identify the course only &mdash; contact the maker for removal.
       Provided <b>as-is, no warranty</b>; maps show general tilt, not exact break &mdash; trust your own read.
-      <b>lucasgreenbook.org</b> &middot; contact <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. This book: free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
+      <b>lucasgreenbook.org</b> &middot; contact <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. ''' + sharing_line() + '''</div>
   </div>
 </div>'''
 

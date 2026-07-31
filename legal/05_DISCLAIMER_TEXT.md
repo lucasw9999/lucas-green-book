@@ -46,7 +46,9 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 > the maker for removal. Provided free and as-is, with no warranty of any kind; use at your own
 > risk. Confirm materials/equipment rules with your Committee before competition.
 > lucasgreenbook.org · contact/removal info@lucasgreenbook.org. © 2026 Lucas Wu · Lucas Green
-> Book™. This book: free to share, not for sale — CC BY-NC-ND 4.0.
+> Book™. This copy is for personal use only — please do not share or redistribute it, because
+> its greens are blank for want of trustworthy survey data and a reader elsewhere cannot know
+> that. Not for sale. All rights reserved.
 
 ### Variant A3 -- printed on 1 book(s): valley-hi-country-club
 > A free, independent green book for junior golfers, not for sale. Hole & green shapes, and the
