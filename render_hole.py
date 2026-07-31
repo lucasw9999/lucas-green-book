@@ -457,10 +457,18 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # The tick MARK must not sit under a number either: at 2x the labels reach far enough in
         # that the mark was drawn beneath their halos (67 of 814 rows). Clip it to the clear band,
         # and drop it entirely if nothing legible is left -- the two numbers already mark the row.
-        mx0, mx1 = max(Xc-4, left_end), min(Xc+4, right_beg if show_ft else 100.0)
+        # The row is a LEADER, not a tick. It used to be clipped to +-4 units either side of the line,
+        # which is fine when the line sits mid-frame -- but the frame is sized to hold every drawn
+        # feature, so a lake or a tree belt on one side pushes the line off-centre while the numbers
+        # stay pinned in the gutters at x=9 and x=91. On valley-hi 16 that left "110" and "60"
+        # floating in white space ~40% of the panel from anything, with no mark reaching them. Span
+        # the whole clear band between the two numbers instead, dashed and light so five of them
+        # crossing a long hole read as guides rather than as fairway features.
+        mx0 = left_end
+        mx1 = right_beg if show_ft else 100.0
         if mx1 - mx0 >= 2.0:
             rings += (f'<line x1="{mx0:.1f}" y1="{Y0:.1f}" x2="{mx1:.1f}" y2="{Y0:.1f}" '
-                      f'stroke="#9a9a9a" stroke-width="0.7"/>')
+                      f'stroke="#b4b4b4" stroke-width="0.45" stroke-dasharray="1.6,1.6"/>')
         rings += etxt(9, Y0+FSN*0.35, str(yd), "#2f5a26", "start")      # LEFT = to green
         if show_ft:
             rings += etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")   # RIGHT = from back tee
