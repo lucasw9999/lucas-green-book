@@ -584,6 +584,73 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+def test_every_runnable_tool_is_documented():
+    """A tool nobody can find is a trap, and two of these were traps the SUITE itself sets.
+
+    The docs named 7 runnable scripts of 11. The four missing ones were not obscure:
+
+      * tools/gen_provenance.py and tools/gen_disclaimers.py regenerate the two derived legal docs,
+        and the test suite FAILS while either is stale. So adding a course gave a newcomer four red
+        tests whose message says "STALE" and never names the command that fixes it. I walked into this
+        myself while building a nine-hole test course.
+      * tools/check_osm_bbox.py catches a fetch box so tight that features beside the hole were never
+        downloaded -- the case where the map and the footer agree because both count only what arrived.
+      * tools/lidar_dates.py is where the provenance table's flight dates come from. Four courses were
+        mislabelled by 2-12 years before those were decoded from the point records.
+
+    Asserted by discovery, not by a list: anything with a __main__ block must be named in README.md or
+    PIPELINE.md. A hardcoded list of expected tools would need updating by the same person who forgot
+    to write the docs.
+    """
+    undocumented = []
+    docs = ""
+    for d in ("README.md", "PIPELINE.md"):
+        p = os.path.join(ROOT, d)
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as fh:
+                docs += fh.read()
+    assert docs, "neither README.md nor PIPELINE.md is present"
+    for p in sorted(glob.glob(os.path.join(ROOT, "*.py"))
+                    + glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        if "__main__" not in src:
+            continue                      # a module, not something anyone runs
+        name = os.path.basename(p)
+        if name not in docs:
+            undocumented.append(os.path.relpath(p, ROOT))
+    assert not undocumented, (
+        "these scripts can be run but no doc mentions them, so nobody can discover them:\n  "
+        + "\n  ".join(undocumented))
+
+
+def test_no_doc_names_a_script_or_flag_that_does_not_exist():
+    """The other direction: a documented command a newcomer types must actually work.
+
+    Cheap to check and the failure is expensive -- a stale command in the first thing a stranger reads
+    stops them before they build anything, and they cannot tell a renamed script from their own
+    mistake."""
+    problems = []
+    for d in ("README.md", "PIPELINE.md"):
+        p = os.path.join(ROOT, d)
+        if not os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            text = fh.read()
+        for m in re.finditer(r"python3?\s+((?:tools/)?[a-z_0-9]+\.py)((?:\s+--[a-z-]+)*)", text):
+            script, flags = m.group(1), m.group(2).split()
+            sp = os.path.join(ROOT, script)
+            if not os.path.exists(sp):
+                problems.append(f"{d} tells the reader to run {script}, which does not exist")
+                continue
+            with open(sp, encoding="utf-8") as fh:
+                src = fh.read()
+            for f in flags:
+                if f not in src:
+                    problems.append(f"{d} passes {f} to {script}, which does not mention it")
+    assert not problems, "the docs name something that is not there:\n  " + "\n  ".join(problems)
+
+
 def test_the_printed_binding_still_fits_the_printed_cards():
     """The repo ships a 3D-printable binding, and its fit is a silent dependency on the card size.
 

@@ -87,7 +87,7 @@ mkdir -p courses/my-course
 cp examples/course.json courses/my-course/course.json    # then replace every value
 COURSE=my-course python3 fetch_osm.py                    # then follow PIPELINE.md
 ```
-Two checks worth running on anything you build:
+Checks worth running on anything you build:
 ```bash
 python3 -m pytest tests/ -q          # regression tests (skip cleanly with no course data)
 python3 tools/check_scale.py         # measures the LAID-OUT green scale against Rule 4.3
@@ -100,6 +100,25 @@ while every attribute looked correct. It exits non‑zero if any green exceeds 3
 reports the printed 5‑yd bar length from the PDF, but that figure is informational and does not
 gate.) `tools/export_pdf.py --check` is the companion: it proves the PDF you would actually print
 came from the HTML on disk.
+
+**After adding a course, regenerate the two derived legal docs** — the test suite fails until you do,
+and the failure names staleness rather than telling you which command fixes it:
+```bash
+python3 tools/gen_provenance.py       # rewrites legal/03_PROVENANCE_BY_COURSE.md from the artifacts
+python3 tools/gen_disclaimers.py      # rewrites legal/05_DISCLAIMER_TEXT.md from what the books print
+```
+Both take `--check` instead, which is what CI and the suite use. Neither is optional: they are derived
+from the build outputs precisely so the legal record cannot drift from what was actually printed.
+
+Two more tools, useful when a course looks wrong rather than on every build:
+```bash
+python3 tools/check_osm_bbox.py --all # every printed hole's 45 m corridor lies inside its fetch box
+COURSE=<slug> python3 tools/lidar_dates.py   # decodes the flight date from the LiDAR point records
+```
+`check_osm_bbox.py` catches a fetch box so tight that features beside the hole were never downloaded —
+the map then agrees with the footer because both count only what arrived. `lidar_dates.py` is where
+the flight dates in the provenance table come from; a USGS *project name* is not a flight date, and
+four courses were mislabelled by 2–12 years before these were decoded from the points themselves.
 
 ## Editions &amp; extras
 - **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex, top‑flip; slips into a back‑pocket
