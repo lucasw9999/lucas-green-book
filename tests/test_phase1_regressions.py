@@ -462,6 +462,94 @@ def test_every_printed_caveat_matches_the_data_behind_it():
                           + "\n  ".join(problems[:10]))
 
 
+def _arc_yd_for(ref, panel_html):
+    """The drawn centreline length in yards for the hole this panel shows, from the engine itself.
+
+    The card yardage is the SCORECARD's walked figure; the drawn OSM line can be longer or shorter.
+    Any bound on the gutter pair has to use the line the numbers were measured on."""
+    m = re.search(r'<div class="hnum">(\d+)</div>', panel_html)
+    if not m:
+        return None
+    cfg, rh = _engine(ref)
+    try:
+        _svg, info = rh.render_hole(int(m.group(1)), cfg.HOLES)
+    except Exception:
+        return None
+    return info.get("arc_yd")
+
+
+@needs_corpus
+def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
+    """A player can ADD the two numbers on a row. On a dogleg they will not reach the card yardage,
+    and the guide has to say so, because the arithmetic is a twelve-year-old's first instinct.
+
+    Left is the STRAIGHT distance to the green centre -- the shot you actually have to hit. Right is
+    the distance from the tee WALKED along the centreline, which is how a scorecard measures. On a
+    straight hole those sum to the card; on a bend they cannot, and the gap grows as the tick moves
+    into the corner. philadelphia 17 is the extreme: card 472, drawn arc 441, and its 300-yd row
+    reads 300 + 102 = 402. Both numbers are individually true. 50 of 196 cards have a row off by
+    10 yd or more.
+
+    Neither number may quietly become the other, so this asserts what each IS rather than that they
+    agree:
+      * the sums track the drawn ARC, not the card -- if left became a walked distance the sums would
+        snap onto the card yardage and the printed to-green figure would overstate the shot by up to
+        43 yd on a dogleg, which is the one number a player clubs off;
+      * every to-green label is one of the fixed 100/150/200/250/300 radii, so left is a radius;
+      * the guide card explains the mismatch, so a reader who adds them is not left thinking the
+        book is broken.
+    """
+    checked, problems = 0, []
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        assert re.search(r"on a dogleg they do <b>not</b> add up", html), (
+            f"{ref}: the guide card no longer explains why the two gutter numbers do not sum -- "
+            f"a reader who adds them finds up to 54 yd of unexplained discrepancy")
+        for blk in re.split(r'<div class="panel ', html)[1:]:
+            if not blk.startswith('hole"'):
+                continue
+            ym = re.search(r'class="ymain"[^>]*>(\d+)</span>', blk)
+            sm = re.search(r'<div class="lay"><div class="minilab">HOLE</div>(<svg.*?</svg>)',
+                           blk, re.S)
+            if not (ym and sm):
+                continue
+            svg = sm.group(1)
+            vbw = float(re.search(r'viewBox="0 0 ([\d.]+) ', svg).group(1))
+            lanes = {}
+            for x, y, txt in re.findall(
+                    r'<text x="([\d.]+)" y="([\d.]+)"[^>]*>([^<]+)</text>', svg):
+                if txt.isdigit():
+                    lanes.setdefault(round(float(y), 1), {})[
+                        "L" if float(x) < vbw / 2 else "R"] = int(txt)
+            card = int(ym.group(1))
+            arc = _arc_yd_for(ref, blk) or card
+            for v in lanes.values():
+                if "L" not in v:
+                    continue
+                checked += 1
+                if v["L"] not in (100, 150, 200, 250, 300):
+                    problems.append(f"{ref}: a to-green label reads {v['L']}, which is not one of "
+                                    f"the fixed radii -- it is no longer a straight-line distance")
+                # The ceiling is max(card, arc), and finding that took two wrong guesses worth
+                # recording. Bounding on the CARD flagged 115 legitimate rows: castlewood-valley 1 is
+                # drawn 444 yd against a 429 card, so every row there exceeds the card by ~12. Bounding
+                # on the ARC failed too, because the from-tee figure is scaled to the CARD, so on a
+                # hole drawn shorter than its card the pair exceeds the arc. Only the larger of the two
+                # is a real ceiling, and against it the whole corpus fits inside +4 yd -- which is the
+                # rounding of two integers, not a measurement fault.
+                limit = max(card, arc)
+                if "R" in v and v["L"] + v["R"] > limit + 4:
+                    problems.append(f"{ref}: a row reads {v['L']} + {v['R']} = {v['L']+v['R']} "
+                                    f"against a card of {card} and a drawn line of {arc} yd -- past "
+                                    f"both, so one of the two is measuring more than the hole")
+    assert checked >= 500, f"only {checked} gutter rows checked -- build the books first"
+    assert not problems, "the gutter numbers are not what the card says:\n  " + "\n  ".join(problems[:8])
+
+
 @needs_corpus
 def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
     """"37yd deep" in the footer and the 5-yd rungs on the map must be measuring one green.
