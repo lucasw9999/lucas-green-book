@@ -35,3 +35,9 @@ Thumbs.db
 # Local tooling / personal assets (kept out of the repo)
 .claude/
 lucaswu.golf_qr*.png
+
+# Personal outreach drafts (letters to architects, clubs, associations). Recovered from a gitignored
+# worktree where they were the only copy in existence -- git had never seen them, so pruning that
+# worktree would have deleted them. Kept in the working tree so they survive; never committed, because
+# they are private correspondence and this repo is public.
+outreach/

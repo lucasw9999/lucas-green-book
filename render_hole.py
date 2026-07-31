@@ -470,8 +470,10 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         if Y0-lastY < FSN*1.35:
             continue
         lastY=Y0
-        # Horizontal budget. The gutters are fixed at x=9 (start-anchored) and x=91 (end-anchored)
-        # while FSN scales with font_scale, so at the 2x coach scale the numbers ran into each other
+        # Horizontal budget. The gutters sit at x=9 (start-anchored) and x=VBW-9 (end-anchored), and
+        # VBW is only 100 when the numbers fit inside it -- see the box-widening note above, which
+        # exists because these two used to be pinned at 9 and 91 no matter how big the type got.
+        # FSN scales with font_scale, so at the 2x coach scale the numbers ran into each other
         # -- the brown one paints second WITH a white halo, so it erased digits of the to-green
         # yardage (monarch-bay h16 printed "1(498"). Budget the glyph advance plus the halo's
         # 0.14-em reach.
@@ -486,7 +488,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # The row is a LEADER, not a tick. It used to be clipped to +-4 units either side of the line,
         # which is fine when the line sits mid-frame -- but the frame is sized to hold every drawn
         # feature, so a lake or a tree belt on one side pushes the line off-centre while the numbers
-        # stay pinned in the gutters at x=9 and x=91. On valley-hi 16 that left "110" and "60"
+        # stay pinned in the gutters at x=9 and x=VBW-9. On valley-hi 16 that left "110" and "60"
         # floating in white space ~40% of the panel from anything, with no mark reaching them. Span
         # the whole clear band between the two numbers instead, dashed and light so five of them
         # crossing a long hole read as guides rather than as fairway features.
