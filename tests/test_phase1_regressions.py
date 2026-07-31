@@ -479,6 +479,86 @@ def _arc_yd_for(ref, panel_html):
 
 
 @needs_corpus
+def test_the_elevation_word_matches_the_elevation_sign():
+    """"green 22 ft below" is a WORD derived from a signed number, and the word is what a golfer clubs
+    off. Flip it and the book confidently sends the ball a full club short.
+
+    tools/verify_elevation.py cross-checks the NUMBER against the 3DEP DEM, so a units fault or a
+    wrong tee is caught. It never looks at the page, so the translation from -6.7 to "below" was
+    unguarded end to end -- and that translation is the whole product of the elevation feature. A
+    reader cannot tell a flipped word from a real hill; both read as a confident measurement.
+
+    The chain is checked link by link against the artifacts:
+      * change_m == green_z_m - tee_z_m, from the two absolute heights the record stores. This is the
+        sign CONVENTION -- positive means the green sits higher, which is what "above" must mean.
+      * change_ft is that in feet, within 0.07 (change_m is stored to 2 dp and change_ft to 1, so the
+        double rounding alone allows 0.066 -- the corpus worst is 0.0625).
+      * the printed word is "above" exactly when change_ft > 0, and the printed magnitude is
+        abs(round(change_ft)).
+      * a height under 3 ft prints NOTHING. That threshold is deliberate: a tee box's own contour
+        justifies that much, so a small number would be false precision. It also means "nothing
+        printed" is only correct BELOW it -- a suppressed 20 ft hill is a missing measurement, and
+        this asserts both directions.
+    """
+    printed, level, problems = 0, 0, []
+    for ref in CORPUS:
+        book = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        ep = os.path.join(ROOT, "courses", ref, "hole_elev.json")
+        if not (os.path.exists(book) and os.path.exists(ep)):
+            continue
+        with open(ep, encoding="utf-8") as fh:
+            rec = json.load(fh)["holes"]
+        for hn, r in rec.items():
+            gz, tz, cm, cf = (r.get("green_z_m"), r.get("tee_z_m"),
+                              r.get("change_m"), r.get("change_ft"))
+            if None in (gz, tz, cm, cf):
+                problems.append(f"{ref} hole {hn}: incomplete elevation record {sorted(r)}")
+                continue
+            if abs((gz - tz) - cm) > 0.02:
+                problems.append(f"{ref} hole {hn}: change_m {cm} is not green {gz} minus tee {tz} "
+                                f"({gz - tz:.2f}) -- the sign convention is broken at the source")
+            if abs(cm * 3.28084 - cf) > 0.07:
+                problems.append(f"{ref} hole {hn}: change_ft {cf} is not {cm} m in feet "
+                                f"({cm * 3.28084:.2f})")
+        with open(book, encoding="utf-8") as fh:
+            html = fh.read()
+        for blk in re.split(r'<div class="panel ', html)[1:]:
+            if not blk.startswith('hole"'):
+                continue
+            hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            if not hm:
+                continue
+            hn = hm.group(1)
+            truth = rec.get(hn, {}).get("change_ft")
+            pm = re.search(r"green <b>(\d+) ft (above|below)</b>", blk)
+            if pm:
+                printed += 1
+                if truth is None:
+                    problems.append(f"{ref} hole {hn}: prints {pm.group(0)!r} with no measurement "
+                                    f"on record")
+                    continue
+                if abs(truth) < 3:
+                    problems.append(f"{ref} hole {hn}: prints a height for {truth} ft, which is "
+                                    f"inside the tee box's own contour and must read as level")
+                want = "above" if truth > 0 else "below"
+                if pm.group(2) != want:
+                    problems.append(f"{ref} hole {hn}: prints \"{pm.group(1)} ft {pm.group(2)}\" "
+                                    f"but the measurement is {truth:+.1f} ft -- the card is telling "
+                                    f"a player to club the WRONG WAY")
+                if int(pm.group(1)) != abs(round(truth)):
+                    problems.append(f"{ref} hole {hn}: prints {pm.group(1)} ft against a measured "
+                                    f"{truth:+.1f}")
+            elif truth is not None and abs(truth) >= 3:
+                problems.append(f"{ref} hole {hn}: {truth:+.1f} ft measured but the card prints no "
+                                f"height at all -- a real hill is missing from the page")
+            elif truth is not None:
+                level += 1
+    assert printed >= 50, f"only {printed} elevation phrases checked -- build the books first"
+    assert level >= 10, f"only {level} holes exercised the level threshold"
+    assert not problems, "the elevation figure and its word disagree:\n  " + "\n  ".join(problems[:10])
+
+
+@needs_corpus
 def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     """A player can ADD the two numbers on a row. On a dogleg they will not reach the card yardage,
     and the guide has to say so, because the arithmetic is a twelve-year-old's first instinct.
