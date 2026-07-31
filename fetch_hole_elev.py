@@ -47,6 +47,12 @@ TEE_R_M = 15.0          # half-width of the box sampled around the tee point
 MIN_TEE_PTS = 200       # below this, refuse to state a tee height
 GROUND = 2              # LAS classification for bare earth
 R_LAT = 111320.0        # metres per degree of latitude
+# A tee-to-green change beyond this is not a golf hole, it is a units or datum fault. The largest real
+# figure in the corpus is 160 ft (castlewood-hill 18, a genuinely hilly Pleasanton course), so this
+# leaves better than half again of headroom. It exists because the unit bug this file once had produced
+# 300-550 ft figures that printed on real cards and looked like data: a plausibility bound is the one
+# check that would have stopped them at the source instead of needing a reader to notice.
+MAX_PLAUSIBLE_FT = 250.0
 
 
 def _mlon(lat):
@@ -158,7 +164,12 @@ def tee_elevations(anchors):
 
 
 def green_elevation(hole):
-    """Median elevation of the green's built surface, or None."""
+    """Median elevation of the green's built surface, in METRES, or None.
+
+    Already metres, both ways in: fetch_dem_hd.py scales LAZ Z by the CRS axis unit before gridding
+    (its line `z = np.asarray(las.z)[g]*zscale`), and fetch_dem.py's seamless patches come from 3DEP
+    in metres. So this value must NOT be scaled again -- see the note in main() on the bug that was.
+    """
     mp = f"{DIR}/dem_hd/hole{hole:02d}.json"
     npy = mp.replace(".json", ".npy")
     if not (os.path.isfile(mp) and os.path.isfile(npy)):
@@ -173,6 +184,28 @@ def green_elevation(hole):
     if np.all(np.isnan(a)):
         return None
     return float(np.nanmedian(a))
+
+
+def is_plausible_change(change_ft):
+    """False when a tee-to-green figure can only be a units or datum fault. See MAX_PLAUSIBLE_FT.
+
+    Clean data cannot exercise this, so deleting the CALL in main() is invisible until a fault appears
+    -- at which point the corpus test on the recorded figures catches it. That is defence in depth, not
+    full coverage, and is stated here rather than implied."""
+    return abs(change_ft) <= MAX_PLAUSIBLE_FT
+
+
+def elevation_change_m(green_z_m, tee_z_raw, vscale):
+    """Green minus tee, in metres. ONLY the tee height is raw LAZ Z, so only it takes the axis scale.
+
+    Kept as a pure function because the mistake it encodes was invisible in every other check. The
+    code read `(green - tee) * vscale`, subtracting a US-survey-foot tee height from an already-metric
+    green height and scaling the difference. It produced confident, plausible, badly wrong figures on
+    the 5 ftUS courses -- monarch-bay hole 3 printed "green 21 ft below the tee" against a real
+    -6.2 ft -- while the 6 metric courses were exactly right, because vscale is 1.0 there and the two
+    forms coincide. Merion is metric, so no amount of checking Merion could surface it.
+    """
+    return green_z_m - tee_z_raw * vscale
 
 
 def main():
@@ -231,9 +264,21 @@ def main():
             print(f"  hole {hn:2d}: no elevation figure -- {why}")
             continue
         tz, n = tz_n
-        d_m = (gz - tz) * vscale
-        rows[str(hn)] = {"tee_z_m": round(tz * vscale, 2),
-                         "green_z_m": round(gz * vscale, 2),
+        # UNITS. The green surface is ALREADY metres (see green_elevation); the tee median is raw LAZ
+        # Z, so only IT takes the CRS axis scale. Getting this wrong was silent and large: the code
+        # read `(gz - tz) * vscale`, subtracting a ftUS tee height from a metric green height and then
+        # scaling the difference. On every US-survey-foot course that produced a confident, plausible,
+        # badly wrong figure -- monarch-bay hole 3 printed "green 21 ft below the tee" for a real
+        # -6.2 ft. Metric courses (merion, philadelphia) were unaffected because vscale is 1.0 there,
+        # which is exactly why spot-checking Merion did not reveal it.
+        tz_m = tz * vscale
+        d_m = elevation_change_m(gz, tz, vscale)
+        if not is_plausible_change(d_m * 3.28084):
+            print(f"  hole {hn:2d}: no elevation figure -- {d_m*3.28084:+.0f} ft is not a golf hole, "
+                  f"it is a units or datum fault (green {gz:.1f} m, tee {tz_m:.1f} m)")
+            continue
+        rows[str(hn)] = {"tee_z_m": round(tz_m, 2),
+                         "green_z_m": round(gz, 2),
                          "change_m": round(d_m, 2),
                          "change_ft": round(d_m * 3.28084, 1),
                          "tee_points": n,

@@ -3613,6 +3613,92 @@ def test_every_built_course_appears_in_the_provenance_doc():
 
 
 @needs_corpus
+def test_elevation_change_scales_only_the_tee_height():
+    """The green surface is already metres; only the raw LAZ tee height takes the CRS axis scale.
+
+    The code read `(green - tee) * vscale`, subtracting a US-survey-foot tee height from a metric green
+    height and then scaling the difference. Silent and large: monarch-bay hole 3 printed "green 21 ft
+    below the tee" for a real -6.2 ft, and 5 of the 11 courses were affected. The other 6 are metric,
+    where vscale is 1.0 and the two forms coincide -- so checking Merion, which is metric, could never
+    have caught it. That is why this test pins a ftUS case explicitly."""
+    _config, _rh = _engine(CORPUS[0])
+    import fetch_hole_elev as fhe
+    FT_US = 0.30480060960121924
+    got = fhe.elevation_change_m(6.53, 27.62, FT_US)          # monarch-bay hole 3, measured
+    assert abs(got * 3.28084 - (-6.2)) < 0.15, f"{got*3.28084:.2f} ft, expected about -6.2"
+    buggy = (6.53 - 27.62) * FT_US
+    assert abs(got - buggy) > 1.0, "this is the buggy form; only the tee takes the scale"
+    # metric course: the two forms must agree, which is precisely why the bug hid
+    assert fhe.elevation_change_m(100.0, 90.0, 1.0) == 10.0
+    assert abs(fhe.elevation_change_m(100.0, 90.0, 1.0) - (100.0 - 90.0) * 1.0) < 1e-12
+
+
+@needs_corpus
+def test_recorded_green_height_matches_the_built_surface():
+    """hole_elev.json's green_z_m must equal the green surface's own median, unscaled.
+
+    Independent of the arithmetic test above: this reads what was actually WRITTEN for every course,
+    so a re-scaling reintroduced anywhere in the writer shows up as a factor-of-3.28 mismatch on the
+    ftUS courses."""
+    checked = 0
+    for slug in CORPUS:
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        # fetch_hole_elev binds DIR = config.COURSE_DIR at IMPORT, and _engine only pops
+        # config/render_hole/render_green -- so a cached copy keeps reading the FIRST course's files
+        # and this test compared one course's json against another's surfaces.
+        sys.modules.pop("fetch_hole_elev", None)
+        _config, _rh = _engine(slug)
+        import fetch_hole_elev as fhe
+        rows = json.load(open(p))["holes"]
+        for hn, row in rows.items():
+            gz = fhe.green_elevation(int(hn))
+            if gz is None:
+                continue
+            checked += 1
+            assert abs(row["green_z_m"] - gz) < 0.02, (
+                f"{slug} h{hn}: recorded green_z_m {row['green_z_m']} vs surface median {gz:.2f} -- "
+                f"ratio {row['green_z_m']/gz if gz else 0:.3f} (3.28 means a double unit scale)")
+    assert checked >= 100, f"only {checked} recorded green heights checked; expected the whole corpus"
+
+
+@needs_corpus
+def test_no_implausible_elevation_figure_is_recorded():
+    """No hole may record a tee-to-green change beyond the plausibility bound.
+
+    The unit bug produced 300-550 ft figures that printed on real cards and read as data -- 74 of 175
+    holes, median error 298 ft. Nothing in the pipeline objected, because every other check was about
+    coverage and density, not magnitude. The largest genuine figure in the corpus is 160 ft, so the
+    bound also has to be shown to be loose enough not to clip real terrain."""
+    sys.modules.pop("fetch_hole_elev", None)
+    _config, _rh = _engine(CORPUS[0])
+    import fetch_hole_elev as fhe
+    # the bound itself, directly: clean corpus data cannot trip it
+    assert fhe.is_plausible_change(160.2) and fhe.is_plausible_change(-160.2)   # real castlewood 18
+    assert not fhe.is_plausible_change(-500.0)      # what the unit bug produced
+    assert not fhe.is_plausible_change(300.0)
+    assert 200.0 <= fhe.MAX_PLAUSIBLE_FT <= 400.0, "bound moved outside a defensible range"
+    worst, worst_at, n = 0.0, None, 0
+    for slug in CORPUS:
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        for hn, row in json.load(open(p))["holes"].items():
+            n += 1
+            if abs(row["change_ft"]) > abs(worst):
+                worst, worst_at = row["change_ft"], f"{slug} h{hn}"
+            assert abs(row["change_ft"]) <= fhe.MAX_PLAUSIBLE_FT, (
+                f"{slug} h{hn}: {row['change_ft']:+.1f} ft exceeds the {fhe.MAX_PLAUSIBLE_FT:.0f} ft "
+                f"bound -- that is a units or datum fault, not terrain")
+    assert n >= 150, f"only {n} figures checked; expected the whole corpus"
+    # the bound must not be so tight that real hilly terrain trips it
+    assert abs(worst) < fhe.MAX_PLAUSIBLE_FT * 0.85, (
+        f"largest real figure {worst:+.1f} ft ({worst_at}) is close to the bound; raise it deliberately "
+        f"rather than letting it clip terrain")
+
+
+@needs_corpus
 def test_tee_anchor_locates_the_back_tee_or_refuses():
     """The elevation figure names the BACK TEE, so the point sampled must actually be one.
 
