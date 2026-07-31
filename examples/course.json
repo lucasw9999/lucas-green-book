@@ -14,7 +14,18 @@
   "slug": "example-golf-club",
   "name": "Example Golf Club",
   "address": "1 Fairway Rd, Somewhere, ST 00000",
-  "_location": "REQUIRED in practice: picks the NAD83 UTM zone for the LiDAR reprojection (26900 + zone).",
+  "_location": [
+    "REQUIRED. Two jobs, and the second one is easy to get wrong:",
+    "  1. picks the NAD83 UTM zone for the LiDAR reprojection (26900 + zone);",
+    "  2. tells YOUR course's holes apart from a neighbouring course's. OSM often has two clubs, or",
+    "     two 18s of one club, inside one query box with the same hole numbers 1-18. geo.hole_lines",
+    "     picks the way nearest this point and REFUSES when the margin is under 150 m.",
+    "So at a 36-hole club, do NOT put the shared clubhouse address in both course.json files: give each",
+    "course a point inside ITS OWN routing. Castlewood's two courses share one street address and their",
+    "location values sit 960 m apart for exactly this reason, which buys a ~600 m margin. Set both to the",
+    "clubhouse and the nearer course wins BOTH books -- it resolves silently, and you get another course's",
+    "holes, greens and slope printed on your cards with no error at all."
+  ],
   "location": {
     "lat": 37.7,
     "lon": -121.5
