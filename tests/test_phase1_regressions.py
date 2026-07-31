@@ -1069,6 +1069,45 @@ def test_hole_line_choice_does_not_depend_on_element_order():
 
 
 @needs_corpus
+@needs_corpus
+def test_every_green_has_its_own_printed_scale_bar():
+    """One measured 5-yd bar per green, each found by its OWN caption.
+
+    check_scale's second, INDEPENDENT reading of Rule 4.3 used to be "the longest horizontal rule
+    anywhere in the book between 0.20 and 0.60 in". That is not the bar: on callippe it returned
+    0.3554 in from a rule sitting nowhere near a "5 yd" label, while every real bar in that book is
+    0.1902-0.3200 in. It matched the browser-layout figure on the other ten courses only because their
+    longest stray rule happens to land near their largest bar.
+
+    Nothing was ever mis-gated -- the pass/fail rests on the layout measure and the printed figure was
+    informational -- but a second opinion that can latch onto an unrelated rule is not a second opinion,
+    and this tool exists precisely because intent is not evidence."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    for m in ("check_scale", "export_pdf"):
+        sys.modules.pop(m, None)
+    import check_scale
+    checked = 0
+    for slug in CORPUS:
+        if not os.path.isfile(os.path.join(ROOT, "courses", slug, "greenbook.pdf")):
+            continue
+        config, _rh = _engine(slug)
+        pm = check_scale.measure_printed(slug)
+        if pm is None:
+            continue
+        mx, bars = pm
+        checked += 1
+        ngreens = sum(1 for hn in config.HOLE_NUMS
+                      if os.path.isfile(os.path.join(ROOT, "courses", slug, "dem_hd",
+                                                     f"hole{hn:02d}.json")))
+        assert len(bars) == ngreens, (
+            f"{slug}: {len(bars)} printed 5-yd bars found for {ngreens} greens -- a bar was matched to "
+            f"the wrong rule, or a green's caption has no bar beside it")
+        assert mx <= check_scale.LIMIT_IN_PER_5YD, (
+            f"{slug}: a printed bar measures {mx:.4f} in per 5 yd, over the "
+            f"{check_scale.LIMIT_IN_PER_5YD} in Rule 4.3 cap")
+    assert checked >= 10, f"only {checked} books measured"
+
+
 def test_the_card_footer_cannot_break_mid_phrase():
     """The footer must wrap BETWEEN its two spans, never inside one.
 

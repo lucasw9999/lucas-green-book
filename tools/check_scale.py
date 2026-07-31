@@ -110,8 +110,24 @@ def measure_rendered(courses):
     return out
 
 
+BAR_NEAR_LABEL_PT = 14.0        # a bar sits directly under its "5 yd" caption
+BAR_SAME_COLUMN_PT = 40.0       # ...and within the same card column
+
+
 def measure_printed(course):
-    """Longest printed horizontal rule in the plausible 5-yd-bar range, in inches."""
+    """(max, [all]) printed 5-yd bar lengths in inches, or None.
+
+    Each bar is found by its OWN caption. This used to take the longest horizontal rule anywhere in the
+    book inside a 0.20-0.60 in window, and that is not the same thing: on callippe it returned 0.3554 in
+    from a rule sitting nowhere near a "5 yd" label, while every real bar in that book measures
+    0.1902-0.32 in. It agreed with the browser-layout figure on the other ten courses by coincidence --
+    their longest stray rule happens to land near their largest bar.
+
+    That mattered because this is the INDEPENDENT half of the gate. The whole point of the tool is that
+    intent is not evidence, so the printed artifact gets measured too; a second opinion that can latch
+    onto an unrelated rule is not a second opinion. It was informational only, so nothing was ever
+    mis-gated -- but the number it printed was not the bar.
+    """
     try:
         import fitz
     except ImportError:
@@ -119,16 +135,27 @@ def measure_printed(course):
     f = ROOT / "courses" / course / "greenbook.pdf"
     if not f.exists():
         return None
-    mx = 0.0
+    bars = []
     with fitz.open(f) as d:
         for page in d:
+            labels = [sp["bbox"] for blk in page.get_text("dict")["blocks"]
+                      for ln in blk.get("lines", []) for sp in ln.get("spans", [])
+                      if sp["text"].strip() == "5 yd"]
+            if not labels:
+                continue
+            rules = []
             for dr in page.get_drawings():
                 for it in dr["items"]:
                     if it[0] == "l" and abs(it[1].y - it[2].y) < 0.4:
-                        L = abs(it[2].x - it[1].x) / 72.0
-                        if 0.20 < L < 0.60:
-                            mx = max(mx, L)
-    return mx or None
+                        rules.append((abs(it[2].x - it[1].x) / 72.0,
+                                      (it[1].x + it[2].x) / 2.0, it[1].y))
+            for bb in labels:
+                cx, cy = (bb[0] + bb[2]) / 2.0, (bb[1] + bb[3]) / 2.0
+                near = [r for r in rules
+                        if abs(r[2] - cy) < BAR_NEAR_LABEL_PT and abs(r[1] - cx) < BAR_SAME_COLUMN_PT]
+                if near:
+                    bars.append(max(near, key=lambda r: r[0])[0])
+    return (max(bars), bars) if bars else None
 
 
 def main():
@@ -190,8 +217,19 @@ def main():
         near = {h: v for h, v in per.items() if LIMIT_IN_PER_5YD >= v > TARGET_IN_PER_5YD + 0.005}
         warned += len(near)
         failures += [(c, h, v) for h, v in over.items()]
-        printed = measure_printed(c)
-        pr = f" | printed bar {printed:.4f} in" if printed else ""
+        pm = measure_printed(c)
+        pr = ""
+        if pm:
+            printed, bars = pm
+            pr = f" | printed bars {min(bars):.4f}-{printed:.4f} in ({len(bars)})"
+            # the legal claim is about the ARTIFACT, so every bar must clear the cap on its own
+            over_bar = [b for b in bars if b > LIMIT_IN_PER_5YD]
+            if over_bar:
+                failures += [(c, "bar", max(over_bar))]
+                pr += f"  !! {len(over_bar)} printed bar(s) OVER the limit"
+            elif printed > worst + 0.01:
+                pr += (f"  !! a printed bar exceeds the measured layout scale ({worst:.4f}) -- the two "
+                       f"should agree")
         print(f"{c:34s} {len(per):3d} greens  worst h{worst_h:<2} {worst:.4f} in/5yd "
               f"(1:{IN_PER_5YD / worst:.0f})  margin {(1 - worst / LIMIT_IN_PER_5YD) * 100:5.1f}%  "
               f"{'FAIL' if over else 'PASS'}{pr}")
