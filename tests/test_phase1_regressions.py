@@ -263,6 +263,89 @@ def test_no_real_course_carries_a_key_the_template_never_mentions():
                          + "\n  ".join(sorted(set(missing))))
 
 
+@needs_corpus
+def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
+    """A green card states its scale twice. Both statements must mean the same yard.
+
+    The printed 5-yd bar is the instrument tools/check_scale.py measures to prove Rule 4.3
+    conformance -- the whole legal claim rests on that one rule being the length it says. The depth
+    ladder is the other statement: rungs every 5 yd front-to-back, which is what a player actually
+    steps off to judge how deep the pin is. They come from one expression today (4.572/px_m), so in
+    VIEW units they agree by construction -- but that is the weak claim. What matters is the paper,
+    where one is horizontal and the other vertical, and only a uniform scale keeps them equal.
+
+    That is not guaranteed by anything upstream: the green raster is anisotropic by up to 0.85% (px_x
+    vs px_y), the SVG is meet-fit into a box, and the card CSS can size it. If the bar and the ladder
+    ever disagreed, one of two things is true -- either check_scale is certifying a ruler the map does
+    not obey, or the ladder a golfer paces off is lying. Both are worse than a layout bug.
+
+    Measured off the exported PDF, per card, pairing each bar with the ladder in ITS OWN card slot:
+    median disagreement 0.02%, worst 1.10%. Bounded at 5% for glyph-centre and one-decimal rounding
+    on rungs that can sit only ~15 pt apart; a genuine axis mix-up would show as a whole aspect
+    ratio, far outside it.
+    """
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+    import statistics
+    checked, problems = 0, []
+    for ref in CORPUS:
+        pdf = os.path.join(ROOT, "courses", ref, "greenbook.pdf")
+        if not os.path.exists(pdf):
+            continue
+        cfg, _rh = _engine(ref)
+        cw, ch, gut = cfg.CARD_W_IN*72, cfg.CARD_H_IN*72, cfg.GUTTER_IN*72
+        pw, ph = cfg.PAGE_W_IN*72, cfg.PAGE_H_IN*72
+        gx0 = (pw - (cfg.COLS*cw + (cfg.COLS-1)*gut)) / 2
+        gy0 = (ph - (cfg.ROWS*ch + (cfg.ROWS-1)*gut)) / 2
+        slots = []
+        for j in range(cfg.PER):
+            r, c = divmod(j, cfg.COLS)
+            x, y = gx0 + c*(cw+gut), gy0 + r*(ch+gut)
+            slots.append(fitz.Rect(x, y, x+cw, y+ch))
+        with fitz.open(pdf) as d:
+            for page in d:
+                spans = [sp for blk in page.get_text("dict")["blocks"]
+                         for ln in blk.get("lines", []) for sp in ln.get("spans", [])]
+                draws = page.get_drawings()
+                for s in slots:
+                    cap = [sp for sp in spans
+                           if sp["text"].strip() == "5 yd" and s.contains(fitz.Rect(sp["bbox"]))]
+                    if not cap:
+                        continue
+                    cb = fitz.Rect(cap[0]["bbox"])
+                    bars = [dr["rect"].width for dr in draws
+                            if s.contains(dr["rect"]) and dr["rect"].height <= 2.0
+                            and dr["rect"].width >= 4
+                            and abs(dr["rect"].y0 - cb.y1) < 12
+                            and abs((dr["rect"].x0 + dr["rect"].x1)/2 - (cb.x0 + cb.x1)/2) < 40]
+                    rungs = sorted(((fitz.Rect(sp["bbox"]).y0 + fitz.Rect(sp["bbox"]).y1)/2,
+                                    int(sp["text"].strip()))
+                                   for sp in spans
+                                   if sp["text"].strip().isdigit() and sp["color"] == 0x8a8a8a
+                                   and int(sp["text"].strip()) % 5 == 0
+                                   and s.contains(fitz.Rect(sp["bbox"])))
+                    rungs.sort(key=lambda t: t[1])
+                    if not bars or len(rungs) < 3:
+                        continue
+                    gaps = [abs(rungs[i+1][0] - rungs[i][0]) / ((rungs[i+1][1] - rungs[i][1]) / 5)
+                            for i in range(len(rungs)-1) if rungs[i+1][1] != rungs[i][1]]
+                    if not gaps:
+                        continue
+                    bar, lad = max(bars), statistics.median(gaps)
+                    checked += 1
+                    off = abs(bar - lad) / lad * 100
+                    if off > 5.0:
+                        problems.append(
+                            f"{ref}: the printed 5 yd bar is {bar:.1f} pt but the depth ladder puts "
+                            f"5 yd at {lad:.1f} pt ({off:.0f}% apart) -- either Rule 4.3 is being "
+                            f"certified against a ruler the map does not obey, or the ladder a "
+                            f"golfer paces off is wrong")
+    assert checked >= 100, f"only {checked} greens compared -- export the books first"
+    assert not problems, "the card's two scale statements disagree:\n  " + "\n  ".join(problems[:8])
+
+
 def test_a_fresh_clone_gets_a_clean_suite():
     """The README promises `pytest tests/` "skip cleanly with no course data". Enforce that promise.
 
