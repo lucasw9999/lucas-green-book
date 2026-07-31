@@ -653,6 +653,45 @@ def test_carries_are_measured_from_the_back_tee():
 
 
 @needs_corpus
+def test_every_green_surface_still_belongs_to_the_hole_that_draws_it():
+    """dem_hd/holeNN.json's green_id must equal the green the CURRENT code binds that hole to.
+
+    The surface and the drawn outline come from the same file, so a card is always internally
+    consistent -- which is the danger. If a re-fetch, a bbox change or a binding change moves which
+    green a hole binds to, the stored surface keeps describing the OLD green and nothing looks wrong:
+    the slope map, the arrows, the depth grid and the footer would all agree with each other about the
+    wrong putting surface.
+
+    Cheap to check and worth having permanently, because three things in this review could have caused
+    it: geo.hole_lines changing which way IS a hole, valley-hi's widened box replacing a hand-traced
+    green with the real OSM one, and fetch_osm re-fetching geometry under existing surfaces."""
+    checked, bad = 0, []
+    for slug in CORPUS:
+        config, _rh = _engine(slug)
+        import geo
+        geom_p = os.path.join(ROOT, "courses", slug, "osm_geom.json")
+        if not os.path.isfile(geom_p):
+            continue
+        els = json.load(open(geom_p))["elements"]
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        loc = config.COURSE.get("location") or {}
+        lines = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        for p_ in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            meta = json.load(open(p_))
+            hn = meta["hole"]
+            if hn not in lines:
+                bad.append(f"{slug} h{hn}: a surface exists for a hole with no centreline")
+                continue
+            g, _ge, _te = geo.match_green(lines[hn]["geometry"], greens, label=f"h{hn}")
+            checked += 1
+            if g.get("id") != meta.get("green_id"):
+                bad.append(f"{slug} h{hn}: surface built for green {meta.get('green_id')} but the hole "
+                           f"now binds to {g.get('id')} -- rebuild that hole's DEM")
+    assert checked >= 150, f"only {checked} surfaces checked; expected the corpus"
+    assert not bad, "green surfaces no longer match their holes:\n  " + "\n  ".join(bad[:8])
+
+
+@needs_corpus
 def test_a_tee_with_no_hole_by_hole_yardages_is_marked():
     """A tee row the book cannot break down must say so.
 
