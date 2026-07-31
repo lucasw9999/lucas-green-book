@@ -2057,6 +2057,66 @@ def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
         pytest.skip("no book has been exported to PDF here (run tools/export_pdf.py)")
 
 
+def test_the_enlarged_edition_never_drops_half_a_ladder_row():
+    """The big-print book may drop a whole row for spacing; it may NOT drop one number OF a row.
+
+    Each row of the corridor ladder is a pair: to-green on the left, from-tee on the right. Dropping
+    the pair is a legible layout decision -- at 2x type two rows 50 yd apart on a short hole really do
+    collide, and four rows that read beat five that overlap. Dropping only the RIGHT number is a
+    different thing: the row still prints, so nothing looks missing, and the reader of the LARGE-print
+    edition silently gets less than the reader of the pocket one. That is backwards, and it happened
+    to 21 numbers on 5 of 54 cards -- monarch-bay 9, 12 and 16 and philadelphia 12 lost their entire
+    from-tee column while the pocket book printed all five.
+
+    The cause was that the two numbers sit in gutters pinned to a fixed 100-unit box, so the room for
+    them never grew with the type; render_hole now widens the BOX on demand (never the map, never the
+    scale) up to what the panel's aspect allows. This test states the invariant rather than the fix,
+    so any future change that trades a from-tee number for space fails here.
+
+    Rendered in-process at both font scales -- no build, no PDF -- so it holds for courses whose books
+    are not on disk.
+    """
+    checked = missing = 0
+    for ref in CORPUS:
+        if not os.path.exists(os.path.join(ROOT, "courses", ref, "osm_geom.json")):
+            continue
+        cfg, rh = _engine(ref)
+
+        def rows(font_scale):
+            """{to_green_yd: from_tee_yd or None} per hole, paired by shared text baseline"""
+            out = {}
+            for hn in sorted(cfg.HOLES):
+                try:
+                    svg, _info = rh.render_hole(hn, cfg.HOLES, font_scale=font_scale)
+                except Exception:
+                    continue
+                vbw = float(re.search(r'viewBox="0 0 ([\d.]+) ', svg).group(1))
+                lanes = {}
+                for x, y, s in re.findall(r'<text x="([\d.]+)" y="([\d.]+)"[^>]*>([^<]+)</text>', svg):
+                    if not s.isdigit():
+                        continue
+                    lanes.setdefault(round(float(y), 1), {})[
+                        "L" if float(x) < vbw / 2 else "R"] = int(s)
+                out[hn] = {v["L"]: v.get("R") for v in lanes.values() if "L" in v}
+            return out
+
+        small, big = rows(1.0), rows(2.0)
+        for hn in small:
+            for yd, ft in small[hn].items():
+                if ft is None:
+                    continue
+                if yd not in big.get(hn, {}):
+                    continue                      # whole row dropped for spacing -- allowed
+                checked += 1
+                if big[hn][yd] != ft:
+                    missing += 1
+                    print(f"  {ref} hole {hn}: the {yd}yd row prints from-tee {ft} in the pocket "
+                          f"book but {big[hn][yd]!r} in the enlarged one")
+    assert checked, "no hole was compared across the two editions -- nothing was verified"
+    assert missing == 0, (f"{missing} ladder row(s) keep their to-green number in the enlarged "
+                          f"edition but lose the from-tee number beside it")
+
+
 def test_no_printed_words_fall_outside_the_card_they_belong_to():
     """Every word on the paper must sit inside a card, because the paper gets CUT along the ticks.
 

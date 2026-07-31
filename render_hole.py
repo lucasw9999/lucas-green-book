@@ -77,6 +77,7 @@ def dist_to_poly_m(pt, poly, em):
                for i in range(len(P)))
 
 
+DIGIT_EM = 0.556                  # Helvetica/Arial Bold digit advance, in em
 PAR3_STRAIGHT_MAX = 1.02          # arc / chord
 
 def par3_exact_from_tee(par, arc_m, chord_m):
@@ -240,22 +241,44 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # viewBox hugs the hole; width normalized to 100 units, height follows the hole's
     # aspect. TB = proportional top/bottom breathing room so labels/trees at the ends
     # are never cut. LG = side gutters for the distance numbers.
-    VBW=100.0; LG=12.0
-    s=(VBW-2*LG)/wW
+    CONTENT_W=100.0; LG=12.0
+    s=(CONTENT_W-2*LG)/wW
     contentH=wH*s
     TB=max(8.0, 0.06*contentH)
     VBH=contentH+2*TB
-    ox=LG-wx0*s; oy=TB-wy0*s
-    def TX(x): return x*s+ox
-    def TY(y): return y*s+oy
+    oy=TB-wy0*s
     # Physically CONSISTENT label sizes on every hole: each hole's viewBox is scaled by
     # `fit` (inches per view-unit) to fill the map column, so we size fonts inversely to
     # `fit` -> the printed text is the same size on every hole regardless of its scale.
     LAY_W_IN=(config.CARD_W_IN-2*0.07)*(1.6/4.0)      # map column width (see .lay flex)
     LAY_H_IN=config.CARD_H_IN-2*0.07-0.50-0.18        # minus header + foot
-    fit=min(LAY_W_IN/VBW, LAY_H_IN/VBH)               # in per view-unit after meet-fit
+    fit=min(LAY_W_IN/CONTENT_W, LAY_H_IN/VBH)         # in per view-unit after meet-fit
     FS=round(0.100/fit*font_scale,1)        # GRN / BLA  (~7.2 pt printed, consistent; scaled up for enlarged editions)
     FSN=round(0.092/fit*font_scale,1)       # distance numbers (~6.6 pt printed, consistent)
+    # The BOX may be wider than the content, because the two gutter numbers have to fit BESIDE the
+    # map and the space for them does not otherwise grow with the type. At font_scale 2 the pair
+    # stopped fitting between the fixed gutters and the from-tee yardage was dropped rather than
+    # overprinted -- 21 numbers on 5 of the enlarged edition's 54 cards, all of them present in the
+    # pocket book. The enlarged edition losing data the small one prints is the wrong trade, and it
+    # was happening while ~65% of the enlarged card's width sat blank: the map is a tall ribbon that
+    # meet-fits by HEIGHT, so widening the box costs nothing at all.
+    #
+    # Demand-driven, so the pocket book is untouched: at 1x nothing needs more room than the 100
+    # units it already has (verified across all 198 holes), so `pad` is 0 and every coordinate,
+    # `fit` and font size below is bit-identical to before.
+    #
+    # The two caps are what keep this honest. `s`, `contentH`, `VBH` and `fit` are all computed from
+    # CONTENT_W, never from the widened box, so the drawn map keeps its size and scale -- the box
+    # only grows OUTWARD. And the box may not out-grow the panel's own aspect ratio, or meet-fit
+    # would start fitting by width and shrink the map to buy room for its labels, which is the same
+    # mistake in the other direction.
+    need_w = 18.0 + 2*(DIGIT_EM*FSN*3) + 0.24*FSN     # 9-unit gutters + two 3-digit numbers + halos
+    box_cap = VBH * (LAY_W_IN/LAY_H_IN)               # widest box that still meet-fits by height
+    VBW = max(CONTENT_W, min(need_w, box_cap))
+    pad = (VBW-CONTENT_W)/2.0
+    ox=LG+pad-wx0*s
+    def TX(x): return x*s+ox
+    def TY(y): return y*s+oy
     def path(g,close=True):
         d="M "+" L ".join(f"{TX(x):.1f},{TY(y):.1f}" for x,y in poly_pts(g))
         return d+(" Z" if close else "")
@@ -303,6 +326,10 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # line. Both are drawn in the frame gutters; a row is dropped if it would collide vertically
     # with the row above, and the right number is dropped if the two would overprint horizontally.
     def etxt(x, y, sn, fill, anchor):
+        # `:g` on a rounded x, for the same reason the viewBox uses it: the right gutter is now
+        # VBW-9 rather than the literal 91, and a bare float would print "91.0" and rewrite every
+        # pocket book's bytes without moving a single glyph.
+        x = f"{round(x,1):g}"
         return (f'<text x="{x}" y="{y:.1f}" font-size="{FSN:.1f}" text-anchor="{anchor}" '
                 f'paint-order="stroke" stroke="#fff" stroke-width="{FSN*0.28:.1f}" fill="{fill}" font-weight="700">{sn}</text>')
     total_yd = HOLES[hnum][_cfg.BACK_I]       # the tee THIS BOOK is built on (config.BACK_I)
@@ -439,7 +466,6 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # Vertical guard: one printed row needs ~0.998*FSN of baseline separation (0.718 cap height +
     # two 0.14 halo strokes), so 1.35 clears it with margin while not needlessly dropping the
     # radius-spaced ticks. Measured tightest realised gap: 1.365*FSN (coach edition, bay-view h9).
-    DIGIT_EM = 0.556                          # Helvetica/Arial Bold digit advance
     for Y0,Xc,yd,ft in cands:
         if Y0-lastY < FSN*1.35:
             continue
@@ -452,7 +478,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         wl = DIGIT_EM*FSN*len(str(yd))
         wr = DIGIT_EM*FSN*len(str(ft)) if ft is not None else 0.0
         left_end  = 9 + wl + 0.12*FSN
-        right_beg = (91 - wr - 0.12*FSN) if ft is not None else 100.0
+        right_beg = (VBW-9 - wr - 0.12*FSN) if ft is not None else VBW
         show_ft = ft is not None and left_end <= right_beg
         # The tick MARK must not sit under a number either: at 2x the labels reach far enough in
         # that the mark was drawn beneath their halos (67 of 814 rows). Clip it to the clear band,
@@ -465,13 +491,13 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # the whole clear band between the two numbers instead, dashed and light so five of them
         # crossing a long hole read as guides rather than as fairway features.
         mx0 = left_end
-        mx1 = right_beg if show_ft else 100.0
+        mx1 = right_beg if show_ft else VBW
         if mx1 - mx0 >= 2.0:
             rings += (f'<line x1="{mx0:.1f}" y1="{Y0:.1f}" x2="{mx1:.1f}" y2="{Y0:.1f}" '
                       f'stroke="#b4b4b4" stroke-width="0.45" stroke-dasharray="1.6,1.6"/>')
         rings += etxt(9, Y0+FSN*0.35, str(yd), "#2f5a26", "start")      # LEFT = to green
         if show_ft:
-            rings += etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")   # RIGHT = from back tee
+            rings += etxt(VBW-9, Y0+FSN*0.35, str(ft), "#7a4a12", "end")   # RIGHT = from back tee
 
     # --- CARRY DISTANCES to the bunkers a tee shot has to deal with ---------------------------
     # Standard yardage-book content the card was missing. proj() already gives along-line distance
@@ -546,7 +572,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             merged.append([a, b])
     carries = [(round(a), round(b)) for a, b in merged][:3]
 
-    vb=f"0 0 100 {VBH:.1f}"
+    # `:g` on a rounded value, not `:.1f`: an un-widened box must print as the bare "100" it always
+    # did, or all 12 pocket books change bytes for a purely cosmetic reason.
+    vb=f"0 0 {round(VBW,1):g} {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
          f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
          f'{trow_svg}{tdot_svg}{rings}{labels}</svg>')
