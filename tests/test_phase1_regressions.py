@@ -1068,6 +1068,35 @@ def test_hole_line_choice_does_not_depend_on_element_order():
     assert len(msgs) == 1, "the refusal message depends on element order"
 
 
+@needs_corpus
+def test_the_card_footer_cannot_break_mid_phrase():
+    """The footer must wrap BETWEEN its two spans, never inside one.
+
+    On a 5-tee course three "other" tees make the right span 44 characters, too long to share a line with
+    the left one on a 3.5 in card -- so it wrapped, and without these rules it broke mid-phrase:
+    monarch-bay orphaned "3.1%" onto its own line and split "Gol403 / Gre338 /" from "Red288", on holes 1,
+    3 and 5. Five courses have five tee columns (callippe, copper-valley, monarch-bay, poppy, the-reserve).
+
+    Exactly the fault the playline had, which is why that row was given its own line. Asserted on the CSS
+    because text layout cannot be measured here -- crude, but it pins the two rules the fix depends on,
+    and losing either brings the orphaning straight back."""
+    checked = 0
+    for slug in CORPUS:
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        if not os.path.isfile(book):
+            continue
+        html = open(book, encoding="utf-8").read()
+        if '<div class="foot">' not in html:
+            continue
+        checked += 1
+        assert "flex-wrap: wrap" in html, (
+            f"{slug}: .foot has no flex-wrap, so an over-long span breaks mid-phrase instead of the "
+            f"footer moving to a second line")
+        assert ".foot span" in html and "white-space: nowrap" in html, (
+            f"{slug}: .foot span is not nowrap, so a phrase can still be split across lines")
+    assert checked >= 10, f"only {checked} books checked"
+
+
 def test_both_editions_share_one_playline_definition():
     """The pocket and enlarged cards must build the tee-shot row from the SAME code.
 

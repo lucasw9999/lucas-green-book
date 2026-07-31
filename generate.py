@@ -617,7 +617,13 @@ def main():
   .ynote {{ flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: space-between; padding-bottom: 2px; }}
   .ynote .nl {{ border-bottom: 1px solid #cfcfcf; height: 1px; }}
   .minilab {{ position: absolute; top: 0; left: 1px; font-size: 5.5pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
-  .foot {{ display: flex; justify-content: space-between; font-size: 7.5pt; color: #999; margin-top: 1px; }}
+  /* flex-wrap + nowrap spans: the footer is too long to fit one line on a 5-tee course (three
+     "other" tees make the right span 44 characters), and without these it broke MID-PHRASE --
+     monarch-bay orphaned "3.1%" on its own line and split "Gol403 / Gre338 /" from "Red288".
+     The same fault the playline had. Wrapping BETWEEN the two spans is fine; inside one is not. */
+  .foot {{ display: flex; flex-wrap: wrap; justify-content: space-between; font-size: 7.5pt;
+           color: #999; margin-top: 1px; }}}}
+  .foot span {{{{ white-space: nowrap; }}}}
   .playline {{ font-size: 7.5pt; color: #777; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .sheettab {{ position: absolute; top: 2px; right: 5px; font-size: 7pt; color: #bbb; }}
 
@@ -969,7 +975,13 @@ def build_coach(coach_name=""):
   .cmap {{ flex: 1; min-height: 0; position: relative; margin: 2px 0; }}
   .cmap svg {{ width: 100%; height: 100%; }}
   .minilab {{ position: absolute; top: 0; left: 1px; font-size: 7pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
-  .foot {{ display: flex; justify-content: space-between; font-size: 8pt; color: #999; margin-top: 1px; }}
+  /* flex-wrap + nowrap spans: the footer is too long to fit one line on a 5-tee course (three
+     "other" tees make the right span 44 characters), and without these it broke MID-PHRASE --
+     monarch-bay orphaned "3.1%" on its own line and split "Gol403 / Gre338 /" from "Red288".
+     The same fault the playline had. Wrapping BETWEEN the two spans is fine; inside one is not. */
+  .foot {{ display: flex; flex-wrap: wrap; justify-content: space-between; font-size: 8pt;
+           color: #999; margin-top: 1px; }}}}
+  .foot span {{{{ white-space: nowrap; }}}}
   .playline {{ font-size: 8pt; color: #777; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .cover {{ position: relative; overflow: hidden; padding: 0; }}
   .gtitle, .cardtitle {{ font-size: 12pt; font-weight: 800; color: #2b6a2b; border-bottom: 2px solid #2b6a2b; padding-bottom: 2px; margin-bottom: 4px; }}
