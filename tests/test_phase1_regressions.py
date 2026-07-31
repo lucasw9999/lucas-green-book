@@ -2057,6 +2057,95 @@ def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
         pytest.skip("no book has been exported to PDF here (run tools/export_pdf.py)")
 
 
+def test_every_duplex_back_lands_behind_its_own_front():
+    """The one defect that would ruin every PHYSICAL copy while every digital check stayed green.
+
+    A book is printed two-sided and cut up. Leaf L is card 2L+1 on the front and 2L+2 on the back, and
+    the sheet tells the printer to flip on the LONG edge -- which for portrait paper turns the sheet
+    about its vertical axis and so mirrors it left-to-right. generate.py compensates by placing each
+    back card in the column-mirrored slot. Get that backwards and hole 4's green prints behind hole
+    6's map: the PDF looks perfect on screen, every yardage is right, the scale conforms, and the
+    error only exists once paper comes out of the printer. Nothing here could have caught it.
+
+    Three things are asserted, measured off the exported PDF rather than the HTML, because it is the
+    paper that has to be right:
+      * every back card is on the page immediately after its front;
+      * mirroring a back card's slot about the page's vertical centreline lands it exactly on its
+        front's slot, to half a point;
+      * exactly one back is printed upright and it is the LAST card. The other backs are rotated 180
+        so they read the right way up when the cut card is flipped over its top edge; the dedication
+        is the back cover of the finished book and must read upright, which is is_upright_back's job.
+
+    Cards are located by the small grey `.pageno` number in their corner -- the artifact's own label,
+    not a recomputed guess.
+    """
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+    checked, problems = 0, []
+    for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
+        ref = os.path.basename(os.path.dirname(f))
+        if ref.startswith("_"):
+            continue
+        cfg, _rh = _engine(ref)
+        cw, ch, gut = cfg.CARD_W_IN*72, cfg.CARD_H_IN*72, cfg.GUTTER_IN*72
+        pw, ph = cfg.PAGE_W_IN*72, cfg.PAGE_H_IN*72
+        gx0 = (pw - (cfg.COLS*cw + (cfg.COLS-1)*gut)) / 2
+        gy0 = (ph - (cfg.ROWS*ch + (cfg.ROWS-1)*gut)) / 2
+        slots = {}
+        for j in range(cfg.PER):
+            r, c = divmod(j, cfg.COLS)
+            x, y = gx0 + c*(cw+gut), gy0 + r*(ch+gut)
+            slots[j] = fitz.Rect(x, y, x+cw, y+ch)
+        loc = {}
+        with fitz.open(f) as d:
+            for pno, page in enumerate(d):
+                for blk in page.get_text("dict")["blocks"]:
+                    for ln in blk.get("lines", []):
+                        for sp in ln.get("spans", []):
+                            t = sp["text"].strip()
+                            if not t.isdigit() or not (7.5 <= sp["size"] <= 8.5):
+                                continue
+                            if sp["color"] not in (0xbbbbbb, 0xcccccc):   # .pageno grey
+                                continue
+                            b = fitz.Rect(sp["bbox"])
+                            for j, s in slots.items():
+                                if s.contains(b):
+                                    loc.setdefault(int(t), []).append(
+                                        (pno, j, tuple(round(v, 1) for v in ln["dir"])))
+        name = f"{ref}/{os.path.basename(f)}"
+        if not loc:
+            problems.append(f"{name}: no card numbers found -- the check verified nothing")
+            continue
+        dup = sorted(n for n in loc if len(loc[n]) != 1)
+        if dup:
+            problems.append(f"{name}: card number(s) {dup} appear in more than one slot")
+        last = max(loc)
+        for L in range((last + 1) // 2):
+            fr, bk = 2*L+1, 2*L+2
+            if fr not in loc or bk not in loc:
+                continue
+            (pf, jf, _df), (pb, jb, db) = loc[fr][0], loc[bk][0]
+            sf, sb = slots[jf], slots[jb]
+            checked += 1
+            if pb != pf + 1:
+                problems.append(f"{name}: card {bk} is on page {pb+1}, not behind card {fr} "
+                                f"on page {pf+1}")
+            if abs((pw - sb.x1) - sf.x0) > 0.5 or abs(sb.y0 - sf.y0) > 0.5:
+                problems.append(f"{name}: card {bk} does not land behind card {fr} after a "
+                                f"long-edge flip (slot {jb} vs {jf}) -- the back of a leaf would "
+                                f"carry a different hole's page")
+            upright = db == (1.0, 0.0)
+            if upright != (bk == last):
+                problems.append(f"{name}: card {bk} prints "
+                                f"{'upright' if upright else 'rotated 180'} but "
+                                f"{'only the last card may be upright' if upright else 'the last card must be upright'}")
+    assert checked, "no leaf was checked -- export a book first (tools/export_pdf.py)"
+    assert not problems, ("duplex imposition is wrong -- printed copies would be mis-assembled:\n  "
+                          + "\n  ".join(problems[:10]))
+
+
 def test_the_enlarged_edition_never_drops_half_a_ladder_row():
     """The big-print book may drop a whole row for spacing; it may NOT drop one number OF a row.
 
