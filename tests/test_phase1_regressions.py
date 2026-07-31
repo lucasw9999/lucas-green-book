@@ -653,6 +653,40 @@ def test_carries_are_measured_from_the_back_tee():
 
 
 @needs_corpus
+def test_no_recorded_source_is_lost_to_truncation():
+    """Every source recorded for a course must appear UNCUT somewhere in legal/03.
+
+    The table shortens the Scorecard column to 190 characters to stay readable, and that cut twice threw
+    away real provenance -- the basis for philadelphia's pre-rebuild caveat, and five courses' rating and
+    slope sources, all written into that one field. It also hid bay-view's "CORRECTED 2026-07-17 --
+    earlier Blue/White/Red data was wrong (those tees don't exist on this course)", which is exactly the
+    kind of thing a provenance document exists to carry.
+
+    The cut is fine; losing the text was not. A "Sources in full" section now reproduces everything, and
+    this test is what keeps the two in step -- otherwise a longer note added tomorrow disappears again
+    with nothing to notice."""
+    doc = open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")).read()
+    assert "## Sources in full" in doc, "the full-text section is gone; truncation is lossy again"
+    tail = " ".join(doc.split("## Sources in full", 1)[1].split())
+    missing, checked = [], 0
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        j = json.load(open(cj))
+        for key, val in sorted((j.get("sources") or {}).items()):
+            val = " ".join(str(val).split())
+            if not val:
+                continue
+            checked += 1
+            if val not in tail:
+                missing.append(f"{slug}.sources.{key}: {val[:70]}...")
+    assert checked >= 20, f"only {checked} recorded sources checked"
+    assert not missing, ("recorded source text does not appear in full in legal/03:\n  "
+                         + "\n  ".join(missing[:6]))
+
+
+@needs_corpus
 def test_every_printed_rating_is_either_cited_or_visibly_uncited():
     """The Rating/Slope table is printed on every card; legal/03 must say where each course's came from.
 
