@@ -595,6 +595,25 @@ def is_upright_back(card_index, ncards):
     return card_index == ncards - 1
 
 
+def _deck_thirds(nums):
+    """[(lo, hi, "lo-hi")] for the three thumb-index groups, derived from the holes present.
+
+    Derived rather than hardcoded so a 9-hole book gets 1-3 / 4-6 / 7-9 and an 18-hole one 1-6 / 7-12 /
+    13-18, instead of the old 6/8/4 which came from two hand-written branches."""
+    n = len(nums)
+    if n == 0:
+        return []
+    cut = [nums[0] - 1] + [nums[min((i + 1) * n // 3, n) - 1] for i in range(3)]
+    out, seen = [], set()
+    for i in range(3):
+        lo, hi = cut[i] + 1, cut[i + 1]
+        if hi < lo or (lo, hi) in seen:
+            continue
+        seen.add((lo, hi))
+        out.append((lo, hi, f"{lo}\u2013{hi}"))
+    return out
+
+
 def main():
     yardage = (config.BUILD_MODE == "yardage")
     if not yardage:
@@ -603,11 +622,15 @@ def main():
             LAYOUTS[h] = render_hole.render_hole(h, HOLES)
     # flat, ordered deck of cards (cut-and-stack, top-bound)
     panels = [cover_panel(), yardage_guide_panel() if yardage else guide_panel()]
+    # The corner tab is a THUMB INDEX -- which third of the cut deck this card is in -- and it used to
+    # read "Front" / "Mid" / "Finish". "Front" means holes 1-9 in golf, universally, and it was being
+    # used here for 1-6 while the SAME BOOK's scorecard splits Out 1-9 / In 10-18. So one book grouped
+    # its own holes two ways and a junior looking under "Front" for hole 8 found it tabbed "Mid".
+    # Literal ranges cannot collide with a golf term, state the grouping instead of naming it, and make
+    # the uneven split visible rather than surprising.
+    thirds = _deck_thirds(config.HOLE_NUMS)
     for h in config.HOLE_NUMS:
-        if config.NHOLES <= 9:
-            grp = "Front" if h <= 3 else ("Mid" if h <= 6 else "Finish")
-        else:
-            grp = "Front" if h <= 6 else ("Mid" if h <= 14 else "Finish")
+        grp = next(lbl for lo, hi, lbl in thirds if lo <= h <= hi)
         panels.append(yardage_hole_panel(h, grp) if yardage else hole_panel(h, grp))
     panels += [scorecard_panel(), tees_panel(),
                notes_panel(f"Notes {config.HOLE_NUMS[0]}-{config.HOLE_NUMS[-1]}"

@@ -584,6 +584,62 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+@needs_corpus
+def test_no_hole_grouping_uses_a_golf_term_with_the_wrong_meaning():
+    """One book must not group its own holes two different ways, and must not redefine "front".
+
+    The corner tab is a thumb index -- which third of the cut deck a card sits in -- and it read
+    "Front" / "Mid" / "Finish". In golf "front" means holes 1-9, universally; here it meant 1-6, while
+    the SAME book's scorecard splits Out 1-9 / In 10-18. So a junior looking under "Front" for hole 8
+    found it tabbed "Mid", and the book answered "which holes are the front?" two ways.
+
+    The split was also uneven -- 6/8/4 on eighteen holes -- because it came from two hand-written
+    branches rather than from the holes present.
+
+    Now literal ranges, derived: 1-6 / 7-12 / 13-18 on eighteen, 1-3 / 4-6 / 7-9 on nine. A range
+    cannot collide with a golf term because it states the grouping instead of naming it.
+
+    Asserted two ways. No tab may reuse a scorecard word (front, back, out, in) -- which is the
+    ambiguity itself, not a style preference -- and the thirds must be within one card of even, which
+    is what a thumb index is for.
+    """
+    WORDS = ("front", "back", "out", "in")
+    checked = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        groups = {}
+        for blk in re.split(r'<div class="panel ', html)[1:]:
+            if not re.match(r'hole[\s"]', blk):
+                continue
+            hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            st = re.search(r'<div class="sheettab">([^<]*)</div>', blk)
+            if hn and st:
+                groups.setdefault(st.group(1).strip(), []).append(int(hn.group(1)))
+        if not groups:
+            continue
+        checked += 1
+        for label, holes in groups.items():
+            assert label.lower() not in WORDS, (
+                f"{ref}/{os.path.basename(p)}: a corner tab reads {label!r} and covers holes "
+                f"{min(holes)}-{max(holes)}, but the scorecard in the same book uses that word for a "
+                f"different set -- one book, two meanings for one golf term")
+            assert re.fullmatch(r"\d+[\u2013-]\d+", label), (
+                f"{ref}/{os.path.basename(p)}: the tab {label!r} names a grouping instead of stating "
+                f"it; a literal range cannot be misread")
+        sizes = sorted(len(v) for v in groups.values())
+        assert sizes[-1] - sizes[0] <= 1, (
+            f"{ref}/{os.path.basename(p)}: the thumb index splits the deck {sizes}, which is not "
+            f"thirds -- fanning to a group lands in the wrong place")
+        # ...and the groups must partition the holes, with no hole in two tabs or none
+        allh = sorted(h for v in groups.values() for h in v)
+        assert len(allh) == len(set(allh)), f"{ref}: a hole appears under two different tabs"
+    assert checked >= 10, f"only {checked} books checked -- build them first"
+
+
 def test_the_qr_code_says_where_it_goes():
     """A QR sits under "VISIT lucasgreenbook.org" and does NOT go there. It must say so.
 
@@ -1988,8 +2044,16 @@ def test_a_nine_hole_course_is_a_first_class_course(tmp_path):
     assert "len(HOLE_NUMS)" in open(os.path.join(ROOT, "config.py"), encoding="utf-8").read(), \
         "NHOLES must be derived from the file's own holes, never a constant"
     gen = open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read()
-    assert "config.NHOLES <= 9" in gen, \
-        "the scorecard must collapse OUT/IN for a nine-hole card"
+    # Anchored on scorecard_panel's OWN branch. This used to match "config.NHOLES <= 9", which lived
+    # in the thumb-tab code and had nothing to do with the scorecard -- so the assertion passed for the
+    # wrong reason for as long as that unrelated line happened to exist, and only broke when the tab
+    # code was rewritten. A proxy string is not the thing.
+    sc = gen[gen.index("def scorecard_panel"):]
+    sc = sc[:sc.index("\ndef ")]
+    assert "len(nums) <= 9" in sc, \
+        "scorecard_panel must collapse OUT/IN into one Total for a nine-hole card"
+    assert "no front/back split" in sc, \
+        "the nine-hole scorecard branch must say why it has no front/back split"
 
 
 def test_nothing_tracked_carries_a_work_identity_or_a_home_path():
