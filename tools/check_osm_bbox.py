@@ -27,6 +27,21 @@ geometry OSM already had, and then look like a data-availability problem rather 
 What is checked: every printed hole's drawing corridor (render_hole's 45 m) must lie inside the box.
 Reported in metres of overshoot per hole, worst first.
 
+ALREADY INVESTIGATED, so a shortfall here is not automatically a defect. As of 2026-07-31 four courses
+are short and were each probed live against Overpass with a 120 m-widened box, and NO drawn feature is
+missing on any of them:
+
+    castlewood-hill      28 m short (holes 6, 17, 18, 8, 13)   4 features outside, 0 in a corridor
+    castlewood-valley    28 m short                            22 features outside, 0 in a corridor
+    copper-valley        16 m short (hole 5)                    -- 0 in a corridor
+    monarch-bay          18 m short (hole 15)                   -- 0 in a corridor
+
+They are left alone deliberately. Widening a box forces a re-fetch, and a re-fetch pulls whatever else
+has changed upstream in OSM since the last one -- so it would risk changing four books for reasons
+unrelated to the fix, to gain nothing measurable. Re-probe before acting on these; do not assume a
+shortfall means a missing feature, and do not assume it does not (valley-hi's 46 m hid two bunkers, a
+green and a hole line).
+
 Exit codes:  0 every corridor is inside the box
              1 at least one hole draws from outside it -- widen osm_bbox and re-fetch
              2 nothing could be checked
