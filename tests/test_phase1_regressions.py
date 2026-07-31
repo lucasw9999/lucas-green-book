@@ -463,6 +463,64 @@ def test_every_printed_caveat_matches_the_data_behind_it():
 
 
 @needs_corpus
+def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
+    """"37yd deep" in the footer and the 5-yd rungs on the map must be measuring one green.
+
+    A player uses them together: the footer to size the green at a glance, the ladder to place the
+    pin within it. They are computed apart -- depth_yd from the polygon extent in the approach frame,
+    the rungs by stepping 4.572/px_m from the front edge -- so nothing forced them to agree, and a
+    disagreement is invisible on the page because each looks reasonable alone.
+
+    The deepest rung must be a multiple of 5 lying within one rung of the stated depth: for a green
+    printed as 37 yd deep the ladder ends at 35, and the rungs below it are every 5 yd from the front.
+
+    The window is [depth-5, depth] rather than an exact value, and that is a real property of the two
+    numbers, not slack for its own sake. The footer rounds -- int(round(depth_yd)) -- while the ladder
+    walks the true float and stops strictly before the back edge. So a green measuring 29.6 yd prints
+    "30yd deep" and DOES draw a rung at 30, while one measuring 30.4 also prints "30" and stops at 25.
+    Both are right. Across the corpus 11 cards draw the back-edge rung and 22 do not, and the two
+    groups are separated by nothing more than a sub-yard remainder the card never shows.
+
+    Getting that wrong is how this test was first written -- as an exact identity that the 11 legitimate
+    cards failed. Recorded because the tempting fix is to "correct" the engine to match the assertion.
+
+    What the window still catches is everything that actually matters: rungs not stepped every 5 yd,
+    a ladder measuring the width instead of the depth on a non-square green, a front/back swap, or a
+    ladder stepped in metres -- all of which miss by more than one rung on most holes.
+    """
+    checked, problems = 0, []
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        for blk in re.split(r'<div class="panel ', html)[1:]:
+            if not blk.startswith('hole"'):
+                continue
+            hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            dm = re.search(r"(\d+)yd deep", blk)
+            if not (hm and dm):
+                continue
+            rungs = [int(x) for x in re.findall(r'fill="#8a8a8a"[^>]*>(\d+)</text>', blk)]
+            if not rungs:
+                continue
+            checked += 1
+            depth, deepest = int(dm.group(1)), max(rungs)
+            if not (depth - 5 <= deepest <= depth):
+                problems.append(
+                    f"{ref} hole {hm.group(1)}: footer says {depth}yd deep but the ladder's deepest "
+                    f"rung is {deepest} -- more than one rung apart, so the two numbers are not "
+                    f"measuring the same green")
+            if sorted(rungs) != list(range(5, deepest + 1, 5)):
+                problems.append(f"{ref} hole {hm.group(1)}: ladder rungs {sorted(rungs)} are not "
+                                f"every 5 yd from the front edge")
+    assert checked >= 150, f"only {checked} cards checked -- build the books first"
+    assert not problems, ("the printed depth and the depth ladder disagree:\n  "
+                          + "\n  ".join(problems[:8]))
+
+
+@needs_corpus
 def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
     """A green card states its scale twice. Both statements must mean the same yard.
 
