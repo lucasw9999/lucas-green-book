@@ -584,6 +584,47 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+def test_the_qr_code_says_where_it_goes():
+    """A QR sits under "VISIT lucasgreenbook.org" and does NOT go there. It must say so.
+
+    The code on the dedication card is an INSTAGRAM QR -- Instagram logo, brand gradient, labelled
+    LUCASWU.GOLF. It is printed directly beneath the line inviting the reader to visit the website, so
+    a twelve-year-old scans the square expecting lucasgreenbook.org and arrives at a social profile.
+    Nothing on the page said otherwise; the only distinguishing mark was the logo baked into the image,
+    which is exactly the kind of detail a reader skips.
+
+    The caption class `.dqrcap` was already defined for this, including an Instagram-purple rule for a
+    <b> inside it, and was never emitted -- so the caption had been intended and was lost. Now it
+    prints "Instagram @lucaswu.golf".
+
+    Asserted as a relationship, not a string: if a book invites the reader to a URL and also carries a
+    QR image, the QR must be labelled. Both halves must be present because either alone is fine -- a
+    website line with no QR, or a QR with no competing URL beside it.
+    """
+    checked = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        has_qr = bool(re.search(r'class="dqr"', html))
+        invites = bool(re.search(r"lucasgreenbook\.org", html))
+        if not (has_qr and invites):
+            continue
+        checked += 1
+        assert re.search(r'class="dqrcap"', html), (
+            f"{ref}/{os.path.basename(p)} prints a QR code beneath an invitation to visit "
+            f"lucasgreenbook.org, but nothing labels where the QR actually goes -- it is an Instagram "
+            f"code, and a reader will scan it expecting the website")
+        cap = re.search(r'class="dqrcap">(.*?)</div>', html, re.S)
+        flat = " ".join(re.sub(r"<[^>]+>", "", cap.group(1)).split())
+        assert re.search(r"instagram", flat, re.I), (
+            f"{ref}/{os.path.basename(p)}: the QR caption reads {flat!r}, which does not name the "
+            f"destination")
+    assert checked >= 10, f"only {checked} books carried both a QR and a website line"
+
+
 @needs_corpus
 def test_nothing_is_drawn_off_the_putting_surface():
     """Every mark on a green map claims something about ground you can putt on. Verify it is.

@@ -539,7 +539,13 @@ def legend_panel():
     flag = ('<svg width="26" height="26" viewBox="0 0 26 26">'
             '<line x1="9" y1="4" x2="9" y2="22" stroke="#b8860b" stroke-width="1.6" stroke-linecap="round"/>'
             '<path d="M9 4 L20 8 L9 12 Z" fill="#b8860b"/></svg>')
-    qr = (f'<div class="dqr"><img src="{IG_QR}" alt="@lucaswu.golf"/></div>') if IG_QR else ""
+    # The caption is not decoration. This QR is an INSTAGRAM code and it sits directly under
+    # "VISIT lucasgreenbook.org", so a reader -- a twelve-year-old -- scans it expecting the website
+    # and lands on a social profile. The only thing distinguishing them was the logo baked into the
+    # image. `.dqrcap` was defined for this, complete with an Instagram-purple rule for its <b>, and
+    # never emitted; the caption had clearly been intended and was lost.
+    qr = (f'<div class="dqr"><img src="{IG_QR}" alt="@lucaswu.golf"/>'
+          f'<div class="dqrcap">Instagram <b>@lucaswu.golf</b></div></div>') if IG_QR else ""
     return f'''<div class="panel dedic">
   <div class="dcrest">{flag}</div>
   <div class="dtitle">For every junior golfer</div>
