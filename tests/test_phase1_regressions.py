@@ -584,6 +584,70 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+def test_a_personal_aerial_reference_is_honest_about_what_it_is():
+    """The aerial sheet is a shipped artifact that NO test touched, and it makes three claims.
+
+    poppy-ridge is yardage mode -- no OSM geometry, blank greens -- so it ships an extra
+    aerial_reference_PERSONAL.pdf: a NAIP photo of the course with its own full scorecard. It is
+    outside CORPUS (no geometry), outside BOOKS (not a greenbook), and outside export_pdf's freshness
+    stamp, so nothing verified any of it.
+
+    Three things it must get right, each a live risk for this project:
+      * imagery provenance. It is public-domain USDA NAIP, and it says so, and it states plainly that
+        no Esri/Maxar, Google or Apple imagery was used. That sentence is the project's whole IP
+        posture on one page; it must not quietly disappear.
+      * the personal marking. It shows a PRE-2025 layout of a course rebuilt in 2025, so it is not
+        merely undistributable, it is actively out of date. The filename says PERSONAL and so must the
+        page.
+      * its scorecard. It reprints all five tees hole by hole -- 90 yardages -- which is more tee
+        detail than the book itself carries. Nothing checked them against course.json.
+    """
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+    sheets = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "aerial_reference*.pdf")))
+    if not sheets:
+        pytest.skip("no aerial reference sheet built")
+    for p in sheets:
+        ref = os.path.basename(os.path.dirname(p))
+        with fitz.open(p) as d:
+            text = " ".join(d[i].get_text() for i in range(len(d)))
+            text = " ".join(text.split())
+            n_img = sum(len(d.get_page_images(i)) for i in range(len(d)))
+        assert n_img >= 1, f"{ref}: the aerial sheet embeds no image at all"
+        assert "NAIP" in text, f"{ref}: the aerial does not name its imagery source"
+        assert re.search(r"public.domain", text, re.I), \
+            f"{ref}: the aerial does not state that its imagery is public domain"
+        assert re.search(r"No Esri/Maxar, Google, or Apple imagery", text), (
+            f"{ref}: the aerial has lost the sentence disclaiming commercial imagery -- that line is "
+            f"this project's IP posture stated on the page")
+        assert "PERSONAL" in text, (
+            f"{ref}: the sheet is named PERSONAL but the PAGE does not say so, and a printed page "
+            f"outlives its filename")
+
+        cj = os.path.join(ROOT, "courses", ref, "course.json")
+        with open(cj, encoding="utf-8") as fh:
+            course = json.load(fh)
+        holes, ncol = course["holes"], len(course["hole_cols"])
+        if "H Par HCP" not in text:
+            continue                       # a sheet with no scorecard has nothing more to check
+        nums = [int(x) for x in re.findall(r"\b\d+\b", text[text.index("H Par HCP"):])]
+        rows, i = {}, 0
+        while i + ncol < len(nums) and len(rows) < len(holes):
+            if nums[i] == len(rows) + 1:
+                rows[nums[i]] = nums[i+1:i+1+ncol]
+                i += 1 + ncol
+            else:
+                i += 1
+        assert len(rows) == len(holes), (
+            f"{ref}: parsed {len(rows)} of {len(holes)} scorecard rows off the aerial")
+        for hn, got in sorted(rows.items()):
+            want = list(holes[str(hn)])
+            assert got == want, (f"{ref} hole {hn}: the aerial's scorecard row {got} does not match "
+                                 f"course.json {want} -- two artifacts of one course disagree")
+
+
 @needs_corpus
 def test_the_book_says_which_stroke_index_it_prints():
     """"HCP 15" appears on every card and decides where a player takes their handicap strokes.
