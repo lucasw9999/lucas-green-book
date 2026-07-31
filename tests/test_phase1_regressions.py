@@ -653,6 +653,42 @@ def test_carries_are_measured_from_the_back_tee():
 
 
 @needs_corpus
+def test_a_pre_rebuild_caveat_carries_its_basis():
+    """"Rebuilt after the flight" is an assertion about real cards; it must cite why.
+
+    Philadelphia marks its whole back nine pre-rebuild -- 9 of 18 cards -- and the evidence (a phased
+    Flynn restoration; the front nine reopened 2024, before the Dec 2024-Mar 2025 flight, the back nine
+    after it) was recorded inside sources.scorecard. legal/03 truncates that field to its first sentence,
+    so the justification never reached the row making the claim: a reader auditing the caveat saw the
+    assertion with no basis, in a table whose entire purpose is traceability.
+
+    This project cites its yardages to three cross-checked sources. A caveat printed on nine cards has to
+    meet the same bar."""
+    doc = open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")).read()
+    checked = 0
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        j = json.load(open(cj))
+        stale = j.get("greens_possibly_outdated") or []
+        if not stale:
+            continue
+        checked += 1
+        basis = str(j.get("greens_outdated_basis") or "").strip()
+        assert basis, (f"{slug} labels greens {stale} pre-rebuild data on {len(stale)} cards with no "
+                       f"recorded basis -- add greens_outdated_basis to course.json")
+        name = j.get("name", slug)
+        line = next((l for l in doc.splitlines() if l.startswith("| " + name + " |")), None)
+        assert line, f"{name} has no provenance row"
+        assert "basis not recorded" not in line, f"{name}: legal/03 reports the basis as unrecorded"
+        head = " ".join(basis.split()[:6])
+        assert head in " ".join(line.split()), (
+            f"{name}: the pre-rebuild basis does not reach legal/03 (looked for {head!r})")
+    assert checked, "no course marks any green pre-rebuild, so this claim is untested"
+
+
+@needs_corpus
 def test_a_book_that_may_not_be_shared_says_so_on_the_page():
     """A non-distributable book must not print a free-to-share licence.
 

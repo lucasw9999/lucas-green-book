@@ -183,8 +183,15 @@ def _row(slug):
     if elev_note:
         notes.append(elev_note)
     if stale:
-        notes.append(f"greens on holes {', '.join(str(h) for h in stale)} were **rebuilt after the "
-                     f"flight** — those cards are labelled *pre-rebuild data*")
+        # The caveat AND its basis, together. "rebuilt after the flight" is an assertion about 9 of
+        # philadelphia's 18 cards, and its evidence was recorded in sources.scorecard -- which this table
+        # truncates to the first sentence for readability, so the justification never reached the row
+        # that makes the claim. A reader auditing the caveat could not see why it was made.
+        note = (f"greens on holes {', '.join(str(h) for h in stale)} were **rebuilt after the "
+                f"flight** — those cards are labelled *pre-rebuild data*")
+        basis = re.sub(r"\s+", " ", str(j.get("greens_outdated_basis") or "")).strip()
+        note += f" ({basis})" if basis else " *(basis not recorded — see greens_outdated_basis)*"
+        notes.append(note)
     if insuf:
         notes.append(f"{insuf} green(s) had no usable point cloud and print no read")
     if dig:
