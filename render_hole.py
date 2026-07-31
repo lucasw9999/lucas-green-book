@@ -139,6 +139,29 @@ def line_runs_from_a_forward_tee(arc_yd, back_yd, tee_yds, start_at_tee_m):
         return False
     return any(abs(arc_yd - y) <= max(15.0, 0.05*y) for y in tee_yds)
 
+WANDER_MAX = 1.02       # arc / chord above which a line's extra length may be mid-line, not at an end
+
+
+def line_traced_past_the_tee(arc_yd, back_yd, chord_yd):
+    """True when the drawn line runs BEYOND the back tee, so its extra length is at the TEE end.
+
+    The mirror of line_runs_from_a_forward_tee, and it needs no tee evidence at all: the line's green
+    end is at the green on all 198 corpus holes, so a line LONGER than the back-tee card must start
+    behind that tee. The one alternative is a line that wanders in the middle -- extra length not at
+    either end -- and a straight line cannot do that, which is what the chord test rules out. (A
+    doglegged overshoot would be ambiguous; none exists in the corpus, and it refuses.)
+
+    Why it matters: without this the two overshoot holes measured every along-line distance from a
+    point ~36 yd behind their real tee. castlewood-hill 4 printed "carry 85" for sand that is 49 yd
+    off the tee -- not a carry decision at all -- and callippe 3 printed 269 for a real 233.
+    """
+    if arc_yd <= back_yd:
+        return False
+    if arc_yd - back_yd <= max(15.0, 0.05*back_yd):
+        return False                                  # within tolerance: the line spans, no shift
+    return arc_yd <= WANDER_MAX * (chord_yd or 1.0)
+
+
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy
     if L2<1e-9: return math.hypot(px-ax,py-ay)
@@ -304,6 +327,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     start_at_tee_m = min((dist_to_poly_m(pts_em[0], t, em) for t in tees), default=1e9)
     fwd_tee = (not tee_ok and line_runs_from_a_forward_tee(
         arc_yd, total_yd, [HOLES[hnum][2+i] for i in range(1, len(_cfg.TEES))], start_at_tee_m))
+    # The mirror case: a line traced PAST the tee. Same conclusion -- the length difference is at the
+    # tee end -- so the same signed shift and the same from-tee derivation apply.
+    past_tee = not tee_ok and line_traced_past_the_tee(arc_yd, total_yd, L/0.9144)
 
     # A PAR 3 is the one case where the from-tee distance needs no model at all -- see
     # par3_exact_from_tee for why, and why par 4/5 are excluded. This also CORRECTS the 64 par-3 rows
@@ -394,8 +420,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             ft = round(total_yd - yd)
         elif tee_ok:
             ft = round(total_yd * arc_from_tee / arc_m)
-        elif fwd_tee:
-            # Complete route from a forward tee: back-tee card minus the walk still left to the green.
+        elif fwd_tee or past_tee:
+            # Complete route from a forward tee, or traced past the back tee: either way the length
+            # difference sits at the tee end, so the back-tee distance is the card minus the walk left.
             # Both are walked measures, so this does not mix a straight-line radius into a route
             # length -- the mistake that made (card - to_green) up to 42 yd wrong on a dogleg.
             ft = round(total_yd - (arc_m - arc_from_tee)/0.9144)
@@ -462,7 +489,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # the greenside test judge back-tee distances too. That also fixes two spurious carries: merion 9's
     # greenside bunker lands at 215 on a 231 yd hole and is correctly dropped, and valley-hi 6's at 303
     # is past anyone's tee shot.
-    tee_shift_yd = (total_yd - arc_yd) if fwd_tee else 0.0
+    # Signed, and correct in both directions: positive where the line starts at a forward tee, negative
+    # where it was traced past the back tee.
+    tee_shift_yd = (total_yd - arc_yd) if (fwd_tee or past_tee) else 0.0
     carries = []
     for g in bunkers:
         alongs, offs = [], []
@@ -517,8 +546,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
               arc_yd=round(arc_yd), card_yd=total_yd,
-              tee_ticks=tee_ok or par3_straight or fwd_tee,
-              line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee,
+              tee_ticks=tee_ok or par3_straight or fwd_tee or past_tee,
+              line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee, past_tee=past_tee,
               start_at_tee_m=round(start_at_tee_m, 1),
               carries=carries)
     return svg, info

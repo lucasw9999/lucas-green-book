@@ -653,6 +653,39 @@ def test_carries_are_measured_from_the_back_tee():
 
 
 @needs_corpus
+def test_line_traced_past_the_tee_shifts_the_other_way():
+    """A line traced BEYOND the back tee must shift NEGATIVELY, and its guard is corpus-invisible.
+
+    Both overshoot holes measured every along-line distance from a point ~36 yd behind their real tee:
+    castlewood-hill 4 printed "carry 85" for sand that is 49 yd off the tee -- not a carry decision at
+    all -- and callippe 3 printed 269 for a real 233. The signed shift already handled this direction;
+    it simply was not applied."""
+    _config, render_hole = _engine(CORPUS[0])
+    f = render_hole.line_traced_past_the_tee
+    assert f(586.0, 550.0, 578.0)            # callippe 3: 36 yd past, and straight
+    assert f(218.4, 182.0, 218.4)            # castlewood-hill 4
+    assert not f(397.9, 501.0, 393.0)        # SHORT, not past -- that is the forward-tee case
+    assert not f(505.0, 500.0, 498.0)        # within tolerance: the line spans, no shift
+    # a WANDERING line's extra length need not be at the tee end, so refuse it
+    assert not f(586.0, 550.0, 480.0)
+    assert not f(586.0, 550.0, 0.0)          # degenerate chord must not fall through to True
+
+    if "castlewood-hill-course" in CORPUS:
+        config, render_hole = _engine("castlewood-hill-course")
+        _svg, i4 = render_hole.render_hole(4, config.HOLES)
+        assert i4["past_tee"], "castlewood-hill 4 is traced past its tee; this pin assumes that"
+        assert not i4["carries"], (
+            "castlewood-hill 4's sand is 49 yd off the real tee and must not print as a carry: "
+            f"{i4['carries']}")
+    if "callippe-preserve-golf-course" in CORPUS:
+        config, render_hole = _engine("callippe-preserve-golf-course")
+        _svg, i3 = render_hole.render_hole(3, config.HOLES)
+        assert i3["past_tee"] and i3["carries"], "callippe 3 should still carry a shifted carry"
+        assert 225 <= i3["carries"][0][0] <= 241, (
+            f"callippe 3 carry {i3['carries'][0][0]} looks unshifted (269) or over-shifted")
+
+
+@needs_corpus
 def test_forward_tee_rule_guards():
     """Both guards on the forward-tee derivation, tested DIRECTLY.
 
@@ -829,6 +862,11 @@ def test_from_tee_labels_are_bounded_and_ordered():
                 fwd_yds = [config.HOLES[hn][2 + i] for i in range(1, len(config.TEES))]
                 fwd_model = (start_tee_m <= 20.0 and
                              any(abs(arc_yd_ - y) <= max(15.0, 0.05 * y) for y in fwd_yds))
+            # ...and the mirror case: a line traced PAST the tee uses the same offset derivation, so
+            # this must be modelled here too or its holes read as wrong values (callippe 3 did).
+            if (not spans and not exact_model and arc_yd_ > card
+                    and arc <= 1.02 * chord):
+                fwd_model = True
             ge = em(gend["lat"], gend["lon"])
             green_end_off = math.hypot(ge[0] - gc[0], ge[1] - gc[1]) / 0.9144
             for y, ln in pairs:
@@ -3661,6 +3699,36 @@ def test_recorded_green_height_matches_the_built_surface():
                 f"{slug} h{hn}: recorded green_z_m {row['green_z_m']} vs surface median {gz:.2f} -- "
                 f"ratio {row['green_z_m']/gz if gz else 0:.3f} (3.28 means a double unit scale)")
     assert checked >= 100, f"only {checked} recorded green heights checked; expected the whole corpus"
+
+
+@needs_corpus
+def test_provenance_records_the_elevation_basis():
+    """Every printed number must be traceable in legal/03, and the height change was not.
+
+    The table accounted for OSM geometry, LiDAR project, flight dates, density and the scorecard, but
+    said nothing about a figure printed on ~130 cards -- nor which of the two bases produced it. The
+    par-3 extrapolated tee is a weaker claim than a tee sampled where the line starts, and a reader
+    auditing a card cannot tell them apart without this."""
+    doc = open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")).read()
+    checked = 0
+    for slug in CORPUS:
+        p_elev = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p_elev):
+            continue
+        rows = json.load(open(p_elev))["holes"]
+        name = json.load(open(os.path.join(ROOT, "courses", slug, "course.json"))).get("name", slug)
+        # match the FULL name: two Castlewood courses share a prefix, and a prefix match picked
+        # the Hill row when checking the Valley course
+        line = next((l for l in doc.splitlines() if l.startswith("| " + name + " |")), None)
+        assert line, f"{name} has no provenance row"
+        assert f"measured on {len(rows)} of" in line, (
+            f"{name}: provenance does not record the {len(rows)} measured height changes")
+        n_ex = sum(1 for r in rows.values() if "extrapolated" in str(r.get("tee_basis", "")))
+        if n_ex:
+            assert "extrapolated" in line, (
+                f"{name}: {n_ex} hole(s) use an extrapolated tee and the doc does not say so")
+        checked += 1
+    assert checked >= 10, f"only {checked} courses checked; expected the corpus"
 
 
 @needs_corpus

@@ -77,6 +77,31 @@ def _greens(slug):
     return len(metas), (min(dens) if dens else None), (max(dens) if dens else None), seam, insuf
 
 
+def _elevation(slug):
+    """(n_measured, n_holes_on_card, n_extrapolated) from hole_elev.json, or (0, 0, 0).
+
+    The card prints a tee-to-green height on ~130 cards across the corpus, and this table -- whose
+    whole purpose is that every printed number is traceable to an artifact -- said nothing about it.
+    It also has to distinguish the two BASES, because they are not equally direct: most holes are
+    sampled at the tee end of the mapped centreline, but on a short par 3 the tee is extrapolated
+    along the hole axis to the card yardage. A reader auditing a figure needs to know which.
+    """
+    p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+    if not os.path.isfile(p):
+        return 0, 0, 0
+    try:
+        rows = json.load(open(p)).get("holes") or {}
+    except Exception:
+        return 0, 0, 0
+    extrap = sum(1 for r in rows.values() if "extrapolated" in str(r.get("tee_basis", "")))
+    try:
+        holes = len(json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
+                    .get("holes", {})) or 18
+    except Exception:
+        holes = 18
+    return len(rows), holes, extrap
+
+
 def _digitized(slug):
     p = os.path.join(ROOT, "courses", slug, "osm_geom.json")
     if not os.path.exists(p):
@@ -140,7 +165,23 @@ def _row(slug):
             bits.append(f"{seam} green(s) fall back to the 1 m seamless DEM")
         slope = ", ".join(bits)
 
+    nelev, nholes, nextrap = _elevation(slug)
+    if nelev:
+        bits = [f"tee-to-green **height change measured on {nelev} of {nholes} holes** from the same "
+                f"public LiDAR (ground returns at the tee vs the green's own surface)"]
+        if nextrap:
+            bits.append(f"{nextrap} of them with the tee extrapolated along the hole axis to the card "
+                        f"yardage, because the mapped line stops short of the back tee")
+        if nelev < nholes:
+            bits.append(f"the other {nholes - nelev} print no height: the tee could not be located or "
+                        f"had no ground returns")
+        elev_note = "; ".join(bits)
+    else:
+        elev_note = ""
+
     notes = []
+    if elev_note:
+        notes.append(elev_note)
     if stale:
         notes.append(f"greens on holes {', '.join(str(h) for h in stale)} were **rebuilt after the "
                      f"flight** — those cards are labelled *pre-rebuild data*")
