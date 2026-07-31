@@ -981,6 +981,22 @@ def test_hole_line_choice_does_not_depend_on_element_order():
                     and (e.get("tags") or {}).get("golf") == "hole" and e.get("geometry"))
         assert cands > 1, "this pin assumes hole 1 is ambiguous; it no longer is"
 
+    # A MARGINAL centre must refuse too. The choice rests on course.json "location", and one course's
+    # recorded location sits 617 m from its own hole centroid -- the same order as the 602 m margin that
+    # separates castlewood-valley's holes from their Hill-course twins. So a location that far off on a
+    # course WITH duplicate refs could flip the answer, and a near-tie has to stop rather than guess.
+    near = [{"id": 1, "tags": {"golf": "hole", "ref": "2"},
+             "geometry": [{"lat": 37.000, "lon": -121.0}, {"lat": 37.001, "lon": -121.0}]},
+            {"id": 2, "tags": {"golf": "hole", "ref": "2"},
+             "geometry": [{"lat": 37.002, "lon": -121.0}, {"lat": 37.003, "lon": -121.0}]}]
+    with pytest.raises(SystemExit):                      # centre equidistant between the two
+        geo.hole_lines(near, 37.0015, -121.0)
+    far = geo.hole_lines(near, 36.990, -121.0)            # centre clearly nearer the first
+    assert far[2]["id"] == 1
+    assert geo.AMBIGUOUS_MARGIN_M <= 300, (
+        "the margin must stay well under the 602 m that separates the real ambiguous holes, or it "
+        "would refuse them too")
+
     # and with NO centre, an ambiguous ref must REFUSE rather than pick by order
     two = [{"id": 1, "tags": {"golf": "hole", "ref": "1"},
             "geometry": [{"lat": 37.0, "lon": -121.0}, {"lat": 37.001, "lon": -121.0}]},
@@ -991,16 +1007,26 @@ def test_hole_line_choice_does_not_depend_on_element_order():
     one = geo.hole_lines(two[:1], None, None)          # unambiguous: no centre needed
     assert one[1]["id"] == 1
 
-    # EXACTLY equidistant candidates: the distance cannot decide, so the id must, or the answer is once
-    # again whatever order the list happened to be in. No corpus hole ties to the millimetre, so this is
-    # the only thing exercising that tie-break.
+    # EXACTLY equidistant candidates must REFUSE, not pick. An earlier version of this asserted the id
+    # tie-break resolved them deterministically -- deterministic, but arbitrary: OSM id order says
+    # nothing about which course a hole belongs to. Once the margin guard existed, "stable" stopped
+    # being good enough and the honest answer became "the centre cannot decide this".
     tie = [{"id": 99, "tags": {"golf": "hole", "ref": "4"},
             "geometry": [{"lat": 37.01, "lon": -121.0}, {"lat": 37.01, "lon": -121.0}]},
            {"id": 11, "tags": {"golf": "hole", "ref": "4"},
             "geometry": [{"lat": 36.99, "lon": -121.0}, {"lat": 36.99, "lon": -121.0}]}]
-    chosen = {geo.hole_lines(list(reversed(tie)) if flip else tie, 37.0, -121.0)[4]["id"]
-              for flip in (False, True)}
-    assert chosen == {11}, f"equidistant candidates resolved by order, not by id: {chosen}"
+    for flip in (False, True):
+        with pytest.raises(SystemExit):
+            geo.hole_lines(list(reversed(tie)) if flip else tie, 37.0, -121.0)
+    # the id tie-break still matters: it makes the RANKING -- and so the refusal message -- the same
+    # whichever order the elements arrive in.
+    msgs = set()
+    for flip in (False, True):
+        try:
+            geo.hole_lines(list(reversed(tie)) if flip else tie, 37.0, -121.0)
+        except SystemExit as e:
+            msgs.add(str(e))
+    assert len(msgs) == 1, "the refusal message depends on element order"
 
 
 def test_both_editions_share_one_playline_definition():

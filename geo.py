@@ -163,6 +163,15 @@ def match_green(hole_line, greens, max_m=GREEN_BIND_MAX_M, label=""):
     return g, gend, tend
 
 
+# How much closer the winning candidate must be than the runner-up for the course centre to be
+# DECIDING rather than guessing. The two real ambiguous holes (castlewood-valley 1 and 9, each with a
+# Hill-course twin) are separated by 602 m and 632 m, so 150 m keeps 4x headroom while still refusing a
+# genuinely close call. It is not academic: copper-valley's recorded location sits 617 m from its own
+# hole centroid, the same order as those margins, so a location that far off on a course WITH duplicate
+# refs could flip the choice. Better to stop and say so than to print another course's hole.
+AMBIGUOUS_MARGIN_M = 150.0
+
+
 def hole_lines(elements, course_lat, course_lon):
     """{hole_number: the ONE way that is this course's hole}, chosen DETERMINISTICALLY.
 
@@ -212,4 +221,19 @@ def hole_lines(elements, course_lat, course_lon):
         d = math.hypot((lo - course_lon) * mlon(la), (la - course_lat) * R_LAT)
         return (round(d, 3), w.get("id") or 0)
 
-    return {hn: min(ws, key=score) for hn, ws in by_ref.items()}
+    out = {}
+    for hn, ws in by_ref.items():
+        ranked = sorted(ws, key=score)
+        out[hn] = ranked[0]
+        if len(ranked) > 1:
+            margin = score(ranked[1])[0] - score(ranked[0])[0]
+            if margin < AMBIGUOUS_MARGIN_M:
+                raise SystemExit(
+                    f"hole {hn} has {len(ranked)} OSM ways and the course centre cannot tell them\n"
+                    f"  apart: nearest {score(ranked[0])[0]:.0f} m (way {ranked[0].get('id')}),\n"
+                    f"  next {score(ranked[1])[0]:.0f} m (way {ranked[1].get('id')}) -- a margin of only\n"
+                    f"  {margin:.0f} m, under the {AMBIGUOUS_MARGIN_M:.0f} m this needs to be a decision\n"
+                    f"  rather than a coin toss. Check course.json \"location\": it is what separates two\n"
+                    f"  courses that share one OSM area, and picking wrong puts ANOTHER course's hole --\n"
+                    f"  its map, its green, its slope, its yardages -- on this card.")
+    return out
