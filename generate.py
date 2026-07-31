@@ -920,7 +920,10 @@ def build_coach(coach_name=""):
             x, y, r, c = slot(j)
             fronts.append(card_div(x, y, 2*L+1, cards[2*L], False))
             xb, yb, _, _ = slot(r*config.COLS + (config.COLS-1-c))
-            is_last = (2*L+1 == len(cards)-1)   # last card prints UPRIGHT like the front cover
+            # the SAME rule the pocket book uses, not a second copy of it: green_honesty, the footer
+            # and the playline each drifted between these two code paths before being shared, and this
+            # was the last rule still written twice.
+            is_last = is_upright_back(2*L+1, len(cards))
             backs.append(card_div(xb, yb, 2*L+2, cards[2*L+1], not is_last))
         pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT</div>{"".join(fronts)}</div>')
         pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; BACK (duplex, flip on LONG edge)</div>{"".join(backs)}</div>')

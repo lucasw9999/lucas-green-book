@@ -931,6 +931,15 @@ def test_both_editions_share_one_playline_definition():
         assert "playline_html(" in src, f"{fn_name} no longer uses the shared playline helper"
         assert "elev_phrase(" not in src and "carry_phrase(" not in src, (
             f"{fn_name} builds the row itself again -- that is how the two editions drift")
+    # ...and the duplex upright-back rule, which was the last one still written twice: the pocket path
+    # called is_upright_back() while the coach path reimplemented it inline. Identical then, but three
+    # rules have already drifted between these two paths, so the copy is the hazard, not the mismatch.
+    assert hasattr(generate, "is_upright_back"), "the shared upright-back helper is gone"
+    for fn_name in ("main", "build_coach"):
+        src = inspect.getsource(getattr(generate, fn_name))
+        assert "is_upright_back(" in src, f"{fn_name} no longer uses the shared upright-back rule"
+        assert "len(cards)-1" not in src.replace(" ", "") or "is_upright_back(" in src, (
+            f"{fn_name} tests the last-card condition itself again")
 
 
 @needs_corpus
