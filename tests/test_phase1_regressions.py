@@ -282,6 +282,80 @@ def test_a_null_tee_preference_is_not_a_crash():
 
 
 @needs_corpus
+def test_the_course_location_decides_hole_lines_by_a_wide_margin():
+    """course.json "location" is now load-bearing, so measure how much room it has to be wrong.
+
+    geo.hole_lines resolves duplicate OSM ways for one hole number by distance to the stated course
+    centre, and refuses under a 150 m margin rather than guess. Three more stages were moved onto it
+    -- fetch_dem_hd (green surfaces), fetch_trees (tree corridors), fetch_dem (gap-fill) -- so a
+    location that is merely PLAUSIBLE is no longer good enough: it now decides which hole's geometry
+    every stage builds on. Pick wrong and another course's hole, green and slope print on this card.
+
+    Two properties, because passing today is not the same as being safe:
+
+      * MARGIN, not just the answer. castlewood-valley is the real case -- it shares an OSM area with
+        castlewood-hill, whose clubhouse is 960 m away, and its holes 1 and 9 each have two candidate
+        ways. Their margins are 602 m and 632 m against the 150 m floor, so the decision is made with
+        4x the room it needs. Asserting only "the right way was chosen" would still pass at 151 m,
+        one bad edit from a coin toss.
+      * No way is claimed by two courses. That is the actual failure this protects against, stated
+        directly, and it holds across the whole corpus: 198 chosen ways, 198 distinct.
+
+    A stated location sitting a few hundred metres from the mapped-feature centroid is normal and NOT
+    checked -- a clubhouse address legitimately sits off-centre, and the corpus runs to 450 m. What
+    matters is the margin, not the offset.
+    """
+    import math
+    R = 111320.0
+    checked, tight, shared = 0, [], {}
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "osm_geom.json")
+        if not os.path.exists(p):
+            continue
+        cfg, _rh = _engine(ref)
+        import geo
+        with open(p, encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        loc = cfg.COURSE.get("location") or {}
+        if not loc.get("lat"):
+            continue
+        mlon = R * math.cos(math.radians(loc["lat"]))
+        by_ref = {}
+        for e in els:
+            t = e.get("tags") or {}
+            if t.get("golf") == "hole" and e.get("geometry") and (t.get("ref") or "").isdigit():
+                by_ref.setdefault(int(t["ref"]), []).append(e)
+        for hn, cands in sorted(by_ref.items()):
+            if len(cands) < 2:
+                continue
+            ds = []
+            for g in cands:
+                n = len(g["geometry"])
+                la = sum(q["lat"] for q in g["geometry"]) / n
+                lo = sum(q["lon"] for q in g["geometry"]) / n
+                ds.append(math.hypot((la - loc["lat"]) * R, (lo - loc["lon"]) * mlon))
+            ds.sort()
+            checked += 1
+            margin = ds[1] - ds[0]
+            if margin < geo.AMBIGUOUS_MARGIN_M * 2:
+                tight.append(f"{ref} hole {hn}: nearest {ds[0]:.0f} m, next {ds[1]:.0f} m -- a "
+                             f"margin of {margin:.0f} m, under twice the "
+                             f"{geo.AMBIGUOUS_MARGIN_M:.0f} m floor. Verify \"location\" against "
+                             f"the clubhouse before this becomes a coin toss.")
+        try:
+            for hn, g in geo.hole_lines(els, loc.get("lat"), loc.get("lon")).items():
+                shared.setdefault(g.get("id"), set()).add(ref)
+        except SystemExit:
+            pass
+    both = {k: v for k, v in shared.items() if len(v) > 1}
+    assert not both, ("an OSM hole way is claimed by two different courses -- one of those books "
+                      f"is printing another course's hole: "
+                      + "; ".join(f"way {k} -> {sorted(v)}" for k, v in list(both.items())[:5]))
+    assert not tight, "a hole-line choice rests on too little margin:\n  " + "\n  ".join(tight)
+    assert checked >= 1, "no contested hole number in the corpus -- the margin was never exercised"
+
+
+@needs_corpus
 def test_no_book_quietly_headlines_a_shorter_tee():
     """The headline yardage must be the longest tee on the card, or the course must say it is on purpose.
 
