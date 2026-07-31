@@ -457,7 +457,16 @@ def render(hole, tournament=False):
         # .grn column width must match generate.py's CSS: card minus padding, minus the 1px
         # flex gap, times the .grn share (2.4 of 1.6+2.4). Measured in-browser at 2.010in.
         grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)        # .grn column width
-        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - 0.18              # minus header + foot
+        # Footer allowance. This was a hardcoded 0.18 in, which assumed a ONE-LINE footer. It can be
+        # three: at 7.5pt with normal leading a line is ~0.125 in, and a five-tee course prints "feeds
+        # ... %" then "Nyd deep * NB NW * three tees" then the carry/elevation playline. 0.18 in
+        # under-reserves by up to 0.32 in, so a green sized against it would be too tall for its panel.
+        # Precautionary: measured across the corpus, HEIGHT binds on 0 of 198 greens -- 172 are limited
+        # by the 2.01 in column width and 26 by the Rule 4.3 cap -- so this changes no output today. It
+        # is fixed because the day a tall narrow green meets a three-line footer, the failure is a green
+        # clipped by its own panel, and nothing in the pipeline is watching for that.
+        foot_lines_in = 3 * 0.125 + 0.125                                # 3 footer lines + playline
+        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - foot_lines_in      # minus header + foot
         fit_kf = min(grn_w_in/VBw, grn_h_in/VBh)                         # fit the whole frame
         kf = min(legal_kf, fit_kf)
         wattr, hattr = f'{VBw*kf:.3f}in', f'{VBh*kf:.3f}in'
