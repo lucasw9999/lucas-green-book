@@ -264,6 +264,48 @@ needs_corpus = pytest.mark.skipif(not CORPUS, reason="per-course data is gitigno
 
 
 @pytest.fixture(autouse=True)
+def _no_network(request):
+    """Block outbound sockets unless a test says @pytest.mark.network.
+
+    What this actually blocks: socket.socket.connect and socket.create_connection, which is the path
+    urllib, requests and http.client all take -- so it catches the realistic accident, a test quietly
+    reaching a live service. It is NOT a sandbox. Playwright's two Rule 4.3 tests launch Chromium
+    in-process and still pass with the guard on, because that IPC does not go through connect(); an
+    already-open socket or a raw sendto would slip past too. Stated plainly so nobody reads a green
+    suite here as proof of hermeticity beyond what is checked.
+
+    The suite is hermetic today -- verified by running all 136 with socket.connect blocked -- and that
+    is a property worth keeping rather than rediscovering. A test that quietly reaches a live service is
+    slow, fails offline, fails on a fresh clone, and fails differently depending on whose machine it is,
+    which is the opposite of what a regression suite is for. The two tests that exercise network FAILURE
+    paths already fake urlopen; their 8 s and 4 s are real retry backoff, not real traffic.
+
+    The cold build is the one legitimate exception: it re-fetches ~300 MB of LiDAR on purpose. It is
+    marked, and skipped unless COLD_BUILD=1 anyway.
+    """
+    if request.node.get_closest_marker("network"):
+        yield
+        return
+    import socket
+    real_connect = socket.socket.connect
+    real_create = socket.create_connection
+
+    def blocked(self, address, *a, **k):
+        raise RuntimeError(
+            f"this test opened a network connection to {address!r}. The suite is meant to run "
+            f"offline and on a fresh clone; fake the transport, or mark the test @pytest.mark.network "
+            f"if it genuinely needs the wire.")
+
+    socket.socket.connect = blocked
+    socket.create_connection = lambda *a, **k: blocked(None, a[0] if a else None)
+    try:
+        yield
+    finally:
+        socket.socket.connect = real_connect
+        socket.create_connection = real_create
+
+
+@pytest.fixture(autouse=True)
 def _bind_a_course():
     """Bind COURSE for every test.
 
@@ -7083,6 +7125,7 @@ def test_vertical_unit_refuses_rather_than_assuming_metres():
             geo.vertical_scale(bad)
 
 
+@pytest.mark.network          # re-fetches ~300 MB of LiDAR on purpose; see the _no_network fixture
 @pytest.mark.skipif(not os.environ.get("COLD_BUILD"),
                     reason="set COLD_BUILD=1 to run: needs network and reprocesses ~300 MB of LiDAR")
 def test_cold_build_reproduces_every_book_byte_for_byte():
