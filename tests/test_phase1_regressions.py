@@ -584,6 +584,69 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+def test_the_printed_binding_still_fits_the_printed_cards():
+    """The repo ships a 3D-printable binding, and its fit is a silent dependency on the card size.
+
+    `green book binding.stl` is a spine the trimmed deck slides into. Its long axis is 90.0 mm against
+    a 88.9 mm card -- 1.1 mm of total clearance, about half a millimetre a side. Change CARD_W_IN and
+    the STL does not move with it: the book still builds, every test still passes, and the failure
+    only shows up when someone has spent an hour printing a binding their cards will not go into.
+    Nothing linked the two.
+
+    Also checks the mesh is actually printable, because a broken STL fails in the slicer with a
+    message about geometry rather than about this project: 1122 triangles, no zero-area faces, and
+    every edge shared by exactly two of them, which is what watertight means.
+
+    Units are assumed mm, the STL convention and what every slicer defaults to. If the model were
+    ever authored in inches its long axis would read 3.54 rather than 90, so the fit assertion
+    catches that too.
+    """
+    import struct
+    p = os.path.join(ROOT, "green book binding.stl")
+    if not os.path.exists(p):
+        pytest.skip("no binding STL in this checkout")
+    with open(p, "rb") as fh:
+        raw = fh.read()
+    assert raw[:5].lower() != b"solid" or b"facet" not in raw[:2000], \
+        "expected a binary STL; an ASCII one needs a different reader"
+    n = struct.unpack("<I", raw[80:84])[0]
+    assert len(raw) == 84 + 50 * n, (
+        f"STL is {len(raw)} bytes but its header declares {n} triangles "
+        f"({84 + 50*n} expected) -- the file is truncated or padded")
+
+    xs, ys, zs = [], [], []
+    degenerate, edges = 0, {}
+    for i in range(n):
+        rec = raw[84 + 50*i: 84 + 50*(i+1)]
+        vs = [struct.unpack_from("<fff", rec, 12 + 12*v) for v in range(3)]
+        for x, y, z in vs:
+            xs.append(x); ys.append(y); zs.append(z)
+        a, b, c = vs
+        u = (b[0]-a[0], b[1]-a[1], b[2]-a[2])
+        v = (c[0]-a[0], c[1]-a[1], c[2]-a[2])
+        cr = (u[1]*v[2] - u[2]*v[1], u[2]*v[0] - u[0]*v[2], u[0]*v[1] - u[1]*v[0])
+        if (cr[0]**2 + cr[1]**2 + cr[2]**2) ** 0.5 / 2 < 1e-9:
+            degenerate += 1
+        q = lambda t: (round(t[0], 4), round(t[1], 4), round(t[2], 4))
+        for k in range(3):
+            e = tuple(sorted([q(vs[k]), q(vs[(k+1) % 3])]))
+            edges[e] = edges.get(e, 0) + 1
+    assert degenerate == 0, f"{degenerate} zero-area triangle(s) -- slicers reject or mis-fill these"
+    bad = [e for e, c in edges.items() if c != 2]
+    assert not bad, (f"{len(bad)} edge(s) not shared by exactly two triangles -- the mesh is not "
+                     f"watertight and will not slice into a solid part")
+
+    span = (max(xs)-min(xs), max(ys)-min(ys), max(zs)-min(zs))
+    cfg, _rh = _engine(a_course())
+    card_mm = cfg.CARD_W_IN * 25.4
+    fits = [s for s in span if 0 <= s - card_mm <= 4.0]
+    assert fits, (
+        f"the binding measures {span[0]:.1f} x {span[1]:.1f} x {span[2]:.1f} mm and no axis is a "
+        f"slide-on fit for a {card_mm:.1f} mm card (CARD_W_IN={cfg.CARD_W_IN}). Either the card size "
+        f"changed and the STL did not, or the STL is not in millimetres -- a deck that does not go "
+        f"into its binding is only discovered after an hour of printing")
+
+
 def test_a_personal_aerial_reference_is_honest_about_what_it_is():
     """The aerial sheet is a shipped artifact that NO test touched, and it makes three claims.
 
