@@ -135,6 +135,32 @@ def _mlon(lat):
     return 111320.0 * math.cos(math.radians(lat))
 
 
+def _dist_to_poly(pt, poly, em):
+    """Metres from a projected point to a polygon: 0 inside, else nearest edge. Written here rather
+    than imported so the test's model choice does not lean on the engine's own geometry code."""
+    P = [em(p["lat"], p["lon"]) for p in (poly.get("geometry") or [])]
+    if not P:
+        return 1e9
+    x, y = pt
+    inside = False
+    for i in range(len(P)):
+        x1, y1 = P[i]
+        x2, y2 = P[(i + 1) % len(P)]
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / ((y2 - y1) or 1e-12):
+            inside = not inside
+    if inside:
+        return 0.0
+    best = 1e18
+    for i in range(len(P)):
+        x1, y1 = P[i]
+        x2, y2 = P[(i + 1) % len(P)]
+        dx, dy = x2 - x1, y2 - y1
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / L2))
+        best = min(best, math.hypot(x - (x1 + t * dx), y - (y1 + t * dy)))
+    return best
+
+
 CORPUS = _courses()
 needs_corpus = pytest.mark.skipif(not CORPUS, reason="per-course data is gitignored; nothing to measure")
 
@@ -575,6 +601,62 @@ def test_par3_exact_from_tee_rule():
 
 
 @needs_corpus
+def test_forward_tee_rule_guards():
+    """Both guards on the forward-tee derivation, tested DIRECTLY.
+
+    Neither is exercised by the corpus: the one hole that fails the tee-box test (valley-hi 17, which
+    starts 98.6 m out in the fairway) also fails the yardage test, and the one overshoot hole
+    (callippe 3) matches no forward-tee figure either. So deleting either guard changes no printed
+    number and every corpus sweep still passes -- verified by mutation."""
+    _config, render_hole = _engine(CORPUS[0])
+    f = render_hole.line_runs_from_a_forward_tee
+    # a 398 yd line on a 501 yd hole, on a tee box, against published forward tees of 394/381
+    assert f(397.9, 501, [394, 381], 0.0)
+    assert f(397.9, 501, [394, 381], 19.0)          # still on the box within slack
+    # starts out in the fairway -> truncated line, refuse however well the yardage matches
+    assert not f(397.9, 501, [394, 381], 98.6)
+    assert not f(397.9, 501, [394, 381], 20.1)
+    # on a tee box but the length matches NO published forward tee -> cannot say which tee it is
+    assert not f(497.0, 561, [460, 430], 0.0)
+    # OVERSHOOT: line traced PAST the tee, so the extra length is at the tee end and subtracting the
+    # remaining walk from the card understates the distance (callippe 3, 586 yd line on a 550 card)
+    # The forward-tee figures here are chosen to MATCH the overshooting length, so only the overshoot
+    # guard can reject them -- an earlier version of this case matched nothing and passed even with the
+    # guard deleted, which is exactly the false comfort mutation testing is for.
+    assert not f(585.9, 550, [580, 520], 0.0)
+    assert not f(218.4, 182, [215, 170], 0.0)
+    # no tee polygons on the course at all -> the 1e9 sentinel must refuse, not sail through
+    assert not f(397.9, 501, [394, 381], 1e9)
+    assert not f(397.9, 501, [], 0.0)
+
+
+@needs_corpus
+def test_short_par45_holes_still_get_their_from_tee_numbers():
+    """Merion 2, 5, 6 and 8 must carry a from-tee number on every tick.
+
+    Their OSM line runs from the Middle tee, not the Championship tee, so it is 23-103 yd shorter than
+    the card and the proportional model cannot be used -- the whole brown gutter was empty on four of
+    eighteen cards, which reads as a broken book. Pinned as an OUTPUT because reverting the derivation
+    violates no invariant: it just empties those gutters again while every consistency check passes."""
+    if "merion-golf-club" not in CORPUS:
+        pytest.skip("merion-golf-club not built")
+    config, render_hole = _engine("merion-golf-club")
+    for hn in (2, 5, 6, 8):
+        svg, info = render_hole.render_hole(hn, config.HOLES)
+        lefts = [int(x) for x in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg)]
+        rights = [int(x) for x in re.findall(r'<text x="91"[^>]*>(\d+)</text>', svg)]
+        card = config.HOLES[hn][2]
+        assert info["fwd_tee"], f"merion {hn} should use the forward-tee derivation"
+        assert rights, f"merion {hn} has an empty from-tee gutter again"
+        assert len(lefts) == len(rights), f"merion {hn} unmatched rows: {lefts} / {rights}"
+        assert rights == sorted(rights, reverse=True), f"merion {hn} not monotonic: {rights}"
+        # the tee-most number must reflect the BACK tee, i.e. exceed the forward-tee card it was
+        # derived past -- a degenerate derivation would land near the forward figure instead
+        assert max(rights) > config.HOLES[hn][3] - 150, \
+            f"merion {hn} from-tee {max(rights)} looks derived from the wrong tee (card {card})"
+
+
+@needs_corpus
 def test_short_par3_still_gets_its_gutter_numbers():
     """A hole under 150 yd must still carry a to-green/from-tee pair.
 
@@ -625,6 +707,9 @@ def test_from_tee_labels_are_bounded_and_ordered():
         geom = json.load(open(os.path.join(ROOT, "courses", slug, "osm_geom.json")))["elements"]
         greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
         holes = [e for e in geom if (e.get("tags") or {}).get("golf") == "hole" and e.get("geometry")]
+        _cj = json.load(open(os.path.join(ROOT, "courses", slug, "osm_course.json")))["elements"]
+        course_tees = [e for e in _cj
+                       if (e.get("tags") or {}).get("golf") == "tee" and e.get("geometry")]
         for hn in config.HOLE_NUMS:
             try:
                 svg, _ = render_hole.render_hole(hn, config.HOLES)
@@ -681,6 +766,17 @@ def test_from_tee_labels_are_bounded_and_ordered():
             # engine, so the choice of model is verified and not inherited
             chord = math.hypot(pts[-1][0] - pts[0][0], pts[-1][1] - pts[0][1]) or 1.0
             exact_model = config.HOLES[hn][0] == 3 and arc <= 1.02 * chord
+            # Which model applies to a SHORT par 4/5: a complete route from a forward tee, or nothing?
+            # Decided here from the geometry and the scorecard, not read off the engine, so a change to
+            # either side has to be restated. Both conditions must hold, as in the engine.
+            arc_yd_ = arc / 0.9144
+            spans = abs(arc_yd_ - card) <= max(15.0, 0.05 * card)
+            fwd_model = False
+            if not spans and not exact_model and arc_yd_ < card:
+                start_tee_m = min((_dist_to_poly(pts[0], t, em) for t in course_tees), default=1e9)
+                fwd_yds = [config.HOLES[hn][2 + i] for i in range(1, len(config.TEES))]
+                fwd_model = (start_tee_m <= 20.0 and
+                             any(abs(arc_yd_ - y) <= max(15.0, 0.05 * y) for y in fwd_yds))
             ge = em(gend["lat"], gend["lon"])
             green_end_off = math.hypot(ge[0] - gc[0], ge[1] - gc[1]) / 0.9144
             for y, ln in pairs:
@@ -713,6 +809,9 @@ def test_from_tee_labels_are_bounded_and_ordered():
                                     round(err, 1), round(green_end_off + 5.0, 1)))
                     continue
                 expect = card * best[1] / arc          # card yardage scaled by position on the line
+                if fwd_model:
+                    # back-tee card minus the walk still left to the green -- both walked measures
+                    expect = card - (arc - best[1]) / 0.9144
                 err = abs(int(rmap[y]) - expect)
                 worst_value_err = max(worst_value_err, err)
                 # 2 yd covers dense-sampling granularity + rounding. Was 8 yd, which left 8.9x

@@ -60,6 +60,23 @@ def match_green(hole_line, greens, label=""):
     """Delegates to geo.match_green, which carries the distance cap. See there for why."""
     return geo.match_green(hole_line, greens, label=label)
 
+def dist_to_poly_m(pt, poly, em):
+    """Metres from a projected point to a polygon: 0 when inside, else the nearest edge."""
+    P = [em(p['lat'], p['lon']) for p in (poly.get('geometry') or [])]
+    if not P:
+        return 1e9
+    x, y = pt
+    inside = False
+    for i in range(len(P)):
+        x1, y1 = P[i]; x2, y2 = P[(i+1) % len(P)]
+        if (y1 > y) != (y2 > y) and x < x1 + (y-y1)*(x2-x1)/((y2-y1) or 1e-12):
+            inside = not inside
+    if inside:
+        return 0.0
+    return min(dist_pt_seg(x, y, P[i][0], P[i][1], P[(i+1) % len(P)][0], P[(i+1) % len(P)][1])
+               for i in range(len(P)))
+
+
 PAR3_STRAIGHT_MAX = 1.02          # arc / chord
 
 def par3_exact_from_tee(par, arc_m, chord_m):
@@ -81,6 +98,46 @@ def par3_exact_from_tee(par, arc_m, chord_m):
     printed number and no corpus sweep could catch it.
     """
     return par == 3 and arc_m <= PAR3_STRAIGHT_MAX * (chord_m or 1.0)
+
+
+def line_runs_from_a_forward_tee(arc_yd, back_yd, tee_yds, start_at_tee_m):
+    """True when the drawn line is a COMPLETE tee-to-green route that simply starts at a FORWARD tee.
+
+    This is what lets the from-tee number be printed on a hole whose line is shorter than the back-tee
+    card. The line is not truncated mid-fairway: it runs from some tee to the green, and the only thing
+    missing is the stretch from the back tee up to that forward tee -- which is at the TEE end. So
+    (back-tee card - the walk still left to the green) is the distance from the back tee, both terms
+    being walked measures, the same one the scorecard uses.
+
+    Two independent things must hold, because neither alone is enough:
+
+      * The line STARTS ON a mapped tee box (start_at_tee_m). Measured against a control: 99% of the
+        176 holes whose line does span the back-tee card also start on one, so this is OSM's
+        convention, and 17 of the 18 short par 4/5 holes satisfy it. A line starting mid-fairway
+        (valley-hi 17, 98.6 m from any tee) fails and is refused.
+      * The line's LENGTH matches one of this hole's own published forward-tee yardages. Equivalently,
+        the shortfall equals the published tee-to-tee difference: merion 5 runs 397.9 yd against a
+        Middle tee of 394 and is short of the 501 Championship card by 103 against a published gap of
+        107; merion 8 is short by 23 against a published 21.
+
+    Why BOTH: on its own the yardage match is weak -- it fires on 78% of the real holes but also on
+    41% of decoys (the same forward-tee columns of other holes of the same par), because holes of one
+    par have similar yardages and the tolerance is wide. The tee-box test is the strong one.
+
+    Residual failure mode, stated rather than hidden: a line that starts at the BACK tee but cuts the
+    corner of a dogleg would also satisfy both tests if its length happened to land near a forward-tee
+    figure. Then the missing length is spread along the hole, not at the tee, and the from-tee number
+    would read high by up to the shortfall at the tick nearest the tee, converging to correct at the
+    green. That is the risk this trade accepts; refusing instead left 4 of Merion's 18 cards with an
+    empty gutter, which reads as a broken book rather than as a careful one.
+    """
+    if arc_yd >= back_yd:
+        return False          # not short at all, or OVERSHOOTING the card: a line traced PAST the tee
+                             # has extra length at the tee end, so subtracting the remaining walk from
+                             # the card understates the distance instead of recovering it
+    if start_at_tee_m > 20.0:
+        return False
+    return any(abs(arc_yd - y) <= max(15.0, 0.05*y) for y in tee_yds)
 
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy
@@ -241,6 +298,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # is what you club off, is unaffected. Note the overshoot case still needs the yd < total_yd
     # bound below; suppressing the label alone does not bound the radius.
     tee_ok = abs(arc_yd - total_yd) <= max(15.0, 0.05*total_yd)
+    # Where the line is SHORT of the back-tee card, is it a truncated line or a complete route from a
+    # forward tee? See line_runs_from_a_forward_tee. Distance from the line's start to the nearest
+    # mapped tee box, 1e9 when the course has no tee polygons at all (then this stays refused).
+    start_at_tee_m = min((dist_to_poly_m(pts_em[0], t, em) for t in tees), default=1e9)
+    fwd_tee = (not tee_ok and line_runs_from_a_forward_tee(
+        arc_yd, total_yd, [HOLES[hnum][2+i] for i in range(1, len(_cfg.TEES))], start_at_tee_m))
 
     # A PAR 3 is the one case where the from-tee distance needs no model at all -- see
     # par3_exact_from_tee for why, and why par 4/5 are excluded. This also CORRECTS the 64 par-3 rows
@@ -329,8 +392,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # line spans the hole; otherwise print the to-green number alone.
         if par3_straight:
             ft = round(total_yd - yd)
+        elif tee_ok:
+            ft = round(total_yd * arc_from_tee / arc_m)
+        elif fwd_tee:
+            # Complete route from a forward tee: back-tee card minus the walk still left to the green.
+            # Both are walked measures, so this does not mix a straight-line radius into a route
+            # length -- the mistake that made (card - to_green) up to 42 yd wrong on a dogleg.
+            ft = round(total_yd - (arc_m - arc_from_tee)/0.9144)
         else:
-            ft = round(total_yd * arc_from_tee / arc_m) if tee_ok else None
+            ft = None
         if ft is not None and ft < ft_floor:
             ft = None          # keep the row: its to-green number is still true and is the one a
                                # golfer clubs off -- only the from-tee figure is not worth printing
@@ -429,8 +499,10 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               waters=len(waters),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
-              arc_yd=round(arc_yd), card_yd=total_yd, tee_ticks=tee_ok or par3_straight,
-              line_spans=tee_ok, par3_straight=par3_straight,
+              arc_yd=round(arc_yd), card_yd=total_yd,
+              tee_ticks=tee_ok or par3_straight or fwd_tee,
+              line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee,
+              start_at_tee_m=round(start_at_tee_m, 1),
               carries=carries)
     return svg, info
 
