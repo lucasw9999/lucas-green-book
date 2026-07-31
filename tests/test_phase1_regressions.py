@@ -585,6 +585,69 @@ def _arc_yd_for(ref, panel_html):
 
 
 @needs_corpus
+def test_no_tree_marker_sits_on_a_playing_surface():
+    """The README promises trees are "never placed on greens/fairways/tees/bunkers". Hold the corpus
+    to it.
+
+    A tree dot in the middle of a fairway is a map that lies about where the ball can go, and it is the
+    kind of error a reader trusts because everything around it is right. The markers come from LiDAR
+    canopy returns, so nothing about their source prevents one landing on mown grass -- a low return
+    over a green, a bush beside a tee, a maintenance shed edge. fetch_trees.on_playing_surface exists
+    to reject those, and a unit test covers the classifier on synthetic polygons.
+
+    What was never checked is the ARTIFACT: that the filter actually ran, over every course, and left
+    nothing behind. Those are different claims -- the classifier can be perfect and still be applied to
+    the wrong polygon set, or skipped for a course whose surfaces failed to load. Re-tested here
+    independently, with a fresh point-in-polygon over osm_course.json rather than by calling the
+    function that did the filtering, so a fault in that function cannot vouch for itself.
+
+    68,884 markers across 11 courses, zero on a green, fairway, tee or bunker.
+    """
+    def inside(px, py, poly):
+        c, n = False, len(poly)
+        for i in range(n):
+            x1, y1 = poly[i]
+            x2, y2 = poly[(i + 1) % n]
+            if (y1 > py) != (y2 > py) and px < x1 + (py - y1) * (x2 - x1) / ((y2 - y1) or 1e-12):
+                c = not c
+        return c
+
+    total, offenders, seen = 0, [], set()
+    for ref in CORPUS:
+        tp = os.path.join(ROOT, "courses", ref, "trees_lidar.json")
+        cp = os.path.join(ROOT, "courses", ref, "osm_course.json")
+        if not (os.path.exists(tp) and os.path.exists(cp)):
+            continue
+        with open(tp, encoding="utf-8") as fh:
+            trees = json.load(fh)
+        with open(cp, encoding="utf-8") as fh:
+            elements = json.load(fh)["elements"]
+        surfaces = []
+        for e in elements:
+            kind = (e.get("tags") or {}).get("golf")
+            if kind in ("green", "fairway", "tee", "bunker") and e.get("geometry"):
+                surfaces.append((kind, [(q["lon"], q["lat"]) for q in e["geometry"]]))
+        if not surfaces:
+            continue
+        seen.add(ref)
+        for hn, pts in (trees.items() if isinstance(trees, dict) else []):
+            for entry in pts:
+                lat, lon = ((entry[0], entry[1]) if isinstance(entry, (list, tuple))
+                            else (entry["lat"], entry["lon"]))
+                total += 1
+                for kind, poly in surfaces:
+                    if inside(lon, lat, poly):
+                        offenders.append(f"{ref} hole {hn}: a tree marker sits on a {kind} "
+                                         f"at {lat:.6f},{lon:.6f}")
+                        break
+    assert total > 10000, f"only {total} tree markers examined -- the sweep found almost nothing"
+    assert_no_course_skipped(seen, "test_no_tree_marker_sits_on_a_playing_surface")
+    assert not offenders, ("tree markers are drawn on ground the ball can be played from, which the "
+                           f"README says cannot happen ({len(offenders)} of {total}):\n  "
+                           + "\n  ".join(offenders[:8]))
+
+
+@needs_corpus
 def test_the_hand_written_verdict_matches_the_machine_verdict():
     """legal/00 names, by hand, every book that is safe to hand out. That list has drifted twice.
 
