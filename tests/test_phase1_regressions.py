@@ -652,6 +652,27 @@ def test_carries_are_measured_from_the_back_tee():
             f"merion 1 carries look shifted: {i1['carries']} (expected a near edge around 172)"
 
 
+def test_both_editions_share_one_playline_definition():
+    """The pocket and enlarged cards must build the tee-shot row from the SAME code.
+
+    They have drifted three times: green_honesty lived only in hole_panel(), then the footer, then this
+    row -- the enlarged edition's own legend described an elevation and a carry its cards never printed.
+    Each fix copied the content across, which only resets the clock, so both now call playline_html()
+    and this asserts they still do. Source-level on purpose: the point is that no SECOND expression of
+    this row exists to fall out of step."""
+    import inspect
+    for m in ("config", "render_hole", "render_green", "generate"):
+        sys.modules.pop(m, None)
+    os.environ["COURSE"] = CORPUS[0] if CORPUS else "merion-golf-club"
+    import generate
+    assert hasattr(generate, "playline_html"), "the shared playline helper is gone"
+    for fn_name in ("hole_panel", "coach_map_card"):
+        src = inspect.getsource(getattr(generate, fn_name))
+        assert "playline_html(" in src, f"{fn_name} no longer uses the shared playline helper"
+        assert "elev_phrase(" not in src and "carry_phrase(" not in src, (
+            f"{fn_name} builds the row itself again -- that is how the two editions drift")
+
+
 @needs_corpus
 def test_line_traced_past_the_tee_shifts_the_other_way():
     """A line traced BEYOND the back tee must shift NEGATIVELY, and its guard is corpus-invisible.

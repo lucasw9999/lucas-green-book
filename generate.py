@@ -197,6 +197,23 @@ def carry_phrase(info):
     return "carry <b>" + " / ".join(str(a) for a, _b in cs) + "</b>"
 
 
+def playline_html(hole, info):
+    """The second footer row: tee-to-green height, then the carries off the tee. "" when neither.
+
+    ONE definition, called by both the pocket card and the enlarged card. The two editions have now
+    drifted three times -- the green honesty rules lived only inside hole_panel(), then the footer, then
+    this row, which the enlarged edition's own legend described while its cards printed nothing. Each
+    time the fix was to copy the content across, which just resets the clock. A shared helper makes this
+    particular divergence impossible instead.
+
+    Both phrases are omitted entirely when unmeasured, never shown as a blank or a zero. It gets its OWN
+    full-width line rather than a third column in the flex footer: as a third span the row wrapped
+    mid-phrase and left "&middot; 1.8%" and "carry / 95" orphaned.
+    """
+    extras = " &middot; ".join(x for x in (elev_phrase(hole), carry_phrase(info)) if x)
+    return f'<div class="playline">{extras}</div>' if extras else ''
+
+
 def hole_panel(hole, sheet_label):
     row = HOLES[hole]
     par, hcp = row[0], row[1]
@@ -205,12 +222,7 @@ def hole_panel(hole, sheet_label):
     others = " / ".join(f"{lbl[:3]}{row[idx]}" for lbl, idx in config.OTHERS)
     grnlab, slope = green_honesty(hole, s)
     lead = (f'green <b>{esc(s["feeds"])}</b> &middot; no slope printed' if slope is None else slope)
-    # Second footer row: what the player decides with -- elevation to the green and the carries off
-    # the tee. Both are omitted entirely when unmeasured rather than shown as a blank or a zero.
-    extras = " &middot; ".join(x for x in (elev_phrase(hole), carry_phrase(i)) if x)
-    # Its OWN full-width line, not a third column in the flex footer: as a third span the row wrapped
-    # mid-phrase and left "&middot; 1.8%" and "carry / 95" orphaned on their own lines.
-    playline = f'<div class="playline">{extras}</div>' if extras else ''
+    playline = playline_html(hole, i)          # shared with the enlarged edition -- see playline_html
 
     foot = (f'<span>{lead}</span>'
             f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
@@ -739,11 +751,7 @@ def coach_cover_panel(coach_name):
 def coach_map_card(hole):
     row = HOLES[hole]; par, hcp = row[0], row[1]
     lsvg, i = LAYOUTS[hole]
-    # The enlarged edition must carry the SAME tee-shot facts as the pocket card. It did not, while
-    # coach_about_card explained both -- a legend describing content that is not on the cards. This is
-    # the drift the two editions keep having: honesty rules, then the footer, and now these.
-    extras = " &middot; ".join(x for x in (elev_phrase(hole), carry_phrase(i)) if x)
-    playline = f'<div class="playline">{extras}</div>' if extras else ''
+    playline = playline_html(hole, i)          # the SAME row the pocket card prints, by construction
     return f'''<div class="panel hole">
   <div class="etag">ENLARGED</div>
   <div class="hhead">
