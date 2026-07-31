@@ -454,6 +454,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # 401-429 on a 502 yd hole). Both ends chosen for the reader, not the data.
     CARRY_MIN_YD, CARRY_MAX_YD = 80.0, 300.0
     CARRY_OFF_M  = 30.0        # further off the line than this is not this hole's problem
+    # Every along-line distance here is measured from where the LINE starts, and on a forward-tee hole
+    # that is not the back tee. Left unshifted, merion 5 printed "carry 173" for sand that is nearer
+    # 276 from the Championship tee -- a 103 yd understatement of the one number a player actually
+    # clubs against, and worse than the empty gutter it sat beside. Shift by the same tee-to-tee gap
+    # the from-tee gutter numbers are derived through, BEFORE the filters, so the 80-300 yd window and
+    # the greenside test judge back-tee distances too. That also fixes two spurious carries: merion 9's
+    # greenside bunker lands at 215 on a 231 yd hole and is correctly dropped, and valley-hi 6's at 303
+    # is past anyone's tee shot.
+    tee_shift_yd = (total_yd - arc_yd) if fwd_tee else 0.0
     carries = []
     for g in bunkers:
         alongs, offs = [], []
@@ -464,7 +473,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             offs.append(abs(dx*perp[0] + dy*perp[1]))
         if not alongs:
             continue
-        near_yd, far_yd = min(alongs)/0.9144, max(alongs)/0.9144
+        near_yd = min(alongs)/0.9144 + tee_shift_yd
+        far_yd  = max(alongs)/0.9144 + tee_shift_yd
+        # The shift is only trustworthy for sand well UP the hole, where the direction from the back
+        # tee is nearly the chord direction. Close to the tee the back tee's unknown lateral offset
+        # dominates, and shifting swept in bunkers lying BEHIND the forward tee: merion 5 grew a
+        # "carry 81" and "105" from sand at -22 and +2 yd along its own line. So the reach test must
+        # also pass on the UNSHIFTED distance -- a carry has to be a real carry from the mapped tee too.
+        if min(alongs)/0.9144 < CARRY_MIN_YD:
+            continue
         if not (CARRY_MIN_YD <= near_yd <= CARRY_MAX_YD) or min(offs) > CARRY_OFF_M:
             continue
         if near_yd > total_yd - 40:        # greenside sand, not a tee carry

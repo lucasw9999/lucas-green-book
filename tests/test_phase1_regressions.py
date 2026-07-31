@@ -601,6 +601,58 @@ def test_par3_exact_from_tee_rule():
 
 
 @needs_corpus
+def test_carries_are_measured_from_the_back_tee():
+    """A carry is the number a player actually clubs against, so it must be from the BACK tee.
+
+    Every along-line distance in render_hole is measured from where the drawn line starts, and on a
+    forward-tee hole that is the forward tee. Unshifted, merion 5 printed "carry 173" for sand that is
+    nearer 276 from the Championship tee -- understating the one number a club is chosen against by
+    103 yd, which is worse than the empty gutter beside it.
+
+    The invariant: on a forward-tee hole every printed carry must clear (tee-to-tee gap + the 80 yd
+    reach floor), because the floor is applied to the UNSHIFTED distance and the gap is then added. An
+    unshifted carry cannot satisfy that. The floor is checked unshifted on purpose -- shifting first
+    swept in sand lying BEHIND the forward tee (merion 5 grew a "carry 81" from a bunker 22 yd back
+    down its own line), where the back tee's unknown lateral offset makes the shift meaningless."""
+    for slug in CORPUS:
+        config, render_hole = _engine(slug)
+        for hn in config.HOLE_NUMS:
+            try:
+                _svg, info = render_hole.render_hole(hn, config.HOLES)
+            except Exception:
+                continue
+            if not info.get("fwd_tee") or not info.get("carries"):
+                continue
+            gap = info["card_yd"] - info["arc_yd"]
+            floor = gap + 80.0 - 1.0                     # 1 yd of rounding slack
+            worst = min(c[0] for c in info["carries"])
+            assert worst >= floor, (
+                f"{slug} h{hn}: carry {worst} is below {floor:.0f} (gap {gap} + 80 yd reach), so it "
+                f"was measured from the forward tee, not the back tee")
+            # and the greenside rule must be judged on the same back-tee scale
+            for near, _far in info["carries"]:
+                assert near <= info["card_yd"] - 40, \
+                    f"{slug} h{hn}: carry {near} is greenside sand on a {info['card_yd']} yd hole"
+
+    if "merion-golf-club" in CORPUS:
+        config, render_hole = _engine("merion-golf-club")
+        _svg, i5 = render_hole.render_hole(5, config.HOLES)
+        assert i5["carries"] and min(c[0] for c in i5["carries"]) > 250, \
+            f"merion 5 carries should be back-tee figures near 276/297, got {i5['carries']}"
+        _svg, i9 = render_hole.render_hole(9, config.HOLES)
+        assert not i9["carries"], (
+            "merion 9's only bunker sits 215 yd out on a 231 yd hole once measured from the back tee, "
+            f"i.e. greenside, and must not print as a tee carry: {i9['carries']}")
+        # A SPANNING hole must NOT be shifted -- its line already starts at the back tee. Pinned on
+        # merion 1, whose line is 14 yd under its card: applying the shift there anyway moves its
+        # carries from 172/212/245 to 186/226/259, and no forward-tee assertion above would notice.
+        _svg, i1 = render_hole.render_hole(1, config.HOLES)
+        assert not i1["fwd_tee"], "merion 1 spans its card; this pin assumes that"
+        assert i1["carries"] and 168 <= min(c[0] for c in i1["carries"]) <= 176, \
+            f"merion 1 carries look shifted: {i1['carries']} (expected a near edge around 172)"
+
+
+@needs_corpus
 def test_forward_tee_rule_guards():
     """Both guards on the forward-tee derivation, tested DIRECTLY.
 
