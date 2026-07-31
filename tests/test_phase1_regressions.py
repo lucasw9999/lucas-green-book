@@ -584,6 +584,63 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+def test_only_the_conforming_edition_claims_to_conform():
+    """One edition is built to Rule 4.3 and one deliberately is not. Neither may be mistaken for the
+    other.
+
+    The pocket book is measured at 0.36 in : 5 yd, ~4% under the 3/8 in cap, and wears a
+    "DESIGNED TO CONFORM - RULE 4.3" badge. The enlarged edition breaks the cap on purpose so the
+    greens read at arm's length: measured off its own PDFs it prints 0.47-0.60 in : 5 yd, which is
+    26-60% OVER the limit. That is a design decision, and the only thing that keeps it honest is the
+    sentence on its guide card saying so plus the absence of the badge.
+
+    Both halves are load-bearing and neither is enforced anywhere else. tools/check_scale.py reads
+    only greenbook.html/greenbook.pdf, so its 198/198 figure never covered the enlarged books at all
+    -- they are outside the gate rather than passing it. legal/06 did not mention them either until
+    this commit. So a reader had a conformance document, a passing gate and a cover badge, and nothing
+    connecting any of that to the edition it does not describe.
+
+    Asserted as a pair: the enlarged edition must SAY it does not conform, and must NOT carry the
+    badge. Either alone leaves the other free to drift.
+    """
+    checked = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook_coach.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        # Normalise whitespace before matching. The sentence wraps across a source line inside a <b>,
+        # so "...under\n    Rule&nbsp;4.3" does not match a naive one-line pattern -- the assertion
+        # failed on text that was present, which is the false alarm this note exists to prevent.
+        flat = " ".join(html.split())
+        checked += 1
+        assert re.search(r"NOT a conforming competition book under Rule", flat), (
+            f"{ref}: the enlarged edition prints greens 26-60% over the Rule 4.3 scale cap but no "
+            f"longer says so -- a coach would take it into a competition")
+        assert "DESIGNED TO CONFORM" not in html, (
+            f"{ref}: the enlarged edition carries the conformance badge, which belongs only to the "
+            f"pocket book it is measured on")
+        assert re.search(r"use the standard pocket edition for competition", flat), (
+            f"{ref}: the enlarged edition disclaims conformance without naming the edition that does "
+            f"conform, which leaves the reader with no usable alternative")
+    if checked == 0:
+        pytest.skip("no enlarged edition built (COURSE=<slug> COACH=1 python3 generate.py)")
+
+    # ...and the pocket book must still make the claim, or the badge check above proves nothing
+    pocket = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        if "DESIGNED TO CONFORM" in html:
+            pocket += 1
+    assert pocket >= 1, ("no pocket book claims Rule 4.3 conformance, so the enlarged edition's "
+                         "'use the standard edition' instruction points at nothing")
+
+
 def test_every_osm_using_book_carries_the_attribution_odbl_requires():
     """ODbL attribution is a LICENCE OBLIGATION, not a courtesy, and legal/02 states what it is.
 

@@ -59,6 +59,17 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   becomes unusable for reading the green — the rest of the book stays fine.
 - **Book size:** cards are **3.5 × 5.0 in** — well under the 4.25 × 7 in cap.
   (See `config.py`: `CARD_W_IN = 3.5`, `CARD_H_IN = 5.0`.)
+- **Which books this covers, and the one it does not.** Everything above is about the **standard
+  pocket edition**, the book meant for competition. The **enlarged edition**
+  (`COACH=1`) deliberately breaks the scale cap so the greens read at arm's length: measured off its
+  own PDFs it prints **0.47–0.60 in : 5 yd (1:382 to 1:300), i.e. 26–60% OVER** the 0.375 in limit.
+  That is a design decision, not a defect, and it is stated on the enlarged edition's own guide card:
+  *"Because the greens here are printed larger than the tournament scale, this enlarged edition is a
+  practice aid and is NOT a conforming competition book under Rule 4.3 — use the standard pocket
+  edition for competition."* It also omits the "DESIGNED TO CONFORM · RULE 4.3" cover badge that the
+  pocket book carries, and `tools/check_scale.py` reads only `greenbook.html`/`greenbook.pdf`, so the
+  198/198 figure above never included it. Recorded here because a conformance document that never
+  mentions the one edition that does not conform invites the reader to assume every book does.
 
 ## Why the wording is safe
 - We say **"Designed to conform,"** not "conforms" / "legal" / "USGA‑approved." It is an
