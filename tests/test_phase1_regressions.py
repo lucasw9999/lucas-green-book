@@ -2057,6 +2057,68 @@ def test_printed_card_size_is_measured_from_the_pdf_not_from_config():
         pytest.skip("no book has been exported to PDF here (run tools/export_pdf.py)")
 
 
+def test_no_printed_words_fall_outside_the_card_they_belong_to():
+    """Every word on the paper must sit inside a card, because the paper gets CUT along the ticks.
+
+    Text that overruns a card boundary is not merely ugly: the crop ticks are a cutting instruction,
+    so an overrunning line is sliced in half and half of it goes in the bin. The reader is then left
+    with a sentence that stops mid-clause, and on this project the sentence in question is the legal
+    notice -- "not endorsed by or sponsored by any course, club, association or product" -- which is
+    the one text on the card that has to survive intact.
+
+    Nothing caught this. The card SIZE is checked against Rule 4.3, the scale bar is checked, the
+    HTML is byte-compared against a cold build; all of them passed while the enlarged edition ran 25
+    text spans off the card, because every one of those checks asks about the card and none of them
+    asks what is inside it. It is only visible in the laid-out PDF: the HTML is correct, the browser
+    decides where the words land, and it does not warn you when they land past the box.
+
+    The ONE thing allowed outside a card is generate.py's `.sheetnote` printer label ("Sheet 1 ·
+    FRONT"), which is deliberately in the sheet margin as an instruction to whoever prints it. So the
+    assertion is not "few spans outside" but "nothing outside except that label" -- a threshold would
+    have quietly accepted the 2 spans that were already over the edge before this was measured.
+    """
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+    checked, problems = 0, []
+    for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
+        ref = os.path.basename(os.path.dirname(f))
+        if ref.startswith("_"):
+            continue
+        cfg, _rh = _engine(ref)
+        cw, ch = cfg.CARD_W_IN * 72, cfg.CARD_H_IN * 72
+        gut = cfg.GUTTER_IN * 72
+        pw, ph = cfg.PAGE_W_IN * 72, cfg.PAGE_H_IN * 72
+        gx0 = (pw - (cfg.COLS * cw + (cfg.COLS - 1) * gut)) / 2
+        gy0 = (ph - (cfg.ROWS * ch + (cfg.ROWS - 1) * gut)) / 2
+        slots = []
+        for j in range(cfg.PER):
+            r, c = divmod(j, cfg.COLS)
+            x, y = gx0 + c * (cw + gut), gy0 + r * (ch + gut)
+            slots.append(fitz.Rect(x, y, x + cw, y + ch))
+        with fitz.open(f) as d:
+            for pno, page in enumerate(d):
+                for blk in page.get_text("dict")["blocks"]:
+                    for ln in blk.get("lines", []):
+                        for sp in ln.get("spans", []):
+                            txt = sp["text"].strip()
+                            if not txt or txt.startswith("Sheet "):
+                                continue          # the printer label, deliberately in the margin
+                            b = fitz.Rect(sp["bbox"])
+                            if any(s.contains(b) for s in slots):
+                                continue
+                            problems.append(
+                                f"{ref}/{os.path.basename(f)} p{pno + 1}: {txt[:52]!r} at "
+                                f"({b.x0:.1f},{b.y0:.1f})-({b.x1:.1f},{b.y1:.1f}) is not inside any "
+                                f"card -- the trim line runs through it")
+        checked += 1
+    if checked == 0:
+        pytest.skip("no book has been exported to PDF here (run tools/export_pdf.py)")
+    assert not problems, (f"{len(problems)} printed span(s) would be cut by the trim line:\n  "
+                          + "\n  ".join(problems[:12]))
+
+
 @pytest.mark.slow          # re-derives the surface for every green it checks
 @needs_corpus
 def test_contours_join_equal_height_at_the_stated_interval():

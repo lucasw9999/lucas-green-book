@@ -863,9 +863,8 @@ def coach_about_card():
   <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
     this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
     Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
-  <div class="legrow"><span><b>green N ft above/below</b> = the <b>measured</b> height of the green
-    against its back tee &mdash; <b>not</b> a yardage adjustment. <b>carry N</b> = yd from the back tee
-    to the <b>near edge</b> of a fairway bunker; clearing it needs more than N.</span></div>
+  <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a
+    yardage adjustment. <b>carry N</b> = yd from the back tee to a fairway bunker's near edge.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes, and the <b>carry</b>
@@ -1010,7 +1009,11 @@ def build_coach(coach_name=""):
   .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 8pt; line-height: 1.3; margin-bottom: 5px; }}
   .abt {{ margin-top: 4px; border-top: 1.2px solid #cdb96a; padding-top: 3px; }}
   .abthead {{ font-size: 8pt; font-weight: 800; color: #2b6a2b; margin-bottom: 1px; }}
-  .abtxt {{ font-size: 6.6pt; line-height: 1.28; color: #6b6b6b; text-align: justify; }}   /* legal, slightly bigger for older eyes */
+  /* The legal block sat at 6.6pt against the pocket book's 5.15pt, and it ran OFF the card: its last
+     lines were sliced through by the trim line, so a cut sheet lost them. This edition exists to make the
+     MAPS and the LEGENDS readable for older eyes; enlarging the small print too is what did not fit.
+     5.9pt still beats the pocket book by 15% and leaves the card whole. */
+  .abtxt {{ font-size: 5.75pt; line-height: 1.22; color: #6b6b6b; text-align: justify; }}
   .dedic {{ align-items: center; text-align: center; justify-content: center; padding: 0.28in 0.3in; }}
   .dcrest {{ margin-bottom: 6px; line-height: 0; }}
   .dtitle {{ font-family: Georgia,"Times New Roman",serif; font-style: italic; font-size: 16pt; color: #2b6a2b; margin-bottom: 9px; }}
