@@ -584,6 +584,79 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+def test_the_esri_imagery_incident_stays_resolved():
+    """legal/07 records that licensed Esri/Maxar imagery was removed from this project. Enforce it.
+
+    That incident is the only time this project used a third party's copyrighted content: Poppy
+    Ridge's aerial embedded Esri World Imagery (Maxar). Esri's licence permits on-screen display and
+    transitory caching, not exporting or building printed derivatives -- so baking those pixels into a
+    PDF was a breach even privately, and real exposure if shared. The fix was to delete the source
+    files and rebuild the aerial from public-domain USDA NAIP.
+
+    A resolution recorded in prose decays. Two halves of it are mechanically checkable and now are:
+
+      * the named source files stay deleted. If either returns -- a restore from a backup, a stray
+        copy, an old worktree promoted -- the incident silently reopens.
+      * no photographic raster enters the tracked tree at all. This is the general form of the rule
+        and the one that matters going forward, because the next breach will not be called
+        aerial_src.jpeg. Judged by distinct-colour count: the only tracked raster is the project
+        banner, a designed graphic at 4643 distinct colours over 911k pixels (0.5%). An aerial tile or
+        photo runs tens of thousands and a far higher ratio, so the 20000 threshold sits about 4x
+        above the legitimate asset and well below any photograph.
+
+    The third claim in that document -- a retained GREENS_LETTERED_coords.txt -- is NOT asserted here,
+    because re-checking found the file gone. It lived under gitignored courses/ so its removal is
+    undated and unrecorded. Its absence strengthens the position rather than weakening it (nothing
+    Esri-derived remains, not even the factual coordinates), and the document now says so instead of
+    listing evidence an auditor would go looking for and not find.
+    """
+    import subprocess
+    GONE = ("aerial_src.jpeg", "GREENS_LETTERED.jpg")
+    back = []
+    for root, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+        for f in files:
+            if f in GONE:
+                back.append(os.path.relpath(os.path.join(root, f), ROOT))
+    assert not back, (
+        "an Esri/Maxar-derived file that legal/07 records as DELETED is back in the tree, which "
+        f"reopens a resolved licensing breach: {back}")
+
+    # fitz, not Pillow: PyMuPDF is already a declared dependency and reads PNG/JPEG fine, so this
+    # check adds nothing to install. Reaching for Pillow here immediately failed the
+    # every-third-party-import-is-declared test written one iteration earlier -- which is that guard
+    # doing its job on its author, and the right answer was to use what is already there.
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+    try:
+        listing = subprocess.run(["git", "ls-files"], cwd=ROOT,
+                                 capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        pytest.skip(f"git unavailable: {e}")
+    if listing.returncode != 0:
+        pytest.skip("not a git checkout")
+    photos = []
+    for rel in listing.stdout.split():
+        if not rel.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp")):
+            continue
+        p = os.path.join(ROOT, rel)
+        if not os.path.isfile(p):
+            continue
+        pm = fitz.Pixmap(p)
+        if pm.alpha:                          # drop the alpha channel before counting colours
+            pm = fitz.Pixmap(pm, 0)
+        buf, comp = pm.samples, pm.n
+        n = len({buf[i:i+comp] for i in range(0, len(buf), comp)})
+        if n > 20000:
+            photos.append(f"{rel} has {n} distinct colours -- that is photographic, not a graphic")
+    assert not photos, (
+        "a tracked raster looks like a photograph or an aerial tile. This project ships open data, "
+        "public domain and facts only, and licensed imagery is the one line it has crossed before:\n  "
+        + "\n  ".join(photos))
+
+
 def test_every_third_party_import_is_declared():
     """A dependency the code uses but requirements.txt omits works on the author's machine and
     nowhere else.
