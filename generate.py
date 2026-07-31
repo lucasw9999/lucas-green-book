@@ -424,7 +424,8 @@ def guide_panel():
   <div class="legrow"><svg width="28" height="14"><path d="M2,11 Q9,3 26,6" stroke="#3c5a34" fill="none" stroke-width="0.9"/><path d="M2,13 Q11,7 26,11" stroke="#3c5a34" fill="none" stroke-width="0.9"/></svg>
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep.</span></div>
   <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="7" height="9" fill="rgb(120,190,120)"/><rect x="10" y="3" width="7" height="9" fill="rgb(232,224,120)"/><rect x="18" y="3" width="7" height="9" fill="rgb(210,90,70)"/></svg>
-    <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%). <b>Numbers</b> = slope % there.</span></div>
+    <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%). <b>Numbers</b> = slope % there.
+    <b>Print in colour</b> &mdash; over 10% has colour and no number, and bunkers fade into the fairway.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: fairway (green), rough, <b>trees</b> (dark green), bunkers (tan), water (blue). Edge numbers: <b>left = yd to green</b>, <b>right = yd from the back tee, along the line</b>.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = the <b>measured</b> height of the green
@@ -859,7 +860,8 @@ def coach_about_card():
     glance. Flip up one more page for the green; flip again for the next hole.</span></div>
   <div class="legrow"><span><b>Arrows</b> point downhill (the way the ball rolls; longer = steeper).
     <b>Contours</b> join equal height. <b>Colour</b>: green flat &rarr; yellow &rarr; red (steep).
-    "feeds" = the low side putts run toward.</span></div>
+    "feeds" = the low side putts run toward. <b>Print in colour</b> &mdash; ground over 10% is shown
+    by colour only, and bunkers all but vanish in black &amp; white.</span></div>
   <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
     this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
     Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>

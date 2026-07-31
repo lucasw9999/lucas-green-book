@@ -110,6 +110,11 @@ came from the HTML on disk.
 - **3D‑printable binding** — [`green book binding.stl`](green%20book%20binding.stl), a printable
   cover/binding for the trimmed card deck.
 
+**Print in colour.** Colour is a real data channel here, not decoration: ground steeper than 10% is
+shown by colour *only* and deliberately carries no number, and a fairway bunker's sand sits within
+3% grey of the fairway it lies in, so on a mono printer the bunkers all but disappear. Both books say
+so on the guide card.
+
 ## What's in this repo
 - **Included:** the engine (Python), the build docs, `requirements.txt`, a documented
   [`examples/course.json`](examples/course.json) template, the regression tests, the Rule 4.3
