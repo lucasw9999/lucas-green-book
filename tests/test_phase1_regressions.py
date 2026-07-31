@@ -264,6 +264,80 @@ def test_no_real_course_carries_a_key_the_template_never_mentions():
 
 
 @needs_corpus
+def test_every_printed_caveat_matches_the_data_behind_it():
+    """The governing rule of this project, checked against the shipped books rather than a fixture.
+
+    Three caveats are the honesty rule made concrete, and each is a claim about the DATA:
+      * "1 m data"        -- this green came from the coarser seamless model, not the point cloud
+      * "pre-rebuild data" -- the course was rebuilt after the flight, so the map may be stale
+      * no slope at all    -- the gate refused to read this surface
+    Every one is tested somewhere on a synthetic surface, which proves the rule fires. None was
+    tested against the corpus, which is what proves the LABELS ON THE PAGE match the files on disk.
+    Those are different claims: a card can carry a perfectly working rule applied to the wrong hole.
+
+    Both directions, because each fails differently. A missing caveat is the dangerous one -- a
+    junior trusts a 1 m read as if it were 0.4 m LiDAR. A spurious one is the corrosive one: it
+    disclaims data that is actually good, and a book that cries wolf teaches the reader to skip the
+    warnings that matter.
+
+    It also pins two couplings the guide card asserts in prose: the holes it NAMES as coarse must be
+    exactly the coarse ones, and a green printing a slope must not be one the gate refused.
+
+    Note for whoever next edits this: split panels on `<div class="panel ` and filter, not on
+    `panel hole">`. The guide card's own explanation of "1 m data" otherwise lands inside the
+    preceding hole's block and reads as a mislabelled card -- which is exactly the false alarm this
+    test was written after chasing.
+    """
+    checked, problems = 0, []
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        cj = os.path.join(ROOT, "courses", ref, "course.json")
+        with open(cj, encoding="utf-8") as fh:
+            stale = set(json.load(fh).get("greens_possibly_outdated") or [])
+        for blk in re.split(r'<div class="panel ', html)[1:]:
+            if not blk.startswith('hole"'):
+                continue
+            hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            if not hm:
+                continue
+            hn = int(hm.group(1))
+            meta_p = os.path.join(ROOT, "courses", ref, "dem_hd", f"hole{hn:02d}.json")
+            if not os.path.exists(meta_p):
+                continue
+            with open(meta_p, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            checked += 1
+            coarse = "seamless" in str(meta.get("source", "")).lower()
+            says_coarse = "GREEN &middot; 1 m data" in blk
+            if coarse and not says_coarse and hn not in stale:
+                problems.append(f"{ref} hole {hn}: built from the 1 m seamless model but the card "
+                                f"does not say so -- the read looks as sharp as a LiDAR one")
+            if says_coarse and not coarse:
+                problems.append(f"{ref} hole {hn}: card says \"1 m data\" but the green was built "
+                                f"from {meta.get('source')!r} -- disclaiming data that is good")
+
+            says_stale = "pre-rebuild data" in blk
+            if (hn in stale) != says_stale:
+                problems.append(f"{ref} hole {hn}: greens_possibly_outdated says "
+                                f"{hn in stale}, the card says {says_stale}")
+
+            refused = bool(meta.get("insufficient"))
+            no_slope = "no slope printed" in blk
+            if refused and not no_slope:
+                problems.append(f"{ref} hole {hn}: the gate refused this surface but the card still "
+                                f"prints a slope -- a number the data does not support")
+            if no_slope and re.search(r"&middot; \d+\.\d%", blk):
+                problems.append(f"{ref} hole {hn}: card says no slope printed, yet prints one")
+    assert checked >= 150, f"only {checked} cards checked -- build the books first"
+    assert not problems, ("a printed caveat does not match its data:\n  "
+                          + "\n  ".join(problems[:10]))
+
+
+@needs_corpus
 def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
     """A green card states its scale twice. Both statements must mean the same yard.
 
