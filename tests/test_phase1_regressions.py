@@ -3310,7 +3310,14 @@ def test_each_card_footer_matches_its_own_map():
                 continue
             checked += 1
             footer = (int(m.group(1)), int(m.group(2)))
-            drawn = (panel.count('fill="#efe3b8"'), panel.count('fill="#a9d3ef"'))
+            # Water is inked TWO ways and both must count, which is where this test used to be as
+            # blind as the code it guards. A pond is a filled polygon; a stream or ditch is a blue
+            # POLYLINE, drawn from the same palette and just as wet. Counting only the fill let 17
+            # cards print "0W" over visible blue -- merion 5 said it over five lines of Cobbs Creek.
+            # The stroke-width is what separates a watercourse from a hazard polygon's own outline.
+            drawn = (panel.count('fill="#efe3b8"'),
+                     panel.count('fill="#a9d3ef"')
+                     + panel.count('stroke="#5b9bd0" stroke-width="1.8"'))
             if footer != drawn:
                 bad.append((slug, footer, drawn))
     assert checked >= 150, f"only {checked} hole cards examined"

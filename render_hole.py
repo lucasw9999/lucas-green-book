@@ -588,8 +588,14 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # computes; the footer sitting under the map is something a 12-year-old reads directly. So the
     # footer describes the map, and a bunker between two parallel holes legitimately appears on both
     # cards -- it is in play on both.
+    # The footer's water count must cover every blue mark the map DRAWS, not just the polygons OSM
+    # tagged golf=water_hazard. A stream or ditch inside the corridor is drawn in the same blue and
+    # is just as wet, but it was excluded: 17 cards printed "0W" over a map showing blue, and merion 5
+    # printed it over five separate lines of Cobbs Creek. The guide's legend calls all of it "water
+    # (blue)", so the footer was contradicting both the map beside it and the legend that explains it.
     info=dict(bunkers=len(bunkers),
-              waters=len(waters),
+              waters=len(waters)+len(creeks),
+              water_hazards=len(waters), watercourses=len(creeks),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
               arc_yd=round(arc_yd), card_yd=total_yd,
