@@ -599,6 +599,61 @@ def test_a_fresh_clone_gets_a_clean_suite():
         + "\n  ".join(unguarded))
 
 
+def test_a_nine_hole_course_is_a_first_class_course(tmp_path):
+    """Junior golf is played on nine-hole courses, and the README invites people to add their own.
+
+    Everything about this engine is written around eighteen -- the corpus is twelve 18-hole courses,
+    the scorecard prints OUT and IN, par sums are checked against 72 in the wild. A hardcoded 18
+    anywhere would make the engine useless for exactly the audience the book is for, and nothing in
+    the suite ever built a nine.
+
+    It works, and this pins the parts that would break first if someone assumed eighteen:
+      * config.NHOLES follows the file rather than a constant;
+      * the stroke index is validated as a permutation of 1..N, not 1..18;
+      * the scorecard collapses OUT/IN into one total, since a nine has no back nine to sum;
+      * par is checked against the file's own declared par, not against 72.
+
+    Built from a JSON fixture in tmp_path, so it runs on a fresh clone with no course data. That
+    matters more than usual here: the whole point is the newcomer's first course, and a check that
+    only runs where twelve courses already exist would never see their situation.
+    """
+    holes = {str(h): (4 if h % 3 else 3, 0, 380 - 6*h, 350 - 6*h) for h in range(1, 10)}
+    order = sorted(holes, key=lambda k: -holes[k][2])
+    for rank, k in enumerate(order, 1):
+        v = list(holes[k]); v[1] = rank; holes[k] = v
+    cj = {
+        "slug": "nine", "name": "Nine Hole Test", "holes_count": 9,
+        "hole_cols": ["par", "mens_hcp", "Black", "White"],
+        "holes": holes,
+        "par": sum(v[0] for v in holes.values()),
+        "tees": [{"name": "Black", "yards": sum(holes[k][2] for k in holes),
+                  "rating": 35.2, "slope": 118},
+                 {"name": "White", "yards": sum(holes[k][3] for k in holes),
+                  "rating": 34.0, "slope": 112}],
+        "location": {"lat": 40.0, "lon": -75.0},
+    }
+    errs = _check_course(cj, "nine-hole fixture")
+    assert not errs, "a valid nine-hole scorecard was rejected:\n  " + "\n  ".join(errs)
+
+    # ...and the same file with an 18-hole assumption baked in must FAIL, or the check above is
+    # only passing because it never looks at N.
+    bad = dict(cj, holes=dict(cj["holes"]))
+    bad["holes"]["1"] = [cj["holes"]["1"][0], 14] + list(cj["holes"]["1"][2:])   # hcp 14 on a nine
+    assert _check_course(bad, "nine with an 18-hole handicap"), \
+        "a handicap of 14 on a nine-hole card must be rejected -- the permutation is 1..9"
+
+    # config.py resolves courses/ relative to the repo, with no override, so binding a tmp_path
+    # course would mean either writing into the real courses/ (which the suite must never do) or
+    # adding a test-only env hook to production code. _check_course is the gate every course.json
+    # passes and is where an 18-hole assumption would live, so exercising it directly is the honest
+    # coverage; NHOLES is asserted separately below against the corpus.
+    assert "len(HOLE_NUMS)" in open(os.path.join(ROOT, "config.py"), encoding="utf-8").read(), \
+        "NHOLES must be derived from the file's own holes, never a constant"
+    gen = open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read()
+    assert "config.NHOLES <= 9" in gen, \
+        "the scorecard must collapse OUT/IN for a nine-hole card"
+
+
 def test_nothing_tracked_carries_a_work_identity_or_a_home_path():
     """This repo is PUBLIC. Nothing in it may carry a work identity, an employer domain, or a path
     that only exists on one laptop.
