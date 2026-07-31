@@ -584,6 +584,70 @@ def _arc_yd_for(ref, panel_html):
     return info.get("arc_yd")
 
 
+def test_every_third_party_import_is_declared():
+    """A dependency the code uses but requirements.txt omits works on the author's machine and
+    nowhere else.
+
+    rasterio was missing for the life of tools/verify_elevation.py, and that tool is the ONLY
+    independent cross-check on the printed tee-to-green heights -- it is what separated a real -3.7 ft
+    from the "558 ft below" a units fault produced. Worse, its GeoTIFF read sat inside
+    `except Exception: return None`, so on a fresh install every hole reported "DEM unavailable" and
+    the run ended "nothing could be verified -- treat as UNKNOWN". Indistinguishable from a USGS
+    outage, and the natural reading is that the service is down rather than that a package is absent.
+    Silence would have been better than a misleading diagnosis.
+
+    Discovered by parsing the imports, not from a list, and mapped where the install name differs from
+    the import name (fitz -> PyMuPDF). A guarded optional import is fine and is exempted explicitly:
+    `try: import x / except ImportError` says the code copes without it. rasterio's problem was that
+    it was guarded in a way that produced a WRONG explanation, which is why it is now declared and
+    refused up front instead.
+    """
+    import ast
+    req = os.path.join(ROOT, "requirements.txt")
+    if not os.path.exists(req):
+        pytest.skip("no requirements.txt")
+    # Parse PACKAGE NAMES, not a substring of the file. Substring-matching the whole text meant a
+    # commented-out `#numpy removed` line still counted as declaring numpy -- a mutation that should
+    # have failed, passed.
+    declared = set()
+    with open(req, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.split("#", 1)[0].strip()
+            if line:
+                declared.add(re.split(r"[<>=!~\[]", line)[0].strip().lower())
+    # install name != import name
+    ALIAS = {"fitz": "pymupdf", "PIL": "pillow", "yaml": "pyyaml", "cv2": "opencv"}
+    # the stdlib, plus this repo's own modules, plus test-only helpers
+    local = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "*.py"))}
+    local |= {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "tools", "*.py"))}
+    missing = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "*.py"))
+                    + glob.glob(os.path.join(ROOT, "tools", "*.py"))
+                    + glob.glob(os.path.join(ROOT, "tests", "*.py"))):
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        tree = ast.parse(src)
+        # NO exemption for guarded imports. `try: import x / except ImportError` was exempted at
+        # first, and that is exactly how the rasterio mutation slipped through: wrapping the import
+        # in a guard made the test stop requiring it, while verify_elevation.py still REFUSES to run
+        # without it. Guarded is not the same as optional. Declaring a genuinely optional package
+        # costs nothing -- it just gets installed -- so the rule has no exemption to game.
+        for node in ast.walk(tree):
+            mods = []
+            if isinstance(node, ast.Import):
+                mods = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                mods = [node.module.split(".")[0]]
+            for m in mods:
+                if m in sys.stdlib_module_names or m in local or m.startswith("_"):
+                    continue
+                if ALIAS.get(m, m).lower() not in declared:
+                    missing.append(f"{os.path.relpath(p, ROOT)} imports {m!r}, which "
+                                   f"requirements.txt does not declare")
+    assert not missing, ("the code needs packages the install instructions do not name, so it runs "
+                         "only where it was written:\n  " + "\n  ".join(sorted(set(missing))))
+
+
 def test_every_runnable_tool_is_documented():
     """A tool nobody can find is a trap, and two of these were traps the SUITE itself sets.
 

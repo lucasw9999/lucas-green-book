@@ -40,6 +40,11 @@ import urllib.request
 
 import numpy as np
 
+try:
+    import rasterio
+except ImportError:                     # not in requirements for years -- see the note in main()
+    rasterio = None
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
@@ -83,7 +88,6 @@ def dem_median_m(lat, lon, half_m=SAMPLE_HALF_M, px=48):
     if not raw:
         return None
     try:
-        import rasterio
         with rasterio.open(io.BytesIO(raw)) as ds:
             a = ds.read(1).astype(float)
     except Exception:
@@ -161,6 +165,18 @@ def check_course(slug):
 
 
 def main():
+    # This tool is the ONLY independent check on the printed elevation figures -- it is what
+    # separated a real -3.7 ft from the "558 ft below" a units fault produced. rasterio was never in
+    # requirements.txt, and the read was wrapped in `except Exception: return None`, so on a fresh
+    # install every hole came back "DEM unavailable" and the run ended "nothing could be verified --
+    # treat as UNKNOWN". Indistinguishable from a USGS outage, and the natural reading is that the
+    # service is down rather than that a package is missing. Say which it is.
+    if rasterio is None:
+        print("rasterio is not installed, so the DEM comparison cannot run at all.\n"
+              "  This is a MISSING DEPENDENCY, not an unreachable service:\n"
+              "    python3 -m pip install rasterio\n"
+              "  Refusing rather than reporting every hole as unverifiable.")
+        return 2
     if "--all" in sys.argv:
         slugs = sorted(os.path.basename(os.path.dirname(p))
                        for p in __import__("glob").glob(os.path.join(ROOT, "courses", "*", "course.json")))
