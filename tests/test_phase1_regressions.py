@@ -479,6 +479,102 @@ def _arc_yd_for(ref, panel_html):
 
 
 @needs_corpus
+def test_a_printed_carry_never_overstates_what_it_clears():
+    """"carry 224" is a number a junior clubs against off the tee, so it must err SHORT, never long.
+
+    The figure is the near edge of fairway sand measured along the line from the back tee. Two
+    separate ways it could mislead, and they point opposite ways:
+
+      * Too LONG is dangerous. A carry printed further than the sand actually starts tells a player
+        they have room they do not have. Checked by recomputing the near edge from only the polygon
+        points that lie within 15 m of the line -- the sand genuinely in the ball's path -- and
+        requiring the printed number never to exceed it. It does not: the printed value is
+        conservative by a median 0 and up to 20 yd, because min() is taken over the whole polygon
+        including parts up to 45 m off the line. Erring short is the right direction.
+
+      * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
+        "Clearing it needs more than N", which is false where the sand is long: the-reserve 8 prints
+        "carry 90" for sand occupying the line from 92 to 201 yd on a 237-yd par 3, so clearing needs
+        201. Sand runs a median 20 yd past the printed number and up to 111. The number is right --
+        it is where the sand starts -- so the sentence was corrected rather than the figure.
+
+    Also holds the stated window: 80-300 yd from the tee, and never within 40 yd of the green, since
+    greenside sand is not a tee carry.
+    """
+    import math
+    IN_LINE_M = 15.0
+    checked, problems = 0, []
+    for ref in CORPUS:
+        book = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(book):
+            continue
+        with open(book, encoding="utf-8") as fh:
+            html = fh.read()
+        assert "where fairway sand <b>starts</b>" in html and "can run well past N" in html, (
+            f"{ref}: the guide no longer says the sand can run past the printed carry -- on "
+            f"the-reserve 8 that is 111 yd of unstated sand")
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                _green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            carries = info.get("carries") or []
+            if not carries:
+                continue
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+            def em(la, lo):
+                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.R_LAT)
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            perp = (-uy, ux)
+            card = info["card_yd"]
+            for near, _far in carries:
+                checked += 1
+                if not (80 <= near <= 300):
+                    problems.append(f"{ref} hole {hn}: carry {near} is outside the 80-300 yd window")
+                if near > card - 40:
+                    problems.append(f"{ref} hole {hn}: carry {near} on a {card} yd hole is greenside "
+                                    f"sand, not a tee carry")
+                in_line = None
+                for g in bunkers:
+                    al, of = [], []
+                    for q in g["geometry"]:
+                        e, n = em(q["lat"], q["lon"])
+                        dx, dy = e - tee[0], n - tee[1]
+                        al.append(dx*ux + dy*uy); of.append(dx*perp[0] + dy*perp[1])
+                    if not al or abs(min(al) / 0.9144 - near) > 2:
+                        continue
+                    near_in = [a / 0.9144 for a, o in zip(al, of) if abs(o) <= IN_LINE_M]
+                    if near_in:
+                        in_line = min(near_in)
+                if in_line is not None and near > in_line + 2:
+                    problems.append(
+                        f"{ref} hole {hn}: prints carry {near} but sand in the ball's path starts at "
+                        f"{in_line:.0f} yd -- the card claims room the hole does not give")
+    assert checked >= 50, f"only {checked} carries checked -- build the books first"
+    assert not problems, "a printed carry overstates what it clears:\n  " + "\n  ".join(problems[:8])
+
+
+@needs_corpus
 def test_the_elevation_word_matches_the_elevation_sign():
     """"green 22 ft below" is a WORD derived from a signed number, and the word is what a golfer clubs
     off. Flip it and the book confidently sends the ball a full club short.

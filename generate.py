@@ -436,8 +436,8 @@ def guide_panel():
   <div class="legrow"><span><b>green N ft above/below</b> = the <b>measured</b> height of the green
     against its back tee. It is <b>not</b> a yardage adjustment &mdash; how much club that is worth
     depends on your own ball flight, so <b>you</b> make that call.</span></div>
-  <div class="legrow"><span><b>carry N</b> = yd from the back tee to the <b>near edge</b> of a fairway
-    bunker, along the line. Clearing it needs more than N.</span></div>
+  <div class="legrow"><span><b>carry N</b> = yd from the back tee to where fairway sand <b>starts</b>,
+    along the line. The sand can run well past N &mdash; check the map.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book for junior golfers, <b>not for sale</b>. Hole &amp;
@@ -873,7 +873,7 @@ def coach_about_card():
     this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
     Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a
-    yardage adjustment. <b>carry N</b> = yd from the back tee to a fairway bunker's near edge.</span></div>
+    yardage adjustment. <b>carry N</b> = yd to where fairway sand starts; it can run past N.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes, and the <b>carry</b>
