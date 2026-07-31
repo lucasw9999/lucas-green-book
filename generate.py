@@ -30,12 +30,10 @@ LAYOUTS = {}   # hole -> (svg, info)
 # Young players (juniors, and men especially) play the BACK tee, so show the
 # LONGER of the two configured tees as the big main yardage and the shorter as
 # the small one, with FULL tee names (e.g. "Black", not "BLA").
-_ftot = sum(HOLES[h][config.FI] for h in HOLES)
-_stot = sum(HOLES[h][config.SI] for h in HOLES)
-if _stot >= _ftot:
-    BACK_I, BACK_NAME, FRONT_I, FRONT_NAME = config.SI, config.SECONDARY, config.FI, config.FEATURED
-else:
-    BACK_I, BACK_NAME, FRONT_I, FRONT_NAME = config.FI, config.FEATURED, config.SI, config.SECONDARY
+# One answer, from config.py -- render_hole.py and fetch_hole_elev.py must agree with the headline or a
+# card mixes two tees. See the note beside BACK_I there.
+BACK_I, BACK_NAME = config.BACK_I, config.BACK_NAME
+FRONT_I, FRONT_NAME = config.FRONT_I, config.FRONT_NAME
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 

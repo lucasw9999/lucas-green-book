@@ -93,11 +93,29 @@ def tee_anchor(hnum, line, greens):
     arc_m = sum(math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1])
                 for i in range(len(pts)-1)) or 1.0
     chord_m = math.hypot(pts[-1][0]-pts[0][0], pts[-1][1]-pts[0][1]) or 1.0
-    card_yd = config.HOLES[hnum][2]
+    card_yd = config.HOLES[hnum][config.BACK_I]      # the tee the book is built on, not column 0
     card_m = card_yd*0.9144
     arc_yd = arc_m/0.9144
     if abs(arc_yd - card_yd) <= max(15.0, 0.05*card_yd):
         return tend['lat'], tend['lon'], "tee end of the mapped hole line"
+    if render_hole.line_traced_past_the_tee(arc_yd, card_yd, chord_m/0.9144):
+        # The line runs BEYOND the book's tee, so that tee lies ON the drawn line: walk back from the
+        # green end until the remaining walk equals the card yardage. Interpolation on real geometry,
+        # not extrapolation -- and the only reason it is needed is that a course whose OSM lines were
+        # traced along a LONGER tee's route (the-reserve: lines follow Black, the book is built on Gold)
+        # would otherwise sample the ground at the wrong tee, ~40 yd back, and call it this tee's height.
+        want = card_m
+        acc = 0.0
+        for i in range(len(pts)-1, 0, -1):
+            seg = math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1])
+            if acc + seg >= want:
+                f = (want - acc)/(seg or 1.0)          # fraction from pts[i] toward pts[i-1]
+                tx = pts[i][0] + (pts[i-1][0]-pts[i][0])*f
+                ty = pts[i][1] + (pts[i-1][1]-pts[i][1])*f
+                return (ty/R_LAT + la0, tx/_mlon(la0) + lo0,
+                        f"walked back along the mapped line to the card {card_yd} yd "
+                        f"(the line runs {arc_yd:.0f} yd, past this tee)")
+            acc += seg
     if render_hole.par3_exact_from_tee(config.HOLES[hnum][0], arc_m, chord_m):
         gp = [em(p['lat'], p['lon']) for p in green['geometry']]
         gc = (sum(p[0] for p in gp)/len(gp), sum(p[1] for p in gp)/len(gp))

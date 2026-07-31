@@ -573,7 +573,7 @@ def test_no_tick_exceeds_its_hole_yardage():
             except Exception as e:
                 errors.append((slug, hn, repr(e)[:120])); continue
             holes += 1
-            card = config.HOLES[hn][2]
+            card = config.HOLES[hn][config.BACK_I]   # not column 0
             for t in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg):
                 labels += 1
                 if int(t) > card:
@@ -650,6 +650,50 @@ def test_carries_are_measured_from_the_back_tee():
         assert not i1["fwd_tee"], "merion 1 spans its card; this pin assumes that"
         assert i1["carries"] and 168 <= min(c[0] for c in i1["carries"]) <= 176, \
             f"merion 1 carries look shifted: {i1['carries']} (expected a near edge around 172)"
+
+
+@needs_corpus
+def test_one_card_is_built_on_one_tee():
+    """The tee marker, the from-tee gutter, the carries and the elevation must all be the tee the card
+    headlines.
+
+    "Which tee is this book built on" was decided in two places: generate.py took the longer of
+    FEATURED/SECONDARY for the headline, while render_hole.py and fetch_hole_elev.py used TEES[0], the
+    first scorecard column. Those coincide on 11 of 12 courses. the-reserve-at-spanos-park sets
+    featured_tee = Gold while Black is column 0, so its cards headlined "376 Gold" beside a tee marker
+    reading BLA and a brown gutter of 322 measured from the 422-yd BLACK tee -- 10 of 18 holes, up to
+    46 yd out on the number a player reads as how far they have hit."""
+    import re as _re
+    for slug in CORPUS:
+        config, render_hole = _engine(slug)
+        assert config.BACK_I in range(2, 2 + len(config.TEES)), f"{slug}: BACK_I out of range"
+        for hn in config.HOLE_NUMS:
+            try:
+                svg, info = render_hole.render_hole(hn, config.HOLES)
+            except Exception:
+                continue
+            want = config.HOLES[hn][config.BACK_I]
+            assert info["card_yd"] == want, (
+                f"{slug} h{hn}: the map is built on {info['card_yd']} yd but the card headlines "
+                f"{want} yd ({config.BACK_NAME}) -- two tees on one card")
+            lab = _re.findall(r'fill="#20402a"[^>]*>([A-Z]{3})</text>', svg)
+            if lab:
+                assert lab[0] == config.BACK_NAME[:3].upper(), (
+                    f"{slug} h{hn}: tee marker reads {lab[0]} but the card is built on "
+                    f"{config.BACK_NAME}")
+        # the elevation stage must anchor on the same tee
+        p_elev = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if os.path.isfile(p_elev):
+            sys.modules.pop("fetch_hole_elev", None)
+            import fetch_hole_elev as fhe
+            for hn_s, row in json.load(open(p_elev))["holes"].items():
+                basis = str(row.get("tee_basis", ""))
+                m = _re.search(r"card (\d+) yd", basis)
+                if m:
+                    assert int(m.group(1)) == config.HOLES[int(hn_s)][config.BACK_I], (
+                        f"{slug} h{hn_s}: elevation anchored on card {m.group(1)} yd, "
+                        f"card is {config.HOLES[int(hn_s)][config.BACK_I]}")
+            del fhe
 
 
 @needs_corpus
@@ -1020,7 +1064,7 @@ def test_short_par45_holes_still_get_their_from_tee_numbers():
         svg, info = render_hole.render_hole(hn, config.HOLES)
         lefts = [int(x) for x in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg)]
         rights = [int(x) for x in re.findall(r'<text x="91"[^>]*>(\d+)</text>', svg)]
-        card = config.HOLES[hn][2]
+        card = config.HOLES[hn][config.BACK_I]   # not column 0
         assert info["fwd_tee"], f"merion {hn} should use the forward-tee derivation"
         assert rights, f"merion {hn} has an empty from-tee gutter again"
         assert len(lefts) == len(rights), f"merion {hn} unmatched rows: {lefts} / {rights}"
@@ -1094,7 +1138,7 @@ def test_from_tee_labels_are_bounded_and_ordered():
             except Exception as e:
                 errors.append((slug, hn, repr(e)[:120])); continue
             nholes += 1
-            card = config.HOLES[hn][2]
+            card = config.HOLES[hn][config.BACK_I]   # not column 0
             rights = [int(x) for x in re.findall(r'<text x="91"[^>]*>(\d+)</text>', svg)]
             lefts = [int(x) for x in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg)]
             # Floor is scaled: 30 yd is noise on a 500-yd hole but a fifth of a 128-yd one, where a
@@ -1151,7 +1195,8 @@ def test_from_tee_labels_are_bounded_and_ordered():
             fwd_model = False
             if not spans and not exact_model and arc_yd_ < card:
                 start_tee_m = min((_dist_to_poly(pts[0], t, em) for t in course_tees), default=1e9)
-                fwd_yds = [config.HOLES[hn][2 + i] for i in range(1, len(config.TEES))]
+                fwd_yds = [config.HOLES[hn][2 + i] for i in range(len(config.TEES))
+                           if 2 + i != config.BACK_I]
                 fwd_model = (start_tee_m <= 20.0 and
                              any(abs(arc_yd_ - y) <= max(15.0, 0.05 * y) for y in fwd_yds))
             # ...and the mirror case: a line traced PAST the tee uses the same offset derivation, so

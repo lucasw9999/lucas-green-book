@@ -284,7 +284,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     pin=f'<circle cx="{gcx:.1f}" cy="{gcy:.1f}" r="2.6" fill="none" stroke="#c0392b" stroke-width="1.1"/>'
     tx=TX(proj(tee_end['lat'],tee_end['lon'])[0]); ty=TY(proj(tee_end['lat'],tee_end['lon'])[1])
     import config as _cfg
-    back_tee = (_cfg.TEES[0][:3].upper() if _cfg.TEES else "TEE")
+    back_tee = (_cfg.BACK_NAME[:3].upper() if _cfg.BACK_NAME else "TEE")
     def txt(x,y,sn,fill,fs=None):
         fs=FS if fs is None else fs
         hw=fs*0.60*len(sn)/2                       # keep the whole label inside the frame
@@ -305,7 +305,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     def etxt(x, y, sn, fill, anchor):
         return (f'<text x="{x}" y="{y:.1f}" font-size="{FSN:.1f}" text-anchor="{anchor}" '
                 f'paint-order="stroke" stroke="#fff" stroke-width="{FSN*0.28:.1f}" fill="{fill}" font-weight="700">{sn}</text>')
-    total_yd = HOLES[hnum][2]                 # BACK (championship) tee scorecard yardage
+    total_yd = HOLES[hnum][_cfg.BACK_I]       # the tee THIS BOOK is built on (config.BACK_I)
     # Geometry of the drawn playing line, tee end first. arc_m is its true walked length, which the
     # from-tee label is derived from -- course yardage follows the line you walk, not the chord.
     same = lambda a, b: abs(a['lat']-b['lat']) < 1e-9 and abs(a['lon']-b['lon']) < 1e-9
@@ -326,7 +326,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # mapped tee box, 1e9 when the course has no tee polygons at all (then this stays refused).
     start_at_tee_m = min((dist_to_poly_m(pts_em[0], t, em) for t in tees), default=1e9)
     fwd_tee = (not tee_ok and line_runs_from_a_forward_tee(
-        arc_yd, total_yd, [HOLES[hnum][2+i] for i in range(1, len(_cfg.TEES))], start_at_tee_m))
+        arc_yd, total_yd,
+        [HOLES[hnum][2+i] for i in range(len(_cfg.TEES)) if 2+i != _cfg.BACK_I], start_at_tee_m))
     # The mirror case: a line traced PAST the tee. Same conclusion -- the length difference is at the
     # tee end -- so the same signed shift and the same from-tee derivation apply.
     past_tee = not tee_ok and line_traced_past_the_tee(arc_yd, total_yd, L/0.9144)
