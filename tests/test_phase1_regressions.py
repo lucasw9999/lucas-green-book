@@ -8413,3 +8413,90 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     assert checked >= 10, f"only {checked} books' carry legends were checked"
     assert_no_course_skipped(seen, "test_the_carry_legend_says_sand_because_water_is_not_quantified")
     assert not problems, "the carry legend over-claims what it covers:\n  " + "\n  ".join(problems)
+
+
+@needs_corpus
+def test_the_provenance_record_dates_the_geometry_not_just_the_lidar():
+    """The OSM extract date must be reported, for the same reason the flight date is.
+
+    Overpass stamps every response with osm3s.timestamp_osm_base -- the instant of the planet data the
+    answer was computed from. It sat unread in every extract on disk while this project went to real
+    trouble over the other side of the provenance: flight dates are decoded out of the LiDAR point
+    records because four courses had been mislabelled by 2-12 years by their project names.
+
+    The card tells a reader the hole and green SHAPES come from OpenStreetMap, and prints the flight date
+    so they can judge whether the green SLOPE is current. Without the extract date they cannot judge the
+    same thing about the shapes -- a re-bunkered hole or a re-routed green reads exactly as authoritative
+    as a current one. Every extract in this corpus is a day or two old, so this pins a fact rather than
+    fixing a live problem, which is the point: it is recorded now, before a course goes two years without
+    a refetch and nothing says so.
+
+    Asserted against the FILES, not against the document's own prose, so the record cannot drift from the
+    artifacts it claims to describe. Earliest of the three extracts per course, because the honest claim
+    about a book is the age of its oldest ingredient.
+    """
+    with open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md"), encoding="utf-8") as f:
+        prov = f.read()
+    checked, problems, seen = 0, [], set()
+    for slug in CORPUS:
+        stamps = []
+        for fn in ("osm_geom.json", "osm_course.json", "osm_relations.json"):
+            p = os.path.join(ROOT, "courses", slug, fn)
+            if not os.path.isfile(p):
+                continue
+            with open(p, encoding="utf-8") as f:
+                t = (json.load(f).get("osm3s") or {}).get("timestamp_osm_base")
+            if t:
+                stamps.append(str(t))
+        seen.add(slug)
+        if not stamps:
+            continue                      # no OSM extract at all (a yardage-mode course may have none)
+        checked += 1
+        want = min(stamps)[:10]
+        if f"extract **{want}**" not in prov:
+            problems.append(
+                f"{slug}: its oldest OSM extract is {want} and legal/03 does not say so. That table "
+                f"dates the LiDAR to the day; leaving the geometry undated means a reader cannot tell a "
+                f"current hole shape from one traced before the course was re-bunkered. Re-run "
+                f"tools/gen_provenance.py.")
+        if "not recorded" in prov and want:
+            # a row claiming no date while the file has one is worse than either alone
+            pass
+    assert checked >= 10, f"only {checked} courses had an OSM extract to date"
+    assert_no_course_skipped(seen, "test_the_provenance_record_dates_the_geometry_not_just_the_lidar")
+    assert "Geometry carries a date for the same reason" in prov, (
+        "the table no longer explains what the extract date is or why it is there; a bare date in a "
+        "column is not provenance")
+    assert not problems, "the provenance record leaves the geometry undated:\n  " + "\n  ".join(problems)
+
+    # And exercise the EARLIEST choice directly, because the corpus cannot. Every course's three
+    # extracts land on the same calendar day -- they are Overpass calls a minute apart -- so min and max
+    # agree to the day and swapping them is undetectable from the real data. It stops being undetectable
+    # the first time a fetch straddles midnight, which is exactly when reporting the newer date would
+    # overstate how current a book is.
+    import shutil
+    import tempfile
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    sys.modules.pop("gen_provenance", None)
+    import gen_provenance
+    tmp = tempfile.mkdtemp(prefix="greenbook-osmdate-")
+    try:
+        slug = "_datetest"
+        d = os.path.join(tmp, "courses", slug)
+        os.makedirs(d)
+        for fn, ts in (("osm_geom.json", "2026-07-29T23:58:00Z"),
+                       ("osm_course.json", "2026-07-30T00:04:00Z")):
+            with open(os.path.join(d, fn), "w", encoding="utf-8") as f:
+                json.dump({"osm3s": {"timestamp_osm_base": ts}, "elements": []}, f)
+        real_root = gen_provenance.ROOT
+        gen_provenance.ROOT = tmp
+        try:
+            got = gen_provenance._osm_extract_date(slug)
+        finally:
+            gen_provenance.ROOT = real_root
+        assert got == "2026-07-29", (
+            f"_osm_extract_date returned {got!r} for extracts spanning 2026-07-29T23:58 and "
+            f"2026-07-30T00:04. It must report the OLDER ingredient: the newer date would claim the "
+            f"book is a day fresher than its oldest geometry actually is.")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

@@ -102,6 +102,41 @@ def _elevation(slug):
     return len(rows), holes, extrap
 
 
+
+def _osm_extract_date(slug):
+    """Earliest OSM data timestamp across this course's extracts, as YYYY-MM-DD, or None.
+
+    Overpass stamps every response with osm3s.timestamp_osm_base -- the instant of the planet data the
+    answer was computed from. It has been sitting unread in every extract on disk while this table went
+    to real trouble over the LiDAR side, decoding flight dates out of the point records because four
+    courses had been mislabelled by 2-12 years by their project names.
+
+    The same argument applies to geometry. The card tells a reader the hole and green SHAPES come from
+    OpenStreetMap, and it prints the flight date so they can judge whether the SLOPE is current. Without
+    the extract date they cannot judge the same thing about the shapes: a re-bunkered hole or a re-routed
+    green looks exactly as authoritative as a current one. Today every extract is a day or two old, so
+    this records a fact rather than fixing a live problem -- which is the moment to record it, before a
+    course goes two years without a refetch and nothing says so.
+
+    EARLIEST of the three files, deliberately: geometry, course features and relations are separate
+    Overpass calls a minute or so apart, and the honest claim about a book is the age of its oldest
+    ingredient.
+    """
+    stamps = []
+    for fn in ("osm_geom.json", "osm_course.json", "osm_relations.json"):
+        p = os.path.join(ROOT, "courses", slug, fn)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as fh:
+                t = (json.load(fh).get("osm3s") or {}).get("timestamp_osm_base")
+        except (OSError, ValueError):
+            continue
+        if t:
+            stamps.append(str(t))
+    return min(stamps)[:10] if stamps else None
+
+
 def _digitized(slug):
     p = os.path.join(ROOT, "courses", slug, "osm_geom.json")
     if not os.path.exists(p):
@@ -145,6 +180,8 @@ def _row(slug):
         " *(range measured over whole tiles, not only the points over the greens)*"
 
     geom = "OSM (ODbL)"
+    osm_date = _osm_extract_date(slug)
+    geom += f", extract **{osm_date}**" if osm_date else ", extract date **not recorded**"
     if dig:
         geom += f"; {len(dig)} green(s) hand-added, tagged `_digitized` (ids {', '.join(str(d) for d in dig)})"
 
@@ -283,6 +320,12 @@ No Esri/Maxar, Google, Apple or Bing imagery, and nothing from any commercial gr
 **Flight dates are decoded from the LiDAR point records** (`tools/lidar_dates.py`), not from the
 project name. Four courses were mislabelled by 2–12 years before this was measured, so the dataset
 names below are taken from the actual tile filenames on disk.
+
+**Geometry carries a date for the same reason.** Each row's OSM *extract* date is the earliest
+`osm3s.timestamp_osm_base` across that course's Overpass responses — the instant of the planet data
+they were computed from, read off the files rather than recorded by hand. The flight date lets a reader
+judge whether the green SLOPE is current; without this one they cannot judge the same thing about the
+hole and green SHAPES, and a re-bunkered hole looks exactly as authoritative as a current one.
 
 | Course | Status | Geometry | Green slope | Scorecard | Notes |
 |---|---|---|---|---|---|
