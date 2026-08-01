@@ -6251,7 +6251,20 @@ def test_every_green_surface_records_its_gate_verdict():
             with open(p, encoding="utf-8") as f:
                 m = json.load(f)
             checked += 1
-            for key in ("nan_frac", "insufficient"):
+            # fetch_dem_hd runs THREE honesty gates -- extrapolation (nan_frac), in-green density,
+            # and coverage (uncovered) -- and this required the verdict of only one of them plus the
+            # outcome. A surface written without `uncovered` would pass while carrying no record that
+            # the coverage gate ever ran, and coverage is the gate added specifically because nan_frac
+            # cannot see an INTERIOR void: standing water absorbs 1064 nm, so a hole in the middle of a
+            # green is spanned by the interpolation and counted as measured.
+            #
+            # Required for the 192 point-cloud surfaces. The 6 seamless ones come from fetch_dem.py,
+            # which has no point cloud to measure coverage or density against and legitimately records
+            # neither -- so the requirement is keyed on the surface's own recorded source.
+            seamless = "seamless" in str(m.get("source", "")).lower()
+            need = (("nan_frac", "insufficient") if seamless else
+                    ("nan_frac", "insufficient", "uncovered", "density"))
+            for key in need:
                 if m.get(key) is None:
                     missing.append(f"{slug} hole {m.get('hole')}: {key} absent "
                                    f"(source={str(m.get('source'))[:34]})")
