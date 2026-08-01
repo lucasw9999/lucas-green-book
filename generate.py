@@ -549,9 +549,9 @@ def _flown_line():
     if coarse:
         holes = _hole_runs(coarse)
         out += ('  <div class="legrow"><span><b>Holes ' + holes + '</b> had no usable point '   # see above
-                'cloud (tree cover or water), so their greens come from the coarser <b>1 m</b> '
-                'national model, marked <b>&ldquo;1 m data&rdquo;</b>. The tilt is real, just less '
-                'sharp &mdash; small tiers may smooth away.</span></div>\n')
+                'cloud, so their greens use the coarser <b>1 m</b> national model, marked '
+                '<b>&ldquo;1 m data&rdquo;</b> &mdash; tilt is real, small tiers may smooth '
+                'away.</span></div>\n')
     # And the same treatment for the TREE layer, which had none. Trees are found by height above
     # ground in the point cloud, so a hole the survey does not reach draws no trees -- indistinguishable
     # on the card from a hole that genuinely has none, while the legend promises "trees". Monarch Bay 1,
@@ -1197,14 +1197,14 @@ def coach_about_card():
       Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright);
       slope, contours, arrows &amp; <b>elevation change</b> are computed by the maker from
       <b>public-domain USGS&nbsp;3DEP</b> LiDAR; par,
-      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. <b>No proprietary data, image, symbol
-      set, layout or trade dress of any commercial green-reading product was used, copied, referenced or reverse-engineered.</b> Built <b>entirely from remote public data, without entering any club or course</b>.
+      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. Every map is <b>independently created</b>: <b>no proprietary data, image, symbol
+      set, layout or trade dress of any commercial green-reading product was used, copied, referenced or reverse-engineered</b>, and this book is no substitute for any product. Built <b>entirely from remote public data, without entering any club or course</b>.
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
       trademarks belong to their owners and identify the course only &mdash; contact the maker for removal.
       Provided <b>free and as-is, with no warranty of any kind</b> (accuracy, fitness or rules
       conformance): maps show general tilt &amp; tiers, not exact break, and may contain errors &mdash;
       <b>use at your own risk and trust your own read</b>. To the fullest extent permitted by law the
-      maker is not liable for any loss, penalty or damage from use of this book.
+      maker is not liable for any loss, penalty, damage, ruling or disqualification from use of this book.
       <b>lucasgreenbook.org</b> &middot; contact <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. ''' + sharing_line() + '''</div>
   </div>
 </div>'''
@@ -1350,7 +1350,13 @@ def build_coach(coach_name=""):
      lines were sliced through by the trim line, so a cut sheet lost them. This edition exists to make the
      MAPS and the LEGENDS readable for older eyes; enlarging the small print too is what did not fit.
      5.75pt still beats the pocket book's 5.15pt by 12% and leaves the card whole. */
-  .abtxt {{ font-size: 5.75pt; line-height: 1.22; color: #6b6b6b; text-align: justify; }}
+  /* line-height 1.22 -> 1.14 on the small print only. 16 lines x 0.08 x 5.75pt buys back the one
+     line the restored Rule 4.3 ruling disclaimer, the trade-dress lead-in and the no-substitute
+     clause cost on monarch-bay -- the binding book, which had 9.31 px of clearance against a
+     9.35 px line. TYPE SIZE is untouched at 5.75pt, still larger than the pocket book's 5.15,
+     which is the reason this edition exists. Leading on legal small print is the cheapest thing
+     on this card, and a defence that is not printed is worth nothing however well led. */
+  .abtxt {{ font-size: 5.75pt; line-height: 1.14; color: #6b6b6b; text-align: justify; }}
   .dedic {{ align-items: center; text-align: center; justify-content: center; padding: 0.28in 0.3in; }}
   .dcrest {{ margin-bottom: 6px; line-height: 0; }}
   .dtitle {{ font-family: Georgia,"Times New Roman",serif; font-style: italic; font-size: 16pt; color: #2b6a2b; margin-bottom: 9px; }}
