@@ -8596,3 +8596,47 @@ def test_the_cross_flight_check_cannot_agree_by_failing_to_read_a_date():
     assert "dates_recoverable(" in after, (
         "cross_flight_check.check() no longer consults dates_recoverable, so the refusal is defined and "
         "unused -- worse than absent, because the docstring claims the run cannot agree by failing")
+
+
+def test_render_refuses_a_green_that_falls_metres_inside_its_own_outline(gate_course):
+    """MAX_PLAUSIBLE_RELIEF_M had no test. It is the gate against a NoData crater.
+
+    render_green carries four refusal gates and three were exercised: too much of the interior
+    extrapolated, a perfectly constant surface, and a producer-flagged insufficient. The fourth --
+    "a putting surface cannot plausibly fall metres within its own outline", written to catch a
+    partially-filled NoData patch that survives the fraction test -- was reached by nothing. Coverage
+    over the whole suite put render_green at 95% with these two lines among the remainder.
+
+    That is the same shape as the confirmed-rebuild branch: a refusal in the honesty path that no data
+    triggers and no test drives, so a wrong comparison or a mistyped constant would leave the suite green
+    while a green with a 30 m hole in it printed a slope read. And the number it would print is not
+    obviously wrong -- the plane fit through a crater still yields a tilt and a feed direction.
+
+    Both sides asserted, because a gate that always refuses is as broken as one that never does: 30 m of
+    fall must be refused, and a steep-but-real green must still be read.
+    """
+    import numpy as np
+    import render_green
+    assert render_green.MAX_PLAUSIBLE_RELIEF_M == 30.0, (
+        "the plausible-relief ceiling moved; this test's surfaces are chosen either side of 30 m")
+
+    # a crater: mostly a real green, with one deep patch, as a partially-filled NoData hole looks
+    def crater(r, c):
+        z = 100.0 + 0.02 * r
+        return np.where((r > 25) & (r < 35) & (c > 25) & (c < 35), z - 40.0, z)
+
+    _synth_green(gate_course, 11, crater, insufficient=False)
+    _svg, s = render_green.render(11)
+    assert s.get("insufficient") is True, (
+        "a green falling 40 m inside its own outline must be refused. That is a NoData patch, not "
+        "terrain, and the plane fit through it still returns a confident-looking tilt and feed word")
+    assert s["conf"] == "no data" and s["tilt_pct"] == 0.0, (
+        "a refused green must report no slope rather than the number computed from the crater")
+
+    # ...and a genuinely severe green stays readable: 2.5 m of fall is a real, steep putting surface
+    _synth_green(gate_course, 12, lambda r, c: 100.0 + 0.042 * r, insufficient=False)
+    _svg2, s2 = render_green.render(12)
+    assert not s2.get("insufficient"), (
+        "2.5 m of fall across a green is severe but real -- refusing it would blank legitimate greens, "
+        "and this corpus has surfaces with over 2 m of relief")
+    assert s2["tilt_pct"] > 0, "a real sloping green must still report a tilt"
