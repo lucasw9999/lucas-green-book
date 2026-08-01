@@ -82,12 +82,16 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 > osm.org/copyright); slope, contours, arrows & elevation change are computed by the maker from
 > public-domain USGS 3DEP LiDAR; par, yardage & handicap (HCP = men’s stroke index) are facts
 > from the published scorecard. No proprietary data, image, symbol set, layout or trade dress
-> of any commercial green-reading product was used, copied or referenced. Not affiliated with,
-> endorsed or sponsored by any course, club, association or product; names & trademarks belong
-> to their owners and identify the course only — contact the maker for removal. Provided as-is,
-> no warranty; maps show general tilt, not exact break — trust your own read.
-> lucasgreenbook.org · contact info@lucasgreenbook.org. © 2026 Lucas Wu · Lucas Green Book™.
-> This book: free to share, not for sale — CC BY-NC-ND 4.0.
+> of any commercial green-reading product was used, copied, referenced or reverse-engineered.
+> Built entirely from remote public data, without entering any club or course. Not affiliated
+> with, endorsed or sponsored by any course, club, association or product; names & trademarks
+> belong to their owners and identify the course only — contact the maker for removal. Provided
+> free and as-is, with no warranty of any kind (accuracy, fitness or rules conformance): maps
+> show general tilt & tiers, not exact break, and may contain errors — use at your own risk and
+> trust your own read. To the fullest extent permitted by law the maker is not liable for any
+> loss, penalty or damage from use of this book. lucasgreenbook.org · contact
+> info@lucasgreenbook.org. © 2026 Lucas Wu · Lucas Green Book™. This book: free to share, not
+> for sale — CC BY-NC-ND 4.0.
 
 ## Why this text covers the risks
 - **Independent / open-data provenance** -> copyright + trade-dress defense.
