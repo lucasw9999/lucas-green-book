@@ -27,20 +27,27 @@ geometry OSM already had, and then look like a data-availability problem rather 
 What is checked: every printed hole's drawing corridor (render_hole's 45 m) must lie inside the box.
 Reported in metres of overshoot per hole, worst first.
 
-ALREADY INVESTIGATED, so a shortfall here is not automatically a defect. As of 2026-07-31 four courses
-are short and were each probed live against Overpass with a 120 m-widened box, and NO drawn feature is
-missing on any of them:
+FOUR COURSES ARE SHORT, and the earlier live probe NO LONGER COVERS TWO OF THEM. Current measurement:
 
-    castlewood-hill      28 m short (holes 6, 17, 18, 8, 13)   4 features outside, 0 in a corridor
-    castlewood-valley    28 m short                            22 features outside, 0 in a corridor
-    copper-valley        16 m short (hole 5)                    -- 0 in a corridor
-    monarch-bay          18 m short (hole 15)                   -- 0 in a corridor
+    castlewood-hill      65 m short (holes 1, 8, 7)                  widening costs +27% query area
+    castlewood-valley    80 m short (7, 12, 14, 6, 17 and 3 more)    widening costs +39% query area
+    copper-valley        16 m short (hole 5)                         widening costs +2% query area
+    monarch-bay          18 m short (hole 15)                        widening costs +5% query area
 
-They are left alone deliberately. Widening a box forces a re-fetch, and a re-fetch pulls whatever else
-has changed upstream in OSM since the last one -- so it would risk changing four books for reasons
-unrelated to the fix, to gain nothing measurable. Re-probe before acting on these; do not assume a
-shortfall means a missing feature, and do not assume it does not (valley-hi's 46 m hid two bunkers, a
-green and a hole line).
+An earlier revision of this note recorded a live Overpass probe with a 120 m-widened box finding no
+drawn feature missing, at "28 m short (holes 6, 17, 18, 8, 13)" for hill and "28 m" for valley. Those
+figures no longer match: the shortfalls are now 65 m and 80 m and fall on DIFFERENT holes, so whatever
+that probe checked, it did not check this. copper-valley and monarch-bay are unchanged at 16 m and 18 m,
+and for those two the recorded probe still stands.
+
+Treat hill and valley as UNVERIFIED. The reassurance was the dangerous part -- a stale "already
+investigated" is worse than no note, because it stops the next person looking. valley-hi's 46 m turned
+out to hide two bunkers inside a drawn corridor, a green, and a hole line, so a shortfall of 65-80 m is
+not obviously harmless.
+
+Still not widened, and the reason is unchanged: a re-fetch pulls whatever else has moved upstream in OSM
+since the last one, so it would change four books for reasons unrelated to the fix. But that is a
+deferral now, not a clearance.
 
 Exit codes:  0 every corridor is inside the box
              1 at least one hole draws from outside it -- widen osm_bbox and re-fetch

@@ -467,6 +467,16 @@ def render(hole, tournament=False):
         legal_kf = 0.36 * px_m / 4.572                                   # legal ceiling
         # .grn column width must match generate.py's CSS: card minus padding, minus the 1px
         # flex gap, times the .grn share (2.4 of 1.6+2.4). Measured in-browser at 2.010in.
+        # Why 2.4/4.0 and not wider. 172 of 198 greens are limited by this 2.010 in column rather than
+        # by the Rule 4.3 cap, so a wider share would draw them bigger -- but the hole map pays for it,
+        # and measured, the trade is not worth taking:
+        #     1.5/2.5 -> green 2.093 in (+4.2%), 101 of 198 hole maps shrink 6%
+        #     1.4/2.6 -> green 2.177 in (+8.3%), 119 of 198 hole maps shrink 13%
+        # Only the hole maps whose viewBox is SHORTER than 100*LAY_H/LAY_W are affected (108 of 198 are
+        # height-limited today and lose nothing), which is why the cost lands on about half of them. And
+        # the 26 greens already at the legal cap gain zero from any of this. So the whole exchange buys
+        # 0.08 in on a green that is already 2 in across, at the price of shrinking half the hole maps.
+        # Left alone deliberately; do not re-open it without re-measuring those two lines.
         grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)        # .grn column width
         # Footer allowance. This was a hardcoded 0.18 in, which assumed a ONE-LINE footer. It can be
         # three: at 7.5pt with normal leading a line is ~0.125 in, and a five-tee course prints "feeds
