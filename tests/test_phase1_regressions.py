@@ -7654,3 +7654,79 @@ def test_a_green_whose_plane_and_arrows_conflict_names_no_direction():
         "and arrows 177 deg apart). If a data or threshold change made every green consistent that is "
         "good news, but verify it rather than assuming: an unreachable refusal path is a refusal that "
         "will not fire when it is next needed.")
+
+
+@needs_corpus
+def test_a_mapped_green_is_mostly_puttable_ground():
+    """An OSM green outline drawn around the whole COMPLEX corrupts every figure for that hole.
+
+    The outline is the one piece of a green card that is not measured here -- it comes from an
+    OpenStreetMap mapper. Everything else is derived from it: the printed depth and width, the 5-yard
+    depth ladder, the extent of the heat colouring and the contours, and (until the plane fit was
+    restricted) the tilt and feed word. So a mapper who traced the green complex -- putting surface
+    plus its surrounds and bunker faces -- makes all of those wrong at once, in a way no other check
+    in this suite looks for: `check_osm_bbox.py` tests the FETCH box, and the drawing tests only
+    confirm that nothing is drawn outside the outline, not that the outline is right.
+
+    Ground steeper than SLOPE_LABEL_MAX_PCT is the available proxy: this renderer, and the card's own
+    legend, already call it "not putting surface (a bank or bunker face inside the mapped edge)". A
+    real green is mostly not that. Measured across the corpus the fraction runs p50 0.4%, p90 8.0%,
+    p99 19.5%, worst 21.6% (copper-valley 3, followed by philadelphia 18 at 20.7% -- a genuine bank
+    inside a slightly generous outline, which is what the tail of a healthy distribution looks like).
+
+    The ceiling is deliberately loose. It is not a mapping-quality bar -- a fifth of an outline being
+    bank is already worth a look, and this would pass it -- but a tripwire for an outline that is
+    describing something other than a putting green.
+    """
+    import numpy as np
+
+    def mask_of(poly, W, H):
+        """Vectorized crossing-number; verified identical to render_green.point_in_poly."""
+        X, Y = np.meshgrid(np.arange(W)+0.5, np.arange(H)+0.5)
+        inside = np.zeros((H, W), bool)
+        n = len(poly); j = n-1
+        for i in range(n):
+            xi, yi = poly[i]; xj, yj = poly[j]
+            inside ^= ((yi > Y) != (yj > Y)) & (X < (xj-xi)*(Y-yi)/(yj-yi+1e-12)+xi)
+            j = i
+        return inside
+
+    CEILING = 0.35
+    worst, checked, bad, seen = (0.0, None), 0, [], set()
+    for slug in geometry_courses():
+        os.environ["COURSE"] = slug
+        for m in ("config", "geo", "render_green"):
+            sys.modules.pop(m, None)
+        import render_green as rg
+        from geo import R_LAT, mlon
+        seen.add(slug)
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            with open(p, encoding="utf-8") as f:
+                meta = json.load(f)
+            if meta.get("insufficient"):
+                continue
+            arr = np.load(p.replace(".json", ".npy"))
+            H, W = arr.shape
+            x0, y0, x1, y1 = meta["bbox"]
+            px_x = (x1-x0)*mlon(meta["green_center"][0])/W
+            px_y = (y1-y0)*R_LAT/H
+            mask = mask_of(rg.poly_to_px(meta["polygon"], meta["bbox"], W, H), W, H)
+            if mask.sum() < 50:
+                continue
+            arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)
+            _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
+            frac = float((mask & (S["slope"] > rg.SLOPE_LABEL_MAX_PCT)).sum())/float(mask.sum())
+            checked += 1
+            if frac > worst[0]:
+                worst = (frac, f"{slug} hole {meta['hole']}")
+            if frac > CEILING:
+                bad.append(f"{slug} hole {meta['hole']}: {frac*100:.0f}% of the mapped green is "
+                           f"steeper than {rg.SLOPE_LABEL_MAX_PCT:.0f}%, so the outline is describing "
+                           f"a green complex rather than a putting surface -- its printed depth, "
+                           f"depth ladder and colouring all describe ground you cannot putt on")
+    assert checked >= expected_geometry_holes() - 18, (
+        f"only {checked} greens measured of {expected_geometry_holes()} with geometry -- a course "
+        f"was skipped, and this check is worthless on the course it skipped")
+    assert_no_course_skipped(seen, "test_a_mapped_green_is_mostly_puttable_ground")
+    assert not bad, "green outline(s) do not describe a putting surface:\n  " + "\n  ".join(bad)
+    assert worst[0] <= CEILING, f"worst {worst[0]*100:.1f}% at {worst[1]}"
