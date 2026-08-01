@@ -7917,3 +7917,95 @@ def test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf():
     assert checked, "no book PDF was inspected, so this test verified nothing"
     assert_no_course_skipped(seen, "test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf")
     assert not problems, "duplex rotation is wrong in the printed PDF:\n  " + "\n  ".join(problems)
+
+
+@needs_corpus
+def test_no_card_silently_clips_its_own_text():
+    """`.card` is a fixed 3.5x5in box with overflow:hidden, so text that does not fit VANISHES.
+
+    No warning, no reflow, no scrollbar -- the sentence simply ends. On a card that carries the legal
+    notice, an insufficient-green explanation or the guide-card legend, the tail is exactly the part
+    that qualifies the claim, so silent truncation turns a hedged statement into a bare one.
+
+    Nothing in this suite could see it. The obvious probe, scrollHeight > clientHeight, is BLIND here:
+    with overflow:hidden Chrome clamps scrollHeight to clientHeight, and an injected 400px div moved
+    neither number. The card's children are absolutely positioned too. So this walks the elements that
+    directly hold visible text -- skipping SVG internals, whose rects legitimately exceed the card
+    because the hole map's background fills are clipped by the map's own viewBox on purpose -- and
+    compares each rect against the card box.
+
+    The metric is self-validating: it appends a deliberately overflowing element first and asserts it
+    is detected, so a future change that makes the check blind fails here rather than passing quietly.
+
+    Slack is real but thin. The guide card's ink comes within 1.19 mm of the trim on three books, and
+    its content is conditional (the no-clear-fall note appears only where a green needs it), so this
+    grows with the caveats a course happens to require.
+    """
+    books = [f for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html")))
+             if not os.path.basename(os.path.dirname(f)).startswith("_")]
+    if not books:
+        pytest.skip("no book built")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+    exe = export_pdf._headless_shell()
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
+
+    JS = """() => {
+      const out=[];
+      document.querySelectorAll('.card').forEach((c,ci)=>{
+        const cb=c.getBoundingClientRect();
+        c.querySelectorAll('*').forEach(e=>{
+          if(e.closest('svg')) return;                 // clipped by the map's viewBox by design
+          if(![...e.childNodes].some(n=>n.nodeType===3 && n.textContent.trim().length)) return;
+          const s=getComputedStyle(e);
+          if(s.display==='none'||s.visibility==='hidden'||parseFloat(s.opacity)===0) return;
+          const r=e.getBoundingClientRect();
+          if(r.width===0||r.height===0) return;
+          const over=Math.max(cb.top-r.top, r.bottom-cb.bottom, cb.left-r.left, r.right-cb.right);
+          if(over>0.5) out.push({ci, cls:(e.getAttribute('class')||''), over:+over.toFixed(1),
+                                 txt:e.textContent.trim().slice(0,60)});
+        });
+      });
+      return out;
+    }"""
+    PROBE = """() => {
+      const c=document.querySelectorAll('.card')[0];
+      const d=document.createElement('div');
+      d.style.cssText='position:absolute;top:900px;left:4px';
+      d.textContent='OVERFLOW PROBE';
+      d.setAttribute('class','overflow-probe');
+      c.appendChild(d);
+    }"""
+    with sync_playwright() as pw:
+        try:
+            b = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
+        except Exception:
+            pytest.skip("no browser available")
+        pg = b.new_page()
+        problems, checked, seen = [], 0, set()
+        try:
+            for bf in books:
+                ref = os.path.basename(os.path.dirname(bf))
+                seen.add(ref)
+                pg.goto("file://" + os.path.abspath(bf))
+                pg.emulate_media(media="print")
+                clipped = pg.evaluate(JS)
+                # the check must be able to SEE overflow on this very page
+                pg.evaluate(PROBE)
+                if not any(x["cls"] == "overflow-probe" for x in pg.evaluate(JS)):
+                    problems.append(f"{ref}: the overflow probe was NOT detected, so this test cannot "
+                                    f"see clipped text and its silence means nothing")
+                    continue
+                checked += 1
+                for x in clipped:
+                    problems.append(
+                        f"{ref} card {x['ci']}: text overruns the card by {x['over']}px and is cut off "
+                        f"by overflow:hidden -- {x['txt']!r}")
+        finally:
+            b.close()
+    assert checked, "no book was measured in a browser, so nothing was verified"
+    assert_no_course_skipped(seen, "test_no_card_silently_clips_its_own_text")
+    assert not problems, "text is being silently clipped:\n  " + "\n  ".join(problems[:10])
