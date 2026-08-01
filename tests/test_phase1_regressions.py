@@ -1979,6 +1979,81 @@ def test_a_printed_carry_never_overstates_what_it_clears():
 
 
 @needs_corpus
+@needs_corpus
+def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings():
+    """The green's height must come from the GREEN, not from the patch the green sits in.
+
+    green_elevation() took the median of the whole dem_hd .npy, and that array is the green's bounding
+    box padded by fetch_dem_hd.MARGIN_M = 12 m on every side -- a region 5.5x the green's area, of which
+    a corpus-median 82% is not green. Because a green is usually a raised pad surrounded by fairway and
+    bunker, the figure read LOW: the interior median is higher on 140 of 177 holes, mean +0.478 ft,
+    one-sided at p = 2.7e-15. It moved 102 printed integers.
+
+    The polygon was in the SAME meta file the whole time, and render_green.py rasterises it to measure
+    every slope figure the card prints. So the test is a comparison between the two readers of one file:
+    the recorded height must match the median over render_green's own mask, and must NOT match the median
+    over the whole patch. Both directions matter -- the second is what fails if this ever regresses,
+    and without it a test that only checked the first would also pass on the old code whenever the two
+    happened to agree.
+
+    Behavioural, not a grep: it re-derives the number from the .npy rather than asserting that
+    green_elevation contains the word "polygon".
+    """
+    import numpy as np
+    checked = agreed_with_patch = 0
+    problems = []
+    for slug in CORPUS:
+        cdir = os.path.join(ROOT, "courses", slug)
+        rp = os.path.join(cdir, "hole_elev.json")
+        if not os.path.isfile(rp):
+            continue
+        os.environ["COURSE"] = slug
+        for m in ("config", "geo", "render_green"):
+            sys.modules.pop(m, None)
+        import config                                    # noqa: F401
+        import render_green as rg
+        with open(rp, encoding="utf-8") as fh:
+            rec = json.load(fh)["holes"]
+        for hn, r in rec.items():
+            gz = r.get("green_z_m")
+            mp = os.path.join(cdir, "dem_hd", f"hole{int(hn):02d}.json")
+            npy = mp.replace(".json", ".npy")
+            if gz is None or not (os.path.isfile(mp) and os.path.isfile(npy)):
+                continue
+            with open(mp, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            a = np.load(npy).astype(float)
+            a[~np.isfinite(a)] = np.nan
+            a[np.abs(a) > 1e30] = np.nan
+            H, W = a.shape
+            poly = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+            mask = np.array([[rg.point_in_poly(c + 0.5, r_ + 0.5, poly) for c in range(W)]
+                             for r_ in range(H)])
+            if not mask.any() or np.all(np.isnan(a[mask])):
+                continue
+            checked += 1
+            inside = float(np.nanmedian(a[mask]))
+            whole = float(np.nanmedian(a))
+            if abs(gz - inside) > 0.02:
+                problems.append(f"{slug} hole {hn}: recorded green_z_m {gz:.2f} m is not the median over "
+                                f"the green polygon ({inside:.2f} m). Whole-patch median is {whole:.2f} m "
+                                f"-- if that is what it matches, the height is being taken over the green "
+                                f"PLUS its 12 m collar again.")
+            if abs(gz - whole) <= 0.02:
+                agreed_with_patch += 1
+    assert checked >= 150, f"only {checked} greens checked -- run fetch_hole_elev --write first"
+    assert not problems, ("the recorded green height is not measured over the green:\n  "
+                          + "\n  ".join(problems[:10]))
+    # The anti-vacuous half: on the old code EVERY hole matched the whole-patch median, so a test that
+    # only checked the first condition would have been just as green then as now on any hole where the
+    # two coincide. They coincide on very few.
+    assert agreed_with_patch <= checked // 4, (
+        f"{agreed_with_patch} of {checked} recorded heights equal the WHOLE-PATCH median, which is what "
+        f"the collar bug produced. Either the mask is not being applied or it is selecting the whole "
+        f"array.")
+
+
+@needs_corpus
 def test_the_elevation_word_matches_the_elevation_sign():
     """"green 22 ft below" is a WORD derived from a signed number, and the word is what a golfer clubs
     off. Flip it and the book confidently sends the ball a full club short.
@@ -2048,9 +2123,23 @@ def test_the_elevation_word_matches_the_elevation_sign():
                     problems.append(f"{ref} hole {hn}: prints \"{pm.group(1)} ft {pm.group(2)}\" "
                                     f"but the measurement is {truth:+.1f} ft -- the card is telling "
                                     f"a player to club the WRONG WAY")
-                if int(pm.group(1)) != abs(round(truth)):
+                # The printed integer must be A rounding of the measurement -- floor or ceil of its
+                # magnitude -- not equal to abs(round(truth)). Pinning Python's round() here made this
+                # test enforce BANKER'S rounding, which is the defect: change_ft is stored to 0.1 ft, 17
+                # holes hold a value ending in .5, and round() breaks those ties to the even integer, so
+                # -21.5 printed 22 while -24.5 printed 24. One measurement, rounded two ways. The card
+                # now rounds half away from zero; this checks the property (the integer is a rounding of
+                # the number, off by less than 1) instead of re-implementing the rule it audits, and the
+                # tie direction is pinned separately below.
+                mag = abs(truth)
+                if int(pm.group(1)) not in (math.floor(mag), math.ceil(mag)):
                     problems.append(f"{ref} hole {hn}: prints {pm.group(1)} ft against a measured "
-                                    f"{truth:+.1f}")
+                                    f"{truth:+.1f} -- that is not a rounding of the measurement")
+                elif abs(mag - int(pm.group(1))) == 0.5 and int(pm.group(1)) < mag:
+                    problems.append(f"{ref} hole {hn}: prints {pm.group(1)} ft for {truth:+.1f}, "
+                                    f"rounding a tie TOWARD zero. Ties must go away from zero, or the "
+                                    f"same .5 prints differently depending on the parity of the "
+                                    f"integer beside it -- which is what banker's rounding did here.")
             elif truth is not None and abs(truth) >= 3:
                 problems.append(f"{ref} hole {hn}: {truth:+.1f} ft measured but the card prints no "
                                 f"height at all -- a real hill is missing from the page")

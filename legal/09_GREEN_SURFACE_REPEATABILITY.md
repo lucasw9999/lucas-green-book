@@ -120,14 +120,26 @@ finding shape in randomness. For a book that prints a tilt to one decimal, this 
 had to hold, and it holds with two orders of magnitude of margin.
 
 **Does not:**
-1. **This is precision, not accuracy** — with one part of that now bounded separately. Both passes come
+1. **This is precision, not accuracy** — with one part of that now bounded separately, and with the
+   caveat that both figures below were measured *after* the tee-to-green height was moved onto the
+   feature polygons. Before that, the printed height was a median over the green plus a 12 m collar,
+   82% of which is not green, against a median over an axis-aligned box at the tee that a mapped tee
+   covers about 13% of. Those two region errors pointed opposite ways and largely cancelled in the
+   printed *change*, which is why neither was visible in it: correcting only the green end would have
+   shifted every height in the book by +0.47 ft. Corrected together they moved 102 of 177 printed
+   integers, made 6 heights appear and 2 disappear at the 3 ft floor, flipped no above/below word on
+   any card that prints one, and took this tool's agreement with the independent DEM from a median
+   0.80 ft to 0.10 ft. Both passes come
    from the same USGS program, sensor class and processing chain, so a *systematic* bias would be
    present in both and invisible to the comparisons above. Two kinds of systematic bias are worth
    separating, because only one of them stays open:
    - **Our own processing** — a vertical unit read wrong, a CRS or grid misalignment, a geoid/ellipsoid
      mixup. This IS bounded, by checking the *absolute* elevation of our surfaces against the 3DEP
-     seamless DEM, a separately produced raster this project does not build. Over 55 greens across all
-     11 courses the two agree to a **median 0.07 m and a worst case of 0.47 m**. A US‑survey‑foot cloud
+     seamless DEM, a separately produced raster this project does not build — sampled over the **same
+     green polygon** the pipeline measures, so the comparison is not dominated by a region mismatch.
+     Over all 177 measured holes on the 11 courses the two agree to a **worst per‑course median of
+     0.32 m and a worst single green of 0.81 m**; the printed tee‑to‑green *change* agrees to a
+     **median 0.10 ft, worst 3.10 ft**. A US‑survey‑foot cloud
      read as metres would show tens of metres; a geoid/ellipsoid confusion about 30 m in California.
      Neither is present. (This project has shipped a foot/metre fault before — it put 74 of 175 holes'
      elevations out by a median 298 ft — so the check is not hypothetical.)

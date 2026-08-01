@@ -17,9 +17,10 @@ confident-but-unsupported number this project refuses. The player brings the jud
 measurement.
 
 Method, per hole:
-  tee   -- median Z of ground-classified returns within TEE_R_M of the hole's BACK TEE
-  green -- median Z of the green's own built surface (dem_hd/holeNN.npy), which is already gated
-           for density and coverage, so it inherits that honesty check for free
+  tee   -- median Z of ground-classified returns over the hole's BACK TEE PAD
+  green -- median Z of the GREEN INTERIOR of its own built surface (dem_hd/holeNN.npy, masked by the
+           same polygon render_green draws the card from), which is already gated for density and
+           coverage, so it inherits that honesty check for free
 Both are medians, not means: a mean is dragged by a single mis-classified return, and a tee box is
 flat enough that the median is the tee's height.
 
@@ -44,7 +45,16 @@ import render_hole                 # for par3_exact_from_tee: one definition of 
 
 DIR = config.COURSE_DIR
 TEE_R_M = 15.0          # half-width of the box sampled around the tee point
-MIN_TEE_PTS = 200       # below this, refuse to state a tee height
+MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached the tee at all
+# When the sample is the mapped TEE RING, "few points" no longer means "we probably missed the tee" --
+# every point is inside the pad by construction, so the only question left is whether the median is
+# stable. That is measurable, so it is measured rather than approximated by a count: a median's standard
+# error is 1.253*sd/sqrt(n), and over the corpus's mapped pads that is 0.006-0.040 ft even at n = 89.
+# The old 200 floor was calibrated against a 900 m2 box and refused 13 pads that carry a median good to
+# a hundredth of a foot -- 8 holes lost a printed height for having a SMALL TEE. Gate on the number the
+# figure is actually printed to instead.
+MAX_TEE_SE_FT = 0.25    # ring: max standard error of the tee median, 12x under the 3 ft print floor
+MIN_RING_PTS = 30       # and enough points that the sd estimate behind that SE means anything
 GROUND = 2              # LAS classification for bare earth
 R_LAT = 111320.0        # metres per degree of latitude
 # A tee-to-green change beyond this is not a golf hole, it is a units or datum fault. The largest real
@@ -132,6 +142,117 @@ def tee_anchor(hnum, line, greens):
                         f"is not the back tee and a par-{config.HOLES[hnum][0]} card can dogleg")
 
 
+def tee_rings_latlon():
+    """Every mapped `golf=tee` ring as (lats, lons) float arrays, in lat/lon.
+
+    One loader for the pipeline and for tools/verify_elevation.py. The checker has to sample the DEM over
+    the SAME regions this module samples the point cloud over, or its disagreement is dominated by the
+    region difference rather than by anything about the data -- which is exactly what happened when only
+    this side was corrected: the tool's median |diff| rose from 0.80 ft to 1.12 ft while our own agreement
+    with the DEM's absolute green elevation improved. A reference that measures a different place is not
+    an independent check, it is a second measurement of the bug.
+    """
+    try:
+        with open(f"{DIR}/osm_course.json") as f:
+            els = json.load(f).get("elements") or []
+    except (OSError, ValueError):
+        return []
+    out = []
+    for e in els:
+        if (e.get("tags") or {}).get("golf") != "tee" or not e.get("geometry"):
+            continue
+        g = e["geometry"]
+        if len(g) >= 4:
+            out.append((np.asarray([p["lat"] for p in g], float),
+                        np.asarray([p["lon"] for p in g], float)))
+    return out
+
+
+def ring_containing(la, lo, rings):
+    """The (lats, lons) ring holding this lat/lon, or None. Ray-cast in a local metric frame so the
+    lon/lat aspect ratio cannot distort the test on a small pad."""
+    for rla, rlo in rings:
+        k = _mlon(la)
+        if _point_in_ring(lo*k, la*R_LAT, rlo*k, rla*R_LAT):
+            return (rla, rlo)
+    return None
+
+
+def _tee_pads(anchors, crs):
+    """{hole: (vx, vy)} -- the mapped `golf=tee` ring, in LAZ CRS units, that contains each anchor.
+
+    The tee height was a median over an AXIS-ALIGNED BOX of half-width TEE_R_M around the anchor, and
+    that box is mostly not tee. Measured over the corpus, a mapped tee covers about 13% of it on the six
+    metric courses -- the same pathology as the green end, pointing the other way, because a box centred
+    on a raised tee pad reaches down the surrounding ground and reads LOW. The two errors partly cancel
+    in the printed CHANGE, which is why neither was visible in the figure: correcting only the green end
+    would have shifted every height in the book by +0.47 ft.
+
+    The rings are in osm_course.json and were never loaded. Refusing to guess when the anchor lands in
+    none of them (8 of 177 holes): those fall back to the box, which is at least centred on the tee.
+    """
+    from pyproj import Transformer
+    T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    rings = []
+    for rla, rlo in tee_rings_latlon():
+        vx, vy = T.transform(rlo.tolist(), rla.tolist())
+        rings.append((np.asarray(vx, float), np.asarray(vy, float)))
+    out = {}
+    for hn, (tx, ty) in anchors.items():
+        for vx, vy in rings:
+            if _point_in_ring(tx, ty, vx, vy):
+                out[hn] = (vx, vy)
+                break
+    return out
+
+
+def _point_in_ring(px, py, vx, vy):
+    """Ray-cast a single point against one ring. Scalar, used once per (hole, ring)."""
+    inside = False
+    n = len(vx)
+    for i in range(n):
+        j = i - 1
+        if (vy[i] > py) != (vy[j] > py):
+            xint = (vx[j]-vx[i])*(py-vy[i])/((vy[j]-vy[i]) or 1e-12) + vx[i]
+            if px < xint:
+                inside = not inside
+    return inside
+
+
+def _mask_in_ring(x, y, vx, vy):
+    """Vectorised ray-cast of many points against one ring."""
+    inside = np.zeros(len(x), dtype=bool)
+    n = len(vx)
+    for i in range(n):
+        j = i - 1
+        crosses = (vy[i] > y) != (vy[j] > y)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            denom = vy[j] - vy[i]
+            xint = (vx[j]-vx[i])*(y-vy[i])/(denom if denom else 1e-12) + vx[i]
+        inside ^= crosses & (x < xint)
+    return inside
+
+
+def _crs_units_per_m(crs, la, lo):
+    """How many LAZ-CRS horizontal units make one metre, measured rather than looked up.
+
+    TEE_R_M = 15.0 was applied straight to CRS coordinates -- `np.abs(x - tx) < TEE_R_M` -- so on the
+    five State Plane (US survey foot) courses the "15 m" box was 15 ft = 4.57 m, a 9.1 m square against
+    30 m on the six metric ones: the same nominal measurement taken over areas differing by 10.8x. It
+    also made MIN_TEE_PTS = 200 effectively 10.8x stricter there. verify_elevation.py's comment "same box
+    fetch_hole_elev samples at the tee" was false on 5 of 11 courses because of it.
+
+    Measured by transforming two points 15 m apart through the same transformer the samples came
+    through, so it needs no unit introspection and cannot disagree with the projection actually used.
+    """
+    from pyproj import Transformer
+    T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    x0, y0 = T.transform(lo, la)
+    x1, y1 = T.transform(lo, la + 15.0/R_LAT)
+    d = math.hypot(x1-x0, y1-y0)
+    return (d/15.0) if d > 1e-9 else 1.0
+
+
 def _tee_points(anchors):
     """{hole: (x, y)} in the LAZ CRS for each hole's tee anchor, plus the CRS used."""
     tiles = sorted(glob.glob(f"{DIR}/laz/*.laz"))
@@ -148,18 +269,35 @@ def _tee_points(anchors):
 
 
 def tee_elevations(anchors):
-    """{hole: (median_z, n_points)} sampled from ground returns around each tee anchor."""
+    """{hole: (median_z, n_points, basis)} from ground returns over each hole's TEE PAD.
+
+    Over the mapped `golf=tee` ring where the anchor lands in one, and over a true 15 m box where it
+    does not. Both changes matter and they are independent:
+
+      * the RING, not a box. A box centred on a raised tee pad also samples the ground it is raised
+        above, so it reads the tee low -- measured at a median 0.20 ft and a mean 0.72 ft low over the
+        169 holes whose anchor lands inside a mapped tee, and up to 1.90 ft on copper-valley. On the six
+        metric courses the mapped tee is only about 13% of the box.
+      * a true 15 m box in the FALLBACK, because TEE_R_M was applied in raw CRS units. See
+        _crs_units_per_m: on the five US-survey-foot courses that made the box 9.1 m square instead of
+        30 m, a 10.8x difference in sampled area for the same nominal measurement.
+    """
     targets, crs = _tee_points(anchors)
     if not targets:
         return {}
     import laspy
+    pads = _tee_pads(targets, crs)
+    # one representative anchor is enough: a course spans far too little to change the scale factor
+    _la, _lo = next(iter(anchors.values()))
+    upm = _crs_units_per_m(crs, _la, _lo)
+    R = TEE_R_M * upm                          # the box, now genuinely TEE_R_M metres in every CRS
     acc = {hn: [] for hn in targets}
     for path in sorted(glob.glob(f"{DIR}/laz/*.laz")):
         with laspy.open(path) as f:
             hb = f.header
             # skip a tile that cannot contain any tee box at all
-            if all(x + TEE_R_M < hb.x_min or x - TEE_R_M > hb.x_max or
-                   y + TEE_R_M < hb.y_min or y - TEE_R_M > hb.y_max
+            if all(x + R < hb.x_min or x - R > hb.x_max or
+                   y + R < hb.y_min or y - R > hb.y_max
                    for x, y in targets.values()):
                 continue
             for chunk in f.chunk_iterator(3_000_000):
@@ -171,24 +309,82 @@ def tee_elevations(anchors):
                 y = np.asarray(chunk.y)[g]
                 z = np.asarray(chunk.z)[g]
                 for hn, (tx, ty) in targets.items():
-                    m = (np.abs(x - tx) < TEE_R_M) & (np.abs(y - ty) < TEE_R_M)
-                    if m.any():
+                    # the box is still the PREFILTER even when a ring is used -- a ring test over every
+                    # ground point in a 3 M-point chunk would be the slow way to get the same answer
+                    m = (np.abs(x - tx) < R) & (np.abs(y - ty) < R)
+                    if not m.any():
+                        continue
+                    ring = pads.get(hn)
+                    if ring is None:
                         acc[hn].append(z[m])
+                        continue
+                    inr = _mask_in_ring(x[m], y[m], ring[0], ring[1])
+                    if inr.any():
+                        acc[hn].append(z[m][inr])
     out = {}
     for hn, parts in acc.items():
         if not parts:
             continue
         zs = np.concatenate(parts)
-        out[hn] = (float(np.median(zs)), int(zs.size))
+        on_pad = hn in pads
+        basis = ("the mapped tee pad" if on_pad else
+                 f"a {TEE_R_M:.0f} m box at the tee anchor (no mapped tee ring contains it)")
+        se = 1.253*float(np.std(zs))/math.sqrt(len(zs)) if len(zs) else float("inf")
+        out[hn] = (float(np.median(zs)), int(zs.size), basis, on_pad, se)
     return out
 
 
+def tee_median_is_trustworthy(n, se_raw, on_pad, vscale):
+    """(ok, reason) for one hole's tee sample. Two different questions, so two different gates.
+
+    * RING: every point is inside the mapped tee, so the residual doubt is only whether the median is
+      stable, and that is measurable. Gate on the standard error of the median expressed in the FEET the
+      figure is printed to, plus a small floor so the sd behind it means something.
+    * BOX: no such guarantee. A handful of points there means the box barely reached the tee, and a
+      tight median over five returns on a cart path is stable and wrong. The count is the only signal, so
+      the original 200 floor stands.
+
+    Split out as a predicate because the two branches are easy to conflate and a loosened gate is the
+    failure mode this project is most exposed to -- the point of the measurement is to justify the
+    threshold, not to find one that keeps the numbers.
+    """
+    se_ft = se_raw * vscale * 3.28084
+    if on_pad:
+        if n < MIN_RING_PTS:
+            return False, f"only {n} ground returns on the mapped tee pad (need {MIN_RING_PTS})"
+        if se_ft > MAX_TEE_SE_FT:
+            return False, (f"the tee median over the mapped pad is only good to {se_ft:.2f} ft "
+                           f"(need {MAX_TEE_SE_FT} ft) -- the pad is not flat enough to state a height")
+        return True, ""
+    if n < MIN_TEE_PTS:
+        return False, (f"only {n} ground returns in the {TEE_R_M:.0f} m box (need {MIN_TEE_PTS}); no "
+                       f"mapped tee ring contains this anchor, so a small sample may not be the tee")
+    return True, ""
+
+
 def green_elevation(hole):
-    """Median elevation of the green's built surface, in METRES, or None.
+    """Median elevation of the GREEN INTERIOR, in METRES, or None.
 
     Already metres, both ways in: fetch_dem_hd.py scales LAZ Z by the CRS axis unit before gridding
     (its line `z = np.asarray(las.z)[g]*zscale`), and fetch_dem.py's seamless patches come from 3DEP
     in metres. So this value must NOT be scaled again -- see the note in main() on the bug that was.
+
+    The MASK is the point. This took the median of the WHOLE .npy, and that array is the green's bounding
+    box padded by fetch_dem_hd.MARGIN_M = 12 m on all four sides -- so the "measured height of the green"
+    was a median over a region 5.5x the green's area, of which a corpus-median 82% is not green. It is
+    fairway, bunker and rough surrounding a green that is usually a raised pad, so the figure read LOW:
+    substituting the interior moves 177 holes by a mean +0.478 ft, positive on 140 of them, one-sided at
+    p = 2.7e-15.
+
+    The polygon was in the SAME meta file the whole time -- meta["polygon"] -- and render_green.py
+    rasterises it to measure every slope, tilt and feed figure the card prints. One .npy, read two
+    different ways by two modules in one pipeline; this one now reads it the way the card does, using
+    render_green's own rasterisation so they cannot drift apart.
+
+    Checked against an independent source, not just argued: median |difference| against the 3DEP seamless
+    DEM over the same green polygon goes 0.161 m -> 0.018 m, better on 159 of 177 holes and in all 11
+    courses. 3DEP independently reproduces the raised-pad mechanism (green interior above its padded
+    patch by +0.179 m there against +0.144 m here, r = 0.909), so this is a region error, not a datum one.
     """
     mp = f"{DIR}/dem_hd/hole{hole:02d}.json"
     npy = mp.replace(".json", ".npy")
@@ -203,7 +399,13 @@ def green_elevation(hole):
     a[np.abs(a) > 1e30] = np.nan
     if np.all(np.isnan(a)):
         return None
-    return float(np.nanmedian(a))
+    import render_green as rg               # the card's own rasteriser, so both read the same cells
+    H, W = a.shape
+    poly = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+    mask = np.array([[rg.point_in_poly(c+0.5, r+0.5, poly) for c in range(W)] for r in range(H)])
+    if not mask.any() or np.all(np.isnan(a[mask])):
+        return None                          # a ring that rasterises to nothing states no height
+    return float(np.nanmedian(a[mask]))
 
 
 def is_plausible_change(change_ft):
@@ -263,20 +465,20 @@ def main():
 
     tees = tee_elevations(anchors)
     rows = {}
-    print(f"{config.SLUG}  ({len(holes)} holes, tee radius {TEE_R_M:g} m, Z x {vscale:g} -> m)")
+    print(f"{config.SLUG}  ({len(holes)} holes, tee pad or {TEE_R_M:g} m box, Z x {vscale:g} -> m)")
     for hn in sorted(holes):
         gz = green_elevation(hn)
         tz_n = tees.get(hn)
         if refused[hn] is not None:
             print(f"  hole {hn:2d}: no elevation figure -- {refused[hn]}")
             continue
-        if gz is None or tz_n is None or tz_n[1] < MIN_TEE_PTS:
-            why = ("no usable green surface" if gz is None else
-                   f"only {tz_n[1] if tz_n else 0} ground returns at the tee "
-                   f"(need {MIN_TEE_PTS})")
+        tee_ok, tee_why = (tee_median_is_trustworthy(tz_n[1], tz_n[4], tz_n[3], vscale)
+                           if tz_n else (False, "no ground returns at the tee"))
+        if gz is None or not tee_ok:
+            why = "no usable green surface" if gz is None else tee_why
             print(f"  hole {hn:2d}: no elevation figure -- {why}")
             continue
-        tz, n = tz_n
+        tz, n, tee_region = tz_n[0], tz_n[1], tz_n[2]
         # UNITS. The green surface is ALREADY metres (see green_elevation); the tee median is raw LAZ
         # Z, so only IT takes the CRS axis scale. Getting this wrong was silent and large: the code
         # read `(gz - tz) * vscale`, subtracting a ftUS tee height from a metric green height and then
@@ -295,7 +497,11 @@ def main():
                          "change_m": round(d_m, 2),
                          "change_ft": round(d_m * 3.28084, 1),
                          "tee_points": n,
-                         "tee_basis": bases[hn]}
+                         "tee_basis": bases[hn],
+                         # WHERE the tee height was sampled, not just how the anchor was found. Both are
+                         # auditable failure points and they fail independently: a correct anchor sampled
+                         # over the wrong region is the fault this field exists to expose.
+                         "tee_region": tee_region}
         d_ft = d_m * 3.28084
         word = "above" if d_ft > 0 else "below"
         print(f"  hole {hn:2d}: green {abs(d_ft):5.1f} ft {word} the tee   "

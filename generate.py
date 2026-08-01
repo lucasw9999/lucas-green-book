@@ -248,14 +248,26 @@ def elev_phrase(hole):
     Under 3 ft reads as level rather than as a precise small number, and that floor is MEASURED, not
     just argued. tools/verify_elevation.py compares every recorded height against the 3DEP seamless
     DEM -- a different product, delivered in metres, fetched over the network rather than read off
-    disk -- and across 177 holes the two disagree by a median 0.80 ft and a worst 1.77 ft. So a
-    printed "green 2 ft above" would sit inside the gap between two honest sources; 3 ft is about
-    1.7x the worst of them. 26 of the 177 holes fall in the 2-4 ft band where that gap decides whether
-    anything prints at all, which is exactly why the floor cannot be lowered to look more precise."""
+    disk, and now sampled over the SAME regions this pipeline samples: the green polygon and the mapped
+    tee pad. Across 177 holes the two disagree by a median 0.10 ft, a mean 0.29 ft and a worst 3.10 ft;
+    the worst any single course medians is 0.64 ft. Six holes exceed 2 ft and one exceeds 3. So a
+    printed "green 2 ft above" would still sit inside the spread between two honest sources on those
+    holes, and 23 of the 177 fall in the 2-4 ft band where that spread decides whether anything prints
+    at all -- which is why the floor is not lowered to look more precise.
+
+    (Those figures were a median 0.80 ft and a worst 4.92 ft until both ends of the measurement were
+    moved onto the feature polygons. The docstring quoted "worst 1.77 ft", which was the largest
+    per-COURSE median, not the worst hole.)"""
     ft = HOLE_ELEV.get(hole)
     if ft is None or abs(ft) < 3:
         return ""
-    return f'green <b>{abs(round(ft))} ft {"above" if ft > 0 else "below"}</b>'
+    # Half away from zero, not Python's round(). change_ft is stored to 0.1 ft, so 17 holes hold a value
+    # ending in .5 -- and round() breaks those ties to the EVEN integer, which meant the same .5 went up
+    # or down depending on the parity of the number beside it: -21.5 printed 22 while -24.5 printed 24.
+    # One measurement, rounded two ways. The .5 is itself an artifact of the first rounding, so the tie is
+    # arbitrary either way; what it must not be is arbitrary AND inconsistent.
+    n = math.floor(abs(ft) + 0.5)
+    return f'green <b>{n} ft {"above" if ft > 0 else "below"}</b>'
 
 
 def carry_phrase(info):

@@ -73,7 +73,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 R_LAT = 111320.0
-SAMPLE_HALF_M = 15.0        # same box fetch_hole_elev samples at the tee
+SAMPLE_HALF_M = 15.0        # fallback box, for a tee with no mapped ring. NOT "the same box
+# fetch_hole_elev samples at the tee" -- that comment was false on 5 of 11 courses, because TEE_R_M was
+# applied in raw CRS units there and so described a 9.1 m box, not a 30 m one. Both sides now sample the
+# same REGIONS: the green polygon and the mapped tee pad. Sampling a box against a polygon made this
+# tool's disagreement a measure of the region difference rather than of the data.
 # A 1 m raster smooths a raised tee platform down, so it reads slightly BELOW the point cloud there:
 # measured -1.6 ft at monarch-bay's tees. The change carries that through, so residuals cluster a foot
 # or two positive. 10 ft is comfortably above the worst observed (4.9 ft) and far below the hundreds of
@@ -86,17 +90,46 @@ def _mlon(lat):
     return 111320.0 * math.cos(math.radians(lat))
 
 
-def dem_median_m(lat, lon, half_m=SAMPLE_HALF_M, px=48):
-    """Median 3DEP seamless elevation in metres over a box about (lat, lon), or None.
+def dem_median_over_ring(ring, px=64):
+    """Median 3DEP elevation in metres over a lat/lon RING's interior, or None.
+
+    Fetches the ring's bounding box and masks to the interior, so the reference measures the same ground
+    the pipeline does. Without this the check compared a 3DEP box against our polygon, and the region
+    mismatch dominated: a green is usually a raised pad, so a box that reaches 12 m past it reads low, and
+    the residual that produced was previously written off in this file's own comment as a property of the
+    1 m raster smoothing a tee platform down.
+    """
+    import fetch_hole_elev as fhe          # course-bound, so imported here rather than at module scope
+    rla, rlo = ring
+    la0, lo0 = float(np.mean(rla)), float(np.mean(rlo))
+    pad = 1.0 / R_LAT                                  # a metre of margin so edge pixels exist
+    s, n = float(rla.min()) - pad, float(rla.max()) + pad
+    w, e = float(rlo.min()) - pad/math.cos(math.radians(la0)), float(rlo.max()) + pad/math.cos(math.radians(la0))
+    a = _fetch_patch(w, s, e, n, px)
+    if a is None:
+        return None
+    H, W = a.shape
+    # pixel centres -> lat/lon -> inside test, in a local metric frame
+    lons = w + (np.arange(W) + 0.5) / W * (e - w)
+    lats = n - (np.arange(H) + 0.5) / H * (n - s)
+    LO, LA = np.meshgrid(lons, lats)
+    k = _mlon(la0)
+    inside = fhe._mask_in_ring((LO*k).ravel(), (LA*R_LAT).ravel(), rlo*k, rla*R_LAT).reshape(H, W)
+    vals = a[inside & np.isfinite(a)]
+    if vals.size == 0:
+        return None
+    return float(np.median(vals))
+
+
+def _fetch_patch(w, s, e, n, px):
+    """3DEP seamless elevation over a lat/lon bbox as a float array, or None.
 
     Returns None rather than raising: an unreachable service must read as "could not check" (exit 2),
     never as agreement. Out of coverage 3DEP hands back a CONSTANT raster instead of an error, so a
-    zero-relief patch is reported too -- it means the point is off the edge of the data.
+    zero-relief patch is reported as None too -- it means the point is off the edge of the data.
     """
-    dlat = half_m / R_LAT
-    dlon = half_m / _mlon(lat)
     url = ("https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/"
-           f"exportImage?bbox={lon-dlon},{lat-dlat},{lon+dlon},{lat+dlat}"
+           f"exportImage?bbox={w},{s},{e},{n}"
            f"&bboxSR=4326&size={px},{px}&imageSR=4326&format=tiff&pixelType=F32"
            "&interpolation=RSP_BilinearInterpolation&f=image")
     raw = None
@@ -123,7 +156,19 @@ def dem_median_m(lat, lon, half_m=SAMPLE_HALF_M, px=48):
         return None
     if float(fin.max() - fin.min()) == 0.0:
         return None                     # constant raster: off the edge of 3DEP, not a reading
-    return float(np.median(fin))
+    return a
+
+
+def dem_median_m(lat, lon, half_m=SAMPLE_HALF_M, px=48):
+    """Median 3DEP elevation in metres over a box about (lat, lon), or None. The FALLBACK sampler, for
+    a tee anchor no mapped ring contains -- the ring sampler above is what the greens and mapped tees
+    use, so both sides of the comparison measure the same region."""
+    dlat = half_m / R_LAT
+    dlon = half_m / _mlon(lat)
+    a = _fetch_patch(lon-dlon, lat-dlat, lon+dlon, lat+dlat, px)
+    if a is None:
+        return None
+    return float(np.median(a[np.isfinite(a)]))
 
 
 def check_course(slug):
@@ -145,6 +190,7 @@ def check_course(slug):
     _loc = config.COURSE.get("location") or {}
     holes = geo.hole_lines(els, _loc.get("lat"), _loc.get("lon"))
 
+    tee_rings = fhe.tee_rings_latlon()
     print(f"{slug}  (independent check against the 3DEP seamless DEM, tolerance {TOL_FT:g} ft)")
     diffs, signed, absolute, unreachable = [], [], [], 0
     for hn in sorted(int(k) for k in rec):
@@ -156,9 +202,14 @@ def check_course(slug):
         meta_p = os.path.join(config.COURSE_DIR, "dem_hd", f"hole{hn:02d}.json")
         if not os.path.isfile(meta_p):
             continue
-        gla, glo = json.load(open(meta_p))["green_center"]
-        d_tee = dem_median_m(la, lo)
-        d_grn = dem_median_m(gla, glo)
+        _meta = json.load(open(meta_p))
+        gla, glo = _meta["green_center"]
+        # Sample the reference over the SAME regions the pipeline does -- the green polygon and the
+        # mapped tee pad -- so what is left is disagreement about the data. See dem_median_over_ring.
+        _gp = np.asarray(_meta["polygon"], float)
+        d_grn = dem_median_over_ring((_gp[:, 0], _gp[:, 1]))
+        _ring = fhe.ring_containing(la, lo, tee_rings)
+        d_tee = (dem_median_over_ring(_ring) if _ring is not None else dem_median_m(la, lo))
         if d_tee is None or d_grn is None:
             print(f"  hole {hn:2d}: DEM unavailable at the tee or the green -- not checked")
             unreachable += 1
