@@ -2855,15 +2855,16 @@ def synth_engine(tmp_path_factory):
     try:
         yield _engine(slug)
     finally:
-        for f in ("osm_geom.json", "osm_course.json", "course.json"):
-            fp = os.path.join(cdir, f)
-            if os.path.exists(fp):
-                os.remove(fp)
-        if os.path.isdir(cdir):
-            os.rmdir(cdir)
-        # MUST restore: this dir is now gone, and a stale COURSE pointing at it makes config raise
-        # SystemExit in every later test that shells out to a tool.
+        # RESTORE FIRST, then clean up. The order was the other way round, and it made this fixture a
+        # source of flaky, order-dependent failures elsewhere in the file: os.rmdir raises if ANYTHING
+        # is left in the directory (a dem_hd/ a test wrote, a stray file), and the raise skipped the
+        # restore -- leaving COURSE bound to a slug whose course.json had just been deleted. Every later
+        # test that binds a course then died with "no course.json for COURSE='_synth_ticks'", which is
+        # exactly the symptom seen: three unrelated green tests failing in a full run and passing in
+        # isolation. Restoring first cannot fail, and shutil.rmtree does not care what is in the way.
         _restore_course(prev)
+        import shutil
+        shutil.rmtree(cdir, ignore_errors=True)
 
 
 def _ticks(svg):
@@ -8619,6 +8620,23 @@ def test_the_cross_flight_check_cannot_agree_by_failing_to_read_a_date():
     assert cfc.dates_recoverable(_H()) is False, (
         "a header with no global_encoding at all must fail CLOSED; assuming adjusted time is the "
         "assumption this check exists to remove")
+
+    # A REFUSAL must be a distinguishable OUTCOME, not the same value as "nothing to compare".
+    # Both used to return (0, [], 0, 0, []), so main() printed one extra line, added zero to every
+    # aggregate, and the run still exited 0 -- the tool agreeing by failing, which is exactly what its
+    # docstring says it must not be able to do. Verified end to end: forcing dates_recoverable False on
+    # a multi-date course makes the run print "REFUSED" and exit 1.
+    assert cfc.REFUSED[0] is None, (
+        "cross_flight_check.REFUSED no longer carries a distinguishing marker, so a course it could not "
+        "examine reads as a course that agreed")
+    assert cfc.REFUSED != (0, [], 0, 0, []), (
+        "REFUSED is now byte-identical to the 'nothing to compare' return, which is how a refusal came "
+        "to read as a pass")
+    src_main = open(os.path.join(ROOT, "tools", "cross_flight_check.py"), encoding="utf-8").read()
+    assert "return 1 if refused else 0" in src_main, (
+        "main() no longer exits non-zero when a course was refused. A run that could not examine a "
+        "course must not report success -- this tool's output is the evidence in "
+        "legal/09_GREEN_SURFACE_REPEATABILITY.md.")
 
     # and the read loop must consult it, not just define it
     with open(os.path.join(ROOT, "tools", "cross_flight_check.py"), encoding="utf-8") as f:

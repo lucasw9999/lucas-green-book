@@ -35,7 +35,9 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
 ## How the product is built to stay within it
 - **Green print scale:** rendered at **0.36 in : 5 yd**, i.e. ~4% **under** the 3/8 in (0.375 in)
   cap — a deliberate safety margin so print/rounding can't push a green over the limit.
-  (See `render_green.py`: `kf = 0.36 * px_m / 4.572`.)
+  (See `render_green.py`: `legal_kf = 0.36 * px_m / 4.572`, then `kf = min(legal_kf, fit_kf)` —
+  0.36 is a CEILING and the panel fit usually binds first: measured, 27 of 198 greens reach it,
+  median 1:588.)
 - **Measured, not asserted.** The intended cap was once defeated by a single CSS rule: the size was
   emitted as an SVG `width=` presentation attribute, which has zero specificity, so the stylesheet
   overrode it and 15 of 198 greens printed over the limit while three documents claimed the cap
@@ -47,22 +49,29 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   Two precise statements about what that gate does and does not do, because an earlier revision of
   this file overstated it:
   - It gates on the **browser layout under print media**, not on the exported PDF. It also reports
-    the printed 5‑yd bar length read out of the PDF, but that figure is informational and does not
-    fail the run. (Until this was corrected the gate measured the SCREEN layout while the README
+    the printed 5‑yd bar length read out of the PDF, and **that figure gates too** —
+    any bar over 0.375 in is appended to the failure list and exits non‑zero
+    (`check_scale.py`: `over_bar` → `failures`), because the legal claim is about the
+    ARTIFACT. (Until this was corrected the gate measured the SCREEN layout while the README
     claimed print media — so a print‑only CSS rule could have enlarged a green past the cap without
     tripping it. Screen and print layouts were in fact identical, so no shipped number was wrong.)
   - The exported **PDF is checked separately**: `tools/export_pdf.py --check` proves each PDF was
     produced from the HTML currently on disk (by recorded content hash), and a test reads the printed
     card size straight out of the PDF's crop marks and compares it to the 4.25 × 7 in limit.
 - **Per‑hole, not per‑book.** Scale is computed per green, so it legitimately varies (roughly 1:500
-  to 1:956). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
+  to 1:945). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
   becomes unusable for reading the green — the rest of the book stays fine.
 - **Book size:** cards are **3.5 × 5.0 in** — well under the 4.25 × 7 in cap.
-  (See `config.py`: `CARD_W_IN = 3.5`, `CARD_H_IN = 5.0`.)
+  (See `config.py`: `CARD_DEFAULT_W_IN, CARD_DEFAULT_H_IN = 3.5, 5.0`; `CARD_W_IN`/`CARD_H_IN` are
+  per‑course overrides and no course sets `"card"`, so every built book is 3.5 × 5.0 in.)
 - **Which books this covers, and the one it does not.** Everything above is about the **standard
   pocket edition**, the book meant for competition. The **enlarged edition**
   (`COACH=1`) deliberately breaks the scale cap so the greens read at arm's length: measured off its
-  own PDFs it prints **0.47–0.60 in : 5 yd (1:382 to 1:300), i.e. 26–60% OVER** the 0.375 in limit.
+  own layout under print media, across all 54 of its greens, it prints **0.368–0.599 in : 5 yd
+  (1:489 to 1:301) — from 2% UNDER the cap to 60% over**, with 53 of the 54 over it
+  (monarch‑bay hole 14 alone lands inside). Measured off the browser layout, not the PDFs:
+  the enlarged edition prints **no 5‑yd scale bar at all** (`render_green.py` emits it only
+  when `tournament=True`), so there is nothing in those PDFs to measure.
   That is a design decision, not a defect, and it is stated on the enlarged edition's own guide card:
   *"Because the greens here are printed larger than the tournament scale, this enlarged edition is a
   practice aid and is NOT a conforming competition book under Rule 4.3 — use the standard pocket

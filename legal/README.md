@@ -21,6 +21,8 @@ built only from **open** and **public‑domain** data plus **facts**, independen
 | `06_RULE_4.3_CONFORMANCE.md` | Why the "Designed to conform · Rule 4.3" claim is honest |
 | `07_POPPY_RIDGE_ESRI_IMAGERY.md` | The ONE flagged item and the decision on it |
 | `08_AUDIT_2026-07-13.md` | The full audit + adversarial findings + action checklist |
+| `09_GREEN_SURFACE_REPEATABILITY.md` | What the printed slope numbers are worth, measured across
+repeat LiDAR flights and flight-line overlap |
 
 ## One‑line verdict
 **All eleven distributed books are clean to give away**, and Poppy Ridge (yardage‑mode, personal)

@@ -4,7 +4,8 @@
 is extracted from a built book in `courses/`, so it cannot drift from what is printed.
 Re-run after any wording change; `--check` fails if this file is stale.
 
-Covers **12** built books. Blocks differ per course where the data differs (a rebuilt
+Covers **15** built books (12 pocket, 3 enlarged). Blocks differ per
+course where the data differs (a rebuilt
 course, a NAIP-traced green), so each variant is listed with the courses that print it.
 
 ## A. Pocket edition "About & legal"

@@ -11,7 +11,7 @@ Two different things can make the answer disagree, and they need opposite respon
   * noise -- the passes saw the same green and differ inside the sensor's precision. Expected.
   * change -- the green was rebuilt, top-dressed or re-grassed between the passes, so the shipped
     surface is a composite of two DIFFERENT greens and the card reads a shape that never existed.
-    philadelphia-country-club is the live risk: its passes are 101 days apart and straddle a
+    philadelphia-country-club is the live risk: its passes are 100 days apart and straddle a
     phased restoration, which is exactly when a course changes under the sensor.
 
 Exits non-zero only when two passes that BOTH saw the green disagree beyond the sensor's demonstrated
@@ -45,7 +45,7 @@ from lidar_dates import course_tz, gps_to_utc            # noqa: E402  (same dir
 MIN_COVER = 0.50       # fraction of the green's interior cells this pass alone must touch
 MIN_PTS = 2000         # and an absolute floor, for small greens where 50% is still very few points
 # Tolerances. Set from what two genuinely independent surveys of an UNCHANGED green actually do:
-# philadelphia's passes are 101 days apart and agree to 0.01pp of tilt and 2.1 degrees of aim; the
+# philadelphia's passes are 100 days apart and agree to 0.01pp of tilt and 2.1 degrees of aim; the
 # well-covered Alameda pairs agree to 0.07pp. Anything past these is not precision, it is change.
 TOL_TILT_PP = 0.25     # percentage points of dominant tilt
 TOL_AIM_DEG = 10.0     # degrees of dominant break direction
@@ -55,6 +55,9 @@ TOL_AIM_DEG = 10.0     # degrees of dominant break direction
 # disagree AFTER gridding and smoothing, which is what the contour lines are actually drawn from.
 CINT_CM = 15.0
 CHUNK = 4_000_000
+# A course this tool could not examine. Distinct from (0, [], ...) -- "nothing to compare" -- so a
+# refusal can never be read as agreement. main() exits non-zero when any course returns it.
+REFUSED = (None, [], 0, 0, [])
 
 
 
@@ -181,9 +184,14 @@ def check(slug, verbose=True):
             # evidence in legal/09_GREEN_SURFACE_REPEATABILITY.md, so it must not be able to agree by
             # failing. All 11 corpus courses are uniformly type 1; this is for the next one.
             if not dates_recoverable(f.header):
+                # REFUSED, and that must not look like "nothing to compare". Both used to return the
+                # same tuple, so main() printed one extra line, added zero to every aggregate, and the
+                # run still exited 0 -- a check that agrees by failing, which this tool's own docstring
+                # says it must not be able to do. REFUSED is now its own outcome and main() exits
+                # non-zero on it.
                 print(f"    {os.path.basename(lp)}: gps_time is GPS Week Time (global_encoding bit "
                       f"0 = 0), so no absolute date is recoverable and passes cannot be separated")
-                return 0, [], 0, 0, []
+                return REFUSED
             inv = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
             for ch in f.chunk_iterator(CHUNK):
                 g = np.asarray(ch.classification) == 2
@@ -192,7 +200,11 @@ def check(slug, verbose=True):
                 try:
                     t = np.asarray(ch.gps_time)[g]
                 except Exception:
-                    return 0, [], 0, 0, []   # no per-point time: nothing to separate
+                    # No per-point time at all: the passes cannot be separated, so this is a REFUSAL
+                    # too, not an "everything agreed".
+                    print(f"    {os.path.basename(lp)}: no per-point gps_time, so passes cannot be "
+                          f"separated")
+                    return REFUSED
                 lon, lat = inv.transform(np.asarray(ch.x)[g], np.asarray(ch.y)[g])
                 z = np.asarray(ch.z)[g]
                 for h, m in metas.items():
@@ -259,7 +271,7 @@ def main():
     slugs = ([os.path.basename(os.path.dirname(p)) for p in sorted(glob.glob("courses/*/course.json"))]
              if "--all" in sys.argv else [os.environ.get("COURSE") or sys.exit(
                  "set COURSE=<slug> or pass --all")])
-    total, bad, skipped, flips, surfd = 0, [], 0, 0, []
+    total, bad, skipped, flips, surfd, refused = 0, [], 0, 0, [], []
     for s in slugs:
         j = json.load(open(f"courses/{s}/course.json"))
         dates = {d for pair in j.get('lidar_flown', {}).get('tiles', {}).values() for d in pair}
@@ -269,7 +281,13 @@ def main():
                       f"-- nothing to cross-check")
             continue
         print(f"  {s}: survey spans {sorted(dates)}")
-        n, b, sk, fl, sd = check(s)
+        res = check(s)
+        if res[0] is None:
+            print(f"    {s}: REFUSED -- this course could not be examined, so it is not evidence of "
+                  f"agreement")
+            refused.append(s)
+            continue
+        n, b, sk, fl, sd = res
         if n == 0:
             print("    no green was independently covered by 2 passes -- nothing comparable")
         total += n
@@ -290,6 +308,10 @@ def main():
               f"RMS {rms:.2f} cm, p95 {np.percentile(a, 95):.2f} cm, max {a.max():.2f} cm")
         print(f"  -> the card's {CINT_CM:.0f} cm contour interval is {CINT_CM/max(rms, 1e-9):.0f}x that RMS, "
               f"so adjacent contours are not inside the survey noise")
+    if refused:
+        print(f"\n  {len(refused)} course(s) REFUSED and contribute no evidence either way: "
+              f"{', '.join(refused)}")
+        print("  Exiting non-zero: a run that could not examine a course must not read as a clean one.")
     if bad:
         print("\n  A green whose two passes disagree beyond the tolerance was probably CHANGED\n"
               "  between them, which makes the shipped surface a composite of two different\n"
@@ -298,7 +320,7 @@ def main():
             print(f"    {slug} hole {h}: {d1} {t1:.2f}% vs {d2} {t2:.2f}% "
                   f"(d {dt:.2f}pp, aim {daim:.1f}deg)")
         return 1
-    return 0
+    return 1 if refused else 0
 
 
 if __name__ == "__main__":
