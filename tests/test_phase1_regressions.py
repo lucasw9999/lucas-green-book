@@ -230,11 +230,22 @@ def _code_only(src):
                 continue
             out.append(tok.string)
     except (tokenize.TokenError, IndentationError):
-        return src          # unparseable: fall back rather than silently pass everything
+        # RAISE, do not fall back. Returning the raw source here was itself an instance of the fault
+        # this helper exists to prevent, and it defeated a real guard: splitting a module on
+        # "def main(" yields a fragment starting "):\n    ..." which does not tokenise, so this
+        # returned the source WITH comments and a check that fetch_dem_hd.main() still calls
+        # keeps_existing_surface was satisfied by a comment naming that function. Replacing the live
+        # call with `if False:` left the test green. A silent fallback in a guard-hardening helper is
+        # worse than no helper, because the call site reads as protected.
+        raise AssertionError(
+            "_code_only() was handed source that does not tokenise, so it cannot strip comments and "
+            "the caller's assertion would be checking prose. Pass a whole module, or a fragment that "
+            "parses on its own (dedent it, or re-attach a synthetic header). First 60 chars: "
+            f"{src[:60]!r}")
     return " ".join(out)
 
 
-def assert_no_course_skipped(seen, what):
+def assert_no_course_skipped(seen, what, exempt=None):
     """Every course with geometry must have CONTRIBUTED something -- not merely been visited.
 
     A COUNT floor cannot express this. Derived from CORPUS it falls with the count, so dropping a
@@ -261,7 +272,21 @@ def assert_no_course_skipped(seen, what):
             f"nothing at all -- see this function's docstring. Use collections.Counter() and increment "
             f"beside the per-item counter, past the gates that may legitimately skip an item.")
     contributed = {k for k, v in seen.items() if v}
-    missing = sorted(geometry_courses() - contributed)
+    # `exempt` is {slug: why} for courses that legitimately contribute NOTHING to this particular
+    # test -- a course printing no carry at all cannot contribute to a carry test. It must be spelled
+    # with a reason, so that a course going quiet for a BAD reason still fails. The alternative that
+    # was in use -- incrementing at the top of the loop so every course looks like a contributor --
+    # exempts all twelve silently, which is how a whole 18-hole course could drop out unnoticed.
+    exempt = exempt or {}
+    assert not (set(exempt) - geometry_courses()), (
+        f"{what}: exemption names a course with no geometry: {sorted(set(exempt) - geometry_courses())}")
+    for slug, why in exempt.items():
+        assert isinstance(why, str) and len(why) > 12, (
+            f"{what}: exemption for {slug} needs a real reason, got {why!r}")
+    stale = sorted(s for s in exempt if seen.get(s))
+    assert not stale, (f"{what}: {stale} is exempted but DID contribute -- drop the exemption rather "
+                       f"than leave a stale one that would hide a real skip later")
+    missing = sorted(geometry_courses() - contributed - set(exempt))
     assert not missing, (f"{what}: these courses have geometry on disk but contributed nothing -- "
                          f"they are being skipped: {missing}")
 
@@ -705,7 +730,6 @@ def test_every_printed_caveat_matches_the_data_behind_it():
     checked, problems = 0, []
     seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses[ref] += 1
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -730,6 +754,7 @@ def test_every_printed_caveat_matches_the_data_behind_it():
             with open(meta_p, encoding="utf-8") as fh:
                 meta = json.load(fh)
             checked += 1
+            seen_courses[ref] += 1   # past the gates: counts WORK, not intent
             coarse = "seamless" in str(meta.get("source", "")).lower()
             says_coarse = "GREEN &middot; 1 m data" in blk
             if coarse and not says_coarse and hn not in stale:
@@ -1982,7 +2007,6 @@ def test_a_printed_carry_never_overstates_what_it_clears():
     checked, problems = 0, []
     seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses[ref] += 1
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(book):
             continue
@@ -2027,6 +2051,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             card = info["card_yd"]
             for near, _far in carries:
                 checked += 1
+                seen_courses[ref] += 1   # past the gates: counts WORK, not intent
                 if not (80 <= near <= 300):
                     problems.append(f"{ref} hole {hn}: carry {near} is outside the 80-300 yd window")
                 if near > card - 40:
@@ -2049,7 +2074,9 @@ def test_a_printed_carry_never_overstates_what_it_clears():
                         f"{ref} hole {hn}: prints carry {near} but sand in the ball's path starts at "
                         f"{in_line:.0f} yd -- the card claims room the hole does not give")
     assert checked >= 50, f"only {checked} carries checked -- build the books first"
-    assert_no_course_skipped(seen_courses, "test_a_printed_carry_never_overstates_what_it_clears")
+    assert_no_course_skipped(
+        seen_courses, "test_a_printed_carry_never_overstates_what_it_clears",
+        exempt={"bay-view-golf-club": "prints no carry on any hole -- nothing for this test to check"})
     assert not problems, "a printed carry overstates what it clears:\n  " + "\n  ".join(problems[:8])
 
 
@@ -2328,7 +2355,6 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     checked, problems = 0, []
     seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses[ref] += 1
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -2362,6 +2388,7 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                 if "L" not in v:
                     continue
                 checked += 1
+                seen_courses[ref] += 1   # past the gates: counts WORK, not intent
                 if v["L"] not in (100, 150, 200, 250, 300):
                     problems.append(f"{ref}: a to-green label reads {v['L']}, which is not one of "
                                     f"the fixed radii -- it is no longer a straight-line distance")
@@ -2414,7 +2441,6 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
     checked, problems = 0, []
     seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses[ref] += 1
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -2434,6 +2460,7 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
             if not rungs:
                 continue
             checked += 1
+            seen_courses[ref] += 1   # past the gates: counts WORK, not intent
             depth, deepest = int(dm.group(1)), max(rungs)
             if not (depth - 5 <= deepest <= depth):
                 problems.append(
@@ -2480,7 +2507,6 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
     checked, problems = 0, []
     seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses[ref] += 1
         pdf = os.path.join(ROOT, "courses", ref, "greenbook.pdf")
         if not os.path.exists(pdf):
             continue
@@ -2525,6 +2551,7 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
                         continue
                     bar, lad = max(bars), statistics.median(gaps)
                     checked += 1
+                    seen_courses[ref] += 1   # past the gates: counts WORK, not intent
                     off = abs(bar - lad) / lad * 100
                     if off > 5.0:
                         problems.append(
@@ -2730,6 +2757,171 @@ def test_nothing_tracked_carries_a_work_identity_or_a_home_path():
                     problems.append(f"{rel}: {what} -- {hit!r}")
     assert not problems, ("tracked files in a PUBLIC repo carry identity or machine-specific "
                           "details:\n  " + "\n  ".join(sorted(set(problems))[:12]))
+
+
+def test_the_steepness_colour_still_reads_in_black_and_white():
+    """The slope ramp is the only thing in the book carrying information no word repeats, and it used
+    to invert on a mono printer -- which is how a junior actually prints this.
+
+    The old ramp went green -> pale yellow -> red, brightening to the 2.5% midpoint before darkening.
+    Its grey value FOLDED: 0.00% and 3.65% both printed grey 170, and 26% of all heat cells in the
+    shipped books collided with a slope at least 1.5 points different. The legend inverted too -- a
+    3.6% cell matched the FLAT swatch, so the book actively told a junior that steep ground was level.
+
+    Asserts the property, not the constants: luminance must fall monotonically across the whole
+    interpolated range, and two slopes 1.5 points apart must be separated by enough grey to tell
+    apart. Written against the ramp's OUTPUT so any future restyle is free to change the hues.
+    """
+    cfg, _rh = _engine(a_course())
+    import render_green
+
+    def lum(pct):
+        r, g, b = map(int, re.findall(r"\d+", render_green.heat_color(pct)))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    ls = [lum(i / 100.0) for i in range(0, 501)]
+    reversals = [(i / 100.0, ls[i], ls[i + 1]) for i in range(len(ls) - 1) if ls[i + 1] > ls[i] + 0.4]
+    assert not reversals, (
+        f"the steepness ramp gets LIGHTER as it gets steeper at {len(reversals)} points, starting at "
+        f"{reversals[0][0]:.2f}% ({reversals[0][1]:.0f} -> {reversals[0][2]:.0f} grey). On a mono "
+        f"printer that makes steep ground impersonate flat ground.")
+
+    # a reader must be able to tell 1.5 percentage points apart in grey alone
+    sep = min(ls[i] - ls[i + 150] for i in range(len(ls) - 150))
+    assert sep >= 6.0, (
+        f"two slopes 1.5 points apart differ by only {sep:.1f} grey levels at the worst point -- "
+        f"indistinguishable in a home mono print")
+
+    # and the legend swatches must be the ramp's own output, not a hardcoded copy that can drift
+    src = _code_only(open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read())
+    assert "heat_color" in src, (
+        "generate.py hardcodes the legend swatches instead of calling render_green.heat_color -- "
+        "they printed the OLD ramp's colours after the ramp was fixed, so the key disagreed with "
+        "the map it explains")
+
+
+def test_the_tile_count_counts_only_tiles_the_build_could_have_read():
+    """The published tile count is a legal claim about what the book was MADE FROM, and it was
+    counting whatever .laz happened to sit in the directory when the doc was regenerated.
+
+    Found live: legal/03_PROVENANCE_BY_COURSE.md said callippe-preserve used 9 tiles. It said 7 when
+    it was written on Jul 29. Between those two runs an audit fetched three tiles the build never
+    read, the doc was regenerated, and the count silently rose. No book changed; the record just
+    started claiming evidence that had not existed when the book was built.
+
+    That direction is the dangerous one. An undercount understates our own evidence and hurts nobody;
+    an overcount tells a reader the greens rest on data they do not.
+
+    The cutoff has to be the NEWEST LiDAR-derived artifact, not the oldest. Three stages read the
+    point cloud -- green surfaces, tee-to-green elevation, canopy returns -- and they are written at
+    different times, so a tile landing between them is genuinely used by the later ones. Cutting at
+    the oldest surface undercounted callippe to 7 by disowning two tiles the later stages did read.
+    Both halves are asserted here, because the first fix I wrote had exactly that bug.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gp_prov", os.path.join(ROOT, "tools", "gen_provenance.py"))
+    gp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gp)
+    slug = next((s for s in CORPUS
+                 if glob.glob(os.path.join(ROOT, "courses", s, "laz", "*.laz"))
+                 and glob.glob(os.path.join(ROOT, "courses", s, "dem_hd", "hole*.json"))), None)
+    if slug is None:
+        pytest.skip("no built course with local tiles")
+    cdir = os.path.join(ROOT, "courses", slug)
+    tiles = glob.glob(os.path.join(cdir, "*.laz")) + glob.glob(os.path.join(cdir, "laz", "*.laz"))
+    derived = (glob.glob(os.path.join(cdir, "dem_hd", "hole*.json"))
+               + [os.path.join(cdir, n) for n in ("hole_elev.json", "trees_lidar.json")])
+    stamps = [os.path.getmtime(d) for d in derived if os.path.exists(d)]
+    assert stamps, f"{slug} has no LiDAR-derived artifact -- this test would prove nothing"
+
+    _proj, n, _from_names = gp._tile_project(slug)
+
+    # THE INDEPENDENT FACT, not the rule recomputed. Re-deriving the cutoff from the same mtimes the
+    # producer reads is mechanism (3) -- both sides move together, and it is worth being blunt that a
+    # first draft of this test did exactly that and survived BOTH mutations below. What can be checked
+    # without re-implementing anything: a tile that postdates every LiDAR-derived artifact exists on
+    # disk, so a count equal to the raw file count proves the filter did not run.
+    stale = [t for t in tiles if os.path.getmtime(t) > max(stamps)]
+    if stale:
+        assert n < len(tiles), (
+            f"{slug}: the record counts {n} tiles, the same as the {len(tiles)} files on disk, but "
+            f"{len(stale)} of them postdate every LiDAR-derived artifact and fed nothing: "
+            f"{sorted(os.path.basename(t) for t in stale)[:3]}. The count is a published claim about "
+            f"what the book was MADE FROM -- a file merely sitting in the directory must not inflate it.")
+    assert n > 0, f"{slug}: {len(tiles)} tiles on disk but the record counts none"
+
+    # ...and the published DOC must carry that same number, since the doc is what a reader sees.
+    doc = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
+    if os.path.isfile(doc):
+        with open(doc, encoding="utf-8") as fh:
+            body = fh.read()
+        row = next((ln for ln in body.splitlines()
+                    if slug.split("-")[0].title() in ln and "tiles)" in ln), None)
+        if row:
+            m = re.search(r"\((\d+) tiles\)", row)
+            assert m and int(m.group(1)) == n, (
+                f"{slug}: the generator counts {n} tiles but the published doc says "
+                f"{m.group(1) if m else '?'} -- regenerate legal/03_PROVENANCE_BY_COURSE.md")
+
+    # The other half: do not cut at the OLDEST artifact either, which disowns tiles the later stages
+    # legitimately read. HONEST LIMIT -- on today's corpus min and max give identical counts for all
+    # 12 courses, because no tile happens to sit between two stages, so swapping max for min is
+    # currently unobservable and this assertion cannot fail. It is kept because it becomes live the
+    # moment a course is rebuilt in stages, which is exactly when the mistake would be made again.
+    if max(stamps) > min(stamps):
+        too_strict = sum(1 for t in tiles if os.path.getmtime(t) <= min(stamps))
+        assert n >= too_strict, (
+            f"{slug}: counted {n} tiles, fewer than the {too_strict} predating even the OLDEST "
+            f"artifact -- the cutoff has become stricter than any stage warrants")
+
+
+def test_no_commit_carries_a_work_identity():
+    """The same rule as the tracked-file scan, applied to the COMMIT METADATA -- the vector that
+    actually caused the incident that test's own docstring describes.
+
+    A work email "reached two public repos and had to be scrubbed out of their history". It did not get
+    there in a file. It got there as the AUTHOR of a commit, because the machine-wide git identity is an
+    employer address and an `includeIf` for this directory was the eventual fix. Scanning file contents
+    would never have found it -- `git log --format=%ae` is where it lived, and a history rewrite plus
+    support tickets to two hosts is what removing it cost.
+
+    So this checks author, committer, and message on every reachable commit. The message matters too: a
+    branch name carrying the work account, quoted in a commit body, is published just as surely as a
+    filename, and it names the work account.
+
+    Deliberately NOT limited to unpushed commits. What is already public is what most needs finding --
+    that is the case that costs a rewrite -- and reporting it is the only way it gets fixed.
+    """
+    import subprocess
+    try:
+        log = subprocess.run(
+            ["git", "log", "--all", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%s%n%b%x1e"],
+            cwd=ROOT, capture_output=True, text=True, timeout=120)
+    except Exception as e:                       # not a git checkout (tarball, vendored copy)
+        pytest.skip(f"git unavailable: {e}")
+    if log.returncode != 0:
+        pytest.skip("not a git checkout")
+    commits = [c for c in log.stdout.split("\x1e") if c.strip()]
+    assert len(commits) > 10, f"only {len(commits)} commits parsed -- the scan would prove nothing"
+
+    # \b does not fire between "/" and a letter the way it does at a space, and the work username
+    # appears in exactly that position in a branch name, so match it without leaning on a word break.
+    work = re.compile(r"(?:luyao[a-z0-9_.-]*|lu9999|luyao-wu)|[A-Za-z0-9._%+-]*@[A-Za-z0-9.-]*apple\.com",
+                      re.I)
+    problems = []
+    for entry in commits:
+        parts = entry.strip().split("\x1f")
+        if len(parts) < 6:
+            continue
+        sha, an, ae, cn, ce, msg = parts[0][:8], parts[1], parts[2], parts[3], parts[4], parts[5]
+        for field, val in (("author", f"{an} <{ae}>"), ("committer", f"{cn} <{ce}>"), ("message", msg)):
+            for hit in sorted(set(work.findall(val)))[:2]:
+                problems.append(f"{sha} {field}: {hit!r}")
+    assert not problems, (
+        "commit(s) in a PUBLIC repo carry a work identity. Metadata is published exactly as file "
+        "contents are, and this is how a work email reached two public repos before:\n  "
+        + "\n  ".join(sorted(set(problems))[:12]))
 
 
 def test_no_homoglyphs_in_printed_strings():
@@ -4781,7 +4973,6 @@ def test_each_green_is_turned_the_way_the_card_promises():
     checked, problems = 0, []
     seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses[ref] += 1
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
         geom_p = os.path.join(ROOT, "courses", ref, "osm_geom.json")
         if not (os.path.exists(book) and os.path.exists(geom_p)):
@@ -4835,6 +5026,7 @@ def test_each_green_is_turned_the_way_the_card_promises():
             px, py = x2 - x1, y2 - y1
             n = math.hypot(px, py)
             checked += 1
+            seen_courses[ref] += 1   # past the gates: counts WORK, not intent
             if n == 0:
                 problems.append(f"{ref} hole {hn}: the north needle has zero length")
                 continue
@@ -4998,7 +5190,6 @@ def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
     checked, worst, problems = 0, (0.0, None), []
     seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses[ref] += 1
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -5029,6 +5220,7 @@ def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
             cos = (vx*sx + vy*sy) / (n * math.hypot(sx, sy))
             gap = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
             checked += 1
+            seen_courses[ref] += 1   # past the gates: counts WORK, not intent
             if gap > worst[0]:
                 worst = (gap, f"{ref} hole {hn.group(1)}")
             if gap > 90.0:
@@ -8268,7 +8460,6 @@ def test_a_mapped_green_is_mostly_puttable_ground():
             sys.modules.pop(m, None)
         import render_green as rg
         from geo import R_LAT, mlon
-        seen[slug] += 1
         for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
             with open(p, encoding="utf-8") as f:
                 meta = json.load(f)
@@ -8286,6 +8477,7 @@ def test_a_mapped_green_is_mostly_puttable_ground():
             _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
             frac = float((mask & (S["slope"] > rg.SLOPE_LABEL_MAX_PCT)).sum())/float(mask.sum())
             checked += 1
+            seen[slug] += 1     # past the gates: a course yielding no surface now fails
             if frac > worst[0]:
                 worst = (frac, f"{slug} hole {meta['hole']}")
             if frac > CEILING:
@@ -8296,6 +8488,9 @@ def test_a_mapped_green_is_mostly_puttable_ground():
     assert checked >= expected_geometry_holes() - 18, (
         f"only {checked} greens measured of {expected_geometry_holes()} with geometry -- a course "
         f"was skipped, and this check is worthless on the course it skipped")
+    # This loop iterates geometry_courses() -- the same set the guard checks against -- so
+    # incrementing at the TOP made the assertion literally `not (X - X)`, unfalsifiable by any change
+    # to the code under test. Counting past the per-surface gates is what gives it teeth.
     assert_no_course_skipped(seen, "test_a_mapped_green_is_mostly_puttable_ground")
     assert not bad, "green outline(s) do not describe a putting surface:\n  " + "\n  ".join(bad)
     assert worst[0] <= CEILING, f"worst {worst[0]*100:.1f}% at {worst[1]}"
@@ -9453,7 +9648,9 @@ def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path
     # and main() must actually consult it -- a correct predicate nobody calls protects nothing
     with open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8") as f:
         src = f.read()
-    body = src.split("def main(", 1)[1]
+    # keep the "def main(" so the fragment tokenises -- splitting AFTER it yields "):\n    ..." which
+    # does not, and _code_only used to answer that by returning the raw source, comments and all.
+    body = "def main(" + src.split("def main(", 1)[1]
     assert "keeps_existing_surface" in _code_only(body), (
         "fetch_dem_hd.main() no longer calls keeps_existing_surface, so a refused 0.4 m attempt can "
         "overwrite a working surface again and blank the card")
