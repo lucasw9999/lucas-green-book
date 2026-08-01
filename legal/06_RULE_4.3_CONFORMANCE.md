@@ -73,9 +73,8 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   the enlarged edition prints **no 5‑yd scale bar at all** (`render_green.py` emits it only
   when `tournament=True`), so there is nothing in those PDFs to measure.
   That is a design decision, not a defect, and it is stated on the enlarged edition's own guide card:
-  *"Because the greens here are printed larger than the tournament scale, this enlarged edition is a
-  practice aid and is NOT a conforming competition book under Rule 4.3 — use the standard pocket
-  edition for competition."* It also omits the "DESIGNED TO CONFORM · RULE 4.3" cover badge that the
+  *"Printed larger than tournament scale: a practice aid, NOT a conforming competition book under
+  Rule 4.3. Use the pocket edition in competition."* It also omits the "DESIGNED TO CONFORM · RULE 4.3" cover badge that the
   pocket book carries, and `tools/check_scale.py` reads only `greenbook.html`/`greenbook.pdf`, so the
   198/198 figure above never included it. Recorded here because a conformance document that never
   mentions the one edition that does not conform invites the reader to assume every book does.

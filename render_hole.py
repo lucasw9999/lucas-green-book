@@ -92,9 +92,40 @@ PAR3_STRAIGHT_MAX = 1.02          # arc / chord
 #    the water is held back, which is exactly where the water is not.
 #
 # At module scope so it can be tested by truth table rather than through a whole rendered card.
-PIPED = ('culvert', 'yes', 'building_passage')
+# 'covered' belongs in this tuple because it is a legal VALUE of `tunnel`, not only a key of its
+# own. Omitting it let castlewood-valley way 926093107 through -- an 11.5 m `tunnel=covered`
+# reach of the Arroyo de la Laguna -- and that hole went 0W to 2W on the strength of 3 mm of blue
+# for a buried channel 43.5 m away and 37 m BEHIND the tee. That is merion 13's defect, the one
+# this predicate was written to fix, recreated by the fix on a hole that used to print none.
+PIPED = ('culvert', 'yes', 'building_passage', 'covered')
 NOT_WATER = ('dam', 'weir', 'lock_gate', 'sluice_gate', 'fish_pass')
 HIDDEN_LOCATION = ('underground', 'underwater')
+
+
+def watercourse_identity(feature):
+    """A key that is the same for every OSM way belonging to ONE physical watercourse.
+
+    "3W" beside "14B" is read as "there are three waters on this hole", and it was counting OSM WAYS.
+    A creek is routinely split into several ways at every road crossing and tag change, so one stream
+    printed as several: copper-valley 11 printed 7W where six of the seven ways carry the SAME NHD reach
+    code 18040051001111 -- one reach -- and merion 13 printed 2W for two ways both named "Cobbs Creek".
+    20 of 198 cards printed a bigger W than there is water.
+
+    The key is already in the data on 137 of the corpus's 179 waterways: the source hydrography's own
+    reach identifier, else the name. A way with neither is counted on its own, because nothing available
+    says it is the same water as its neighbour -- guessing from shared endpoints would merge a tributary
+    into the creek it joins.
+
+    Deduplicates the COUNT only. Every segment is still DRAWN: a golfer looking at the card should see
+    all the blue that is there, and the honesty rule that matters is that no counted water lacks ink.
+    """
+    t = feature.get('tags') or {}
+    for k in ('nhd:reach_code', 'pasda:SEGID', 'scvwd:ROUTEID'):
+        if t.get(k):
+            return (k, t[k])
+    if t.get('name'):
+        return ('name', t['name'])
+    return ('id', feature.get('id'))
 
 
 def is_visible_watercourse(feature):
@@ -245,18 +276,56 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and in_corridor(g,40)]
     waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water') and g.get('geometry') and frac_in(g,45)>=0.35]
+    def _near_played_line(pe, pn, buf):
+        """(within buf, and the nearest point is on the PLAYED line rather than off either end).
+
+        dist_to_line is a capsule: it clamps each segment's projection to [0, 1], so the corridor
+        includes a buf-radius half-disc BEHIND the tee and PAST the green. Water sitting in those caps
+        is not on the hole at all. Nine counted watercourses were reachable only through them, and two
+        cards went 0W -> 1W on a river whose nearest approach is 40.5 m away and 39.6 m behind the tee
+        (castlewood-valley 7) and 43.6 m away at the green (castlewood-valley 2).
+
+        So also require the nearest point to project INSIDE the polyline -- t strictly within (0, 1) on
+        some segment, or anywhere on an interior segment. A feature that only rounds the tee or the green
+        is then excluded, which is what the reader means by water on this hole.
+        """
+        best, interior = buf, False
+        n = len(line_em) - 1
+        for i in range(n):
+            ax, ay = line_em[i]; bx, by = line_em[i+1]
+            dx, dy = bx-ax, by-ay
+            L2 = dx*dx + dy*dy
+            if L2 < 1e-9:
+                continue
+            t = ((pe-ax)*dx + (pn-ay)*dy) / L2
+            tc = max(0.0, min(1.0, t))
+            d = math.hypot(pe-(ax+tc*dx), pn-(ay+tc*dy))
+            if d >= buf:
+                continue
+            # off the tee end only if this is the first segment and the projection fell before it;
+            # off the green end only if this is the last and it fell past it
+            off_end = (i == 0 and t <= 0.0) or (i == n-1 and t >= 1.0)
+            if not off_end:
+                interior = True
+            best = min(best, d)
+        return best < buf, interior
+
     def any_within(g, buf):
-        """True when ANY part of the feature comes within buf of this hole's centerline.
+        """True when part of the feature comes within buf of the PLAYED length of this centerline.
 
         The right test for a LINE, and the wrong one for an area -- which is why it is used only for
         watercourses. in_corridor tests the CENTROID, and a creek is typically long and mostly
         elsewhere: a stream that crosses this fairway has its centroid two holes away, so it was
-        excluded. That hid 48 open watercourses on 31 holes, one of them passing 0.7 m from the
+        excluded. That hid 49 open watercourses on 31 holes, one of them passing 0.7 m from the
         centreline. Meanwhile the same centroid test INCLUDED features whose midpoint happens to sit
         near the line while no part of them is visible from it.
         """
         pts = g.get('geometry') or []
-        return any(dist_to_line(*em(p['lat'], p['lon'])) < buf for p in pts)
+        for p in pts:
+            near, interior = _near_played_line(*em(p['lat'], p['lon']), buf)
+            if near and interior:
+                return True
+        return False
 
     creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g,45)]
     tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g,38)]
@@ -703,7 +772,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # printed it over five separate lines of Cobbs Creek. The guide's legend calls all of it "water
     # (blue)", so the footer was contradicting both the map beside it and the legend that explains it.
     info=dict(bunkers=len(bunkers),
-              waters=len(waters)+len(creeks),
+              # distinct PHYSICAL waters: the area hazards plus the deduplicated watercourses. See
+              # watercourse_identity -- counting OSM ways made one split creek read as several.
+              waters=len(waters)+len({watercourse_identity(g) for g in creeks}),
               water_hazards=len(waters), watercourses=len(creeks),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),

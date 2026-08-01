@@ -3,7 +3,7 @@
 Measured 2026‑07‑31 with `tools/cross_flight_check.py --all`. Reproduce it with that command.
 
 Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where that tilt is
-close to the survey's own noise floor, and
+close to the survey's own noise floor and the card still names a side, and
 15 cm contours, and all but one name a feed direction — micke‑grove 2 is flat enough that the plane
 and the arrows disagree, so that card names none (see note 2). The governing rule of this project is that it must never print a
 number the data does not support — but until this measurement, **nothing recorded what the data
@@ -160,8 +160,9 @@ had to hold, and it holds with two orders of magnitude of margin.
 4. It cannot detect a change that happened *before* the first pass or *after* the last. Poppy Ridge's
    2025 rebuild post‑dates all available coverage, which is why that course has no green maps at all.
 
-None of this weakens the books' existing wording — "general tilt and tiers, not exact break … always
-trust your own read" — it supports it, and now with a number behind it.
+None of this weakens the books' existing wording — the pocket card says "general tilt & tiers, not
+exact break, and may contain errors", the enlarged one "general tilt, not exact break — trust your own
+read" — it supports it, and now with a number behind it.
 
 ## Why the tool shares the renderer's math
 

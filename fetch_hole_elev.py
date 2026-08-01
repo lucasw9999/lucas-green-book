@@ -53,8 +53,25 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # The old 200 floor was calibrated against a 900 m2 box and refused 13 pads that carry a median good to
 # a hundredth of a foot -- 8 holes lost a printed height for having a SMALL TEE. Gate on the number the
 # figure is actually printed to instead.
-MAX_TEE_SE_FT = 0.25    # ring: max standard error of the tee median, 12x under the 3 ft print floor
-MIN_RING_PTS = 30       # and enough points that the sd estimate behind that SE means anything
+# Gate on the pad's FLATNESS, not on the precision of its median. The first version of this gate used
+# the standard error of the median (1.253*sd/sqrt(n)) with a 0.25 ft ceiling, and that gate was INERT:
+# over the corpus it ranged 0.002-0.146 ft and refused nothing, and it cannot refuse anything above
+# about 100 returns because sqrt(n) swamps sd. It also ranked the wrong way round -- castlewood-hill 18
+# has 5.1 ft of relief and a +1.06 ft/m slope along the hole axis, which is not a tee, and it scored
+# BETTER than philadelphia 18 (9.1 ft of relief) purely by having fewer points. Measured against the
+# actual implied error, sd correlates 4x better than se (0.44 vs 0.11).
+#
+# What the figure needs is that the sampled ground IS a tee: a mown, near-level pad whose median stands
+# for the whole of it. So bound the spread directly. 2.5 ft of relief across a pad admits a real teeing
+# ground with a slight fall and rejects the cases where the box has walked off the pad onto a bank --
+# it refuses castlewood-hill 18 and philadelphia 18, the two the SE gate waved through.
+# 2.5 ft, tied to the thing it protects: the card suppresses any height under 3 ft as level, so a pad
+# whose own sampled ground spans MORE than that cannot anchor a figure quoted to the nearest foot --
+# the datum would be ambiguous by more than the smallest quantity the book is willing to print. Costs
+# 6 of 177 holes their printed height (bay-view 1, castlewood-hill 2, merion 2, philadelphia 1,
+# valley-hi 1). Printing nothing is the honest outcome for those.
+MAX_TEE_RELIEF_FT = 2.5   # p5-p95 spread of the ring sample; a tee is level or it is not a tee
+MIN_RING_PTS = 30         # and enough points for that spread to mean anything
 GROUND = 2              # LAS classification for bare earth
 R_LAT = 111320.0        # metres per degree of latitude
 # A tee-to-green change beyond this is not a golf hole, it is a units or datum fault. The largest real
@@ -329,32 +346,36 @@ def tee_elevations(anchors):
         on_pad = hn in pads
         basis = ("the mapped tee pad" if on_pad else
                  f"a {TEE_R_M:.0f} m box at the tee anchor (no mapped tee ring contains it)")
-        se = 1.253*float(np.std(zs))/math.sqrt(len(zs)) if len(zs) else float("inf")
-        out[hn] = (float(np.median(zs)), int(zs.size), basis, on_pad, se)
+        rel = (float(np.percentile(zs, 95) - np.percentile(zs, 5)) if len(zs) >= 20
+               else float(zs.max() - zs.min()) if len(zs) else float("inf"))
+        out[hn] = (float(np.median(zs)), int(zs.size), basis, on_pad, rel)
     return out
 
 
-def tee_median_is_trustworthy(n, se_raw, on_pad, vscale):
+def tee_median_is_trustworthy(n, relief_raw, on_pad, vscale):
     """(ok, reason) for one hole's tee sample. Two different questions, so two different gates.
 
-    * RING: every point is inside the mapped tee, so the residual doubt is only whether the median is
-      stable, and that is measurable. Gate on the standard error of the median expressed in the FEET the
-      figure is printed to, plus a small floor so the sd behind it means something.
-    * BOX: no such guarantee. A handful of points there means the box barely reached the tee, and a
-      tight median over five returns on a cart path is stable and wrong. The count is the only signal, so
-      the original 200 floor stands.
+    * RING: every point is inside the mapped tee, so the doubt is not whether the median is PRECISE --
+      it always is, at these sample sizes -- but whether the ground under it is a tee at all. A median
+      over a pad that falls 5 ft is stable and meaningless. Gate on the spread.
+    * BOX: no containment guarantee. A handful of points there means the box barely reached the tee, and
+      a tight median over five returns on a cart path is stable and wrong. The count is the only signal,
+      so the original 200 floor stands.
 
     Split out as a predicate because the two branches are easy to conflate and a loosened gate is the
-    failure mode this project is most exposed to -- the point of the measurement is to justify the
-    threshold, not to find one that keeps the numbers.
+    failure mode this project is most exposed to. The first version of this function gated the ring on
+    the standard error of the median and could not fail: measured across the corpus it never came within
+    a factor of 1.7 of its own ceiling, and it scored a 5-ft-relief pad better than a flat one because
+    se falls with sqrt(n). A gate that cannot refuse is worse than no gate, because it reads as one.
     """
-    se_ft = se_raw * vscale * 3.28084
+    relief_ft = relief_raw * vscale * 3.28084
     if on_pad:
         if n < MIN_RING_PTS:
             return False, f"only {n} ground returns on the mapped tee pad (need {MIN_RING_PTS})"
-        if se_ft > MAX_TEE_SE_FT:
-            return False, (f"the tee median over the mapped pad is only good to {se_ft:.2f} ft "
-                           f"(need {MAX_TEE_SE_FT} ft) -- the pad is not flat enough to state a height")
+        if relief_ft > MAX_TEE_RELIEF_FT:
+            return False, (f"the mapped tee pad spans {relief_ft:.1f} ft of height (limit "
+                           f"{MAX_TEE_RELIEF_FT}) -- that is not a level teeing ground, so a median "
+                           f"over it does not stand for a tee height")
         return True, ""
     if n < MIN_TEE_PTS:
         return False, (f"only {n} ground returns in the {TEE_R_M:.0f} m box (need {MIN_TEE_PTS}); no "
@@ -399,7 +420,11 @@ def green_elevation(hole):
     a[np.abs(a) > 1e30] = np.nan
     if np.all(np.isnan(a)):
         return None
-    import render_green as rg               # the card's own rasteriser, so both read the same cells
+    # render_green's own poly_to_px/point_in_poly. Note it builds its mask with a scanline fill and only
+    # falls back to per-cell point_in_poly below 20 cells, so this is the same GEOMETRY, not literally
+    # the same code path -- verified cell-for-cell identical on all 198 greens, but a change to that
+    # scanline could diverge from this silently.
+    import render_green as rg
     H, W = a.shape
     poly = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
     mask = np.array([[rg.point_in_poly(c+0.5, r+0.5, poly) for c in range(W)] for r in range(H)])

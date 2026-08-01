@@ -227,13 +227,28 @@ def check_course(slug):
         # Comparing the green's absolute elevation against a raster this project does NOT build closes
         # that gap. This is not hypothetical: a foot/metre fault once put 74 of 175 holes' elevations
         # out by a median 298 ft. A US-survey-foot cloud read as metres shows tens of metres here; a
-        # geoid confusion about 30 m in California. Measured across 55 greens: median 0.07 m, worst
-        # 0.47 m. See legal/09_GREEN_SURFACE_REPEATABILITY.md.
+        # geoid confusion about 30 m in California. Measured over all 177 holes with both sides masked
+        # to the green polygon: median 0.00 m, worst 0.80 m. See
+        # legal/09_GREEN_SURFACE_REPEATABILITY.md.
+        #
+        # MASKED, like green_elevation. This took the median of the WHOLE .npy -- the green plus its 12 m
+        # collar -- and compared it against a 3DEP median masked to the green polygon, so it measured the
+        # region difference the pipeline had just stopped making and reported a spurious +0.127 m offset
+        # in the one line whose job is to bound our own processing. It also skipped the >1e30 NoData
+        # sentinels that green_elevation strips.
         try:
-            _a = np.load(meta_p.replace(".json", ".npy"))
-            _fin = _a[np.isfinite(_a)]
-            if _fin.size:
-                absolute.append(d_grn - float(np.median(_fin)))
+            _a = np.load(meta_p.replace(".json", ".npy")).astype(float)
+            _a[~np.isfinite(_a)] = np.nan
+            _a[np.abs(_a) > 1e30] = np.nan
+            _gpx = fhe.np_green_mask(_a.shape, _meta) if hasattr(fhe, "np_green_mask") else None
+            if _gpx is None:
+                import render_green as _rg
+                _H, _W = _a.shape
+                _poly = _rg.poly_to_px(_meta["polygon"], _meta["bbox"], _W, _H)
+                _gpx = np.array([[_rg.point_in_poly(c + 0.5, r + 0.5, _poly) for c in range(_W)]
+                                 for r in range(_H)])
+            if _gpx.any() and not np.all(np.isnan(_a[_gpx])):
+                absolute.append(d_grn - float(np.nanmedian(_a[_gpx])))
         except Exception:
             pass
         print(f"  hole {hn:2d}: ours {ours_ft:+7.1f} ft   DEM {indep_ft:+7.1f} ft   "

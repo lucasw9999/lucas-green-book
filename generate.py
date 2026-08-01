@@ -511,7 +511,8 @@ def _flown_line():
         holes = ", ".join(str(h) for h in stale)
         out += ('  <div class="legrow"><span><b>&#9888; Holes ' + esc(holes) + '</b>: '
                 '<b>rebuilt after</b> that survey, marked <b>&ldquo;pre-rebuild data&rdquo;</b> '
-                '&mdash; shapes and tiers may have changed. Trust your own read.</span></div>\n')
+                '&mdash; shapes and tiers may have changed. A guide only; trust your own '
+                'read.</span></div>\n')
     # The other caveat a card can carry needs the same treatment. Six of Monarch Bay's greens print
     # "GREEN - 1 m data" and the phrase appeared NOWHERE else in either edition -- a 12-year-old
     # reading it learns nothing, and the whole point of the label is to tell him to trust that green
@@ -551,7 +552,14 @@ def _faint_note():
     Keyed off what was actually rendered, so a book whose every green has a clear fall does not carry
     a line explaining a mark it never uses.
     """
-    if not any(sm.get("conf") == "faint" for _svg, sm in GREENS.values()):
+    # Keyed on what the card actually PRINTS, not on the internal value. green_honesty() suppresses the
+    # mark on a NO_CLEAR_FALL green -- "no clear fall (faint)" would say the same thing twice -- and
+    # micke-grove's hole 2 is both its only faint green AND its only no-clear-fall green. So this row
+    # shipped on a book containing zero (faint) marks: a legend line explaining a symbol the reader will
+    # never see, which is the clutter this function's docstring promises not to add. It also cost 10.5 px
+    # on the tightest guide card in the corpus, which had 1.19 px of clearance left.
+    if not any(sm.get("conf") == "faint" and sm.get("feeds") != render_green.NO_CLEAR_FALL
+               for _svg, sm in GREENS.values()):
         return ''
     # Kept to ONE line on purpose. The first draft ran four and pushed the guide card past its own
     # bounds, clipping the licence and contact lines on three books -- the exact fault the coach
@@ -569,7 +577,8 @@ def _no_fall_note():
         return ''
     return ('  <div class="legrow"><span><b>&ldquo;no clear fall&rdquo;</b> = too level for this data '
             'to name a side: the plane through the green and the arrows on it disagree, so none is '
-            'claimed. The slope % still prints. Read that one with your own eyes.</span></div>\n')
+            'claimed. The <b>measured</b> slope % still prints. Read that one with your own '
+            'eyes.</span></div>\n')
 
 
 def guide_panel():
@@ -578,8 +587,8 @@ def guide_panel():
   <div class="legrow"><svg width="28" height="14"><line x1="2" y1="7" x2="18" y2="7" stroke="#15271b" stroke-width="1.3"/><polygon points="18,7 14,4.5 14,9.5" fill="#15271b"/></svg>
     <span><b>Arrows</b> point downhill &mdash; the way the ball rolls. Longer = steeper.</span></div>
   <div class="legrow"><span><b>Black numbers</b> = slope % there; over <b>10%</b> is bank or bunker face,
-    not putting surface, so it is coloured but not numbered. <b>Grey numbers</b> = yd from the front edge.
-    The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
+    not putting surface, so it is coloured but not numbered. <b>Grey numbers</b> = yd from the front edge
+    <b>down the middle</b>. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
   <div class="legrow"><svg width="28" height="14"><path d="M2,11 Q9,3 26,6" stroke="#3c5a34" fill="none" stroke-width="0.9"/><path d="M2,13 Q11,7 26,11" stroke="#3c5a34" fill="none" stroke-width="0.9"/></svg>
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep.</span></div>
   <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="7" height="9" fill="rgb(120,190,120)"/><rect x="10" y="3" width="7" height="9" fill="rgb(232,224,120)"/><rect x="18" y="3" width="7" height="9" fill="rgb(210,90,70)"/></svg>
@@ -589,8 +598,9 @@ def guide_panel():
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
-  <div class="legrow"><span><b>green N ft above/below</b> = the <b>measured</b> height of the green
-    against its back tee, <b>not</b> a yardage adjustment &mdash; that club call is <b>yours</b>.</span></div>
+  <div class="legrow"><span><b>green N ft above/below</b> = <b>measured</b> height vs the back tee.
+    <b>Not</b> a yardage adjustment &mdash; club depends on your ball flight, so <b>you</b>
+    decide.</span></div>
   <div class="legrow"><span><b>carry N</b> = yd from the back tee to where fairway sand <b>starts</b>,
     along the line. The sand can run well past N &mdash; check the map.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
@@ -793,14 +803,30 @@ def _deck_thirds(nums):
     return out
 
 
-def main():
+def build_deck():
+    """(panels, n_leading, n_holes) -- the flat, ordered card deck for this course.
+
+    Extracted from main() because it had a SECOND implementation. The iOS reader in the companion repo
+    needs the same deck to map a hole to a page, and app/tools/course_worker.py hand-rewrote this loop
+    -- then drifted from it. It shipped the tab labels this engine deliberately abandoned ("Front" for
+    holes 1-6, when "Front" means 1-9 in golf and the same book's scorecard splits Out 1-9 / In 10-18),
+    a notes panel headed "Notes 1-9" over all eighteen holes, and `range(1, 19)` where the engine had
+    already moved to config.HOLE_NUMS so a nine-hole course works.
+
+    Worse than the wrong labels: the app derives its hole-to-page map from its own copy of this list, so
+    any panel added here shifts the app's mapping silently and the reader shows a green beside the wrong
+    hole. One deck, one implementation, so that cannot happen.
+
+    Renders the greens and layouts as a side effect, into GREENS/LAYOUTS, exactly as before -- the panel
+    builders read those module dicts.
+    """
     yardage = (config.BUILD_MODE == "yardage")
     if not yardage:
         for h in config.HOLE_NUMS:
             GREENS[h] = render_green.render(h, tournament=True)  # single conforming book
             LAYOUTS[h] = render_hole.render_hole(h, HOLES)
     # flat, ordered deck of cards (cut-and-stack, top-bound)
-    panels = [cover_panel(), yardage_guide_panel() if yardage else guide_panel()]
+    leading = [cover_panel(), yardage_guide_panel() if yardage else guide_panel()]
     # The corner tab is a THUMB INDEX -- which third of the cut deck this card is in -- and it used to
     # read "Front" / "Mid" / "Finish". "Front" means holes 1-9 in golf, universally, and it was being
     # used here for 1-6 while the SAME BOOK's scorecard splits Out 1-9 / In 10-18. So one book grouped
@@ -808,13 +834,19 @@ def main():
     # Literal ranges cannot collide with a golf term, state the grouping instead of naming it, and make
     # the uneven split visible rather than surprising.
     thirds = _deck_thirds(config.HOLE_NUMS)
+    holes = []
     for h in config.HOLE_NUMS:
         grp = next(lbl for lo, hi, lbl in thirds if lo <= h <= hi)
-        panels.append(yardage_hole_panel(h, grp) if yardage else hole_panel(h, grp))
-    panels += [scorecard_panel(), tees_panel(),
-               notes_panel(f"Notes {config.HOLE_NUMS[0]}-{config.HOLE_NUMS[-1]}"
-                           if config.NHOLES <= 18 else "Notes",
-                           config.HOLE_NUMS), legend_panel()]
+        holes.append(yardage_hole_panel(h, grp) if yardage else hole_panel(h, grp))
+    trailing = [scorecard_panel(), tees_panel(),
+                notes_panel(f"Notes {config.HOLE_NUMS[0]}-{config.HOLE_NUMS[-1]}"
+                            if config.NHOLES <= 18 else "Notes",
+                            config.HOLE_NUMS), legend_panel()]
+    return leading + holes + trailing, len(leading), len(holes)
+
+
+def main():
+    panels, _n_leading, _n_holes = build_deck()
 
     def doc(sheets, subtitle):
         return f'''<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">

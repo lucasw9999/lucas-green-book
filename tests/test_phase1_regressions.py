@@ -2326,7 +2326,7 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
     numbers, not slack for its own sake. The footer rounds -- int(round(depth_yd)) -- while the ladder
     walks the true float and stops strictly before the back edge. So a green measuring 29.6 yd prints
     "30yd deep" and DOES draw a rung at 30, while one measuring 30.4 also prints "30" and stops at 25.
-    Both are right. Across the corpus 11 cards draw the back-edge rung and 22 do not, and the two
+    Both are right. Across the corpus 25 cards draw the back-edge rung and 227 do not, and the two
     groups are separated by nothing more than a sub-yard remainder the card never shows.
 
     Getting that wrong is how this test was first written -- as an exact identity that the 11 legitimate
@@ -4802,7 +4802,7 @@ def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
     tier and hollow, so on an undulating green they diverge. Measured across the corpus the gap runs
     to a median 11.3 deg and a 90th percentile of 26.3 deg, and only 2 of 198 exceed one 45 deg
     octant -- monarch-bay 12 and the-reserve 8, whose plane tilt is 0.5% and 0.4%, flat enough that
-    the tilt direction is barely more than noise. Both cards mark those "(subtle)" and print the
+    the tilt direction is barely more than noise. Both cards mark those "(faint)" and print the
     measured percentage beside the word, so the book already tells the reader not to lean on them.
 
     90 deg is therefore not a quality bar, it is a CONTRADICTION bar: past it the words and the
@@ -5855,11 +5855,30 @@ def test_each_card_footer_matches_its_own_map():
             drawn = (panel.count('fill="#efe3b8"'),
                      panel.count('fill="#a9d3ef"')
                      + panel.count('stroke="#5b9bd0" stroke-width="1.8"'))
-            if footer != drawn:
-                bad.append((slug, footer, drawn))
+            # Bunkers: exact. One drawn shape is one bunker.
+            if footer[0] != drawn[0]:
+                bad.append((slug, "bunkers", footer[0], drawn[0]))
+            # Water: DIRECTIONAL, not exact, and the direction is the honesty rule.
+            #
+            # A watercourse is split into several OSM ways at every road crossing and tag change, and
+            # those ways are drawn as separate joined polylines that a reader sees as ONE creek. So the
+            # footer counts distinct water (render_hole.watercourse_identity) while the map inks every
+            # segment, and demanding equality here would force the footer back to counting OSM ways --
+            # which is how copper-valley 11 came to print "7W" for two NHD reaches and merion 13 "2W"
+            # for two ways both named Cobbs Creek.
+            #
+            # What must hold is the pair of one-sided rules:
+            #   * never a count with no ink -- that is merion 13's original defect, "1W" whose only blue
+            #     mark was a buried culvert. So footer > 0 requires ink, and footer <= drawn.
+            #   * never ink with no count -- water visible on the map that the footer calls zero.
+            if footer[1] > drawn[1]:
+                bad.append((slug, "water counted but not drawn", footer[1], drawn[1]))
+            if bool(footer[1]) != bool(drawn[1]):
+                bad.append((slug, "water/ink disagree about whether there is any",
+                            footer[1], drawn[1]))
     assert checked >= 150, f"only {checked} hole cards examined"
     assert not bad, (f"{len(bad)} of {checked} cards print a count that contradicts their own map "
-                     f"(slug, footer, drawn): {bad[:6]}")
+                     f"(slug, what, footer, drawn): {bad[:6]}")
 
 
 def test_multipolygon_relations_become_drawable_features(tmp_path):
@@ -8547,6 +8566,72 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
         f"only {bare_total} treeless holes across the corpus; monarch-bay 1, 17 and 18 are the known "
         f"case, so if that is gone the tree fetch changed and this test now proves nothing")
     assert not problems, "a hole the survey missed prints as open ground:\n  " + "\n  ".join(problems)
+
+
+@needs_corpus
+def test_the_card_deck_has_exactly_one_implementation():
+    """main() and the iOS reader must lay the deck out the same way, or the app shows the wrong hole.
+
+    The companion app repo needs this deck to map a hole to a PDF page, and its exporter
+    (app/tools/course_worker.py) hand-rewrote the loop rather than calling the engine. The copy then
+    drifted, and shipped exactly the things this engine had deliberately fixed:
+
+      * `grp = "Front" if h <= 6 else ("Mid" if h <= 14 else "Finish")` -- the tab wording removed
+        because "Front" means holes 1-9 in golf while it was being used for 1-6, so a junior looking
+        under "Front" for hole 8 found it tabbed "Mid" in a book whose own scorecard says Out 1-9.
+      * `notes_panel("Notes 1-9", range(1, 10))` -- a heading describing half the book.
+      * `range(1, 19)` -- a hard-coded 18, after the engine moved to config.HOLE_NUMS for nine-hole
+        courses.
+
+    The dangerous one is neither: the app derives firstHolePage from ITS OWN leading list, so any panel
+    added here shifts the app's hole-to-page map silently and the reader shows a green beside the wrong
+    hole. build_deck() exists so there is one list. This test pins the contract the app depends on --
+    the return shape, and that the labels are the corrected ones.
+    """
+    os.environ["COURSE"] = CORPUS[0]
+    for m in ("config", "geo", "render_green", "render_hole", "generate"):
+        sys.modules.pop(m, None)
+    import config
+    import generate
+
+    assert hasattr(generate, "build_deck"), (
+        "generate.build_deck is gone. The app's exporter calls it; without it the app must hand-copy "
+        "main()'s deck again, which is how it came to ship 'Front'/'Mid'/'Finish' tabs and a "
+        "'Notes 1-9' heading over eighteen holes.")
+    panels, n_leading, n_holes = generate.build_deck()
+    assert n_holes == config.NHOLES, f"deck has {n_holes} hole cards for {config.NHOLES} holes"
+    assert n_leading >= 2, "the deck must lead with at least a cover and a guide card"
+    assert len(panels) == n_leading + n_holes + 4, (
+        f"deck is {len(panels)} panels for {n_leading} leading + {n_holes} holes; the app computes its "
+        f"hole-to-page map from these counts, so the shape is part of the contract")
+
+    # main() must USE it, not carry a second copy
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as f:
+        src = f.read()
+    body = src.split("def main(", 1)[1].split("\ndef ", 1)[0]
+    assert "build_deck()" in body, "main() no longer calls build_deck -- there are two decks again"
+    # No grep for the removed words "Front"/"Mid"/"Finish". They appear in the comments that explain why
+    # they were removed, so the grep failed on prose -- the same trap that made the fetch_dem_hd guard
+    # test pass on a comment, inverted. The tab check below is strictly stronger anyway: it requires a
+    # LITERAL RANGE that contains the hole, which no golf term can satisfy.
+
+    # the hole cards must carry literal-range tabs covering every hole exactly once
+    tabs = {}
+    for h, panel in zip(config.HOLE_NUMS, panels[n_leading:n_leading + n_holes]):
+        m = re.search(r'class="sheettab"[^>]*>(\d+)\u2013(\d+)<', panel)
+        assert m, f"hole {h}'s card has no literal-range thumb tab"
+        lo, hi = int(m.group(1)), int(m.group(2))
+        assert lo <= h <= hi, f"hole {h} is tabbed {lo}-{hi}"
+        tabs.setdefault((lo, hi), []).append(h)
+    covered = sorted(x for v in tabs.values() for x in v)
+    assert covered == list(config.HOLE_NUMS), f"tabs cover {covered}, not {list(config.HOLE_NUMS)}"
+
+    # and the notes heading must describe the whole book
+    notes = [p for p in panels[n_leading + n_holes:] if "Notes" in p]
+    assert notes, "no notes panel in the deck"
+    assert f"Notes {config.HOLE_NUMS[0]}-{config.HOLE_NUMS[-1]}" in notes[0], (
+        f"the notes heading does not name every hole in the book -- the app shipped 'Notes 1-9' over "
+        f"eighteen holes for exactly this reason. Got: {re.findall(r'Notes[^<]*', notes[0])[:2]}")
 
 
 @needs_corpus                    # render_hole imports config, which needs a bound course to import

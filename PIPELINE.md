@@ -72,7 +72,7 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    the printed book still showed a 40% slope label the code had already stopped emitting. The tool
    records a hash of the source HTML beside each PDF so `--check` can prove they match.
 8. **Verify (never skip).** Eyeball each green (golf-plausible slope % and feed
-   direction; near-flat greens flagged "subtle"), confirm hole layouts match
+   direction; near-flat greens marked "(faint)"), confirm hole layouts match
    satellite, and that yardages equal the scorecard.
 
 ## Data sources & licences (keep us clean)

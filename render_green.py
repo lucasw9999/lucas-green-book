@@ -112,10 +112,29 @@ def play_line_span(rp):
         x1, y1 = rp[i]; x2, y2 = rp[(i+1) % n]
         if (x1 > midx) != (x2 > midx):
             ys.append(y1 + (y2-y1)*(midx-x1)/(x2-x1))
-    if len(ys) < 2:                       # degenerate ring: fall back to the box rather than crash
-        rys = [q[1] for q in rp]
-        return max(rys), min(rys), midx
-    return max(ys), min(ys), midx         # approach edge is at the bottom, so front = max
+    if len(ys) < 2:
+        # Provably unreachable for any real green: ys counts state transitions of (x > midx) around a
+        # closed ring, so its length is exactly even, and midx lies strictly between min and max
+        # whenever they differ -- so there is at least one transition. The only trigger is a ring with
+        # zero lateral extent after rotation, which is not a polygon. Raise rather than fall back to the
+        # bounding box: the box is the very measure this function exists to replace, and returning it
+        # silently would print a depth that is wrong in exactly the way the card claims to have fixed.
+        raise ValueError("green ring has no lateral extent in the approach frame; cannot measure depth")
+    # PAIRS, not extremes. max(ys), min(ys) was the same min/max-of-crossings pattern that this commit
+    # replaced 40 lines below in xspans(), where it drew a ladder rung straight across a concavity.
+    # A green bitten on one side crosses the play line four times, and taking the extremes would report
+    # the notch as green: on a synthetic bite 33% of the printed span was outside the outline, and the
+    # pin ring -- drawn at the middle of this span -- landed outside its own green. No corpus green
+    # crosses more than twice today, but 55 of 198 already have a four-crossing band, the nearest just
+    # 3.12 yd from the play line on merion 9 where the interior gap is 21.3 yd. That is one OSM re-trace
+    # away, and midx itself is set by the two most extreme vertices -- precisely the ones a re-trace moves.
+    #
+    # Take the LONGEST interior run: the green's main body, which is what a player is aiming at and
+    # putting across. Identical to max/min on every green in the corpus.
+    ys.sort()
+    runs = [(ys[i+1] - ys[i], ys[i], ys[i+1]) for i in range(0, len(ys) - 1, 2)]
+    _len, lo, hi = max(runs)
+    return hi, lo, midx                   # approach edge is at the bottom, so front = max
 
 
 def depth_width_yd(meta):
@@ -286,10 +305,11 @@ def green_summary(arr, mask, px_x, px_y, putt=None):
     # confidence: is the dominant tilt above the LiDAR noise floor over the green?
     span_m = max(math.hypot(Xe.max()-Xe.min(), Yn.max()-Yn.min()), 1.0) if len(Xe) else 1.0
     rise_ft = tilt_pct/100.0*span_m*3.28084
-    # Tested against the UNROUNDED tilt, while the card prints it to one decimal. So six of 198 greens
-    # print "1.2%" -- three "(firm)", three "(subtle)" -- and a reader cannot see why: the difference is
-    # a true tilt of 1.24 against 1.16, plus the rise test, neither of which the card shows. 1.2% is the
-    # only printed value in the corpus that carries both words.
+    # Tested against the UNROUNDED tilt, while the card prints it to one decimal. When the card marked
+    # every green, that showed: six of 198 printed "1.2%", three of them "(firm)" and three "(subtle)",
+    # and a reader could not see why -- a true tilt of 1.24 against 1.16, plus the rise test, neither of
+    # which the card shows. Only the exception is marked now, so the ambiguity is confined to whether a
+    # 1.2% green carries "(faint)"; the reasoning below is unchanged.
     #
     # Do NOT "fix" that by comparing round(tilt_pct, 1) >= 1.2. It looks like consistency and is a
     # loosening: the effective floor becomes 1.15%, and this threshold exists because below it the plane

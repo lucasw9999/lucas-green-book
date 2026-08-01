@@ -111,13 +111,25 @@ def load_playing_surfaces():
     surfaces=[]
     for e in els:
         t=e.get('tags',{})
+        # WATER belongs here. The filter caught golf surfaces and buildings -- and it catches those
+        # perfectly, zero markers land on either across all 11 courses -- but not ponds, so canopy height
+        # measured over open water was drawn as trees. 615 of 68,884 shipped markers sit inside a mapped
+        # water polygon, 163 more than 5 m from the bank and 40 more than 10 m in; the worst is 22.0 m
+        # inside a pond on the-reserve 2, a card that draws that water in its own footer ("5B 2W") with
+        # 342 tree dots on top of it. A tree standing in a pond is the same defect class as the 1,107
+        # markers once drawn on roofs, 53 of them on Merion's clubhouse.
         is_surface = (t.get('golf') in ('fairway','green','tee','bunker')
-                      or t.get('building') not in (None, 'no'))
+                      or t.get('building') not in (None, 'no')
+                      or t.get('natural') == 'water'
+                      or t.get('landuse') in ('reservoir', 'basin'))
         if is_surface and e.get('geometry'):
             poly=[(p['lon'],p['lat']) for p in e['geometry']]
             xs=[c[0] for c in poly]; ys=[c[1] for c in poly]
             # building='no' means NOT a building -- must not be treated as a surface at all
-            kind='building' if t.get('building') not in (None,'no') else 'golf'
+            kind = ('building' if t.get('building') not in (None,'no')
+                    else 'water' if (t.get('natural') == 'water'
+                                     or t.get('landuse') in ('reservoir','basin'))
+                    else 'golf')
             surfaces.append((min(xs),min(ys),max(xs),max(ys),poly,kind))
     return surfaces
 
