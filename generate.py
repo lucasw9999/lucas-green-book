@@ -233,8 +233,15 @@ def elev_phrase(hole):
 
     The MEASUREMENT, never a "plays like +12 yd". Turning elevation into an effective yardage needs a
     ball-flight model LiDAR cannot supply, and a printed "plays" figure would be the confident-but-
-    unsupported number this book exists not to print. Under 3 ft is inside what a tee box's own
-    contour justifies, so it reads as level rather than as a precise small number."""
+    unsupported number this book exists not to print.
+
+    Under 3 ft reads as level rather than as a precise small number, and that floor is MEASURED, not
+    just argued. tools/verify_elevation.py compares every recorded height against the 3DEP seamless
+    DEM -- a different product, delivered in metres, fetched over the network rather than read off
+    disk -- and across 177 holes the two disagree by a median 0.80 ft and a worst 1.77 ft. So a
+    printed "green 2 ft above" would sit inside the gap between two honest sources; 3 ft is about
+    1.7x the worst of them. 26 of the 177 holes fall in the 2-4 ft band where that gap decides whether
+    anything prints at all, which is exactly why the floor cannot be lowered to look more precise."""
     ft = HOLE_ELEV.get(hole)
     if ft is None or abs(ft) < 3:
         return ""

@@ -19,6 +19,19 @@ the network rather than read off disk. It agrees with the corrected figures to a
 across the courses measured, and it disagreed with the buggy ones by hundreds of feet. So it separates
 the two cases decisively.
 
+The residual disagreement is ONE-SIDED. The note at TOL_FT has said so since the unit fault was fixed
+-- a 1 m raster smooths a raised tee pad down, measured -1.6 ft at monarch-bay's tees, so residuals
+cluster a foot or two positive -- but only |diff| was ever REPORTED, so no run could confirm it held.
+Measured across the whole corpus it does: the DEM reads the green 0.80 ft higher relative to the tee
+than we do (median; mean +0.96), positive on 151 of 177 holes and significant on 9 of the 11 courses.
+The run now prints the signed bias for that reason. It is evidence about the REFERENCE, not a fault in
+the figures being checked, which is why a NEGATIVE bias would be the interesting result -- and it would
+have been invisible.
+
+That spread is also what justifies the card's 3 ft floor: below it, two honest sources disagree by
+enough that a printed "green 2 ft above" would be inside the gap between them (see elev_phrase in
+generate.py).
+
 It is a TOOL, not a unit test, because it needs the network. Run it when a course is added or the
 elevation code changes.
 
@@ -122,7 +135,7 @@ def check_course(slug):
     holes = geo.hole_lines(els, _loc.get("lat"), _loc.get("lon"))
 
     print(f"{slug}  (independent check against the 3DEP seamless DEM, tolerance {TOL_FT:g} ft)")
-    diffs, unreachable = [], 0
+    diffs, signed, unreachable = [], [], 0
     for hn in sorted(int(k) for k in rec):
         if hn not in holes:
             continue
@@ -144,6 +157,7 @@ def check_course(slug):
         d = indep_ft - ours_ft
         diffs.append((abs(d), hn, ours_ft, indep_ft))
         flag = "" if abs(d) <= TOL_FT else "   <== DISAGREES"
+        signed.append(indep_ft - ours_ft)
         print(f"  hole {hn:2d}: ours {ours_ft:+7.1f} ft   DEM {indep_ft:+7.1f} ft   "
               f"diff {d:+6.1f}{flag}")
     if not diffs:
@@ -155,6 +169,25 @@ def check_course(slug):
     bad = [d for d in diffs if d[0] > TOL_FT]
     print(f"  => {len(diffs)} holes checked, median |diff| {med:.2f} ft, worst {worst:.2f} ft "
           f"(hole {worst_hn}){', ' + str(unreachable) + ' unreachable' if unreachable else ''}")
+    # Report the SIGNED bias too. "Small" and "unbiased" are different claims, and reporting only
+    # |diff| hid a systematic: the DEM reads the green ~0.8 ft higher relative to the tee than we do,
+    # on 151 of 177 holes corpus-wide. That direction is expected of a coarser reference -- a 1 m
+    # raster smooths a raised tee pad toward the ground around it, so it under-reads the tee -- so it
+    # says something about the REFERENCE, not about the figures being checked. A run that came out
+    # NEGATIVE would be the anomaly worth chasing, and it was invisible before.
+    if signed:
+        pos = sum(1 for v in signed if v > 0)
+        sm = float(np.median(signed))
+        # Three outcomes, and only one is interesting. A positive bias is expected (the coarser
+        # reference under-reads a raised tee). NO bias is unremarkable -- copper-valley sits at
+        # -0.01 ft with 9 of 18 positive, and flagging that as "negative" was this line's first bug.
+        # A genuinely REVERSED bias would mean the DEM reads the tee higher than the point cloud,
+        # which no resolution argument explains, so that is what earns a mark.
+        tag = ("" if sm >= -0.5 else
+               "  <== REVERSED bias: the DEM reads the tee HIGHER than the point cloud, which "
+               "resolution does not explain; see the module docstring")
+        print(f"     signed bias (DEM - ours): median {sm:+.2f} ft, "
+              f"mean {float(np.mean(signed)):+.2f}, positive on {pos} of {len(signed)}{tag}")
     if bad:
         print(f"  !! {len(bad)} hole(s) disagree by more than {TOL_FT:g} ft. A difference this size is\n"
               f"     not terrain: check the vertical unit (only the raw LAZ tee height takes the CRS\n"
