@@ -127,8 +127,8 @@ def uncovered_holes(course_dir, boxes=None, els=None):
     The greens check alone is not enough. At Castlewood Hill it flagged holes 14 and 16 but not 15
     and 17, whose centrelines also run through the same gap -- and the centreline is where
     fetch_trees.py looks for canopy returns, so those holes silently lose their trees too. Measured
-    across the corpus: 9 of 11 courses have every centreline node inside the data; Castlewood Hill
-    has 5 of 52 outside (holes 14, 15, 16, 17) and Monarch Bay 5 of 52 (holes 1, 17, 18, which are
+    across the corpus: 10 of 11 courses have every centreline node inside the data; Castlewood Hill
+    had 5 of 52 outside (holes 14, 15, 16, 17) until its missing tile copy arrived and is now 0 of 52; Monarch Bay has 5 of 52 (holes 1, 17, 18, which are
     over the bay).
     """
     if els is None:

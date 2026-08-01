@@ -110,8 +110,8 @@ impossible; the shuffle is how you find out it still is.
 media and measures the drawn green there, rather than trusting the SVG's own attributes — a
 stylesheet can override those, which is exactly how 15 greens once printed over the legal scale
 while every attribute looked correct. It exits non‑zero if any green exceeds 3/8 in : 5 yd. (It also
-reports the printed 5‑yd bar length from the PDF, but that figure is informational and does not
-gate.) `tools/export_pdf.py --check` is the companion: it proves the PDF you would actually print
+measures the printed 5‑yd bar in the PDF, and **that figure gates too** &mdash; the Rule 4.3 claim is
+about the artifact a player carries, not the HTML it came from.) `tools/export_pdf.py --check` is the companion: it proves the PDF you would actually print
 came from the HTML on disk.
 
 **After adding a course, regenerate the two derived legal docs** — the test suite fails until you do,

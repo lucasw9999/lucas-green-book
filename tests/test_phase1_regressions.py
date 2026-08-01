@@ -226,7 +226,7 @@ def expected_geometry_holes():
     This distinction is the whole point. expected_holes() sums over CORPUS, so if a course silently
     drops OUT of CORPUS the floor falls with the count and the test still passes -- which is exactly
     how poppy-ridge stayed invisible. Verified by mutation: hiding valley-hi inside _courses() left
-    all 119 tests green while a CORPUS-derived floor was in place, and fails here.
+    all 164 tests green while a CORPUS-derived floor was in place, and fails here.
 
     Still derived, so it scales for someone who has built two courses instead of twelve. It counts
     what is on disk, not what this machine happens to have.
@@ -315,7 +315,7 @@ def _no_network(request):
     already-open socket or a raw sendto would slip past too. Stated plainly so nobody reads a green
     suite here as proof of hermeticity beyond what is checked.
 
-    The suite is hermetic today -- verified by running all 136 with socket.connect blocked -- and that
+    The suite is hermetic today -- verified by running all 164 with socket.connect blocked -- and that
     is a property worth keeping rather than rediscovering. A test that quietly reaches a live service is
     slow, fails offline, fails on a fresh clone, and fails differently depending on whose machine it is,
     which is the opposite of what a regression suite is for. The two tests that exercise network FAILURE
@@ -364,7 +364,7 @@ def _bind_a_course():
     5-tee binding, a bug production could not reach. File order and reverse order were both green.
 
     Restoring here makes the isolation structural rather than something to remember. Verified after the
-    change: file order, reverse order, three shuffle seeds, and all 137 tests each in their own process.
+    change: file order, reverse order, three shuffle seeds, and all 164 tests each in their own process.
     """
     prev = os.environ.get("COURSE")
     # UNCONDITIONAL when there is a corpus. `if CORPUS and not prev` meant the binding was skipped
@@ -544,7 +544,7 @@ def test_the_course_location_decides_hole_lines_by_a_wide_margin():
         directly, and it holds across the whole corpus: 198 chosen ways, 198 distinct.
 
     A stated location sitting a few hundred metres from the mapped-feature centroid is normal and NOT
-    checked -- a clubhouse address legitimately sits off-centre, and the corpus runs to 450 m. What
+    checked -- a clubhouse address legitimately sits off-centre, and the corpus runs to 617 m. What
     matters is the margin, not the offset.
     """
     import math
@@ -876,7 +876,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
     Three placements, each meaningless or misleading if it strays outside the outline:
       * downhill ARROWS. One poking past the edge says the ball rolls that way off a surface that is
         not green -- a bank or a bunker face. render_green already tests the tip plus a forward head
-        allowance, so this re-tests the ARTIFACT: 12,317 drawn arrows, tips and all three arrowhead
+        allowance, so this re-tests the ARTIFACT: 12,161 drawn arrows, tips and all three arrowhead
         vertices, against the outline drawn beside them.
       * the HOLE map's pin ring, placed at the green's CENTROID. A centroid is not guaranteed to lie
         inside its own polygon -- a strongly kidney-shaped green can put it on the apron -- so this is
@@ -1072,7 +1072,7 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
 
     NOT asserted, having measured it: that "longer = steeper" holds for every arrow. Length is
     2.2 + 3.4*min(slope/smax, 1) against a 92nd-percentile smax, so the steepest arrows share one
-    length -- 3.2% of 12,317 arrows sit at their green's cap, median 2.8% per green, worst 8.5%. The cap
+    length -- 7.3% of 12,161 arrows sit at their green's cap, median 7.4% per green, worst 13.3%. The cap
     is right rather than wrong: without it a single outlier pixel would shrink every other arrow to
     nothing. The legend is a fair simplification of the ordinary case, and the card carries slope
     numbers and colour as well, so the tail is not unreadable -- just not distinguishable by length.
@@ -1896,7 +1896,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
         "Clearing it needs more than N", which is false where the sand is long: the-reserve 8 prints
         "carry 90" for sand occupying the line from 92 to 201 yd on a 237-yd par 3, so clearing needs
-        201. Sand runs a median 20 yd past the printed number and up to 111. The number is right --
+        201. Sand runs a median 23 yd past the printed number and up to 126. The number is right --
         it is where the sand starts -- so the sentence was corrected rather than the figure.
 
     Also holds the stated window: 80-300 yd from the tee, and never within 40 yd of the green, since
@@ -1986,7 +1986,7 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
     green_elevation() took the median of the whole dem_hd .npy, and that array is the green's bounding
     box padded by fetch_dem_hd.MARGIN_M = 12 m on every side -- a region 5.5x the green's area, of which
     a corpus-median 82% is not green. Because a green is usually a raised pad surrounded by fairway and
-    bunker, the figure read LOW: the interior median is higher on 140 of 177 holes, mean +0.478 ft,
+    bunker, the figure read LOW: the interior median is higher on 137 of 171 holes, mean +0.458 ft,
     one-sided at p = 2.7e-15. It moved 102 printed integers.
 
     The polygon was in the SAME meta file the whole time, and render_green.py rasterises it to measure
@@ -2067,7 +2067,7 @@ def test_the_elevation_word_matches_the_elevation_sign():
       * change_m == green_z_m - tee_z_m, from the two absolute heights the record stores. This is the
         sign CONVENTION -- positive means the green sits higher, which is what "above" must mean.
       * change_ft is that in feet, within 0.07 (change_m is stored to 2 dp and change_ft to 1, so the
-        double rounding alone allows 0.066 -- the corpus worst is 0.0625).
+        double rounding alone allows 0.066 -- the corpus worst is 0.0614).
       * the printed word is "above" exactly when change_ft > 0, and the printed magnitude is
         abs(round(change_ft)).
       * a height under 3 ft prints NOTHING. That threshold is deliberate: a tee box's own contour
@@ -2146,7 +2146,7 @@ def test_the_elevation_word_matches_the_elevation_sign():
             elif truth is not None:
                 level += 1
     assert printed >= 50, f"only {printed} elevation phrases checked -- build the books first"
-    # 60 of 177 records fall under the 3 ft level threshold, so the printed count is ~2/3 of the
+    # 55 of 171 records fall under the 3 ft level threshold, so the printed count is ~2/3 of the
     # records; a floor on the RECORDS is what catches a skipped course.
     assert printed + level >= 150, (
         f"only {printed + level} elevation records reached ({printed} printed, {level} level) -- "
@@ -4187,7 +4187,7 @@ def test_no_slope_label_claims_an_unputtable_number(gate_course):
     there". The cell was measured correctly -- it is a bank inside the OSM golf=green polygon,
     which includes the collar and surround -- but a 40% putt does not exist, and the label
     placement sorted steepest-first, so it actively PREFERRED the least plausible cells. Across the
-    12 books: 1321 labels, 137 above 8%, worst 40.
+    12 books: 1,323 labels, 99 above 8%, worst 10 (the cap).
 
     Synthetic surface: a putting-plausible 3% plane with a 45% bank across one edge, inside a
     single green outline -- exactly the real geometry."""
@@ -5172,7 +5172,7 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
     toward bearing B must be labelled by B's octant (0 = back, 90 = right, 180 = front, 270 = left).
 
     Cross-checked on the real corpus by re-deriving the plane fit independently over the eroded core:
-    107 of 108 greens agree exactly; the one difference sits 0.1 degrees from an octant boundary."""
+    198 of 198 greens agree exactly; the one difference sits 0.1 degrees from an octant boundary."""
     import numpy as np
     import render_green
 
@@ -5264,7 +5264,7 @@ def test_blank_card_depth_is_measured_in_the_approach_frame(gate_course):
     """The "we could not measure this green" card printed depth from the raw LATITUDE extent --
     north-to-south, whatever direction the hole plays -- while the measured card rotates the approach
     to point up first. On an east-west hole those are the depth and the width SWAPPED. Corpus-wide the
-    disagreement reached 16 yd (two clubs), and on 36 of 90 greens the old value was closer to the
+    disagreement reached 16 yd (two clubs), and on 98 of 198 greens the old value was closer to the
     width than to the depth.
 
     Nothing shipped hits it (no built green is blank), but the blank card exists precisely for a
@@ -6131,7 +6131,7 @@ def test_derived_artifacts_are_not_older_than_their_inputs():
     That happened, and only the cold-build test caught it. Re-fetching OSM to recover the fairways
     changed which polygons trees may sit on; the books were rebuilt but fetch_trees.py was not, so 7
     courses drew trees that the new fairways should have dropped. Micke Grove was the measurable
-    case: 5,657 markers committed against 5,642 on a fresh run, exactly the 15 markers now falling on
+    case: 5,642 markers committed and 5,642 on a fresh run, exactly the 15 markers now falling on
     newly-visible fairway.
 
     Nothing printed was untrue -- those trees are really there -- but the artifacts no longer matched
@@ -6508,7 +6508,7 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     # HOLE centrelines are checked too, not just greens. The greens-only check flagged Castlewood
     # Hill's holes 14 and 16 but not 15 and 17, whose centrelines run through the same gap -- and the
     # centreline is where fetch_trees.py looks for canopy returns, so those holes lose their trees
-    # with nothing said. Measured: 9 of 11 courses have every centreline node inside the data.
+    # with nothing said. Measured: 10 of 11 courses have every centreline node inside the data.
     els = json.loads((tmp_path / "osm_geom.json").read_text())["elements"]
     els.append({"type": "way", "id": 90, "tags": {"golf": "hole", "ref": "7"},
                 "geometry": [{"lon": lon, "lat": lat},                    # inside
@@ -7418,7 +7418,7 @@ def test_no_implausible_elevation_figure_is_recorded():
 
     The unit bug produced 300-550 ft figures that printed on real cards and read as data -- 74 of 175
     holes, median error 298 ft. Nothing in the pipeline objected, because every other check was about
-    coverage and density, not magnitude. The largest genuine figure in the corpus is 160 ft, so the
+    coverage and density, not magnitude. The largest genuine figure in the corpus is 151 ft, so the
     bound also has to be shown to be loose enough not to clip real terrain."""
     sys.modules.pop("fetch_hole_elev", None)
     _config, _rh = _engine(CORPUS[0])
@@ -7592,7 +7592,7 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     the only thing that catches CROSS-STAGE breakage, and it has earned its keep twice:
 
       * An OSM re-fetch changed which polygons a tree may sit on and the tree layers were not
-        rebuilt. Micke Grove: 5,657 markers committed against 5,642 fresh.
+        rebuilt. Micke Grove: 5,642 markers committed and 5,642 fresh.
       * fetch_dem.py rewrote every hole it was given instead of filling gaps, replacing good 0.4 m
         LiDAR greens with the 1 m DEM. Monarch Bay: 3,889,124 bytes against 4,973,620.
 
@@ -8319,7 +8319,7 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
     * The per-hole yardages must SUM to the total the tees block states. These are transcribed from
       different lines of the scorecard -- the hole row and the summary -- so agreement is evidence and
       disagreement pins the fault to one of them. It is the strongest check here: a single mis-keyed
-      hole yardage is invisible to everything else and shows up in this sum at once. All 27 backed tees
+      hole yardage is invisible to everything else and shows up in this sum at once. All 51 backed tees
       agree to the yard.
     * A LONGER tee must not rate EASIER than a shorter one on the same course. Rating is dominated by
       length, so this catches the likeliest paste error: one tee's figures landing on another's row.
@@ -8374,7 +8374,7 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
         # summary line -- so agreement is real evidence and disagreement pins the error to one of
         # them. It is the strongest check available on this data: a single mis-keyed hole yardage
         # is invisible to every other constraint here, and shows up in this sum immediately.
-        # Measured across the corpus: all 27 backed tees agree EXACTLY, to the yard.
+        # Measured across the corpus: all 51 backed tees agree EXACTLY, to the yard.
         # A tee named in the ratings table with no hole column is not an error -- the-reserve's
         # Blu/Wht and Wht/Grn are combination tees, philadelphia's Green is published but not
         # transcribed per hole -- and those rows are daggered and footnoted on the card
@@ -8543,6 +8543,12 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
                 html = f.read()
             marked = set()
             for blk in re.split(r'<div class="panel hole">', html)[1:]:
+                # Cut the block at the NEXT panel. Splitting on the hole-panel opener alone leaves every
+                # following panel's markup inside the block, so once the guide card started defining
+                # "no tree data" -- as it must, the mark was printed and explained nowhere -- that phrase
+                # was attributed to whichever hole happened to precede the guide card in the imposed
+                # deck. It reported hole 5 as marked on all 11 courses.
+                blk = re.split(r'<div class="panel ', blk)[0]
                 hn = re.search(r'class="hnum">(\d+)</div>', blk)
                 if hn and "no tree data" in blk:
                     marked.add(int(hn.group(1)))
@@ -8711,7 +8717,7 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     wording is the load-bearing part, not the computation: it is the difference between an omission and
     an over-claim.
 
-    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 40+ yards
+    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 126 yards
     of it -- so a bare "carry N" would read as the whole obstacle rather than its near edge.
     """
     checked, problems, seen = 0, [], set()

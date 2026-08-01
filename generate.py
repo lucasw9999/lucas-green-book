@@ -249,10 +249,10 @@ def elev_phrase(hole):
     just argued. tools/verify_elevation.py compares every recorded height against the 3DEP seamless
     DEM -- a different product, delivered in metres, fetched over the network rather than read off
     disk, and now sampled over the SAME regions this pipeline samples: the green polygon and the mapped
-    tee pad. Across 177 holes the two disagree by a median 0.10 ft, a mean 0.29 ft and a worst 3.10 ft;
-    the worst any single course medians is 0.64 ft. Six holes exceed 2 ft and one exceeds 3. So a
+    tee pad. Across 171 holes the two disagree by a median 0.09 ft, a mean 0.27 ft and a worst 3.14 ft;
+    the worst any single course medians is 0.57 ft. Five holes exceed 2 ft and one exceeds 3. So a
     printed "green 2 ft above" would still sit inside the spread between two honest sources on those
-    holes, and 23 of the 177 fall in the 2-4 ft band where that spread decides whether anything prints
+    holes, and 22 of the 171 fall in the 2-4 ft band where that spread decides whether anything prints
     at all -- which is why the floor is not lowered to look more precise.
 
     (Those figures were a median 0.80 ft and a worst 4.92 ft until both ends of the measurement were
@@ -473,6 +473,31 @@ def _naip_line():
             'mapping reference for this course.')
 
 
+def _hole_runs(nums):
+    """"10&ndash;18" for a contiguous run, "1, 9, 10&ndash;12" for a mixed list.
+
+    Spelling every hole out cost LINES on the one card that has none to spare. Philadelphia's
+    pre-rebuild caveat read "Holes 10, 11, 12, 13, 14, 15, 16, 17, 18" -- 168 rendered characters over
+    three lines -- and that book's guide card had 1.19 px of clearance left in the pocket edition and
+    9.63 px in the enlarged one, the tightest in the corpus. Collapsing the run to "Holes 10-18" is
+    139 characters over two, which measures at +10.5 px pocket and +12.1 px enlarged, loses nothing,
+    and turns the binding book back into an ordinary one.
+
+    En dash, not hyphen, to match the thumb-index tabs.
+    """
+    nums = sorted(set(int(n) for n in nums))
+    out, i = [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j+1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if j == i else
+                   f"{nums[i]}, {nums[j]}" if j == i + 1 else
+                   f"{nums[i]}&ndash;{nums[j]}")
+        i = j + 1
+    return ", ".join(out)
+
+
 def _flown_line():
     """One honest line naming WHEN the elevation under these greens was measured.
 
@@ -508,7 +533,7 @@ def _flown_line():
     # below records these caveats being added to end. The date sentence is now the only conditional part.
     stale = sorted(config.COURSE.get("greens_possibly_outdated", []))
     if stale:
-        holes = ", ".join(str(h) for h in stale)
+        holes = _hole_runs(stale)
         out += ('  <div class="legrow"><span><b>&#9888; Holes ' + esc(holes) + '</b>: '
                 '<b>rebuilt after</b> that survey, marked <b>&ldquo;pre-rebuild data&rdquo;</b> '
                 '&mdash; shapes and tiers may have changed. A guide only; trust your own '
@@ -520,7 +545,7 @@ def _flown_line():
     coarse = sorted(h for h, (_svg, summ) in GREENS.items()
                     if 'seamless' in str(summ.get('source', '')).lower())
     if coarse:
-        holes = ", ".join(str(h) for h in coarse)
+        holes = _hole_runs(coarse)
         out += ('  <div class="legrow"><span><b>Holes ' + esc(holes) + '</b> had no usable point '
                 'cloud (tree cover or water), so their greens come from the coarser <b>1 m</b> '
                 'national model, marked <b>&ldquo;1 m data&rdquo;</b>. The tilt is real, just less '
@@ -590,11 +615,11 @@ def guide_panel():
     not putting surface, so it is coloured but not numbered. <b>Grey numbers</b> = yd from the front edge
     <b>down the middle</b>. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
   <div class="legrow"><svg width="28" height="14"><path d="M2,11 Q9,3 26,6" stroke="#3c5a34" fill="none" stroke-width="0.9"/><path d="M2,13 Q11,7 26,11" stroke="#3c5a34" fill="none" stroke-width="0.9"/></svg>
-    <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep.</span></div>
+    <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep. Bar = 5&nbsp;yd.</span></div>
   <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="7" height="9" fill="rgb(120,190,120)"/><rect x="10" y="3" width="7" height="9" fill="rgb(232,224,120)"/><rect x="18" y="3" width="7" height="9" fill="rgb(210,90,70)"/></svg>
     <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%).
     <b>Print in colour</b> &mdash; the steepest ground is shown by colour alone, and bunkers otherwise
-    fade into the fairway.</span></div>
+    fade in. <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
@@ -1115,22 +1140,24 @@ def coach_green_card(hole):
 def coach_about_card():
     return '''<div class="panel guide">
   <div class="gtitle">Enlarged edition</div>
-  <div class="legrow"><span>An <b>enlarged</b> copy: each hole takes two big cards &mdash; the course
-    map, then the green on its <b>reverse</b>. Flip for the green; flip again for the next hole.</span></div>
+  <div class="legrow"><span>Each hole = <b>two big cards</b>: the course map, then the green on its
+    <b>reverse</b>.</span></div>
   <div class="legrow"><span><b>Arrows</b> point downhill (the way the ball rolls; longer = steeper).
-    <b>Contours</b> join equal height, <b>15&nbsp;cm each</b>. <b>Colour</b>: green flat &rarr; yellow
-    &rarr; red (&ge;5%). Small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
-  <div class="legrow"><span><b>Numbers</b> on a green = slope % there. Ground over <b>10%</b> is not
-    putting surface (a bank or bunker face inside the mapped edge): colour only, no number. <b>Print in
-    colour</b> &mdash; bunkers all but vanish in black &amp; white.</span></div>
-  <div class="legrow"><span><b>Left</b> = to green (straight), <b>right</b> = from the tee (walked)
-    &mdash; on a dogleg they do <b>not</b> add up.</span></div>
+    <b>Contours</b> join equal height, <b>15&nbsp;cm each</b>; <b>close = steep</b>. <b>Colour</b>: green
+    flat &rarr; yellow &rarr; red (&ge;5%). Small <b>N</b> = north. "feeds" = the low side putts run
+    toward.</span></div>
+  <div class="legrow"><span><b>Black numbers</b> = slope % there; over <b>10%</b> is bank or bunker face,
+    not putting surface: coloured, not numbered. <b>Grey numbers</b> = yd from the <b>front edge</b>, down
+    the middle. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to
+    green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add
+    up.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
   <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
     conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a
-    yardage adjustment. <b>carry N</b> = yd from the back tee to where fairway
-    sand starts; it can run past N.</span></div>
+    yardage adjustment. <b>carry N</b> = yd from the back tee to where fairway sand starts; it can run
+    past N. <b>Print in colour</b> &mdash; bunkers vanish in black &amp; white.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes, and the <b>carry</b>
@@ -1139,10 +1166,13 @@ def coach_about_card():
       slope, contours, arrows &amp; <b>elevation change</b> are computed by the maker from
       <b>public-domain USGS&nbsp;3DEP</b> LiDAR; par,
       yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. <b>No proprietary data, image, symbol
-      set, layout or trade dress of any commercial green-reading product was used, copied or referenced.</b>
+      set, layout or trade dress of any commercial green-reading product was used, copied, referenced or reverse-engineered.</b> Built <b>entirely from remote public data, without entering any club or course</b>.
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
       trademarks belong to their owners and identify the course only &mdash; contact the maker for removal.
-      Provided <b>as-is, no warranty</b>; maps show general tilt, not exact break &mdash; trust your own read.
+      Provided <b>free and as-is, with no warranty of any kind</b> (accuracy, fitness or rules
+      conformance): maps show general tilt &amp; tiers, not exact break, and may contain errors &mdash;
+      <b>use at your own risk and trust your own read</b>. To the fullest extent permitted by law the
+      maker is not liable for any loss, penalty or damage from use of this book.
       <b>lucasgreenbook.org</b> &middot; contact <b>info@lucasgreenbook.org</b>. &copy;&nbsp;2026 Lucas Wu &middot; Lucas Green Book&trade;. ''' + sharing_line() + '''</div>
   </div>
 </div>'''
@@ -1277,13 +1307,17 @@ def build_coach(coach_name=""):
      paid for the six caveats this card was missing, and for its About & legal block to stop
      overflowing: at 8pt it clipped the licence line, the warranty disclaimer and the contact
      address off two of the three enlarged books. 7.0 is the largest size the full card fits at. */
-  .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 7pt; line-height: 1.3; margin-bottom: 5px; }}
+  /* margin-bottom 3px, the pocket book's own value: this is row SPACING, not type size, so the 7pt
+     legend still reads at arm's length -- which is the whole reason this edition exists. It buys
+     the ~16px the restored trespass defence and liability cap need on the two tightest cards. A
+     defence that is not printed is worth nothing, however large the type it would have been set in. */
+  .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 7pt; line-height: 1.3; margin-bottom: 3px; }}
   .abt {{ margin-top: 4px; border-top: 1.2px solid #cdb96a; padding-top: 3px; }}
   .abthead {{ font-size: 8pt; font-weight: 800; color: #2b6a2b; margin-bottom: 1px; }}
   /* The legal block sat at 6.6pt against the pocket book's 5.15pt, and it ran OFF the card: its last
      lines were sliced through by the trim line, so a cut sheet lost them. This edition exists to make the
      MAPS and the LEGENDS readable for older eyes; enlarging the small print too is what did not fit.
-     5.9pt still beats the pocket book by 15% and leaves the card whole. */
+     5.75pt still beats the pocket book's 5.15pt by 12% and leaves the card whole. */
   .abtxt {{ font-size: 5.75pt; line-height: 1.22; color: #6b6b6b; text-align: justify; }}
   .dedic {{ align-items: center; text-align: center; justify-content: center; padding: 0.28in 0.3in; }}
   .dcrest {{ margin-bottom: 6px; line-height: 0; }}

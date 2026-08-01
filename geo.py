@@ -21,7 +21,7 @@ R_LAT = 111320.0                    # metres per degree of latitude (mean)
 # integers. Using the true meridian radius would shave that but would change every book's output for
 # no gain a golfer could act on -- so this is a deliberate, quantified approximation, not an
 # oversight. Re-measure before assuming it is still fine if tick radii ever exceed 300 yd (the error
-# grows with distance: 1.53 yd at 540 yd).
+# grows with distance: 1.55 yd at 534 yd).
 
 
 def mlon(lat):
@@ -181,8 +181,8 @@ def hole_lines(elements, course_lat, course_lon):
       * It is not deterministic. When two candidates tie on vertex count, max() returns whichever came
         first, i.e. whatever order Overpass happened to serialise. Verified: shuffling castlewood-valley
         hole 1's candidates flips the answer between two different ways.
-      * At Castlewood, two 18-hole courses share one OSM area, so EVERY Valley ref has a Hill way with
-        the same ref. Valley hole 1's two candidates both have 3 vertices, 513 m apart. So a re-fetch
+      * At Castlewood, two 18-hole courses share one OSM area, so a Valley ref can have a Hill way with
+        the same ref. Valley hole 1's two candidates both have 3 vertices, 604 m apart. So a re-fetch
         could silently put the HILL course's first hole -- its map, its green, its slope, its yardage
         ticks -- on a Valley card, with nothing to say so. Length is no help either: the way it must
         REJECT (425.8 yd) matches Valley's 429 card better than the right one (444.3 yd) does.

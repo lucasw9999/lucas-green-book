@@ -144,7 +144,7 @@ def depth_width_yd(meta):
     north-to-south, regardless of which way the hole plays; render() measures it after rotating the
     approach to point up. On a hole that plays east-west the two are the depth and the width
     swapped. Corpus-wide the disagreement ran to 18 yards -- two clubs -- with 32 greens off by more
-    than 30%, and callippe h6 printing 42 x 29 where the truth is 27 deep x 43 wide.
+    than 30%, and callippe h6 printing 42 x 29 where the truth is 22 deep x 43 wide.
 
     Nothing shipped hits it today (no built green is blank), but the whole point of the blank card is
     the case where a course has no usable LiDAR, and then it fires on all 18 holes at once."""
@@ -564,8 +564,12 @@ def render(hole, tournament=False):
         """The green's x-extent(s) at screen-y yy, as inside/outside PAIRS.
 
         This returned a single (min, max) span, which draws the rung straight across a concavity --
-        over ground the card's own outline excludes. copper-valley 4 has it: one of its six rungs
-        bridged a 7.0 yd gap outside the polygon, ruling a putting-depth reference across a notch.
+        over ground the card's own outline excludes. copper-valley 4 had it: one of its six rungs
+        bridged a 7.0 yd gap outside the polygon, ruling a putting-depth reference across a notch. That
+        instance is GONE -- moving the ladder's zero onto the line of play in the same commit shifted every
+        rung, and no green in the corpus now draws a multi-fragment rung. The guard is kept as the correct
+        way to draw one, not because a live case remains; do not go looking for copper-valley 4 and
+        conclude the code is wrong.
         Sorting the crossings and taking them two at a time draws only the parts that are green, and
         collapses to the old behaviour on the convex greens that are the vast majority.
         """

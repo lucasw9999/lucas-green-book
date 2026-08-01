@@ -22,7 +22,7 @@ the two cases decisively.
 The residual disagreement is ONE-SIDED. The note at TOL_FT has said so since the unit fault was fixed
 -- a 1 m raster smooths a raised tee pad down, measured -1.6 ft at monarch-bay's tees, so residuals
 cluster a foot or two positive -- but only |diff| was ever REPORTED, so no run could confirm it held.
-Measured across the whole corpus it does: the DEM reads the green 0.80 ft higher relative to the tee
+Measured across the whole corpus it does: the DEM used to read the green 0.80 ft higher relative to the tee
 than we do (median; mean +0.96), positive on 151 of 177 holes and significant on 9 of the 11 courses.
 The run now prints the signed bias for that reason. It is evidence about the REFERENCE, not a fault in
 the figures being checked, which is why a NEGATIVE bias would be the interesting result -- and it would

@@ -68,14 +68,14 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # 2.5 ft, tied to the thing it protects: the card suppresses any height under 3 ft as level, so a pad
 # whose own sampled ground spans MORE than that cannot anchor a figure quoted to the nearest foot --
 # the datum would be ambiguous by more than the smallest quantity the book is willing to print. Costs
-# 6 of 177 holes their printed height (bay-view 1, castlewood-hill 2, merion 2, philadelphia 1,
-# valley-hi 1). Printing nothing is the honest outcome for those.
+# 6 of 177 holes their printed height (bay-view h3, castlewood-hill h9 and h18,
+# merion h1 and h11, philadelphia h18). Printing nothing is the honest outcome for those.
 MAX_TEE_RELIEF_FT = 2.5   # p5-p95 spread of the ring sample; a tee is level or it is not a tee
 MIN_RING_PTS = 30         # and enough points for that spread to mean anything
 GROUND = 2              # LAS classification for bare earth
 R_LAT = 111320.0        # metres per degree of latitude
 # A tee-to-green change beyond this is not a golf hole, it is a units or datum fault. The largest real
-# figure in the corpus is 160 ft (castlewood-hill 18, a genuinely hilly Pleasanton course), so this
+# figure in the corpus is 151 ft (castlewood-hill 7, a genuinely hilly Pleasanton course), so this
 # leaves better than half again of headroom. It exists because the unit bug this file once had produced
 # 300-550 ft figures that printed on real cards and looked like data: a plausibility bound is the one
 # check that would have stopped them at the source instead of needing a reader to notice.

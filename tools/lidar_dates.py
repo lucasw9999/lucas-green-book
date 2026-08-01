@@ -277,7 +277,7 @@ def main():
     # Date the points that actually built the green surfaces, not whole tiles. The tile set is
     # chosen by bbox overlap with the whole course, so it routinely includes neighbours that cover no
     # green at all -- and the union over whole tiles then widens the range the book prints. Measured
-    # at The Reserve: t390135.laz spans 2017-12-16..2018-01-21 and has NO point within 60 m of any
+    # at The Reserve: t390135.laz spans 2017-12-16..2018-01-21 and has NO point within GREEN_PAD_M (30 m) of any
     # green (its nearest green is 1336 m from its earliest point, 1382 m from its latest), while the
     # three tiles that do feed greens span only 2017-12-16..2017-12-17. The book printed "flown
     # 2017-12-15 to 2018-01-21" -- 38 days -- for greens flown on two.

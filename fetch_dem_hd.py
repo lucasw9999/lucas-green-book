@@ -7,7 +7,7 @@
 High-resolution green surfaces from RAW LiDAR ground returns.
 
 Upgrade over fetch_dem.py (which used the gridded 1 m DEM): here we read the
-course's USGS 3DEP point cloud (typically 9-33 pts/m^2 over a green),
+course's USGS 3DEP point cloud (4.7-27.9 pts/m^2 over a green in this corpus),
 keep ONLY ground-classified points (class 2), and interpolate a 0.4 m surface
 over each green — sampled on the same lat/lon grid render_green.py expects, so
 the renderer is unchanged. Output -> dem_hd/holeNN.{npy,json}.
@@ -120,7 +120,7 @@ def build_targets():
     greens=[e for e in geom if e.get('tags',{}).get('golf')=='green' and e.get('geometry')]
     # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,
     # first-wins on a tie -- the exact heuristic geo.hole_lines was written to replace after it
-    # flipped under element reordering on castlewood-valley (two candidates 513 m apart, both
+    # flipped under element reordering on castlewood-valley (two candidates 604 m apart, both
     # 3 vertices). Three fetch scripts still carried their own copy of it, so the tree corridors,
     # the green surfaces and the gap-fill DEM could each have been placed on a DIFFERENT line
     # from the one render_hole draws and fetch_hole_elev measures against. They all agreed on all

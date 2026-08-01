@@ -126,10 +126,10 @@ had to hold, and it holds with two orders of magnitude of margin.
    82% of which is not green, against a median over an axis-aligned box at the tee that a mapped tee
    covers about 13% of. Those two region errors pointed opposite ways and largely cancelled in the
    printed *change*, which is why neither was visible in it: correcting only the green end would have
-   shifted every height in the book by +0.47 ft. Corrected together they moved 102 of 177 printed
+   shifted every height in the book by +0.46 ft. Corrected together they moved 102 of the then-177 printed
    integers, made 6 heights appear and 2 disappear at the 3 ft floor, flipped no above/below word on
    any card that prints one, and took this tool's agreement with the independent DEM from a median
-   0.80 ft to 0.10 ft. Both passes come
+   0.80 ft to 0.09 ft. Both passes come
    from the same USGS program, sensor class and processing chain, so a *systematic* bias would be
    present in both and invisible to the comparisons above. Two kinds of systematic bias are worth
    separating, because only one of them stays open:
@@ -137,9 +137,9 @@ had to hold, and it holds with two orders of magnitude of margin.
      mixup. This IS bounded, by checking the *absolute* elevation of our surfaces against the 3DEP
      seamless DEM, a separately produced raster this project does not build — sampled over the **same
      green polygon** the pipeline measures, so the comparison is not dominated by a region mismatch.
-     Over all 177 measured holes on the 11 courses the two agree to a **worst per‑course median of
-     0.32 m and a worst single green of 0.81 m**; the printed tee‑to‑green *change* agrees to a
-     **median 0.10 ft, worst 3.10 ft**. A US‑survey‑foot cloud
+     Over all 171 measured holes on the 11 courses the two agree to a **worst per‑course median of
+     0.10 m and a worst single green of 0.35 m**; the printed tee‑to‑green *change* agrees to a
+     **median 0.09 ft, worst 3.14 ft**. A US‑survey‑foot cloud
      read as metres would show tens of metres; a geoid/ellipsoid confusion about 30 m in California.
      Neither is present. (This project has shipped a foot/metre fault before — it put 74 of 175 holes'
      elevations out by a median 298 ft — so the check is not hypothetical.)
@@ -153,7 +153,7 @@ had to hold, and it holds with two orders of magnitude of margin.
 2. **It validates the dominant plane and the surface the contours follow, not every feature.** Tilt,
    aim, the `clear`/`faint` qualifier and the 15 cm interval are what were compared. It does not establish
    that any individual arrow on a faint-fall green points the right way — and one green, micke‑grove 2, is
-   flat enough that the plane and its own arrows disagree by 177°, so the card names no direction there
+   flat enough that the plane and its own arrows disagree by 179.5°, so the card names no direction there
    at all.
 3. **n = 33 greens on 5 courses, one LiDAR program.** Four of the five course pairs are days apart and
    leaf‑off winter or summer; only Philadelphia spans a season.

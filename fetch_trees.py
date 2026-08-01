@@ -113,10 +113,10 @@ def load_playing_surfaces():
         t=e.get('tags',{})
         # WATER belongs here. The filter caught golf surfaces and buildings -- and it catches those
         # perfectly, zero markers land on either across all 11 courses -- but not ponds, so canopy height
-        # measured over open water was drawn as trees. 615 of 68,884 shipped markers sit inside a mapped
-        # water polygon, 163 more than 5 m from the bank and 40 more than 10 m in; the worst is 22.0 m
+        # measured over open water was drawn as trees. 535 of 68,884 shipped markers sat inside a mapped
+        # water polygon, 151 more than 5 m from the bank and 40 more than 10 m in; the worst is 22.0 m
         # inside a pond on the-reserve 2, a card that draws that water in its own footer ("5B 2W") with
-        # 342 tree dots on top of it. A tree standing in a pond is the same defect class as the 1,107
+        # 339 tree dots on top of it. A tree standing in a pond is the same defect class as the 1,107
         # markers once drawn on roofs, 53 of them on Merion's clubhouse.
         is_surface = (t.get('golf') in ('fairway','green','tee','bunker')
                       or t.get('building') not in (None, 'no')
@@ -171,7 +171,7 @@ def main():
     # hole centrelines as UTM segment lists.
     # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,
     # first-wins on a tie -- the exact heuristic geo.hole_lines was written to replace after it
-    # flipped under element reordering on castlewood-valley (two candidates 513 m apart, both
+    # flipped under element reordering on castlewood-valley (two candidates 604 m apart, both
     # 3 vertices). Three fetch scripts still carried their own copy of it, so the tree corridors,
     # the green surfaces and the gap-fill DEM could each have been placed on a DIFFERENT line
     # from the one render_hole draws and fetch_hole_elev measures against. They all agreed on all
