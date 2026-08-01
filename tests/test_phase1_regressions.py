@@ -5564,8 +5564,13 @@ def test_the_density_and_coverage_gate_measures_the_green_itself():
 @needs_corpus
 def test_every_built_green_records_its_coverage():
     """The gate's inputs must be recorded in the meta, so a printed read can be audited after the
-    fact rather than taken on trust. Measured across the corpus: worst uncovered share 0.9%, worst
-    in-green density 4.7 pts/m^2 against a 4.0 floor."""
+    fact rather than taken on trust.
+
+    Across the corpus the worst uncovered share stays under 1% against the 2% gate, and the worst
+    in-green density above 4.5 pts/m^2 against the 4.0 floor. Deliberately bounds rather than exact
+    figures: the exact worst shifts whenever a course is added or re-fetched, and both this docstring
+    and fetch_dem_hd.py's comment had drifted to 0.9%/0.87% against an actual 0.71%.
+    """
     import json as _json
     checked = 0
     worst_unc = 0.0
@@ -7256,10 +7261,11 @@ def test_tee_anchor_locates_the_back_tee_or_refuses():
       itself and printed an elevation change of about zero -- plausible-looking, not obviously wrong.
       No course exercises this, so the reversed line is built here explicitly.
 
-    * The mapped line stops short of the back tee on 22 of 198 holes, by up to 138 yd. Sampling there
+    * The mapped line stops short of the back tee on 19 of 198 holes, by up to 103 yd. Sampling there
       measures the fairway. A straight par 3 is recoverable by collinearity; a par 4/5 is not and must
       refuse. Merion 9 moved 11.5 ft (23.0 -> 34.5 ft below) once measured at the real tee, so this is
-      not a rounding concern."""
+      not a rounding concern. (Was 22 holes and 138 yd, before valley-hi 17's 220 yd stub was replaced
+      by its real 360 yd centreline -- see fetch_hole_elev.py, which carries the same figures.)"""
     for m in ("config", "render_hole", "fetch_hole_elev"):
         sys.modules.pop(m, None)
     os.environ["COURSE"] = "merion-golf-club"
@@ -7768,3 +7774,73 @@ def test_the_tree_finder_does_not_filter_on_a_vegetation_class():
     assert "class 5" not in doc or "NOT" in doc, (
         "fetch_trees.py's docstring claims a class-5 vegetation filter again; the code uses height "
         "above ground, and the two disagreeing is what sent this looking in the first place")
+
+
+@needs_corpus
+def test_the_geometry_counts_the_comments_quote_are_still_true():
+    """Comments quote measured corpus counts, and those counts go stale silently.
+
+    Two figures are cited repeatedly across the engine because so much behaviour turns on them: how
+    many mapped centrelines STOP SHORT of the back tee (the from-tee gutter number, the elevation
+    sampling point and the tick bound all branch on it) and how many OVERSHOOT it. They appear in
+    fetch_hole_elev.py, render_hole.py and several docstrings here.
+
+    They have gone stale twice. "22 of 198 holes, by up to 138 yd" survived in this file after
+    valley-hi 17's 220 yd stub was replaced by its real 360 yd centreline, which made the truth 19 and
+    103; and fetch_dem_hd.py quoted a worst uncovered share of 0.87% against an actual 0.71%. A stale
+    count is not harmless here -- it is the evidence a reader uses to judge whether a branch is worth
+    keeping, so an inflated one argues for defending a case that no longer exists.
+
+    Pinned as exact values on purpose. If a course is added or a centreline re-traced these SHOULD
+    fail, because that is the moment the comments need rewriting; the failure message says so.
+    """
+    SHORT, SHORT_YD, OVER, OVER_YD = 19, 103, 2, 36
+    short, over, total = [], [], 0
+    for slug in geometry_courses():
+        os.environ["COURSE"] = slug
+        os.environ["QUIET_TEE_CHECK"] = "1"
+        for m in ("config", "geo"):
+            sys.modules.pop(m, None)
+        import config
+        import geo
+        gp = os.path.join(ROOT, "courses", slug, "osm_geom.json")
+        if not os.path.exists(gp):
+            continue
+        with open(gp, encoding="utf-8") as f:
+            d = json.load(f)
+        loc = config.COURSE.get("location") or {}
+        lines = geo.hole_lines(d["elements"] if isinstance(d, dict) else d,
+                              loc.get("lat"), loc.get("lon"))
+        for hn, el in lines.items():
+            pts = [(p["lat"], p["lon"]) for p in el.get("geometry", [])]
+            row = config.COURSE["holes"].get(str(hn))
+            if not row or len(pts) < 2:
+                continue
+            card = row[config.BACK_I]
+            if not isinstance(card, int):
+                continue
+            total += 1
+            clat = sum(p[0] for p in pts)/len(pts)
+            ml = 111320.0*math.cos(math.radians(clat))
+            arc = sum(math.hypot((pts[i+1][1]-pts[i][1])*ml, (pts[i+1][0]-pts[i][0])*111320.0)
+                      for i in range(len(pts)-1))/0.9144
+            tol = max(15.0, 0.05*card)          # render_hole.py's own tee_ok tolerance
+            if arc < card - tol:
+                short.append((round(card-arc), slug, hn))
+            elif arc > card + tol:
+                over.append((round(arc-card), slug, hn))
+
+    assert total >= expected_geometry_holes() - 18, f"only {total} holes measured"
+    why = ("\n  These counts are quoted in fetch_hole_elev.py, render_hole.py and test docstrings. If "
+           "the change\n  was intentional (a course added, a centreline re-traced), update those "
+           "comments AND\n  these constants together -- do not just move the number here.")
+    assert len(short) == SHORT, (
+        f"{len(short)} holes stop short of the back tee, comments say {SHORT}: "
+        f"{sorted(short, reverse=True)[:4]}{why}")
+    assert max(short)[0] == SHORT_YD, (
+        f"worst shortfall is {max(short)[0]} yd, comments say {SHORT_YD} "
+        f"({max(short)[1]} h{max(short)[2]}){why}")
+    assert len(over) == OVER, (
+        f"{len(over)} holes overshoot the back tee, comments say {OVER}: {over}{why}")
+    assert max(over)[0] == OVER_YD, (
+        f"worst overshoot is {max(over)[0]} yd, comments say {OVER_YD}{why}")

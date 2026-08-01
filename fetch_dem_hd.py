@@ -201,8 +201,11 @@ def main():
         # counted as measured. A demo deleting the returns in a 6 m circle at each green centre (about
         # a quarter of a 450 m^2 green) still reported nan_frac=0.0000 and insufficient=False, while
         # changing 7 of 18 printed reads. So ALSO measure real coverage: every green node must have a
-        # ground return near it. (Measured on the built corpus: worst uncovered share is 0.87%, so no
-        # existing green is affected -- this closes a blind spot rather than reclassifying anything.)
+        # ground return near it. (Measured on the built corpus: the worst uncovered share sits under
+        # 1%, well inside the 2% gate, so no existing green is affected -- this closes a blind spot
+        # rather than reclassifying anything. Stated as a bound, not an exact figure: the exact worst
+        # moves whenever a course is added or re-fetched, and this comment carried a stale 0.87%
+        # against an actual 0.71% for exactly that reason.)
         if n_in:
             tree=cKDTree(pts)
             dist,_=tree.query(grid[inside], k=1)
