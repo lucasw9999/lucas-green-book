@@ -9974,6 +9974,8 @@ def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
             sys.modules.pop(m, None)
         import config
         import render_hole
+        _bp = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        shipped = open(_bp, encoding="utf-8").read() if os.path.isfile(_bp) else None
         seen[slug] += 1
         for h in sorted(config.HOLES, key=lambda x: int(x)):
             _svg, i = render_hole.render_hole(int(h), config.HOLES)
@@ -9981,6 +9983,24 @@ def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
             assert i["carry_origin_known"] == known, (
                 f"{slug} hole {h}: carry_origin_known={i['carry_origin_known']} but line_spans/fwd_tee/"
                 f"past_tee say {known} -- the exported flag has drifted from the condition")
+            # THE OBSERVABLE CONSEQUENCE, not the formula again. The assertion above restates
+            # render_hole's own expression verbatim, so it can only catch the exported flag drifting from
+            # it -- never a wrong origin, which is what the test is named for. What matters is what the
+            # CARD does: a hole whose origin nothing corroborates must print no carry, and it must print
+            # none in the shipped book too, not merely in this re-render. Checked against the artifact so
+            # a stale book cannot hide behind a correct engine.
+            if not known:
+                assert not i.get("carries"), (
+                    f"{slug} hole {h}: the engine produced carries {i.get('carries')} with no "
+                    f"corroborated origin -- the suppression at render_hole's origin gate did not fire")
+                if shipped is not None:
+                    blk = next((b for b in re.split(r'<div class="panel hole', shipped)[1:]
+                                if re.search(rf'class="hnum">{int(h)}</div>', b)), "")
+                    blk = re.split(r'<div class="panel ', blk)[0]
+                    assert "carry <b>" not in blk, (
+                        f"{slug} hole {h}: the SHIPPED card prints a carry although the geometry gives "
+                        f"no origin for it. The engine suppresses it, so this book predates that fix -- "
+                        f"rebuild, or a reader is being handed a number measured from nowhere.")
             if i.get("carries"):
                 if known:
                     with_origin += 1
