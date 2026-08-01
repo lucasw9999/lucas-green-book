@@ -8698,6 +8698,73 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
 
 
 @needs_corpus
+def test_every_enlarged_green_is_on_the_back_of_its_own_hole():
+    """The enlarged edition's whole promise is "the course map, then the green on its REVERSE".
+
+    Nothing checked the pairing. test_every_duplex_back_lands_behind_its_own_front verifies that leaf
+    L's back card sits geometrically behind its front, to 0.000 pt -- but geometry cannot say whether
+    the green on that back is the SAME HOLE's green. A deck that emitted hole 7's map and hole 8's
+    green on one leaf would pass every existing test: the imposition is right, the trim is right, the
+    mirror is right, and both cards individually carry correct numbers.
+
+    That failure mode is not hypothetical for this edition. It is built by a second code path from the
+    pocket book's (build_coach, not build_deck), one hole is TWO cards rather than one, and the two
+    editions have already drifted on the green honesty labels, the footer, the playline, the ODbL URL
+    and the upright-back rule. A junior reading a coach's book would be putting to the wrong green with
+    nothing on the page to say so -- the most serious thing this project could print, and the one thing
+    a per-card number check cannot see.
+
+    Measured on the deck rather than the imposed HTML: the deck IS the contract, and the imposition is
+    separately verified. All three enlarged books, 18 leaves each, correct today.
+    """
+    checked = collections.Counter()
+    for slug in CORPUS:
+        if not os.path.isfile(os.path.join(ROOT, "courses", slug, "greenbook_coach.html")):
+            continue
+        os.environ["COURSE"] = slug
+        for m in ("config", "geo", "render_green", "render_hole", "generate"):
+            sys.modules.pop(m, None)
+        import config
+        import generate
+
+        for h in config.HOLE_NUMS:
+            generate.GREENS[h] = generate.render_green.render(h, tournament=False)
+            generate.LAYOUTS[h] = generate.render_hole.render_hole(h, generate.HOLES, font_scale=2.0)
+        for h in config.HOLE_NUMS:
+            mp, gp = generate.coach_map_card(h), generate.coach_green_card(h)
+            m_hole = re.search(r'class="hnum">(\d+)</div>', mp)
+            g_hole = re.search(r'class="hnum">(\d+)</div>', gp)
+            assert m_hole and g_hole, f"{slug} hole {h}: a coach card carries no hole number"
+            assert int(m_hole.group(1)) == h, (
+                f"{slug}: the map card built for hole {h} prints hole {m_hole.group(1)}")
+            assert int(g_hole.group(1)) == h, (
+                f"{slug}: the GREEN card built for hole {h} prints hole {g_hole.group(1)} -- a coach "
+                f"would hand a junior the wrong green, and every geometric duplex check would still "
+                f"pass because the imposition is correct")
+            # and they must be the two SIDES of one leaf: map first, green second, nothing between
+            assert "HOLE" in mp and "GREEN" in gp, (
+                f"{slug} hole {h}: the map/green captions are swapped or missing, so the reader is told "
+                f"to flip for a green that is on the front")
+            # THE DRAWING, not just the label. Checking the printed hole number alone is not enough and
+            # I proved it: swapping coach_green_card to embed GREENS[hole+1] left the earlier version of
+            # this test green, because the number comes from `hole` while the surface comes from the
+            # dict -- so the card would have said "13" over hole 14's green. That is the exact failure
+            # this test exists for, so it has to compare the SURFACE.
+            assert generate.GREENS[h][0] in gp, (
+                f"{slug} hole {h}: the green card does not contain the surface rendered for hole {h}. "
+                f"It is drawing another hole's green under this hole's number -- a junior would putt to "
+                f"the wrong map, and the number on the card would not give it away.")
+            assert generate.LAYOUTS[h][0] in mp, (
+                f"{slug} hole {h}: the map card does not contain the layout rendered for hole {h}")
+            checked[slug] += 1
+    if not checked:
+        pytest.skip("no enlarged edition built (COURSE=<slug> COACH=1 python3 generate.py)")
+    assert sum(checked.values()) >= 36, (
+        f"only {sum(checked.values())} enlarged leaves checked across {len(checked)} book(s); the corpus "
+        f"ships three enlarged editions of 18 holes each")
+
+
+@needs_corpus
 def test_the_card_deck_has_exactly_one_implementation():
     """main() and the iOS reader must lay the deck out the same way, or the app shows the wrong hole.
 
