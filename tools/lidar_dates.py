@@ -132,10 +132,28 @@ class _Extremes:
         return lo[0], hi[0], lo[1], hi[1]
 
     def _resolve(self, inward):
-        """(value, n_dropped) for the first value in a run ordered FROM the extreme INWARD that is
-        not isolated from its neighbour, or None."""
-        for i in range(len(inward) - 1):
-            if abs(inward[i + 1] - inward[i]) <= MAX_ENDPOINT_GAP_S:
+        """(value, n_dropped) for the first value in a run ordered FROM the extreme INWARD that the
+        BULK supports, or None.
+
+        Support is measured across MAX_ISOLATED_VALUES + 1 positions, not against the single next
+        neighbour. Against the neighbour alone, TWO junk readings close to each other vouch for one
+        another and the endpoint is published with n_dropped = 0 and no message at all -- the gap test
+        is satisfied by the pair before it ever reaches the bulk. Reproduced end-to-end: two points of
+        merion 18TVK472428.laz's 127,832 green-covering returns (0.0016%) moved a 2024-12-17 flight to
+        "ACQUIRED: 2023-01-17 to 2024-12-17", and --write would have put that on every card and into
+        legal/03. Spacing sweep on the old rule: 1 s, 3599 s and 3600 s apart all published silently;
+        only 3601 s was caught. MAX_ISOLATED_VALUES was unreachable, so the only backstop left was the
+        730-day span check, which passes drags of 100, 365 and 700 days.
+
+        A cluster of up to MAX_ISOLATED_VALUES bad readings is now isolated from the bulk however
+        tightly it is packed, because the distance is measured past the whole cluster. Legitimately
+        sparse tiles are unaffected: the corpus's real endpoints have hundreds of returns within the
+        window, and every recorded label reproduces byte-identically under this rule.
+        """
+        n = len(inward)
+        for i in range(n - 1):
+            j = min(i + MAX_ISOLATED_VALUES + 1, n - 1)
+            if abs(inward[j] - inward[i]) <= MAX_ENDPOINT_GAP_S:
                 return float(inward[i]), i
             if i >= MAX_ISOLATED_VALUES:
                 return None
