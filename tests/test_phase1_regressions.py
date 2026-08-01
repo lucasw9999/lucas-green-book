@@ -245,6 +245,18 @@ def _code_only(src):
     return " ".join(out)
 
 
+def _elev_rows(slug):
+    """{hole: record} from a course's hole_elev.json, {} when the stage was not run."""
+    fp = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+    if not os.path.isfile(fp):
+        return {}
+    try:
+        with open(fp, encoding="utf-8") as fh:
+            return json.load(fh).get("holes") or {}
+    except Exception:
+        return {}
+
+
 def assert_no_course_skipped(seen, what, exempt=None):
     """Every course with geometry must have CONTRIBUTED something -- not merely been visited.
 
@@ -2209,7 +2221,14 @@ def test_the_elevation_word_matches_the_elevation_sign():
             if not hm:
                 continue
             hn = hm.group(1)
-            truth = rec.get(hn, {}).get("change_ft")
+            # the EXACT figure where the producer records it. Deriving truth from change_ft (0.1 ft)
+            # invented ties the measurement never had: castlewood-valley 7 measures 8.478 ft, is stored
+            # as 8.5, and this test then demanded the card print 9 -- enforcing a tie rule on a tie that
+            # is purely an artifact of the storage precision. The card prints 8, correctly.
+            _r = rec.get(hn, {})
+            truth = _r.get("change_ft_exact")
+            if truth is None:
+                truth = _r.get("change_ft")
             pm = re.search(r"green <b>(\d+) ft (above|below)</b>", blk)
             if pm:
                 printed += 1
@@ -2759,6 +2778,140 @@ def test_nothing_tracked_carries_a_work_identity_or_a_home_path():
                           "details:\n  " + "\n  ".join(sorted(set(problems))[:12]))
 
 
+def test_the_3_ft_elevation_floor_sees_the_measurement_not_a_display_value():
+    """The 3 ft floor was compared against a figure already rounded to 0.1 ft, so a hole measured at
+    2.956 ft was stored as 3.0 and printed "green 3 ft above" -- a number the floor exists to forbid.
+
+    Two cards were doing it: micke-grove 6 at +2.956 ft and the-reserve 10 at -2.952 ft. That floor is
+    not a style choice. generate.py argues at length that below 3 ft two honest sources -- this
+    pipeline and the 3DEP seamless DEM -- disagree by more than the figure itself, so printing one
+    would be the confident-but-unsupported number this book exists not to print.
+
+    The same double-round moved three other cards by a whole foot (castlewood-valley 7 printed 9 for
+    8.478, copper-valley 14 printed 44 for 43.470, copper-valley 17 printed 49 for 48.486), because
+    round(x, 1) pushed them onto a .5 that the display rounding then carried away from zero. 17 of 171
+    holes hold a stored value ending in .5, so a tenth of the corpus was exposed.
+
+    Fixed by recording change_ft_exact beside change_ft and gating on the exact value. Asserted here
+    against BOTH: no printed figure may come from a hole under the floor, and every printed figure
+    must match the unrounded measurement.
+    """
+    import math as _math
+    floor_ft, checked, problems = 3.0, 0, []
+    seen = collections.Counter()
+    for slug in CORPUS:
+        rec_path = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        if not (os.path.isfile(rec_path) and os.path.isfile(book)):
+            continue
+        with open(rec_path, encoding="utf-8") as fh:
+            holes = (json.load(fh).get("holes") or {})
+        with open(book, encoding="utf-8") as fh:
+            html = fh.read()
+        for hn, v in holes.items():
+            exact = v.get("change_ft_exact")
+            if exact is None:
+                continue               # record predates the exact field; the fallback path is tested below
+            checked += 1
+            seen[slug] += 1
+            want = ("" if abs(exact) < floor_ft
+                    else f'green <b>{_math.floor(abs(exact) + 0.5)} ft '
+                         f'{"above" if exact > 0 else "below"}</b>')
+            # what the book actually prints for this hole
+            blk = next((b for b in re.split(r'<div class="panel hole', html)[1:]
+                        if re.search(rf'class="hnum">{int(hn)}</div>', b)), "")
+            blk = re.split(r'<div class="panel ', blk)[0]
+            got = re.search(r"green <b>\d+ ft (?:above|below)</b>", blk)
+            got = got.group(0) if got else ""
+            if got != want:
+                problems.append(
+                    f"{slug} h{hn}: measured {exact:+.3f} ft, card prints {got or 'nothing'!r}, "
+                    f"expected {want or 'nothing'!r}")
+    if not checked:
+        pytest.skip("no course records change_ft_exact yet")
+
+    # ...and the ENGINE must agree, not only the shipped book. Comparing HTML alone catches a stale
+    # book but not a re-introduced gate bug: putting the threshold back on the rounded value left this
+    # green, because the books on disk were already correct. Re-render the phrase from the live engine
+    # for the two holes that sit within a rounding step of the floor, which is where the bug lived.
+    near = [(sl, hn, ex) for sl in CORPUS
+            for hn, ex in [(k, (v or {}).get("change_ft_exact"))
+                           for k, v in _elev_rows(sl).items()]
+            if ex is not None and 2.5 <= abs(ex) < 3.5]
+    assert near, "no hole sits near the 3 ft floor, so the gate cannot be exercised"
+    for slug, hn, exact in near:
+        os.environ["COURSE"] = slug
+        for m in ("config", "generate"):
+            sys.modules.pop(m, None)   # generate reads hole_elev.json at IMPORT time into HOLE_ELEV
+        import generate as _g
+        phrase = _g.elev_phrase(int(hn))
+        expect_blank = abs(exact) < 3.0
+        assert bool(phrase.strip()) != expect_blank, (
+            f"{slug} h{hn}: measured {exact:+.3f} ft and the engine "
+            f"{'printed' if phrase.strip() else 'suppressed'} it -- the 3 ft floor is being applied to "
+            f"a rounded display value, not to the measurement")
+    for m in ("config", "generate"):
+        sys.modules.pop(m, None)       # leave no rebound module for the next test
+    assert not problems, (
+        "printed elevation disagrees with the measurement, or breaches the 3 ft honesty floor:\n  "
+        + "\n  ".join(problems[:8]))
+    # No exemption for poppy-ridge: it has no geometry on disk, so geometry_courses() never names it
+    # and the guard already ignores it. An exemption for a course outside the checked set is itself a
+    # hazard -- it reads as covering something and covers nothing.
+    assert_no_course_skipped(
+        seen, "test_the_3_ft_elevation_floor_sees_the_measurement_not_a_display_value")
+
+
+def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
+    """The flight-date trimmer's reliability INVERTED with the size of the corruption: 8 junk readings
+    were trimmed with a warning, 9 were refused, and 10 published silently with n_dropped = 0.
+
+    Support was measured at a fixed offset of MAX_ISOLATED_VALUES + 1 positions, so a cluster LARGER
+    than that window vouched for ITSELF -- with 10 junk readings, position 0 found its supporter at
+    j = 9, still inside the junk and 0.09 s away. The walk then returned the extreme value and reported
+    nothing dropped, so neither the warning nor the refusal fired. A 100-point cluster published a date
+    two decades from the flight, and `--write` puts that label on EVERY card and into legal/03.
+
+    This is the third time this function has published a wrong date, and each previous fix moved a
+    threshold. This one asserts the PROPERTY instead: refusal must be monotonic in corruption, so no
+    cluster size can ever be easier to publish than a smaller one. A fix that merely bumps the window
+    fails here at window + 1.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ld_probe", os.path.join(ROOT, "tools", "lidar_dates.py"))
+    ld = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ld)
+    cls = next(o for o in vars(ld).values() if isinstance(o, type) and hasattr(o, "_resolve"))
+    base = 1024358400.0                                   # a real GPS-adjusted flight second
+    bulk = [base + i * 0.01 for i in range(2000)]         # a genuine pass: thousands of contiguous pts
+
+    def outcome(k, off_days):
+        """(published?, n_dropped) for k junk readings off_days from the bulk."""
+        vals = sorted([base + off_days * 86400.0 + i * 0.01 for i in range(k)] + bulk)
+        got = cls._resolve(cls.__new__(cls), vals)
+        return (False, None) if got is None else (True, got[1])
+
+    for off in (-700, -365, -100, -2, 700):
+        published = [k for k in range(0, 41) if outcome(k, off)[0]]
+        refused = [k for k in range(0, 41) if not outcome(k, off)[0]]
+        if not refused:
+            continue                    # this offset is inside the tolerated glitch window throughout
+        # everything published must be SMALLER than everything refused: no re-entry at a larger k
+        assert max(published) < min(refused), (
+            f"at {off:+d} days the trimmer publishes a date for {max(published)} junk readings but "
+            f"refuses {min(refused)} -- reliability inverts with the size of the corruption, so a "
+            f"BIGGER clock fault is easier to publish than a smaller one")
+
+    # and a published date must never come from the junk itself: a trimmed run reports what it dropped
+    for k in range(1, ld.MAX_ISOLATED_VALUES + 1):
+        ok, dropped = outcome(k, -700)
+        assert ok and dropped == k, (
+            f"{k} junk readings 700 days from the bulk: expected them all trimmed and counted, got "
+            f"published={ok} dropped={dropped}. n_dropped is what drives the warning, so a silent 0 "
+            f"means the card carries a date nobody was told to check.")
+
+
 def test_the_steepness_colour_still_reads_in_black_and_white():
     """The slope ramp is the only thing in the book carrying information no word repeats, and it used
     to invert on a mono printer -- which is how a junior actually prints this.
@@ -2800,81 +2953,65 @@ def test_the_steepness_colour_still_reads_in_black_and_white():
         "the map it explains")
 
 
-def test_the_tile_count_counts_only_tiles_the_build_could_have_read():
-    """The published tile count is a legal claim about what the book was MADE FROM, and it was
-    counting whatever .laz happened to sit in the directory when the doc was regenerated.
+def test_the_published_tile_count_is_exactly_what_is_on_disk():
+    """The tile count is a published claim about the LiDAR behind a book, and it must be a fact rather
+    than an estimate that drifts.
 
-    Found live: legal/03_PROVENANCE_BY_COURSE.md said callippe-preserve used 9 tiles. It said 7 when
-    it was written on Jul 29. Between those two runs an audit fetched three tiles the build never
-    read, the doc was regenerated, and the count silently rose. No book changed; the record just
-    started claiming evidence that had not existed when the book was built.
+    Two attempts to count only what the build READ both failed. Filtering on mtime against the newest
+    LiDAR-derived artifact first looked right -- callippe showed 10 files against a correct 7, three
+    fetched by an audit the build never saw. Then the count swung to 11 the moment fetch_hole_elev
+    re-ran, because the TEE STAGE DOWNLOADS TILES AS IT RUNS: five of callippe's twelve are its own,
+    over tees outside every green's tile. So a filtered count moves with WHEN the stages last ran
+    rather than with what they read, and it moved in the overstating direction.
 
-    That direction is the dangerous one. An undercount understates our own evidence and hurts nobody;
-    an overcount tells a reader the greens rest on data they do not.
-
-    The cutoff has to be the NEWEST LiDAR-derived artifact, not the oldest. Three stages read the
-    point cloud -- green surfaces, tee-to-green elevation, canopy returns -- and they are written at
-    different times, so a tile landing between them is genuinely used by the later ones. Cutting at
-    the oldest surface undercounted callippe to 7 by disowning two tiles the later stages did read.
-    Both halves are asserted here, because the first fix I wrote had exactly that bug.
+    No stage records its inputs, so "used" is not recoverable from the artifacts. The published number
+    is therefore what is on disk, labelled "tiles held" so it claims presence and nothing about use.
+    This asserts both halves: the number matches the directory exactly, and the wording does not
+    promise more than the number can support.
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         "gp_prov", os.path.join(ROOT, "tools", "gen_provenance.py"))
     gp = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gp)
-    slug = next((s for s in CORPUS
-                 if glob.glob(os.path.join(ROOT, "courses", s, "laz", "*.laz"))
-                 and glob.glob(os.path.join(ROOT, "courses", s, "dem_hd", "hole*.json"))), None)
-    if slug is None:
-        pytest.skip("no built course with local tiles")
-    cdir = os.path.join(ROOT, "courses", slug)
-    tiles = glob.glob(os.path.join(cdir, "*.laz")) + glob.glob(os.path.join(cdir, "laz", "*.laz"))
-    derived = (glob.glob(os.path.join(cdir, "dem_hd", "hole*.json"))
-               + [os.path.join(cdir, n) for n in ("hole_elev.json", "trees_lidar.json")])
-    stamps = [os.path.getmtime(d) for d in derived if os.path.exists(d)]
-    assert stamps, f"{slug} has no LiDAR-derived artifact -- this test would prove nothing"
 
-    _proj, n, _from_names = gp._tile_project(slug)
-
-    # THE INDEPENDENT FACT, not the rule recomputed. Re-deriving the cutoff from the same mtimes the
-    # producer reads is mechanism (3) -- both sides move together, and it is worth being blunt that a
-    # first draft of this test did exactly that and survived BOTH mutations below. What can be checked
-    # without re-implementing anything: a tile that postdates every LiDAR-derived artifact exists on
-    # disk, so a count equal to the raw file count proves the filter did not run.
-    stale = [t for t in tiles if os.path.getmtime(t) > max(stamps)]
-    if stale:
-        assert n < len(tiles), (
-            f"{slug}: the record counts {n} tiles, the same as the {len(tiles)} files on disk, but "
-            f"{len(stale)} of them postdate every LiDAR-derived artifact and fed nothing: "
-            f"{sorted(os.path.basename(t) for t in stale)[:3]}. The count is a published claim about "
-            f"what the book was MADE FROM -- a file merely sitting in the directory must not inflate it.")
-    assert n > 0, f"{slug}: {len(tiles)} tiles on disk but the record counts none"
-
-    # ...and the published DOC must carry that same number, since the doc is what a reader sees.
     doc = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
-    if os.path.isfile(doc):
-        with open(doc, encoding="utf-8") as fh:
-            body = fh.read()
-        row = next((ln for ln in body.splitlines()
-                    if slug.split("-")[0].title() in ln and "tiles)" in ln), None)
-        if row:
-            m = re.search(r"\((\d+) tiles\)", row)
-            assert m and int(m.group(1)) == n, (
-                f"{slug}: the generator counts {n} tiles but the published doc says "
-                f"{m.group(1) if m else '?'} -- regenerate legal/03_PROVENANCE_BY_COURSE.md")
+    if not os.path.isfile(doc):
+        pytest.skip("provenance doc not generated")
+    with open(doc, encoding="utf-8") as fh:
+        body = fh.read()
 
-    # The other half: do not cut at the OLDEST artifact either, which disowns tiles the later stages
-    # legitimately read. HONEST LIMIT -- on today's corpus min and max give identical counts for all
-    # 12 courses, because no tile happens to sit between two stages, so swapping max for min is
-    # currently unobservable and this assertion cannot fail. It is kept because it becomes live the
-    # moment a course is rebuilt in stages, which is exactly when the mistake would be made again.
-    if max(stamps) > min(stamps):
-        too_strict = sum(1 for t in tiles if os.path.getmtime(t) <= min(stamps))
-        assert n >= too_strict, (
-            f"{slug}: counted {n} tiles, fewer than the {too_strict} predating even the OLDEST "
-            f"artifact -- the cutoff has become stricter than any stage warrants")
+    seen = collections.Counter()
+    for slug in CORPUS:
+        cdir = os.path.join(ROOT, "courses", slug)
+        tiles = glob.glob(os.path.join(cdir, "*.laz")) + glob.glob(os.path.join(cdir, "laz", "*.laz"))
+        if not tiles:
+            continue                   # seamless-DEM course, or tiles kept outside the repo
+        seen[slug] += 1
+        _proj, n, _from_names = gp._tile_project(slug)
+        assert n == len(tiles), (
+            f"{slug}: the generator counts {n} tiles but {len(tiles)} .laz files are on disk. The "
+            f"published number must be exactly what is there -- every attempt to publish a cleverer "
+            f"number has drifted, and drifted upward.")
 
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as jf:
+            name = json.load(jf).get("name", slug)
+        row = next((ln for ln in body.splitlines() if ln.startswith(f"| {name} |")), None)
+        if row is None or "tiles" not in row:
+            continue                   # course not distributed, so it has no row to check
+        m = re.search(r"\((\d+) tiles held\)", row)
+        assert m, (
+            f"{slug}: the provenance row states a tile count without the word 'held': {row[:160]}. "
+            f"The count is what is on disk, not what the build consumed -- no stage records its "
+            f"inputs -- so the wording must not imply otherwise.")
+        assert int(m.group(1)) == n, (
+            f"{slug}: the generator counts {n} tiles but the published doc says {m.group(1)} -- "
+            f"regenerate legal/03_PROVENANCE_BY_COURSE.md")
+    # SKIP, not fail, when a fresh clone has no course data: an anti-vacuous floor and a
+    # nothing-to-check skip are different jobs, and a stranger must be able to tell our red from
+    # theirs. The floor is the per-course assertions above, which cannot pass without a real count.
+    if not seen:
+        pytest.skip("no course has local tiles")
 
 def test_no_commit_carries_a_work_identity():
     """The same rule as the tracked-file scan, applied to the COMMIT METADATA -- the vector that

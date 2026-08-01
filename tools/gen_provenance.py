@@ -40,24 +40,24 @@ def _tile_project(slug, dem_source=""):
     been wrong before. Some early downloads saved bare tile ids (t390135.laz) with no project in the
     name; for those we fall back to the recorded dem_source label and say that is what we did.
 
-    Counts only tiles that could actually have FED the book. A tile downloaded after every
-    LiDAR-derived artifact was written contributed nothing, and counting it overstates a published
-    legal claim about what the book was made from. Found with callippe-preserve: 10 files on disk
-    against 9 in the record, because a later audit fetched a tile the build never saw.
+    Counts the tiles PRESENT for this course, published as "tiles held" rather than "tiles used".
 
-    The cutoff is the NEWEST LiDAR-derived artifact, not the oldest. Three stages consume the point
-    cloud -- green surfaces (dem_hd), tee-to-green elevation (hole_elev.json) and canopy returns
-    (trees_lidar.json) -- and they are written at different times, so a tile arriving between them is
-    genuinely used by the later stages. Cutting at the oldest surface undercounted callippe to 7,
-    disowning two tiles the elevation and tree stages really did read."""
+    Two attempts to count only what the build READ both failed, and the second failed in the
+    dangerous direction. Filtering on mtime against the newest LiDAR-derived artifact first looked
+    right -- callippe showed 10 files against a correct 7, three fetched by a later audit the build
+    never saw. But the count then swung to 11 the moment fetch_hole_elev re-ran, because the TEE
+    STAGE DOWNLOADS TILES AS IT RUNS: five of callippe's twelve are its own, over tees that sit
+    outside every green's tile. mtime cannot tell an audit's stray download from a stage's
+    legitimate one, so any count built on it moves with WHEN the stages last ran rather than with
+    what they read.
+
+    No stage records which tiles it consumed, so a true "used" count is not available from the
+    artifacts at all. Rather than publish a number whose meaning shifts under it, publish the one
+    that is exactly true -- what is on disk for this course -- and label it so it claims no more
+    than that. Overstating what the book RESTS ON is the failure that matters here; "held" asserts
+    presence and nothing about use."""
     cdir = os.path.join(ROOT, "courses", slug)
     tiles = glob.glob(os.path.join(cdir, "*.laz")) + glob.glob(os.path.join(cdir, "laz", "*.laz"))
-    derived = (glob.glob(os.path.join(cdir, "dem_hd", "hole*.json"))
-               + [os.path.join(cdir, n) for n in ("hole_elev.json", "trees_lidar.json")])
-    stamps = [os.path.getmtime(d) for d in derived if os.path.exists(d)]
-    if stamps:
-        cutoff = max(stamps)
-        tiles = [t for t in tiles if os.path.getmtime(t) <= cutoff]
     names = [os.path.basename(p) for p in tiles]
     if not names:
         return None, 0, False
@@ -214,7 +214,10 @@ def _row(slug):
     else:
         bits = [f"computed by us from **USGS 3DEP LiDAR** (public domain)"]
         if proj:
-            bits.append(f"project `{proj}` ({ntiles} tiles)"
+            # "tiles held", not "tiles used": no stage records which tiles it consumed, and the tee
+            # stage downloads its own as it runs, so any "used" count would be a guess. See
+            # _tile_project for the two attempts that got this wrong.
+            bits.append(f"project `{proj}` ({ntiles} tiles held)"
                         + ("" if from_names else " *(label recorded in course.json; these tiles\u2019 filenames carry no project name)*"))
         if flown:
             bits.append(f"**flown {flown}**{flown_note}")
