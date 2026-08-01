@@ -793,8 +793,8 @@ def main():
                 # front cover -- not rotated like the other duplex backs.
                 is_last = is_upright_back(2*L+1, len(cards))
                 backs.append(card_div(xb, yb, 2*L+2, cards[2*L+1], not is_last))
-            pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT</div>{"".join(fronts)}</div>')
-            pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; BACK (duplex, flip on LONG edge)</div>{"".join(backs)}</div>')
+            pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT &middot; PRINT AT 100% &mdash; do not scale or fit to page</div>{"".join(fronts)}</div>')
+            pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; BACK (duplex, flip on LONG edge) &middot; PRINT AT 100%</div>{"".join(backs)}</div>')
         return "".join(pages)
 
     sheets_html = build_pages(panels)
@@ -1011,8 +1011,8 @@ def build_coach(coach_name=""):
             # was the last rule still written twice.
             is_last = is_upright_back(2*L+1, len(cards))
             backs.append(card_div(xb, yb, 2*L+2, cards[2*L+1], not is_last))
-        pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT</div>{"".join(fronts)}</div>')
-        pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; BACK (duplex, flip on LONG edge)</div>{"".join(backs)}</div>')
+        pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT &middot; PRINT AT 100% &mdash; do not scale or fit to page</div>{"".join(fronts)}</div>')
+        pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; BACK (duplex, flip on LONG edge) &middot; PRINT AT 100%</div>{"".join(backs)}</div>')
 
     CW, CH = config.CARD_W_IN, config.CARD_H_IN
     css = f'''

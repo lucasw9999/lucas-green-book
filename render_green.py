@@ -464,6 +464,11 @@ def render(hole, tournament=False):
     # margin UNDER the Rule 4.3 cap (0.36 in : 5 yd, ~4% under 3/8) AND (b) fitting inside
     # its panel so nothing overflows/clips. Whichever is smaller wins -> consistent framing.
     if tournament:
+        # 0.36 against a 0.375 limit is a 4% margin, which is a margin against ROUNDING, not against a
+        # printer. Scaling a sheet up by 4.1% puts the worst green over the cap while the cover still
+        # says "DESIGNED TO CONFORM - RULE 4.3", so every sheet's margin note now reads PRINT AT 100%.
+        # Nothing in the book said that before: "fit to page" on A4 happens to shrink a Letter sheet,
+        # which is safe, but any deliberate enlargement is not.
         legal_kf = 0.36 * px_m / 4.572                                   # legal ceiling
         # .grn column width must match generate.py's CSS: card minus padding, minus the 1px
         # flex gap, times the .grn share (2.4 of 1.6+2.4). Measured in-browser at 2.010in.

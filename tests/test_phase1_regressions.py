@@ -1279,6 +1279,43 @@ def test_the_hand_written_verdict_matches_the_machine_verdict():
                        "actually decides:\n  " + "\n  ".join(wrong))
 
 
+def test_every_sheet_tells_the_printer_not_to_scale():
+    """The Rule 4.3 margin is 4%, which protects against rounding -- not against a printer.
+
+    Greens are drawn at 0.36 in : 5 yd against a 0.375 limit. Enlarge a sheet by 4.1% and the worst
+    green is over the cap while the cover still says "DESIGNED TO CONFORM - RULE 4.3". The book measured
+    conforming, the paper does not, and the reader has no way to know: tools/check_scale.py measures the
+    PDF, and the badge is printed before anyone picks a print setting.
+
+    Nothing in the book said so. Every instance of "100%" was CSS; there was no "actual size", no "do not
+    scale", no mention of fit-to-page in any book.
+
+    The instruction belongs in the sheet margin note rather than on a card. That note is already
+    printer-facing -- it carries "BACK (duplex, flip on LONG edge)" -- it sits outside the trim so it is
+    discarded when the cards are cut, and it costs none of the card space that four earlier attempts at
+    guide-card wording could not find. Checked on every sheet of every book, because scaling is a
+    per-SHEET setting.
+
+    What this does not claim: "fit to page" onto A4 shrinks a Letter sheet, which is safe, because the cap
+    is a ceiling. The dangerous setting is a deliberate enlargement.
+    """
+    checked = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        notes = re.findall(r'<div class="sheetnote">([^<]*)</div>', html)
+        assert notes, f"{ref}/{os.path.basename(p)} has no sheet margin note at all"
+        for note in notes:
+            checked += 1
+            assert "PRINT AT 100%" in note, (
+                f"{ref}/{os.path.basename(p)}: a sheet note reads {note!r} without telling the printer "
+                f"not to scale. A 4.1% enlargement breaks the Rule 4.3 cap the cover claims.")
+    assert checked >= 30, f"only {checked} sheet notes checked -- build the books first"
+
+
 def test_only_the_conforming_edition_claims_to_conform():
     """One edition is built to Rule 4.3 and one deliberately is not. Neither may be mistaken for the
     other.
