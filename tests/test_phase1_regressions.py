@@ -8547,3 +8547,52 @@ def test_the_surface_builder_drops_points_the_producer_disowns():
     # the reasoning has to travel with the code, or the next reader re-litigates it from scratch
     assert "overlap" in src and re.search(r"NOT filtering|not filtering", src), (
         "the note explaining why `overlap` is kept is gone; without it the flag reads like an oversight")
+
+
+def test_the_cross_flight_check_cannot_agree_by_failing_to_read_a_date():
+    """A tile whose gps_time carries no absolute date must stop the run, not quietly shorten it.
+
+    cross_flight_check separates a green's surveys by decoding each point's date, and that decode is only
+    valid for Adjusted Standard GPS time. GPS WEEK TIME records seconds since the start of a week the
+    file does not name, so the date is genuinely unrecoverable -- lidar_dates.py refuses such tiles,
+    having once turned every one of them into a fabricated 2011-09-14. This tool called gps_to_utc with
+    its `adjusted=True` default: it assumed what the other module verifies.
+
+    The reason that matters is the shape of the failure, which is silent and flattering. A bad decode does
+    not produce visible nonsense: it collapses every point into one epoch, each green is then covered by a
+    single pass, the course is skipped as "not independently covered", and the run prints ZERO
+    disagreements. That reads as a clean bill of health, and this tool's output is the repeatability and
+    contour-interval evidence in legal/09_GREEN_SURFACE_REPEATABILITY.md.
+
+    Exercised as a decision on real header shapes rather than as a string in the source, because a
+    pattern-shaped assertion has missed the actual edit three times in this suite already.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    sys.modules.pop("cross_flight_check", None)
+    import cross_flight_check as cfc
+
+    class _GE:
+        def __init__(self, t):
+            self.gps_time_type = t
+
+    class _H:
+        def __init__(self, t=None):
+            if t is not None:
+                self.global_encoding = _GE(t)
+
+    assert cfc.dates_recoverable(_H(1)) is True, (
+        "adjusted standard GPS time (bit 0 = 1) is the only decodable form and must be accepted")
+    assert cfc.dates_recoverable(_H(0)) is False, (
+        "GPS WEEK TIME carries no week number, so no absolute date exists -- accepting it lets the run "
+        "collapse every pass into one epoch and then report zero disagreements, which reads as a pass")
+    assert cfc.dates_recoverable(_H()) is False, (
+        "a header with no global_encoding at all must fail CLOSED; assuming adjusted time is the "
+        "assumption this check exists to remove")
+
+    # and the read loop must consult it, not just define it
+    with open(os.path.join(ROOT, "tools", "cross_flight_check.py"), encoding="utf-8") as f:
+        src = f.read()
+    after = src.split("def check(", 1)[-1]
+    assert "dates_recoverable(" in after, (
+        "cross_flight_check.check() no longer consults dates_recoverable, so the refusal is defined and "
+        "unused -- worse than absent, because the docstring claims the run cannot agree by failing")

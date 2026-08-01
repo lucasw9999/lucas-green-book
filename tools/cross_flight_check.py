@@ -57,6 +57,24 @@ CINT_CM = 15.0
 CHUNK = 4_000_000
 
 
+
+def dates_recoverable(header):
+    """False when a tile's gps_time carries no absolute date, so passes cannot be separated.
+
+    Only Adjusted Standard GPS time (global_encoding bit 0 == 1) is decodable. GPS WEEK TIME records
+    seconds since the start of an unrecorded week, so the date is genuinely absent -- lidar_dates.py
+    refuses such tiles for the same reason, having once turned every one of them into a fabricated
+    2011-09-14.
+
+    Split out from the read loop so the refusal can be tested without a synthetic point cloud: the
+    failure it prevents is SILENT, not loud. A bad decode collapses every point into one bogus epoch,
+    each green is then covered by a single pass, the course is skipped as "not independently covered",
+    and the run reports zero disagreements -- which reads as a pass. This tool's output is the evidence
+    in legal/09_GREEN_SURFACE_REPEATABILITY.md, so it must not be able to agree by failing.
+    """
+    return int(getattr(getattr(header, "global_encoding", None), "gps_time_type", 0)) == 1
+
+
 def _grid(meta):
     """The shipped tile's own grid, plus the green-interior mask, so every pass is compared on it."""
     import render_green as rg
@@ -150,6 +168,22 @@ def check(slug, verbose=True):
             crs = f.header.parse_crs()
             if crs is None:
                 continue
+            # Separating passes means DECODING each point's date, and that decode is only valid for
+            # Adjusted Standard GPS time. lidar_dates.py checks this and refuses otherwise, with the
+            # worked failure: GPS WEEK TIME carries no week number, so the old interpretation landed
+            # every such tile on a fabricated 2011-09-14. This tool used gps_to_utc's `adjusted=True`
+            # default, i.e. it assumed what that module verifies.
+            #
+            # The silent failure is the reason to check rather than trust the corpus. A bad decode does
+            # not produce obvious nonsense here: it collapses every point into one bogus epoch, the
+            # green then has only ONE pass, the course is skipped as "not independently covered", and
+            # the run reports 0 disagreements -- which reads as a pass. This tool's output is the
+            # evidence in legal/09_GREEN_SURFACE_REPEATABILITY.md, so it must not be able to agree by
+            # failing. All 11 corpus courses are uniformly type 1; this is for the next one.
+            if not dates_recoverable(f.header):
+                print(f"    {os.path.basename(lp)}: gps_time is GPS Week Time (global_encoding bit "
+                      f"0 = 0), so no absolute date is recoverable and passes cannot be separated")
+                return 0, [], 0, 0, []
             inv = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
             for ch in f.chunk_iterator(CHUNK):
                 g = np.asarray(ch.classification) == 2
