@@ -263,6 +263,47 @@ def _expected_cards():
 needs_corpus = pytest.mark.skipif(not CORPUS, reason="per-course data is gitignored; nothing to measure")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _courses_are_read_only():
+    """The suite must not write inside courses/. That data cannot be got back.
+
+    A course folder holds ~300 MB of LiDAR tiles, the derived 0.4 m surfaces, and the hand-verified
+    scorecard in course.json. It is gitignored by design -- so there is no copy in history, no copy on a
+    remote, and a test that truncates or deletes one has destroyed work that took a network fetch and a
+    manual cross-check to produce. Rebuilding a green surface is hours; re-verifying a scorecard against
+    club sources is worse.
+
+    Nothing in the suite writes there today. This is here so that stays true by accident-detection rather
+    than by everyone remembering: a fixture that builds a course under courses/ instead of tmp_path would
+    be a natural thing to write, and would look fine until the day it picked a real slug.
+
+    Session-scoped, comparing the set of paths and the mtime of every course.json and book, so it costs
+    one directory walk per run rather than one per test.
+    """
+    def snap():
+        out = {}
+        for p in glob.glob(os.path.join(ROOT, "courses", "*", "*")):
+            base = os.path.basename(p)
+            if base.endswith(".json") or base.startswith("greenbook") or base.endswith(".pdf"):
+                try:
+                    out[os.path.relpath(p, ROOT)] = os.path.getmtime(p)
+                except OSError:
+                    pass
+        return out
+
+    before = snap()
+    yield
+    after = snap()
+    vanished = sorted(set(before) - set(after))
+    touched = sorted(k for k in set(before) & set(after) if before[k] != after[k])
+    assert not vanished, (
+        f"the test run DELETED files under courses/, which is gitignored and has no copy anywhere: "
+        f"{vanished[:5]}")
+    assert not touched, (
+        f"the test run modified files under courses/: {touched[:5]}. Course data and built books are "
+        f"inputs to the suite, not scratch space -- write to tmp_path instead.")
+
+
 @pytest.fixture(autouse=True)
 def _no_network(request):
     """Block outbound sockets unless a test says @pytest.mark.network.
