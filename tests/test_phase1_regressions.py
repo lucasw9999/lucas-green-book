@@ -9709,6 +9709,59 @@ Each of those puts a wrong number in a junior's pocket. `test_built_books_still_
 
 
 @needs_corpus
+def test_par_and_length_agree_with_each_other():
+    """The FIRST check in this suite on a scorecard fact that is not another copy of itself.
+
+    A mutation survey found the suite's second structural weakness: par, stroke index, tee yardage and
+    the page totals are each verified only against other copies of themselves. Six mutations that
+    changed every copy consistently -- course.json, both editions, the scorecard row, Out and Tot --
+    left the suite green, including a tee yardage off by 10 yd and a par 5 turned into a par 4. Nothing
+    here compares a yardage to anything OUTSIDE course.json, so a transcription error that is faithfully
+    propagated is invisible.
+
+    Par and length are not independent, and that is an anchor outside the file: the rules of golf and
+    the USGA's yardage guidelines constrain them. Measured over the corpus at the BACK tee -- the column
+    every card headlines -- par 3 runs 125-250 yd, par 4 runs 275-502 and par 5 runs 469-622. The par
+    3/par 4 boundary is CLEAN with a 25 yd gap; par 4 and par 5 genuinely overlap by 33 yd, because long
+    par 4s and short par 5s both exist, so the bounds below are one-sided where the data overlaps.
+
+    What this catches: a mis-keyed ROW -- the realistic transcription error, where a hole takes another
+    hole's par or another hole's yardage. A par 3 at 413 yd, a par 5 at 200, a par 4 at 620.
+
+    What it does NOT catch, stated so the coverage is not overread: a yardage off by ten, or a stroke
+    index swapped with its neighbour. Those need a published reference this project does not hold, and
+    the honest way to close them is a committed file of per-hole yardages transcribed a second time from
+    each course's card -- a data task, not a code one.
+    """
+    # Generous against the measured corpus (par 3 max 250 -> 260; par 4 min 275 -> 265, max 502 -> 540;
+    # par 5 min 469 -> 440). Wide enough that no real hole is accused, tight enough that a swapped row is.
+    BOUNDS = {3: (90, 260), 4: (265, 540), 5: (440, 700), 6: (600, 900)}
+    checked = collections.Counter()
+    bad = []
+    for slug in CORPUS:
+        os.environ["COURSE"] = slug
+        for m in ("config", "geo"):
+            sys.modules.pop(m, None)
+        import config
+        for hn in config.HOLE_NUMS:
+            row = config.HOLES[hn]
+            par, yd = row[0], row[config.BACK_I]
+            if par not in BOUNDS or not isinstance(yd, (int, float)) or yd <= 0:
+                continue
+            checked[slug] += 1
+            lo, hi = BOUNDS[par]
+            if not (lo <= yd <= hi):
+                bad.append(f"{slug} hole {hn}: par {par} at {yd} yd from {config.BACK_NAME} "
+                           f"(a par {par} runs {lo}-{hi} yd)")
+    assert sum(checked.values()) >= 190, (
+        f"only {sum(checked.values())} holes checked; the corpus has 216")
+    assert not bad, (
+        "a hole's par and its length contradict each other, which usually means a row was mis-keyed -- "
+        "the hole took another hole's par or another hole's yardage:\n  " + "\n  ".join(bad))
+    assert_no_course_skipped(checked, "test_par_and_length_agree_with_each_other")
+
+
+@needs_corpus
 def test_no_par_3_prints_a_carry():
     """"carry N" is a tee-shot decision, and a par 3 does not have one.
 
