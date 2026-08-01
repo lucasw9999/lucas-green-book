@@ -24,6 +24,10 @@ The residual disagreement is ONE-SIDED. The note at TOL_FT has said so since the
 cluster a foot or two positive -- but only |diff| was ever REPORTED, so no run could confirm it held.
 Measured across the whole corpus it does: the DEM used to read the green 0.80 ft higher relative to the tee
 than we do (median; mean +0.96), positive on 151 of 177 holes and significant on 9 of the 11 courses.
+That one-sidedness is GONE. Once BOTH ends were moved onto the feature polygons the residual became
+two-sided: measured 2026-08-01, corpus median +0.00 ft, positive on 94 of 171 holes, significant on
+none of the eleven. Most of what this paragraph attributed to the coarser reference was our own
+sampling region, and the paragraph is kept only as the record of that.
 The run now prints the signed bias for that reason. It is evidence about the REFERENCE, not a fault in
 the figures being checked, which is why a NEGATIVE bias would be the interesting result -- and it would
 have been invisible.
@@ -33,7 +37,7 @@ cross-flight repeatability check explicitly cannot: that check compares our proc
 (two surveys, both gridded by us), so a constant offset introduced by our own handling -- a vertical
 unit read wrong, a CRS or grid misalignment, a geoid/ellipsoid mixup -- cancels out of every height
 CHANGE and stays invisible. Comparing a green's absolute elevation against a raster this project does
-not build catches exactly that class. Measured over 55 greens across all 11 courses: median 0.07 m,
+not build catches exactly that class. Measured over 171 greens across all 11 courses: worst per-course median 0.10 m,
 worst 0.47 m. A US-survey-foot cloud read as metres would show tens of metres here, a geoid confusion
 about 30 m in California, and the foot/metre fault above showed a median 298 ft. What this still does
 NOT bound is the source program's own datum or a turfgrass ground-classification bias, since the
@@ -80,7 +84,7 @@ SAMPLE_HALF_M = 15.0        # fallback box, for a tee with no mapped ring. NOT "
 # tool's disagreement a measure of the region difference rather than of the data.
 # A 1 m raster smooths a raised tee platform down, so it reads slightly BELOW the point cloud there:
 # measured -1.6 ft at monarch-bay's tees. The change carries that through, so residuals cluster a foot
-# or two positive. 10 ft is comfortably above the worst observed (4.9 ft) and far below the hundreds of
+# or two positive. 10 ft is comfortably above the worst observed (3.14 ft, bay-view 16) and far below the hundreds of
 # feet a unit fault produces -- this bound is meant to separate those two, not to audit the last foot.
 TOL_FT = 10.0
 RETRIES = 5
@@ -264,7 +268,8 @@ def check_course(slug):
           f"(hole {worst_hn}){', ' + str(unreachable) + ' unreachable' if unreachable else ''}")
     # Report the SIGNED bias too. "Small" and "unbiased" are different claims, and reporting only
     # |diff| hid a systematic: the DEM reads the green ~0.8 ft higher relative to the tee than we do,
-    # on 151 of 177 holes corpus-wide. That direction is expected of a coarser reference -- a 1 m
+    # on 151 of 177 holes corpus-wide -- until both ends moved onto the feature polygons, after which it
+    # is 94 of 171 and two-sided. The direction WAS expected of a coarser reference -- a 1 m
     # raster smooths a raised tee pad toward the ground around it, so it under-reads the tee -- so it
     # says something about the REFERENCE, not about the figures being checked. A run that came out
     # NEGATIVE would be the anomaly worth chasing, and it was invisible before.

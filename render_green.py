@@ -569,7 +569,7 @@ def render(hole, tournament=False):
     # gradient -- so they are SUPPOSED to differ a little, and across the corpus they run to a median
     # 11 deg and a 90th percentile of 27. But when they point more than 90 degrees apart the card is
     # handing a golfer two different breaks, and the honest reading is that the surface does not
-    # determine one. micke-grove 2 is the case that forced this: 0.5% of tilt, plane and arrows 177 deg
+    # determine one. micke-grove 2 is the case that forced this: 0.5% of tilt, plane and arrows 179.5 deg
     # apart, where naming either direction is a coin toss dressed up as a read. So refuse the word and
     # keep the measured percentage, which is still true.
     #

@@ -1354,12 +1354,23 @@ def test_only_the_conforming_edition_claims_to_conform():
 
     The pocket book is measured at 0.36 in : 5 yd, ~4% under the 3/8 in cap, and wears a
     "DESIGNED TO CONFORM - RULE 4.3" badge. The enlarged edition breaks the cap on purpose so the
-    greens read at arm's length: measured off its own PDFs it prints 0.47-0.60 in : 5 yd, which is
-    26-60% OVER the limit. That is a design decision, and the only thing that keeps it honest is the
-    sentence on its guide card saying so plus the absence of the badge.
+    greens read at arm's length: measured off its own LAYOUT under print media it prints
+    0.368-0.599 in : 5 yd (1:489 to 1:301) across all 54 of its greens, from 1.9% UNDER the cap to 60%
+    over, with 53 of the 54 over it -- monarch-bay hole 14 is the one green that lands inside. That is a
+    design decision, and the only thing that keeps it honest is the sentence on its guide card saying so
+    plus the absence of the badge.
 
-    Both halves are load-bearing and neither is enforced anywhere else. tools/check_scale.py reads
-    only greenbook.html/greenbook.pdf, so its 198/198 figure never covered the enlarged books at all
+    THIS DOCSTRING WAS WRONG ON BOTH HALVES, and one explains the other. It said "measured off its own
+    PDFs it prints 0.47-0.60 in : 5 yd, which is 26-60% OVER the limit". No PDF could have produced
+    either number: the enlarged edition renders with tournament=False and render_green emits the "5 yd"
+    bar only when tournament=True, so those PDFs contain no bar to measure. And 0.47-0.60 is the range
+    of the three books' WORST greens, not of the 54. legal/06 had the right figures all along -- two
+    documents quoting one hand measurement is how a wrong one survives, so tools/check_scale.py now
+    measures the enlarged books itself and prints the range in a separate, non-gating section.
+
+    Both halves are load-bearing and neither is enforced anywhere else. The enlarged books sit OUTSIDE
+    the 198/198 scale gate rather than passing it -- deliberately, because gating an edition built to
+    exceed the cap would be a gate against a design decision
     -- they are outside the gate rather than passing it. legal/06 did not mention them either until
     this commit. So a reader had a conformance document, a passing gate and a cover badge, and nothing
     connecting any of that to the edition it does not describe.

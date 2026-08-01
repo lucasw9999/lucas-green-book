@@ -1,6 +1,17 @@
 # Green Surface Repeatability — what the printed slope numbers are actually worth
 
-Measured 2026‑07‑31 with `tools/cross_flight_check.py --all`. Reproduce it with that command.
+Measured 2026‑08‑01 against the corpus on disk. **No single command produces this document**, and
+saying otherwise was itself a defect: three of its blocks cannot be produced by the command this line
+used to name. Each section now says what does.
+
+| section | reproduce with |
+|---|---|
+| "The natural experiment", "Result" (except the raw‑point sentence), "The contour interval" | `python3 tools/cross_flight_check.py --all` |
+| the raw‑point‑level sentence under the Philadelphia table | a one‑off script, not a shipped tool; the method is stated in full beside the figures |
+| "A second, independent line of evidence: flight‑line overlap" | a one‑off script, not a shipped tool; it reuses `cross_flight_check`'s own gridding and differs only in how the points are partitioned |
+| the `withheld` / `synthetic` counts | a one‑off scan of every LAZ tile for those two classification‑flag bits on class‑2 points |
+| item 1 of "What this does and does not establish" (elevation) | `python3 tools/verify_elevation.py --all` — needs the network and `rasterio` |
+| the before/after figures inside item 1 | one‑off measurements taken when those faults were fixed. They describe states of the code that no longer exist and **cannot** be reproduced from the corpus as it stands |
 
 Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where that tilt is
 close to the survey's own noise floor and the card still names a side, and
@@ -108,7 +119,7 @@ ground density in exchange for nothing measurable.
 
 `withheld` and `synthetic` are a different matter and are now filtered out in `fetch_dem_hd.py`. Those
 bits mark points the producer disowns — measurements it says not to use, and points computed rather than
-observed — and neither belongs under a printed slope read. Every tile in the corpus carries **zero** of
+observed — and neither belongs under a printed slope read. Scanning every one of the **71 LAZ tiles in the corpus, 582,510,577 class‑2 ground returns**, finds **zero** of
 both, so the filter changes no shipped surface: rebuilding bay-view with it produced all 36 files
 byte-identical. It is there for the next course's tiles.
 
@@ -139,6 +150,8 @@ had to hold, and it holds with two orders of magnitude of margin.
      green polygon** the pipeline measures, so the comparison is not dominated by a region mismatch.
      Over all 171 measured holes on the 11 courses the two agree to a **worst per‑course median of
      0.10 m and a worst single green of 0.35 m**; the printed tee‑to‑green *change* agrees to a
+     **worst single hole of 3.14 ft**, with per‑course medians from 0.04 to 0.57 ft (the median of
+     those eleven is 0.09 ft — the tool prints no corpus‑wide median, so this says which one it is). A
      **median 0.09 ft, worst 3.14 ft**. A US‑survey‑foot cloud
      read as metres would show tens of metres; a geoid/ellipsoid confusion about 30 m in California.
      Neither is present. (This project has shipped a foot/metre fault before — it put 74 of 175 holes'

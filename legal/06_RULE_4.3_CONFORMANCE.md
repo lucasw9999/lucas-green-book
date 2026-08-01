@@ -75,8 +75,10 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   That is a design decision, not a defect, and it is stated on the enlarged edition's own guide card:
   *"Printed larger than tournament scale: a practice aid, NOT a conforming competition book under
   Rule 4.3. Use the pocket edition in competition."* It also omits the "DESIGNED TO CONFORM · RULE 4.3" cover badge that the
-  pocket book carries, and `tools/check_scale.py` reads only `greenbook.html`/`greenbook.pdf`, so the
-  198/198 figure above never included it. Recorded here because a conformance document that never
+  pocket book carries, and it sits **outside** the 198/198 gate above rather than passing it. `tools/check_scale.py`
+  now measures the enlarged books too — every figure in this paragraph is its output, median
+  **0.458 in : 5 yd (1:393)** — but reports them in a separate, non‑gating section, because gating
+  an edition built to exceed the cap would be a gate against a design decision. Recorded here because a conformance document that never
   mentions the one edition that does not conform invites the reader to assume every book does.
 
 ## Why the wording is safe
