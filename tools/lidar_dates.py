@@ -151,9 +151,27 @@ class _Extremes:
         window, and every recorded label reproduces byte-identically under this rule.
         """
         n = len(inward)
+        # The candidate must belong to the BULK, defined as the largest run of readings each within
+        # MAX_ENDPOINT_GAP_S of the next. Measuring support at a fixed offset of
+        # MAX_ISOLATED_VALUES + 1 positions let a cluster LARGER than that window vouch for ITSELF:
+        # with 10 junk readings, position 0 found its supporter at j = 9, still inside the junk and
+        # 0.09 s away. The walk accepted the extreme value and reported n_dropped = 0, so nothing
+        # warned and nothing refused. Reliability inverted with the size of the corruption -- 8 junk
+        # readings were trimmed with a warning, 9 were refused, and 10 published silently; a 100-point
+        # cluster published a date two decades from the flight, and --write puts that on every card.
+        #
+        # Identifying the bulk by RUN LENGTH fixes the family rather than moving the threshold. A real
+        # flight is thousands of contiguous returns; junk is a handful, whatever its size, and however
+        # tightly packed. No window to outgrow.
+        runs, start = [], 0
+        for k in range(1, n):
+            if abs(inward[k] - inward[k - 1]) > MAX_ENDPOINT_GAP_S:
+                runs.append((start, k - 1))
+                start = k
+        runs.append((start, n - 1))
+        bulk_lo, bulk_hi = max(runs, key=lambda r: r[1] - r[0])
         for i in range(n - 1):
-            j = min(i + MAX_ISOLATED_VALUES + 1, n - 1)
-            if abs(inward[j] - inward[i]) <= MAX_ENDPOINT_GAP_S:
+            if bulk_lo <= i <= bulk_hi:
                 # HOW FAR the trim reached matters as much as how many it dropped. Trimming is for a
                 # clock GLITCH; a value years from the bulk is not a glitch, it is a second epoch, and
                 # a tile holding two epochs cannot be dated at all. Widening the support window made
