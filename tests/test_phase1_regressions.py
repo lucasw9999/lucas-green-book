@@ -7844,3 +7844,76 @@ def test_the_geometry_counts_the_comments_quote_are_still_true():
         f"{len(over)} holes overshoot the back tee, comments say {OVER}: {over}{why}")
     assert max(over)[0] == OVER_YD, (
         f"worst overshoot is {max(over)[0]} yd, comments say {OVER_YD}{why}")
+
+
+@needs_corpus
+def test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf():
+    """The 180-degree duplex rotation must survive into the PDF, not merely be asked for in HTML.
+
+    test_duplex_imposition_puts_every_back_behind_its_own_front checks the HTML: correct mirrored slot,
+    `flip` class present. Neither proves the transform RENDERS. `.card.flip { transform: rotate(180deg) }`
+    is one stylesheet rule away from being overridden or dropped under print media, and if it went the
+    slots would still be perfect while every back printed upside-down -- a book whose reverse side is
+    unreadable, with nothing in the pipeline objecting.
+
+    That is not hypothetical in this project. The Rule 4.3 scale cap was defeated exactly this way: the
+    green size was emitted as an SVG presentation attribute, the stylesheet overrode it with zero
+    specificity, and 15 of 198 greens printed over the legal limit while three documents said the cap
+    held. The lesson recorded then was to measure the artifact, not the intent. This does that.
+
+    Method: `.pageno` is positioned top-left of its card in CSS. Rotate the card 180 about its centre
+    and that stamp must land bottom-right. So on every BACK sheet the stamps belong bottom-right --
+    except exactly one, the dedication back cover, which is_upright_back() deliberately leaves upright.
+    """
+    fitz = pytest.importorskip("fitz", reason="PyMuPDF needed to read the printed PDF")
+    GREY = {0xbbbbbb, 0xcccccc}          # .pageno colour in the pocket and enlarged stylesheets
+    checked, problems, seen = 0, [], set()
+    for ref in BOOKS:
+        pdf = os.path.join(ROOT, "courses", ref, "greenbook.pdf")
+        if not os.path.exists(pdf):
+            continue
+        seen.add(ref)
+        os.environ["COURSE"] = ref
+        sys.modules.pop("config", None)
+        import config
+        CW, CH, G = config.CARD_W_IN*72, config.CARD_H_IN*72, config.GUTTER_IN*72
+        gx0 = (config.PAGE_W_IN*72 - (config.COLS*CW + (config.COLS-1)*G))/2
+        gy0 = (config.PAGE_H_IN*72 - (config.ROWS*CH + (config.ROWS-1)*G))/2
+        doc = fitz.open(pdf)
+        try:
+            tl = br = 0
+            for pno in range(1, len(doc), 2):            # BACK sheets only
+                for blk in doc[pno].get_text("dict")["blocks"]:
+                    for ln in blk.get("lines", []):
+                        for sp in ln.get("spans", []):
+                            if (sp["color"] in GREY and 7.0 < sp["size"] < 9.5
+                                    and sp["text"].strip().isdigit()):
+                                x = (sp["bbox"][0]+sp["bbox"][2])/2
+                                y = (sp["bbox"][1]+sp["bbox"][3])/2
+                                c = 0 if x < gx0+CW+G/2 else 1
+                                r = 0 if y < gy0+CH+G/2 else 1
+                                cx, cy = gx0+c*(CW+G), gy0+r*(CH+G)
+                                if (x-cx) < CW*0.35 and (y-cy) < CH*0.25:
+                                    tl += 1
+                                elif (x-cx) > CW*0.65 and (y-cy) > CH*0.75:
+                                    br += 1
+        finally:
+            doc.close()
+        if tl + br == 0:
+            problems.append(f"{ref}: no page-number stamp found on any back sheet, so nothing was "
+                            f"verified -- has .pageno's colour or size changed?")
+            continue
+        checked += 1
+        # exactly one upright back is expected: the dedication / back cover
+        if tl != 1:
+            problems.append(
+                f"{ref}: {tl} of {tl+br} back-sheet stamps sit TOP-LEFT, i.e. those cards were not "
+                f"rotated. Expected exactly 1 (the dedication back cover, which is_upright_back() "
+                f"exempts). If the rest lost their rotation the whole reverse of the book prints "
+                f"upside-down while the imposition still looks correct in HTML.")
+        if br < 1:
+            problems.append(f"{ref}: no rotated back stamp at all -- the duplex transform is not "
+                            f"reaching the PDF")
+    assert checked, "no book PDF was inspected, so this test verified nothing"
+    assert_no_course_skipped(seen, "test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf")
+    assert not problems, "duplex rotation is wrong in the printed PDF:\n  " + "\n  ".join(problems)
