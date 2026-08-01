@@ -8357,3 +8357,59 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
         f"only {bare_total} treeless holes across the corpus; monarch-bay 1, 17 and 18 are the known "
         f"case, so if that is gone the tree fetch changed and this test now proves nothing")
     assert not problems, "a hole the survey missed prints as open ground:\n  " + "\n  ".join(problems)
+
+
+@needs_corpus
+def test_the_carry_legend_says_sand_because_water_is_not_quantified():
+    """"carry N" covers SAND only, and the card has to keep saying so.
+
+    render_hole computes carries from bunkers alone. That is deliberate -- applying the same test to
+    water finds 62 features in the tee-shot corridor, but 41 span 300-1300 yd ALONG the line, which is a
+    stream running WITH the hole where one number means nothing. Of the 21 that genuinely cross, 10
+    straddle the chord and only 4 carry a golf water tag; the rest are `waterway=drain` or `stream`,
+    covering culverted and seasonally dry channels nobody carries. Quantifying those would mean printing
+    "carry 86" for a storm drain, which is the confident-but-unsupported number this book exists not to
+    print.
+
+    The omission is honest only while the card SAYS "sand". A reader who sees "carry 220 / 246" under a
+    legend reading "hazard" or "carry" would take it as covering the water they can see drawn in blue,
+    and four holes in this corpus have water crossing the tee-shot line with no distance printed. So the
+    wording is the load-bearing part, not the computation: it is the difference between an omission and
+    an over-claim.
+
+    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 40+ yards
+    of it -- so a bare "carry N" would read as the whole obstacle rather than its near edge.
+    """
+    checked, problems, seen = 0, [], set()
+    for ref in BOOKS:
+        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(p):
+            continue
+        seen.add(ref)
+        with open(p, encoding="utf-8") as f:
+            html = f.read()
+        if "carry" not in html:
+            continue
+        legend = [m for m in re.findall(r"<span>(?:(?!</span>).)*carry(?:(?!</span>).)*</span>",
+                                        html, re.S)
+                  if "carry <b>N</b>" in m or "<b>carry N</b>" in m]
+        if not legend:
+            problems.append(f"{ref}: prints carry numbers but no legend row explains what one is")
+            continue
+        checked += 1
+        flat = re.sub(r"<[^>]+>", " ", " ".join(legend)).lower()
+        if "sand" not in flat:
+            problems.append(
+                f"{ref}: the carry legend no longer says SAND. Carries are computed from bunkers only, "
+                f"so a legend that says 'hazard' or just 'carry' claims to cover the water this corpus "
+                f"draws crossing the tee-shot line on four holes without a distance. Either say sand or "
+                f"quantify water -- see the note at CARRY_OFF_M in render_hole.py for why the second is "
+                f"not free.")
+        if not re.search(r"past|beyond|run", flat):
+            problems.append(
+                f"{ref}: the carry legend dropped the hedge that sand can run past N. N is the NEAR "
+                f"edge; the worst window in this corpus runs 40+ yd further, so a bare number reads as "
+                f"the whole obstacle.")
+    assert checked >= 10, f"only {checked} books' carry legends were checked"
+    assert_no_course_skipped(seen, "test_the_carry_legend_says_sand_because_water_is_not_quantified")
+    assert not problems, "the carry legend over-claims what it covers:\n  " + "\n  ".join(problems)

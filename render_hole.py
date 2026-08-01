@@ -547,6 +547,23 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # as the straight-line tee-to-edge distance. Until that is measured and validated, under-reporting a
     # hazard the map still shows beats printing a distance that is wrong as a carry.
     CARRY_OFF_M  = 30.0        # further off the CHORD than this is not quantified
+    # SAND ONLY, and that is a decision rather than an oversight. Applying this same test to water
+    # finds 62 features in the tee-shot corridor corpus-wide, but 41 of them span 300-1300 yd ALONG
+    # the line: they are streams running WITH the hole, where a single "carry N" is meaningless. Of the
+    # 21 that genuinely cross (under 60 yd of along-line extent), 10 straddle the chord, and only 4 of
+    # those carry a golf water tag -- bay-view 11 and 16, merion 9, philadelphia 5. The rest are
+    # `waterway=drain` or `stream`, which in OSM covers culverted and seasonally dry channels that are
+    # not a hazard anyone carries.
+    #
+    # So quantifying water would mean inventing a crosses-versus-runs-along heuristic and trusting OSM
+    # to distinguish a real hazard from a storm drain, on four holes. Printing "carry 86" for a culverted
+    # drain is precisely the confident-but-unsupported number this book exists not to print, and the
+    # failure is worse than the omission: the map already draws every one of these in blue and the
+    # footer counts them ("1W"), so the reader is told the water is there, just not measured.
+    #
+    # The card says so rather than leaving it to be inferred -- the legend reads "carry N = yd ... to
+    # where fairway SAND starts" (see generate.py), which is why that wording is asserted by a test.
+    # Revisit only with something better than the tag to go on.
     # Every along-line distance here is measured from where the LINE starts, and on a forward-tee hole
     # that is not the back tee. Left unshifted, merion 5 printed "carry 173" for sand that is nearer
     # 276 from the Championship tee -- a 103 yd understatement of the one number a player actually
