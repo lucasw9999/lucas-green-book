@@ -9620,6 +9620,76 @@ def test_the_cross_flight_grid_matches_the_surface_it_checks():
         f"green interior; the orientation is right but something else about the grid is not")
 
 
+@pytest.mark.slow          # re-renders every card of every book
+@needs_corpus
+def test_every_shipped_card_is_what_the_engine_produces_now():
+    """The books on disk must be what today's code emits, panel for panel.
+
+    A MUTATION SURVEY OF THIS SUITE FOUND THIS TO BE ITS LARGEST STRUCTURAL GAP. Roughly a third of the
+    suite's evidence is the committed artifact -- greenbook*.html, the PDFs, dem_hd/*.json,
+    hole_elev.json -- so an ENGINE change that emits a wrong number leaves every artifact test green
+    until somebody happens to rebuild. Four such mutations were run and all four passed the full suite:
+
+      * every footer's bunker count made one too low in generate.py
+      * every footer's water count made one too low
+      * the scorecard's Out row made to sum holes 1-8, dropping hole 9
+      * an unqualified Rule 4.3 conformance claim emitted on every card
+
+Each of those puts a wrong number in a junior's pocket. `test_built_books_still_match_the_engine_and_
+    the_data` closes this loop for the PLAYLINE ROW only; the cold-build test closes it completely but
+    is gated behind COLD_BUILD=1 and takes twenty minutes, so it does not run in an ordinary suite.
+
+    This re-renders every hole panel and every green panel in process and requires the shipped HTML to
+    contain them verbatim. It is the cheap half of the cold build: it cannot catch a change to the
+    sheet imposition or the cover, but it catches any change to what a CARD says -- which is where the
+    printed numbers live. When it fails the fix is almost always to rebuild, and the message says so.
+    """
+    checked = collections.Counter()
+    stale = []
+    for slug in CORPUS:
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        if not os.path.isfile(book):
+            continue
+        os.environ["COURSE"] = slug
+        for m in ("config", "geo", "render_green", "render_hole", "generate"):
+            sys.modules.pop(m, None)
+        import config
+        import generate
+        with open(book, encoding="utf-8") as fh:
+            html = fh.read()
+        yardage = (config.BUILD_MODE == "yardage")
+        if not yardage:
+            for h in config.HOLE_NUMS:
+                generate.GREENS[h] = generate.render_green.render(h, tournament=True)
+                generate.LAYOUTS[h] = generate.render_hole.render_hole(h, generate.HOLES)
+        thirds = generate._deck_thirds(config.HOLE_NUMS)
+        for h in config.HOLE_NUMS:
+            grp = next(lbl for lo, hi, lbl in thirds if lo <= h <= hi)
+            panel = (generate.yardage_hole_panel(h, grp) if yardage
+                     else generate.hole_panel(h, grp))
+            checked[slug] += 1
+            if panel not in html:
+                stale.append(f"{slug} hole {h}")
+        for maker in (generate.scorecard_panel, generate.tees_panel):
+            try:
+                p = maker()
+            except Exception:
+                continue
+            checked[slug] += 1
+            if p not in html:
+                stale.append(f"{slug} {maker.__name__}")
+    assert sum(checked.values()) >= 150, (
+        f"only {sum(checked.values())} panels re-rendered; the corpus ships 216 hole cards")
+    assert not stale, (
+        f"{len(stale)} shipped panel(s) are not what the engine emits now:\n  "
+        + "\n  ".join(stale[:12])
+        + "\n\n  Either the books need rebuilding (COURSE=<slug> python3 generate.py, then "
+          "python3 tools/export_pdf.py), or a code change altered a printed value and the books "
+          "still show the old one. Until they agree, every test that reads the shipped HTML is "
+          "measuring yesterday's engine.")
+    assert_no_course_skipped(checked, "test_every_shipped_card_is_what_the_engine_produces_now")
+
+
 @needs_corpus
 def test_no_par_3_prints_a_carry():
     """"carry N" is a tee-shot decision, and a par 3 does not have one.
