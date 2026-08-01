@@ -154,6 +154,14 @@ class _Extremes:
         for i in range(n - 1):
             j = min(i + MAX_ISOLATED_VALUES + 1, n - 1)
             if abs(inward[j] - inward[i]) <= MAX_ENDPOINT_GAP_S:
+                # HOW FAR the trim reached matters as much as how many it dropped. Trimming is for a
+                # clock GLITCH; a value years from the bulk is not a glitch, it is a second epoch, and
+                # a tile holding two epochs cannot be dated at all. Widening the support window made
+                # such a cluster trimmable where the old rule had (accidentally, via the 730-day span
+                # check on the resulting range) refused it -- so the bound is stated here instead of
+                # depending on a downstream check that no longer sees the discarded values.
+                if i and abs(inward[0] - inward[i]) > MAX_TILE_SPAN_DAYS * 86400.0:
+                    return None
                 return float(inward[i]), i
             if i >= MAX_ISOLATED_VALUES:
                 return None
