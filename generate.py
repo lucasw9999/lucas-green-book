@@ -231,7 +231,14 @@ def _hole_elev():
         print(f"  ! {p} exists but could not be read ({type(e).__name__}: {e}); "
               f"no elevation line will print")
         return {}
-    return {int(k): v.get("change_ft") for k, v in (rec.get("holes") or {}).items()
+    # Prefer the UNROUNDED figure where the producer records it. The 3 ft floor below is compared
+    # against this value, and comparing a threshold against a number already rounded to 0.1 ft let
+    # 2.956 ft pass a gate that forbids anything under 3 -- two cards printed "green 3 ft" for a
+    # height the floor exists to suppress. Falls back to change_ft for records written before the
+    # exact field existed, so an old hole_elev.json still prints rather than going blank.
+    return {int(k): (v.get("change_ft_exact") if v.get("change_ft_exact") is not None
+                     else v.get("change_ft"))
+            for k, v in (rec.get("holes") or {}).items()
             if v.get("change_ft") is not None}
 
 

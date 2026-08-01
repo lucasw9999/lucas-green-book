@@ -520,7 +520,15 @@ def main():
         rows[str(hn)] = {"tee_z_m": round(tz_m, 2),
                          "green_z_m": round(gz, 2),
                          "change_m": round(d_m, 2),
+                         # Stored to 0.1 ft for display, and UNROUNDED beside it because generate.py
+                         # gates on 3 ft and rounding first moves values across that line: micke-grove
+                         # 6 measures 2.956 ft and the-reserve 10 measures -2.952 ft, both stored as
+                         # 3.0, both printed as "green 3 ft" -- a figure the module's own floor forbids,
+                         # by a floor written because two honest sources disagree by more than the
+                         # number below it. Two cards were printing it. A threshold must see the
+                         # measurement, not a display value.
                          "change_ft": round(d_m * 3.28084, 1),
+                         "change_ft_exact": d_m * 3.28084,
                          "tee_points": n,
                          "tee_basis": bases[hn],
                          # WHERE the tee height was sampled, not just how the anchor was found. Both are
