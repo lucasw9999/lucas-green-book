@@ -61,8 +61,21 @@ def point_in_poly(x, y, poly):
     return inside
 
 def heat_color(slope_pct):
+    """Green -> amber -> red by steepness, with LIGHTNESS that falls monotonically.
+
+    The ramp used to brighten to a pale yellow at the 2.5% midpoint before darkening to red, so its
+    grey value FOLDED: 0.00% and 3.65% both printed grey 170. On a home mono printer -- which is how a
+    junior actually prints this -- dead flat and a severe slope were the same shade, and 26% of all
+    heat cells in the shipped books collided with a slope at least 1.5 points different. Worse, the
+    legend inverted: a 3.6% cell matched the FLAT swatch.
+
+    Fixed by darkening the mid and end stops so luminance falls 189 -> 62 with no reversal, which
+    keeps the colour reading identical (hues still 120 deg green, amber, red) while making the
+    grayscale print monotonic -- now at least 11 grey levels per 1.5 points of slope. Geometry is
+    untouched, so no scale, layout, or Rule 4.3 measurement moves.
+    """
     t = min(max(slope_pct/5.0, 0), 1)
-    stops = [(0.0,(120,190,120)),(0.5,(232,224,120)),(1.0,(210,90,70))]
+    stops = [(0.0,(150,205,150)),(0.5,(206,170,60)),(1.0,(150,40,32))]
     for a in range(len(stops)-1):
         t0,c0 = stops[a]; t1,c1 = stops[a+1]
         if t <= t1:
