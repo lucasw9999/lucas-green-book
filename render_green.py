@@ -13,8 +13,15 @@ ground returns where available (1 m seamless DEM as an honest fallback):
   * slope heat           = |gradient|, fixed golf scale (0=flat green .. >=5%=red)
 The whole drawing is rotated so the hole's APPROACH is at the bottom of the panel.
 
-Honest limit: airborne LiDAR (~10 cm vertical) resolves real overall tilt / tiers,
-not sub-inch break -- that needs an on-site survey.
+Honest limit, and it is NOT vertical noise. USGS quotes ~10 cm absolute vertical accuracy, but that
+is a datum offset: it moves a whole green up or down together and changes no read, because break
+depends on RELATIVE height inside the one green. Measured against a second independent survey of the
+same greens, the smoothed surface these contours are drawn from repeats to RMS 0.85 cm (p95 1.54),
+so the 15 cm interval is ~18x the noise -- see legal/09_GREEN_SURFACE_REPEATABILITY.md.
+What genuinely cannot be resolved is SPATIAL and non-geometric: a 0.4 m grid under ~1.5 m of
+smoothing erases anything smaller than about a metre and a half, and no elevation model knows grain,
+firmness, moisture, mowing direction or a fresh hole location. So this reads real tilt and tiers,
+never sub-inch break -- that still needs an on-site survey and your own eyes.
 """
 import json, math, os
 import numpy as np

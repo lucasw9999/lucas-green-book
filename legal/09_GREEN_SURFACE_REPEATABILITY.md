@@ -56,6 +56,32 @@ Three of the 33 pairs agreed physically but landed either side of a printed digi
 2.06% prints as "2.0" and "2.1". That is rounding at the boundary, not disagreement, and the tool
 reports it as such rather than as a failure.
 
+## The contour interval
+
+Every green card also asserts **"Contours join equal height (15 cm each)"**. That is a separate claim
+from the tilt, and it needed its own check: if two surveys of the same green disagree by anything near
+15 cm, then adjacent contour lines are inside the survey noise and the card is drawing detail it
+cannot support.
+
+Crucially, the figure that governs this is **relative**, not absolute. USGS quotes ~10 cm absolute
+vertical accuracy for this class of LiDAR, and the project's own source used to cite that as its
+honest limit — but an absolute offset moves an entire green up or down together and changes no read.
+Break depends on height *differences within the one green*.
+
+Differencing the two passes' **rendered** surfaces — each gridded at 0.4 m and smoothed the same way
+the card is — over all 33 greens and 87,589 cells inside the green cores:
+
+| | |
+|---|---|
+| RMS difference | **0.85 cm** |
+| 95th percentile | 1.54 cm |
+| worst single cell | 7.93 cm |
+
+The 15 cm contour interval is therefore about **18× the noise floor** of the surface it is drawn from.
+The claim holds with a wide margin. Averaging 13–28 ground returns per square metre and then smoothing
+over ~1.5 m beats single-pulse accuracy by a large factor, which is why the relative figure is an
+order of magnitude better than the absolute spec.
+
 ## What this does and does not establish
 
 **Does:** the printed read is *reproducible*. Re-fly the course and the card comes out the same. The
@@ -67,12 +93,17 @@ had to hold, and it holds with two orders of magnitude of margin.
 1. **This is precision, not accuracy.** Both passes come from the same USGS program, sensor class and
    processing chain. A *systematic* bias — a vertical datum offset, a consistent ground‑classification
    bias in turfgrass — would be present in both and invisible here. Bounding that needs a
-   ground‑truth survey, which this project does not have and cannot get from public data.
-2. **It validates the dominant plane, not the detail.** Tilt, aim and the firm/subtle qualifier are
-   what were compared. It says nothing about whether an individual 15 cm contour or a single arrow on
-   a subtle green is right.
-3. **n = 33 greens on 5 courses, one LiDAR program.** Four of the five course pairs are days apart
-   and leaf‑off winter or summer; only Philadelphia spans a season.
+   ground‑truth survey, which this project does not have and cannot get from public data. For the
+   contour and break claims this matters less than it sounds, because a bias shared by the whole green
+   cancels out of every height *difference*; it would matter for an absolute elevation, which no green
+   card prints.
+2. **It validates the dominant plane and the surface the contours follow, not every feature.** Tilt,
+   aim, the firm/subtle qualifier and the 15 cm interval are what were compared. It does not establish
+   that any individual arrow on a subtle green points the right way — and one green, micke‑grove 2, is
+   flat enough that the plane and its own arrows disagree by 177°, so the card names no direction there
+   at all.
+3. **n = 33 greens on 5 courses, one LiDAR program.** Four of the five course pairs are days apart and
+   leaf‑off winter or summer; only Philadelphia spans a season.
 4. It cannot detect a change that happened *before* the first pass or *after* the last. Poppy Ridge's
    2025 rebuild post‑dates all available coverage, which is why that course has no green maps at all.
 

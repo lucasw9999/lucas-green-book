@@ -49,6 +49,11 @@ MIN_PTS = 2000         # and an absolute floor, for small greens where 50% is st
 # well-covered Alameda pairs agree to 0.07pp. Anything past these is not precision, it is change.
 TOL_TILT_PP = 0.25     # percentage points of dominant tilt
 TOL_AIM_DEG = 10.0     # degrees of dominant break direction
+# The card claims "Contours join equal height (15 cm each)". That claim is about RELATIVE height
+# inside one green, not absolute elevation -- a uniform datum offset moves every contour together and
+# changes no read. So the figure that matters is how far two independent surveys of the same green
+# disagree AFTER gridding and smoothing, which is what the contour lines are actually drawn from.
+CINT_CM = 15.0
 CHUNK = 4_000_000
 
 
@@ -91,8 +96,11 @@ def _summary(meta, grid, lon, lat, z, zscale, putt=None):
     if not mask.any() or np.isnan(zi[mask]).all():
         return None
     arr = np.where(np.isnan(zi), float(np.nanmedian(zi[mask])), zi)
-    _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y, putt=putt)
+    surf, core, S = rg.green_summary(arr, mask, px_x, px_y, putt=putt)
     S['aim_deg'] = math.degrees(math.atan2(S['pdc'], -S['pdr'])) % 360.0
+    S['surf'] = surf                 # kept so two passes' rendered surfaces can be differenced
+    S['core'] = core
+    S['nan_frac'] = float(np.isnan(zi[mask]).mean())
     return S
 
 
@@ -130,7 +138,7 @@ def check(slug, verbose=True):
             m['_dir'] = cdir
             metas[m['hole']] = m
     if not metas:
-        return 0, []
+        return 0, [], 0, 0, []
     _pt2utm, zscale = laz_to_utm()
     tz = course_tz(config.COURSE['location']['lat'], config.COURSE['location']['lon'],
                    config.COURSE.get('tz'))
@@ -150,7 +158,7 @@ def check(slug, verbose=True):
                 try:
                     t = np.asarray(ch.gps_time)[g]
                 except Exception:
-                    return 0, []          # no per-point time: nothing to separate
+                    return 0, [], 0, 0, []   # no per-point time: nothing to separate
                 lon, lat = inv.transform(np.asarray(ch.x)[g], np.asarray(ch.y)[g])
                 z = np.asarray(ch.z)[g]
                 for h, m in metas.items():
@@ -165,7 +173,7 @@ def check(slug, verbose=True):
                         per[h].setdefault(d, []).append(
                             np.c_[lon[s][k], lat[s][k], z[s][k]])
 
-    bad, n, skipped, flips = [], 0, 0, 0
+    bad, n, skipped, flips, surfd = [], 0, 0, 0, []
     for h in sorted(metas):
         grid = _grid(metas[h])
         putt = _shipped_putt(metas[h], grid)
@@ -206,14 +214,18 @@ def check(slug, verbose=True):
                       f"   d_tilt {dtilt:4.2f}pp  d_aim {daim:4.1f}deg   {note}")
             if over:
                 bad.append((slug, h, ds[0], d, ref['tilt_pct'], o['tilt_pct'], dtilt, daim))
-    return n, bad, skipped, flips
+            # noise floor of the drawn surface, for the contour-interval claim
+            both = ref['core'] & o['core']
+            if both.any():
+                surfd.append(np.abs(ref['surf']-o['surf'])[both]*100.0)
+    return n, bad, skipped, flips, surfd
 
 
 def main():
     slugs = ([os.path.basename(os.path.dirname(p)) for p in sorted(glob.glob("courses/*/course.json"))]
              if "--all" in sys.argv else [os.environ.get("COURSE") or sys.exit(
                  "set COURSE=<slug> or pass --all")])
-    total, bad, skipped, flips = 0, [], 0, 0
+    total, bad, skipped, flips, surfd = 0, [], 0, 0, []
     for s in slugs:
         j = json.load(open(f"courses/{s}/course.json"))
         dates = {d for pair in j.get('lidar_flown', {}).get('tiles', {}).values() for d in pair}
@@ -223,19 +235,27 @@ def main():
                       f"-- nothing to cross-check")
             continue
         print(f"  {s}: survey spans {sorted(dates)}")
-        n, b, sk, fl = check(s)
+        n, b, sk, fl, sd = check(s)
         if n == 0:
             print("    no green was independently covered by 2 passes -- nothing comparable")
         total += n
         bad += b
         skipped += sk
         flips += fl
+        surfd += sd
     print(f"\n  {total} green(s) had two passes that each covered them; {len(bad)} disagree beyond "
           f"{TOL_TILT_PP}pp tilt / {TOL_AIM_DEG:.0f}deg aim")
     print(f"  {skipped} pass/green pair(s) skipped for covering under {MIN_COVER*100:.0f}% of the "
           f"green -- a sliver cannot check a survey")
     print(f"  {flips} agreed physically but landed either side of a printed digit (e.g. 2.05 vs "
           f"2.06 -> \"2.0\" vs \"2.1\"); that is rounding, not disagreement")
+    if surfd:
+        a = np.concatenate(surfd)
+        rms = float(np.sqrt((a**2).mean()))
+        print(f"  rendered-surface noise floor from {len(surfd)} green pair(s), {len(a)} cells: "
+              f"RMS {rms:.2f} cm, p95 {np.percentile(a, 95):.2f} cm, max {a.max():.2f} cm")
+        print(f"  -> the card's {CINT_CM:.0f} cm contour interval is {CINT_CM/max(rms, 1e-9):.0f}x that RMS, "
+              f"so adjacent contours are not inside the survey noise")
     if bad:
         print("\n  A green whose two passes disagree beyond the tolerance was probably CHANGED\n"
               "  between them, which makes the shipped surface a composite of two different\n"
