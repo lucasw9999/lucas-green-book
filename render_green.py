@@ -79,6 +79,45 @@ def rot(x, y, cx, cy, deg):
 DIRS = [(0,-1,"back"),(0.71,-0.71,"back-right"),(1,0,"right"),(0.71,0.71,"front-right"),
         (0,1,"front"),(-0.71,0.71,"front-left"),(-1,0,"left"),(-0.71,-0.71,"back-left")]
 
+def play_line_span(rp):
+    """(front_y, back_y, midx) for a rotated green: where the LINE OF PLAY enters and leaves it.
+
+    The datum for everything the card says about depth. It used to be the rotated polygon's BOUNDING
+    BOX -- max(rys) to min(rys) -- and on a green set square to the approach those are the same thing,
+    which is why it survived. On a green set DIAGONALLY they are not: the frontmost and backmost
+    vertices are corners on opposite sides of the green, and the box spans far more than the green is
+    deep anywhere a ball actually lands.
+
+    castlewood-valley 14 is the worked case. A 125 yd par 3 whose green is a clean parallelogram lying
+    ~45 degrees across the approach: the card printed "41yd deep" and ruled its grey ladder out to 40,
+    on a green that is 20 yd deep down the line the pin ring sits on. That is two clubs of margin for a
+    back pin, on the shortest hole of the round -- the single largest thing this book has told a reader
+    that its own drawing contradicts. Corpus-wide 87 of 198 greens printed a depth 3+ yd too deep and
+    53 were 5+ yd too deep.
+
+    The box was also the ladder's ZERO, so the two errors compounded: on castlewood-valley 14 the front
+    corner sits 14.8 yd nearer the approach than the front edge at the middle, so a reader standing on
+    the front-middle was already reading ~15 on a ladder captioned "yd from the front edge".
+
+    Measuring at the lateral middle fixes both with one number, and it is the line the reader plays:
+    the pin ring is drawn on it, and the ladder now zeroes where the printed depth starts, so the
+    headline figure and the top rung cannot disagree. The centre line crosses the outline exactly
+    twice on all 198 greens in the corpus, so this is single-valued everywhere -- it is not picking
+    an outer extent across a notch.
+    """
+    rxs = [q[0] for q in rp]
+    midx = (min(rxs) + max(rxs)) / 2.0
+    ys, n = [], len(rp)
+    for i in range(n):
+        x1, y1 = rp[i]; x2, y2 = rp[(i+1) % n]
+        if (x1 > midx) != (x2 > midx):
+            ys.append(y1 + (y2-y1)*(midx-x1)/(x2-x1))
+    if len(ys) < 2:                       # degenerate ring: fall back to the box rather than crash
+        rys = [q[1] for q in rp]
+        return max(rys), min(rys), midx
+    return max(ys), min(ys), midx         # approach edge is at the bottom, so front = max
+
+
 def depth_width_yd(meta):
     """(depth, width) in yards, measured in the APPROACH frame -- front-to-back is depth.
 
@@ -102,8 +141,9 @@ def depth_width_yd(meta):
     theta = -90.0 - a_ang
     cx, cy = W / 2.0, H / 2.0
     rp = [rot(x, y, cx, cy, theta) for x, y in poly]
-    rxs = [p[0] for p in rp]; rys = [p[1] for p in rp]
-    return ((max(rys) - min(rys)) * px_m / 0.9144, (max(rxs) - min(rxs)) * px_m / 0.9144)
+    rxs = [p[0] for p in rp]
+    fy, by, _midx = play_line_span(rp)
+    return ((fy - by) * px_m / 0.9144, (max(rxs) - min(rxs)) * px_m / 0.9144)
 
 
 def _blank_green(meta, tournament, rebuilt=False):
@@ -257,7 +297,16 @@ def green_summary(arr, mask, px_x, px_y, putt=None):
     # for a book whose rule is never to print a read the data does not support. The qualifier is also not
     # a function of the printed number at all -- it depends on the FALL as well as the tilt -- so tying it
     # to one decimal would make it less informative to look more tidy.
-    conf = "firm" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "subtle"
+    # The VALUES are "clear"/"faint", not "firm"/"subtle". This gate measures whether the dominant fall
+    # clears the LiDAR noise floor -- it is a statement about the EVIDENCE. Printed as "(firm)", a
+    # golfer reads a statement about the TURF, which is the one thing this module's own docstring says
+    # it cannot know: "no elevation model knows grain, FIRMNESS, moisture, mowing direction or a fresh
+    # hole location". The book disclaimed firmness in prose and then printed "firm" 220 times beside a
+    # slope percentage, on every one of 252 green footers, with no definition in either legend -- and on
+    # two of the fourteen books all 18 greens said it, so it carried no information at all while looking
+    # like a turf claim. "clear"/"faint" describe what was actually tested, and they join a vocabulary
+    # the guide card already explains, ending at NO_CLEAR_FALL: clear fall -> faint -> no clear fall.
+    conf = "clear" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "faint"
     return surf, core, dict(slope=slope, dcol=dcol, drow=drow, relief_m=relief_m,
                             med_slope=med_slope, tilt_pct=tilt_pct, undul_ft=undul_ft,
                             pdc=pdc, pdr=pdr, span_m=span_m, rise_ft=rise_ft, conf=conf,
@@ -484,26 +533,40 @@ def render(hole, tournament=False):
     # ---- depth references: 5-yd front->back grid + F/C/B ----
     px_m = (px_x + px_y) / 2.0
     rp = [rot(x, y, cx, cy, theta) for x, y in poly]      # polygon in screen space
-    rxs = [p[0] for p in rp]; rys = [p[1] for p in rp]
-    front_y, back_y = max(rys), min(rys)                  # approach edge is at bottom
-    midx = (min(rxs)+max(rxs))/2.0
+    rxs = [p[0] for p in rp]
+    # front/back down the LINE OF PLAY, not the corners of the bounding box -- see play_line_span.
+    # depth_yd, the grey 5-yd ladder below and the pin ring all hang off these two numbers, so they
+    # move together and the printed depth cannot disagree with the top rung.
+    front_y, back_y, midx = play_line_span(rp)
     depth_yd = (front_y-back_y)*px_m/0.9144
     width_yd = (max(rxs)-min(rxs))*px_m/0.9144
-    def xspan(yy):                                        # green x-extent at screen-y yy
+    def xspans(yy):
+        """The green's x-extent(s) at screen-y yy, as inside/outside PAIRS.
+
+        This returned a single (min, max) span, which draws the rung straight across a concavity --
+        over ground the card's own outline excludes. copper-valley 4 has it: one of its six rungs
+        bridged a 7.0 yd gap outside the polygon, ruling a putting-depth reference across a notch.
+        Sorting the crossings and taking them two at a time draws only the parts that are green, and
+        collapses to the old behaviour on the convex greens that are the vast majority.
+        """
         xs=[]
         n=len(rp)
         for i in range(n):
             x1,y1=rp[i]; x2,y2=rp[(i+1)%n]
             if (y1>yy)!=(y2>yy):
                 xs.append(x1+(x2-x1)*(yy-y1)/(y2-y1))
-        return (min(xs),max(xs)) if len(xs)>=2 else None
+        xs.sort()
+        return [(xs[i], xs[i+1]) for i in range(0, len(xs)-1, 2)]
     step = 4.572/px_m                                     # 5 yards in pixels
     glines=[]; k=1; yy=front_y-step
     while yy>back_y:
-        sp=xspan(yy)
-        if sp:
-            glines.append(f'<line x1="{sp[0]:.1f}" y1="{yy:.1f}" x2="{sp[1]:.1f}" y2="{yy:.1f}"/>'
-                          f'<text x="{sp[1]+1.5:.1f}" y="{yy+1.5:.1f}" font-size="3.4" fill="#8a8a8a" stroke="none">{k*5}</text>')
+        sps=xspans(yy)
+        if sps:
+            for a, b in sps:
+                glines.append(f'<line x1="{a:.1f}" y1="{yy:.1f}" x2="{b:.1f}" y2="{yy:.1f}"/>')
+            # one label per rung, at the right-hand edge of the green -- not once per fragment
+            glines.append(f'<text x="{sps[-1][1]+1.5:.1f}" y="{yy+1.5:.1f}" font-size="3.4" '
+                          f'fill="#8a8a8a" stroke="none">{k*5}</text>')
         yy-=step; k+=1
     gridg=f'<g stroke="#9a9a9a" stroke-width="0.35" stroke-dasharray="2,2" opacity="0.7" fill="#8a8a8a">{"".join(glines)}</g>'
     # (front/center/back yardage tags removed by request -- declutter the green)
