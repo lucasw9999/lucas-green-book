@@ -9643,6 +9643,24 @@ Each of those puts a wrong number in a junior's pocket. `test_built_books_still_
     contain them verbatim. It is the cheap half of the cold build: it cannot catch a change to the
     sheet imposition or the cover, but it catches any change to what a CARD says -- which is where the
     printed numbers live. When it fails the fix is almost always to rebuild, and the message says so.
+
+    IT ALSO CLOSES THE SURVEY'S OTHER FINDING, which I first reported as still open. The survey showed
+    a POCKET-edition green drawn for the wrong hole survives when the two holes share a rotation and a
+    depth -- the enlarged edition has a dedicated guard and the pocket edition did not. Comparing the
+    whole panel verbatim catches it regardless: swapping two DISTINCT green SVGs between monarch-bay
+    holes 2 and 13 in the shipped book (18,975 and 22,753 characters, file length unchanged) fails here.
+    That is the matched-rotation matched-depth pair the survey chose precisely because the old guards
+    could not see it. Checked after the fact, because I had claimed otherwise -- and a first attempt to
+    reproduce it passed only because the mutation was ineffective, a non-greedy </div> match swapping a
+    fragment inside the SVG rather than the surface.
+
+    The gap that genuinely remains is different in kind, and no amount of re-rendering closes it:
+    self-consistency standing in for verification. Par, stroke index, tee yardage, page totals and tee
+    elevation are each checked only against other copies of themselves, so six mutations that changed
+    every copy together stayed green -- including a tee yardage off by 10 yd, consistent across
+    course.json, both editions, the scorecard row and the totals. Nothing in this suite compares a
+    yardage to anything OUTSIDE course.json; closing that needs an external reference the project does
+    not hold.
     """
     checked = collections.Counter()
     stale = []
