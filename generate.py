@@ -530,14 +530,15 @@ def guide_panel():
   <div class="gtitle">How to read a green</div>
   <div class="legrow"><svg width="28" height="14"><line x1="2" y1="7" x2="18" y2="7" stroke="#15271b" stroke-width="1.3"/><polygon points="18,7 14,4.5 14,9.5" fill="#15271b"/></svg>
     <span><b>Arrows</b> point downhill &mdash; the way the ball rolls. Longer = steeper.</span></div>
-  <div class="legrow"><span><b>Numbers</b> = slope % at that spot. Ground steeper than
-    <b>10%</b> is not putting surface (a bank or bunker face inside the mapped edge), so it is
-    shown by colour only and carries no number.</span></div>
+  <div class="legrow"><span><b>Black numbers</b> = slope % there; over <b>10%</b> is bank or bunker face,
+    not putting surface, so it is coloured but not numbered. <b>Grey numbers</b> = yd from the front edge.
+    The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
   <div class="legrow"><svg width="28" height="14"><path d="M2,11 Q9,3 26,6" stroke="#3c5a34" fill="none" stroke-width="0.9"/><path d="M2,13 Q11,7 26,11" stroke="#3c5a34" fill="none" stroke-width="0.9"/></svg>
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep.</span></div>
   <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="7" height="9" fill="rgb(120,190,120)"/><rect x="10" y="3" width="7" height="9" fill="rgb(232,224,120)"/><rect x="18" y="3" width="7" height="9" fill="rgb(210,90,70)"/></svg>
-    <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%). <b>Numbers</b> = slope % there.
-    <b>Print in colour</b> &mdash; over 10% has colour and no number, and bunkers fade into the fairway.</span></div>
+    <span><b>Colour</b> = steepness: green flat &rarr; yellow &rarr; red (&ge;5%).
+    <b>Print in colour</b> &mdash; the steepest ground is shown by colour alone, and bunkers otherwise
+    fade into the fairway.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _no_fall_note() + '''

@@ -8027,9 +8027,16 @@ def test_no_card_silently_clips_its_own_text():
     The metric is self-validating: it appends a deliberately overflowing element first and asserts it
     is detected, so a future change that makes the check blind fails here rather than passing quietly.
 
-    Slack is real but thin. The guide card's ink comes within 1.19 mm of the trim on three books, and
-    its content is conditional (the no-clear-fall note appears only where a green needs it), so this
-    grows with the caveats a course happens to require.
+    Slack is real and THIN, measured: the About/guide card has **under one legend row of headroom**. Its
+    ink comes within 1.2 mm of the trim on three pocket books, and injecting one more conditional legend
+    row overflows 7 of the 15 books -- worst 22.8 px on the pocket edition, 38.9 px on the enlarged one,
+    clipping the licence line and the contact address.
+
+    That is not a defect in what ships: no course emits every conditional row at once, and this test
+    verifies the real builds. It is a warning to whoever adds the next caveat. The rows that fire
+    conditionally are _no_fall_note() and _flown_line()'s rebuild / 1-m-data lists, so a future course
+    with a no-clear-fall green AND pre-rebuild greens AND seamless-fallback greens is the case that will
+    break it -- and it will break it here, loudly, rather than silently on paper. Make room first.
     """
     # BOTH editions. Globbing only greenbook.html is how this guard missed a live defect: the enlarged
     # edition's About & legal card was overflowing by 27 px on two courses, clipping the licence line,
