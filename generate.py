@@ -26,6 +26,7 @@ from config import HOLES, NAME as COURSE, ADDRESS as ADDR, COURSE_DIR
 
 GREENS = {}    # hole -> (svg, summary)
 LAYOUTS = {}   # hole -> (svg, info)
+_TREES = None  # lazily loaded trees_lidar.json; see _tree_markers()
 
 # Young players (juniors, and men especially) play the BACK tee, so show the
 # LONGER of the two configured tees as the big main yardage and the shorter as
@@ -151,6 +152,25 @@ def yardage_guide_panel():
   </div>
 </div>'''
 
+
+def _tree_markers(hole):
+    """LiDAR tree markers on one hole, or [] -- cached; see the note at the footer that uses it."""
+    global _TREES
+    if _TREES is None:
+        try:
+            _TREES = render_hole._lidar_trees() or {}
+        except Exception:
+            _TREES = {}
+    return _TREES.get(str(hole)) or []
+
+
+def _course_has_trees():
+    """True when SOME hole has markers. A course with no tree layer at all draws none anywhere, and
+    marking all 18 holes "no tree data" would be noise rather than a caveat."""
+    _tree_markers(1)
+    return any(_TREES.values())
+
+
 def green_honesty(hole, s):
     """The green label and the slope phrase, for BOTH editions.
 
@@ -256,8 +276,25 @@ def hole_panel(hole, sheet_label):
     lead = (f'green <b>{esc(s["feeds"])}</b> &middot; no slope printed' if slope is None else slope)
     playline = playline_html(hole, i)          # shared with the enlarged edition -- see playline_html
 
+    # Trees are found by height above ground in the point cloud, so a hole the survey does not reach
+    # draws NONE -- and on the map that is indistinguishable from a links hole that genuinely has none,
+    # while the guide card's legend promises "trees". Said on the hole's own card, beside the bunker and
+    # water counts it belongs with, because that is where the reader is looking at the blank corridor.
+    # Monarch Bay 1, 17 and 18 are the case: zero markers each, and exactly the three holes
+    # lidar_coverage.py reports as centreline outside the point data. They are the only zero-tree holes
+    # in the corpus, so the blank is the survey's edge and not open ground.
+    #
+    # NOT on the guide card, where the other per-hole data caveats live: that panel is full. A single
+    # extra row there overflowed monarch-bay's card by 20 px and clipped the legal notice and the
+    # contact line, and trimming 33 characters of existing wording did not buy the line back. Derived
+    # from the shipped tree data, so it cannot go stale and needs no extra pipeline stage -- which also
+    # means it cannot prove WHY a hole is empty, hence "no tree data" rather than a coverage claim.
+    notrees = ""
+    if not _tree_markers(hole) and _course_has_trees():
+        notrees = ' &middot; <b>no tree data</b>'
     foot = (f'<span>{lead}</span>'
-            f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W &middot; {esc(others)}</span>')
+            f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W{notrees}'
+            f' &middot; {esc(others)}</span>')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
   <div class="hhead">
@@ -420,6 +457,18 @@ def _flown_line():
                 'cloud (tree cover or water), so their greens come from the coarser <b>1 m</b> '
                 'national elevation model and are marked <b>&ldquo;1 m data&rdquo;</b>. The tilt is '
                 'real, just less sharp &mdash; small tiers may be smoothed away.</span></div>\n')
+    # And the same treatment for the TREE layer, which had none. Trees are found by height above
+    # ground in the point cloud, so a hole the survey does not reach draws no trees -- indistinguishable
+    # on the card from a hole that genuinely has none, while the legend promises "trees". Monarch Bay 1,
+    # 17 and 18 are the case: zero markers each, and they are exactly the three holes lidar_coverage.py
+    # reports as having centreline outside the point data. They are also the only zero-tree holes in the
+    # whole corpus, so the blank is the survey's edge, not open ground.
+    #
+    # Derived from the shipped tree data rather than from a coverage report, so it cannot go stale
+    # against a rebuild and needs no extra pipeline stage. That also means it cannot prove WHY a hole
+    # is empty, so the wording claims only what is known: no markers fell here, do not read the blank
+    # as clear. Suppressed when a course has no tree data at all -- then every hole is blank and the
+    # sentence would be noise rather than a caveat.
     return out
 
 

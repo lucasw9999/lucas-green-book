@@ -8287,3 +8287,73 @@ def test_a_confirmed_rebuild_says_so_rather_than_no_coverage(gate_course):
         "something now reaches _blank_green(rebuilt=True). That is a real policy change -- a green is "
         "being withheld rather than printed with a pre-rebuild label -- so update this test and the "
         "docstring at _blank_green, which both record that the branch is deliberately dark.")
+
+
+@needs_corpus
+def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
+    """A hole with no tree markers must say so ON ITS OWN CARD, because blank does not mean clear.
+
+    Trees are found by height above ground in the point cloud, so a hole the survey does not reach
+    draws none -- and on the map that is indistinguishable from a links hole that genuinely has none,
+    while the guide card's legend promises "trees". A junior planning a line off the tee reads open
+    ground.
+
+    Monarch Bay 1, 17 and 18 are the case: zero markers each, and exactly the three holes
+    lidar_coverage.py reports as having centreline outside the point data ("Trees along those stretches
+    ... will be missing"). They are the ONLY zero-tree holes anywhere in the corpus, which is what makes
+    the blank the survey's edge rather than open ground. The card already named those holes for a
+    different reason -- their greens fall back to the 1 m DEM -- so a reader was told the green was
+    coarser and not that the corridor was unmapped.
+
+    On the hole card, not the guide card, and that placement is load-bearing rather than cosmetic. The
+    guide panel holds the other per-hole data caveats and is FULL: one extra row there overflowed
+    monarch-bay's card by 20 px and clipped the legal notice and the contact line, and trimming 33
+    characters of existing wording did not buy the line back. It is also the better place -- the caveat
+    sits beside the bunker and water counts, on the card whose map shows the blank corridor.
+
+    The wording claims only what is known. Derived from the shipped tree data, the book cannot prove WHY
+    a hole is empty, so it says "no tree data" rather than asserting missing coverage. The provenance
+    record carries the fuller statement, and this checks that too: legal/03 documents every other
+    per-hole limitation, so omitting this one would make it read complete when it is not.
+    """
+    checked, problems, seen, bare_total = 0, [], set(), 0
+    with open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md"), encoding="utf-8") as f:
+        prov = f.read()
+    for ref in BOOKS:
+        tp = os.path.join(ROOT, "courses", ref, "trees_lidar.json")
+        book = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not (os.path.exists(tp) and os.path.exists(book)):
+            continue
+        seen.add(ref)
+        with open(tp, encoding="utf-8") as f:
+            tl = json.load(f)
+        if not (tl and any(tl.values())):
+            continue                     # no tree layer at all: nothing to distinguish, no caveat owed
+        checked += 1
+        bare = sorted(int(h) for h, v in tl.items() if not v)
+        with open(book, encoding="utf-8") as f:
+            html = f.read()
+        marked = set()
+        for blk in re.split(r'<div class="panel hole">', html)[1:]:
+            hn = re.search(r'class="hnum">(\d+)</div>', blk)
+            if hn and "no tree data" in blk:
+                marked.add(int(hn.group(1)))
+        bare_total += len(bare)
+        if marked != set(bare):
+            problems.append(
+                f"{ref}: holes {sorted(set(bare)-marked)} draw NO trees and their cards do not say so"
+                f"{'; holes ' + str(sorted(marked-set(bare))) + ' are marked but do have trees' if marked-set(bare) else ''}"
+                f". The map shows an unmeasured corridor as open ground while the legend promises trees.")
+        if bare and not re.search(r"no tree markers on holes? "
+                                  + re.escape(", ".join(str(h) for h in bare)), prov):
+            problems.append(
+                f"{ref}: the book marks treeless holes {bare} but legal/03 does not record it. That "
+                f"table documents every other per-hole data limitation -- 1 m green fallbacks, how many "
+                f"holes carry a measured height -- so omitting this makes it read complete when it is "
+                f"not. Re-run tools/gen_provenance.py.")
+    assert checked >= 10, f"only {checked} books with a tree layer were checked"
+    assert_no_course_skipped(seen, "test_a_hole_the_survey_missed_does_not_print_as_open_ground")
+    assert bare_total >= 3, (
+        f"only {bare_total} treeless holes across the corpus; monarch-bay 1, 17 and 18 are the known "
+        f"case, so if that is gone the tree fetch changed and this test now proves nothing")
+    assert not problems, "a hole the survey missed prints as open ground:\n  " + "\n  ".join(problems)

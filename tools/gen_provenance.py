@@ -196,6 +196,28 @@ def _row(slug):
         notes.append(f"{insuf} green(s) had no usable point cloud and print no read")
     if dig:
         notes.append("hand-added greens were traced from public-domain USDA NAIP because OSM had none")
+    # The TREE layer's coverage gap belongs here too. This table already records where the green
+    # surfaces fall back to the 1 m DEM and how many holes carry a measured height change, so the one
+    # remaining per-hole data limitation it did not report was trees: they are found by height above
+    # ground in the point cloud, so a hole the survey does not reach draws none -- and on the card that
+    # is indistinguishable from a hole that genuinely has none. Monarch Bay 1, 17 and 18 are the case,
+    # and they are exactly the three holes lidar_coverage.py reports as having centreline outside the
+    # point data, which is why the blank is the survey's edge rather than open ground.
+    tp = os.path.join(ROOT, "courses", slug, "trees_lidar.json")
+    if os.path.exists(tp):
+        try:
+            with open(tp, encoding="utf-8") as fh:
+                tl = json.load(fh)
+        except (OSError, ValueError):
+            tl = {}
+        if tl and any(tl.values()):
+            bare = sorted(int(h) for h, v in tl.items() if not v)
+            if bare:
+                notes.append(
+                    f"**no tree markers on hole{'s' if len(bare) > 1 else ''} "
+                    f"{', '.join(str(h) for h in bare)}** — the point cloud does not reach those "
+                    f"corridors, so the maps show them treeless; the cards say to read the blank as "
+                    f"unmapped rather than clear")
     # Every card prints a Rating/Slope table. Those are the only printed numbers whose source this table
     # did not report, and 7 of 12 courses have none recorded -- while the panel's own note said "All
     # yardages from the official scorecard", which a reader takes as covering the columns beside them.
