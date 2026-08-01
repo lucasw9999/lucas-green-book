@@ -24,6 +24,7 @@ mutation test report the OPPOSITE of the truth -- it cost an hour here, first ap
 the contour test could not detect a broken interpolation when in fact it could. Always confirm the
 mutation applied (assert the old string was present) AND that the module you import reflects it.
 """
+import collections.abc
 import glob
 import json
 import math
@@ -205,16 +206,33 @@ def geometry_courses():
 
 
 def assert_no_course_skipped(seen, what):
-    """Every course with geometry must have contributed something.
+    """Every course with geometry must have CONTRIBUTED something -- not merely been visited.
 
     A COUNT floor cannot express this. Derived from CORPUS it falls with the count, so dropping a
     course keeps the test green; derived from the filesystem with a one-course slack it still keeps
     it green, because the slack is exactly the thing being lost. Both were tried and both passed a
-    mutation that hid valley-hi inside _courses(). The set is the honest assertion: per-item totals
-    vary legitimately (a green too shallow for three ladder rungs, a hole with no from-tee number),
-    but a course contributing NOTHING is always a skip.
+    mutation that hid valley-hi inside _courses(). Per-item totals vary legitimately (a green too
+    shallow for three ladder rungs, a hole with no from-tee number), but a course contributing
+    NOTHING is always a skip.
+
+    IT TOOK A SET, AND A SET CANNOT TELL THE DIFFERENCE. Twelve of the call sites did
+    `for ref in CORPUS: seen.add(ref)` at the TOP of the loop, which records intent, not work -- and
+    two of them iterated geometry_courses() itself, making the assertion literally `not (X - X)`,
+    unfalsifiable by any change to the code under test. Proven by mutation: making two such tests
+    `continue` immediately after the add, so the course contributed nothing at all, left them green.
+
+    So it takes a MAPPING of course -> how many things that course contributed, and a count cannot be
+    incremented without something to count. The right place for the increment is beside the per-item
+    counter each of these tests already keeps, past whatever gate can legitimately skip an item.
     """
-    missing = sorted(geometry_courses() - set(seen))
+    if not isinstance(seen, collections.abc.Mapping):
+        raise TypeError(
+            f"{what}: pass a MAPPING of course -> contribution count, not a {type(seen).__name__}. A set "
+            f"records only that the loop reached a course, which is what let twelve call sites assert "
+            f"nothing at all -- see this function's docstring. Use collections.Counter() and increment "
+            f"beside the per-item counter, past the gates that may legitimately skip an item.")
+    contributed = {k for k, v in seen.items() if v}
+    missing = sorted(geometry_courses() - contributed)
     assert not missing, (f"{what}: these courses have geometry on disk but contributed nothing -- "
                          f"they are being skipped: {missing}")
 
@@ -656,9 +674,9 @@ def test_every_printed_caveat_matches_the_data_behind_it():
     test was written after chasing.
     """
     checked, problems = 0, []
-    seen_courses = set()
+    seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses.add(ref)
+        seen_courses[ref] += 1
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -907,7 +925,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
         return (cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
 
     arrows = hole_pins = green_pins = slope_labels = 0
-    problems, seen = [], set()
+    problems, seen = [], collections.Counter()
     for ref in CORPUS:
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
@@ -920,7 +938,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
             hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
             if not hn:
                 continue
-            seen.add(ref)
+            seen[ref] += 1
 
             # --- arrows and the green outline share ONE rotated frame ---
             g = re.search(r'<g transform="rotate\((-?[\d.]+) ([\d.]+) ([\d.]+)\)">(.*?)'
@@ -1204,7 +1222,7 @@ def test_no_tree_marker_sits_on_a_playing_surface():
                 c = not c
         return c
 
-    total, offenders, seen = 0, [], set()
+    total, offenders, seen = 0, [], collections.Counter()
     for ref in CORPUS:
         tp = os.path.join(ROOT, "courses", ref, "trees_lidar.json")
         cp = os.path.join(ROOT, "courses", ref, "osm_course.json")
@@ -1221,7 +1239,7 @@ def test_no_tree_marker_sits_on_a_playing_surface():
                 surfaces.append((kind, [(q["lon"], q["lat"]) for q in e["geometry"]]))
         if not surfaces:
             continue
-        seen.add(ref)
+        seen[ref] += 1
         for hn, pts in (trees.items() if isinstance(trees, dict) else []):
             for entry in pts:
                 lat, lon = ((entry[0], entry[1]) if isinstance(entry, (list, tuple))
@@ -1905,9 +1923,9 @@ def test_a_printed_carry_never_overstates_what_it_clears():
     import math
     IN_LINE_M = 15.0
     checked, problems = 0, []
-    seen_courses = set()
+    seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses.add(ref)
+        seen_courses[ref] += 1
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(book):
             continue
@@ -2181,12 +2199,12 @@ def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_ca
     Violating it would print a distance interpolated along a route that is not the route the yardage
     describes -- wrong by up to the shortfall at the tick nearest the tee.
     """
-    checked, big, problems, seen, refused = 0, 0, [], set(), []
+    checked, big, problems, seen, refused = 0, 0, [], collections.Counter(), []
     for ref in CORPUS:
         if not os.path.exists(os.path.join(ROOT, "courses", ref, "osm_geom.json")):
             continue
         cfg, rh = _engine(ref)
-        seen.add(ref)
+        seen[ref] += 1
         for hn in sorted(cfg.HOLES):
             try:
                 svg, info = rh.render_hole(hn, cfg.HOLES)
@@ -2251,9 +2269,9 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         book is broken.
     """
     checked, problems = 0, []
-    seen_courses = set()
+    seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses.add(ref)
+        seen_courses[ref] += 1
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -2337,9 +2355,9 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
     ladder stepped in metres -- all of which miss by more than one rung on most holes.
     """
     checked, problems = 0, []
-    seen_courses = set()
+    seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses.add(ref)
+        seen_courses[ref] += 1
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -2403,9 +2421,9 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
         pytest.skip("pymupdf not installed")
     import statistics
     checked, problems = 0, []
-    seen_courses = set()
+    seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses.add(ref)
+        seen_courses[ref] += 1
         pdf = os.path.join(ROOT, "courses", ref, "greenbook.pdf")
         if not os.path.exists(pdf):
             continue
@@ -4345,12 +4363,50 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
 
     The bound is stated HERE, independent of render_green.SLOPE_LABEL_MAX_PCT, so raising the cap in
     the code cannot move the test with it -- the previous version read its ceiling from the module it
-    was checking."""
+    was checking.
+
+    IT ALSO COULD NOT CATCH ITS OWN DEFECT. The flagged set was
+    `{v for v in pdf_numbers if v > BOUND} & html_slopes` -- intersected with the HTML -- so a PDF
+    could only be accused of printing a slope the HTML ALSO printed. That is the exact opposite of the
+    stale-export failure in the docstring above, where the HTML was already capped. Proven by
+    mutation: injecting a 41 into the HTML failed the test (41 happens to appear among the PDF's
+    yardages), while injecting 40 -- the literal Merion defect -- passed, because whether the verdict
+    fires depended on the number coinciding with something else on the page.
+
+    So discriminate the slope layer by FONT RESOURCE instead. Chrome emits each green's SVG text as its
+    own Type3 font, and a green's slope labels therefore land in a resource of their own. A resource
+    holding only 1-2 digit values, at least one of them not a multiple of 5, is a slope-label set: the
+    ladder rungs and the gutter ticks are always multiples of 5, and the hole-map yardages are
+    3-digit, so neither can qualify. Measured across the corpus this isolates exactly 252 resources --
+    one per green card, 198 pocket + 54 enlarged -- with a maximum value of 10, the cap. Nothing is
+    intersected with the HTML, so a PDF that disagrees with its source is now visible here.
+
+    Sibling coverage, so this test does not have to carry it: PDF-vs-HTML faithfulness is
+    test_every_number_printed_in_a_pdf_exists_in_its_html, and staleness is
+    test_the_printed_pdf_is_not_older_than_the_html_it_came_from, which hashes content rather than
+    comparing mtimes."""
     try:
-        import fitz          # noqa: F401
+        import fitz
     except ImportError:
         pytest.skip("pymupdf not installed")
     PUTTING_PLAUSIBLE_MAX_PCT = 12
+
+    def slope_label_sets(path):
+        """{(page, font resource): {values}} for the runs that are a green's slope labels."""
+        by = {}
+        with fitz.open(path) as d:
+            for pg in d:
+                for blk in pg.get_text("rawdict")["blocks"]:
+                    for ln in blk.get("lines", []):
+                        for sp in ln.get("spans", []):
+                            if "Type3" not in sp.get("font", ""):
+                                continue
+                            txt = "".join(c.get("c", "") for c in sp.get("chars", [])).strip()
+                            if re.fullmatch(r"\d{1,3}", txt):
+                                by.setdefault((pg.number, sp["font"]), set()).add(int(txt))
+        return {k: v for k, v in by.items()
+                if all(x < 100 for x in v) and any(x % 5 for x in v)}
+
     checked = 0
     for pdf in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
         if os.path.basename(os.path.dirname(pdf)).startswith("_"):
@@ -4362,13 +4418,19 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
             r'font-size="4\.6"[^>]*font-weight="700">(\d+)</text>', open(html, encoding="utf-8").read())}
         if not html_slopes:
             continue      # yardage-mode: the greens are deliberately blank, no slope labels exist
-        # slope labels are the 1-2 digit glyph runs; 3-digit runs are hole-map yardages
-        small = [v for v in _pdf_numbers(pdf) if v < 100]
-        # the depth ruler also prints multiples of 5 up to 45, so only flag a value that is BOTH
-        # above the putting bound and present as a slope label in this book's green SVGs
-        bad = sorted({v for v in small if v > PUTTING_PLAUSIBLE_MAX_PCT} & html_slopes)
-        assert not bad, f"{os.path.relpath(pdf, ROOT)} prints unputtable slope label(s) {bad}"
-        assert small, f"{os.path.relpath(pdf, ROOT)} draws no small numbers at all"
+        sets = slope_label_sets(pdf)
+        # One resource per green card, so the count is a floor on having found the layer at all. A
+        # rewrite that stops emitting per-green fonts, or a discriminator that stops matching, would
+        # otherwise silently examine nothing and pass.
+        assert len(sets) >= 15, (
+            f"{os.path.relpath(pdf, ROOT)}: only {len(sets)} slope-label font resource(s) isolated for a "
+            f"book with green cards. Expected roughly one per green. The discriminator has stopped "
+            f"finding the layer, so this test is examining nothing -- fix it rather than let it pass.")
+        bad = sorted({v for vals in sets.values() for v in vals if v > PUTTING_PLAUSIBLE_MAX_PCT})
+        assert not bad, (
+            f"{os.path.relpath(pdf, ROOT)} prints unputtable slope label(s) {bad}. A putting surface "
+            f"has no {bad[0]}% slope. Read from the PDF's own glyph runs, NOT compared against the "
+            f"HTML -- so a shipped PDF that disagrees with its source shows up here.")
         checked += 1
     if checked == 0:
         pytest.skip("no book has both an HTML and an exported PDF here")
@@ -4632,9 +4694,9 @@ def test_each_green_is_turned_the_way_the_card_promises():
     """
     import math
     checked, problems = 0, []
-    seen_courses = set()
+    seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses.add(ref)
+        seen_courses[ref] += 1
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
         geom_p = os.path.join(ROOT, "courses", ref, "osm_geom.json")
         if not (os.path.exists(book) and os.path.exists(geom_p)):
@@ -4816,9 +4878,9 @@ def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
     import render_green
     dirs = render_green.DIRS
     checked, worst, problems = 0, (0.0, None), []
-    seen_courses = set()
+    seen_courses = collections.Counter()
     for ref in CORPUS:
-        seen_courses.add(ref)
+        seen_courses[ref] += 1
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
@@ -6235,7 +6297,7 @@ def test_green_binding_wins_by_a_wide_margin_not_a_hair():
     """
     import math
     FLOOR_M = 15.0
-    tight, checked, seen = [], 0, set()
+    tight, checked, seen = [], 0, collections.Counter()
     for ref in CORPUS:
         p = os.path.join(ROOT, "courses", ref, "osm_geom.json")
         if not os.path.exists(p):
@@ -6251,7 +6313,7 @@ def test_green_binding_wins_by_a_wide_margin_not_a_hair():
             lines = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
         except SystemExit:
             continue
-        seen.add(ref)
+        seen[ref] += 1
         for hn, w in sorted(lines.items()):
             try:
                 bound, gend, _tend = geo.match_green(w["geometry"], greens)
@@ -7820,12 +7882,12 @@ def test_the_printed_read_is_fitted_to_putting_surface_only():
     question does not arise, and a test that only saw those would be measuring nothing.
     """
     import numpy as np
-    restricted_wins, ambiguous, seen = [], 0, set()
+    restricted_wins, ambiguous, seen = [], 0, collections.Counter()
     for slug in geometry_courses():
         book = os.path.join(ROOT, "courses", slug, "greenbook.html")
         if not os.path.exists(book):
             continue
-        seen.add(slug)
+        seen[slug] += 1
         os.environ["COURSE"] = slug
         for m in ("config", "geo", "render_green"):
             sys.modules.pop(m, None)
@@ -7909,12 +7971,12 @@ def test_a_green_whose_plane_and_arrows_conflict_names_no_direction():
     card while every unit-level check passed.
     """
     import render_green
-    found, seen = [], set()
+    found, seen = [], collections.Counter()
     for ref in BOOKS:
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
-        seen.add(ref)
+        seen[ref] += 1
         with open(p, encoding="utf-8") as f:
             html = f.read()
         for blk in re.split(r'<div class="panel hole">', html)[1:]:
@@ -7975,14 +8037,14 @@ def test_a_mapped_green_is_mostly_puttable_ground():
         return inside
 
     CEILING = 0.35
-    worst, checked, bad, seen = (0.0, None), 0, [], set()
+    worst, checked, bad, seen = (0.0, None), 0, [], collections.Counter()
     for slug in geometry_courses():
         os.environ["COURSE"] = slug
         for m in ("config", "geo", "render_green"):
             sys.modules.pop(m, None)
         import render_green as rg
         from geo import R_LAT, mlon
-        seen.add(slug)
+        seen[slug] += 1
         for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
             with open(p, encoding="utf-8") as f:
                 meta = json.load(f)
@@ -8144,12 +8206,12 @@ def test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf():
     """
     fitz = pytest.importorskip("fitz", reason="PyMuPDF needed to read the printed PDF")
     GREY = {0xbbbbbb, 0xcccccc}          # .pageno colour in the pocket and enlarged stylesheets
-    checked, problems, seen = 0, [], set()
+    checked, problems, seen = 0, [], collections.Counter()
     for ref in BOOKS:
         pdf = os.path.join(ROOT, "courses", ref, "greenbook.pdf")
         if not os.path.exists(pdf):
             continue
-        seen.add(ref)
+        seen[ref] += 1
         os.environ["COURSE"] = ref
         sys.modules.pop("config", None)
         import config
@@ -8274,11 +8336,11 @@ def test_no_card_silently_clips_its_own_text():
         except Exception:
             pytest.skip("no browser available")
         pg = b.new_page()
-        problems, checked, seen = [], 0, set()
+        problems, checked, seen = [], 0, collections.Counter()
         try:
             for bf in books:
                 ref = os.path.basename(os.path.dirname(bf))
-                seen.add(ref)
+                seen[ref] += 1
                 pg.goto("file://" + os.path.abspath(bf))
                 pg.emulate_media(media="print")
                 clipped = pg.evaluate(JS)
@@ -8334,13 +8396,13 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
     real difficulty variation this must not flag.
     """
     import numpy as np
-    tees, problems, seen = [], [], set()
+    tees, problems, seen = [], [], collections.Counter()
     summed = unbacked = 0
     for slug in CORPUS:
         cp = os.path.join(ROOT, "courses", slug, "course.json")
         if not os.path.exists(cp):
             continue
-        seen.add(slug)
+        seen[slug] += 1
         with open(cp, encoding="utf-8") as f:
             j = json.load(f)
 
@@ -8515,7 +8577,7 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
     record carries the fuller statement, and this checks that too: legal/03 documents every other
     per-hole limitation, so omitting this one would make it read complete when it is not.
     """
-    checked, problems, seen, bare_total = 0, [], set(), 0
+    checked, problems, seen, bare_total = 0, [], collections.Counter(), 0
     with open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md"), encoding="utf-8") as f:
         prov = f.read()
     for ref in BOOKS:
@@ -8523,7 +8585,7 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not (os.path.exists(tp) and os.path.exists(book)):
             continue
-        seen.add(ref)
+        seen[ref] += 1
         with open(tp, encoding="utf-8") as f:
             tl = json.load(f)
         if not (tl and any(tl.values())):
@@ -8720,12 +8782,12 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 126 yards
     of it -- so a bare "carry N" would read as the whole obstacle rather than its near edge.
     """
-    checked, problems, seen = 0, [], set()
+    checked, problems, seen = 0, [], collections.Counter()
     for ref in BOOKS:
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
             continue
-        seen.add(ref)
+        seen[ref] += 1
         with open(p, encoding="utf-8") as f:
             html = f.read()
         if "carry" not in html:
@@ -8777,7 +8839,7 @@ def test_the_provenance_record_dates_the_geometry_not_just_the_lidar():
     """
     with open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md"), encoding="utf-8") as f:
         prov = f.read()
-    checked, problems, seen = 0, [], set()
+    checked, problems, seen = 0, [], collections.Counter()
     for slug in CORPUS:
         stamps = []
         for fn in ("osm_geom.json", "osm_course.json", "osm_relations.json"):
@@ -8788,7 +8850,7 @@ def test_the_provenance_record_dates_the_geometry_not_just_the_lidar():
                 t = (json.load(f).get("osm3s") or {}).get("timestamp_osm_base")
             if t:
                 stamps.append(str(t))
-        seen.add(slug)
+        seen[slug] += 1
         if not stamps:
             continue                      # no OSM extract at all (a yardage-mode course may have none)
         checked += 1
@@ -9183,13 +9245,13 @@ def test_the_card_only_claims_an_official_scorecard_where_one_is_recorded():
     legal/03 cannot disagree. Asserted in BOTH directions: a course that earned "official" must still say
     it, or the fix would have quietly cost four books a true claim.
     """
-    checked, problems, off_n, pub_n, seen = 0, [], 0, 0, set()
+    checked, problems, off_n, pub_n, seen = 0, [], 0, 0, collections.Counter()
     for ref in BOOKS:
         cp = os.path.join(ROOT, "courses", ref, "course.json")
         bp = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not (os.path.exists(cp) and os.path.exists(bp)):
             continue
-        seen.add(ref)
+        seen[ref] += 1
         with open(cp, encoding="utf-8") as f:
             src = str((json.load(f).get("sources") or {}).get("scorecard") or "").lower()
         with open(bp, encoding="utf-8") as f:
@@ -9242,13 +9304,13 @@ def test_the_naip_credit_lands_on_the_course_that_actually_used_it():
     enumerates its sources enumerates the right ones -- and a credit on a course that did not use it is
     the same class of error as a missing one.
     """
-    checked, problems, printed, seen = 0, [], [], set()
+    checked, problems, printed, seen = 0, [], [], collections.Counter()
     for ref in BOOKS:
         cp = os.path.join(ROOT, "courses", ref, "course.json")
         bp = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not (os.path.exists(cp) and os.path.exists(bp)):
             continue
-        seen.add(ref)
+        seen[ref] += 1
         checked += 1
         with open(cp, encoding="utf-8") as f:
             j = json.load(f)
@@ -9313,7 +9375,7 @@ def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
     both directions: a hole WITH a corroborated origin must keep printing its carries, or a fix that
     silenced the footer everywhere would pass.
     """
-    with_origin, without, seen = 0, [], set()
+    with_origin, without, seen = 0, [], collections.Counter()
     for slug in geometry_courses():
         os.environ["COURSE"] = slug
         os.environ["QUIET_TEE_CHECK"] = "1"
@@ -9321,7 +9383,7 @@ def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
             sys.modules.pop(m, None)
         import config
         import render_hole
-        seen.add(slug)
+        seen[slug] += 1
         for h in sorted(config.HOLES, key=lambda x: int(x)):
             _svg, i = render_hole.render_hole(int(h), config.HOLES)
             known = bool(i["line_spans"] or i["fwd_tee"] or i["past_tee"])
