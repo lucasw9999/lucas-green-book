@@ -150,9 +150,12 @@ SLOPE_LABEL_MAX_PCT = 10.0      # above this a cell is not putting surface -- co
 NAN_FRAC_MAX_RENDER = 0.25      # >25% of the green interior with no elevation at all
 MIN_RELIEF_M = 0.05            # a green flat to within 5 cm is a zero-fill, not a green
 MAX_PLAUSIBLE_RELIEF_M = 30.0   # 98 ft of fall inside one green outline is a data artifact
+# Sentinel for a green whose fall direction the data does not determine; generate.py prints it
+# instead of a compass word, and never inside "feeds ...", which would be a claim.
+NO_CLEAR_FALL = "no clear fall"
 
 
-def green_summary(arr, mask, px_x, px_y):
+def green_summary(arr, mask, px_x, px_y, putt=None):
     """Every number the green card prints, derived from a filled elevation grid.
 
     ONE home on purpose. `tools/cross_flight_check.py` re-derives these figures from a single
@@ -160,6 +163,11 @@ def green_summary(arr, mask, px_x, px_y):
     computed the plane its own way, the check would drift away from the card it claims to verify
     the moment either side changed. Returns (surf, core, dict) -- the smoothed surface and the
     collar-trimmed core as well, because the SVG draws from them.
+
+    `putt` overrides which cells count as putting surface. The card never passes it: it must derive
+    that from the surface in front of it. It exists for a controlled comparison of TWO surfaces of
+    the same green, where each would otherwise classify slightly different cells as steep and the
+    comparison would measure the reclassification instead of the difference in the ground.
     """
     surf = gauss(arr, 3.0)                       # ~1.5 m smoothing
     core = erode(mask, 3)                        # trim collar (~1.5 m)
@@ -171,16 +179,38 @@ def green_summary(arr, mask, px_x, px_y):
     dcol = -gx; drow = -gy
 
     # --- robust summary: least-squares plane over the green core ---
+    # relief and median slope describe the WHOLE core, because they report the ground as it is.
     zc = surf[core]
     relief_m = float(zc.max()-zc.min()) if core.any() else 0.0
     med_slope = float(np.median(slope[core])) if core.any() else 0.0
-    rr, cc = np.where(core)
+
+    # The plane BEHIND THE PRINTED READ is fitted to putting surface only. Cells steeper than
+    # SLOPE_LABEL_MAX_PCT are dropped because that is already this renderer's definition of ground
+    # that is not a puttable read -- and the card's own legend says so to the reader: "ground over
+    # 10% is shown by colour only". Fitting the headline tilt and feed direction to ground the same
+    # card disowns two lines lower was an internal contradiction.
+    #
+    # It matters because a green outline comes from OpenStreetMap, and one drawn a little generously
+    # laps onto the surrounding bank; erode(mask, 3) trims only ~1.2 m of collar, while such a bank
+    # reaches 8 m inside the outline. philadelphia 18 is the worked case -- 21% slope, 4.1 cm of
+    # surface texture against 1.2 cm over the rest of the green, sitting 0.9 ft above it, which is a
+    # bank and not a green -- and including it printed "3.6%, feeds LEFT" where the putting surface
+    # alone reads "2.6%, feeds FRONT-LEFT". Corpus-wide this moves 32 printed tilts (the median green
+    # not at all, 0.4% of its polygon being steep) and 7 feed directions, which is the figure that
+    # tells a player which way the ball rolls.
+    #
+    # Fall back to the whole core if the exclusion leaves too little to fit: a genuinely steep green
+    # must still get a read rather than silently lose one. No green in the corpus needs it today.
+    fit = core & (slope <= SLOPE_LABEL_MAX_PCT) if putt is None else (core & putt)
+    if fit.sum() < 20:
+        fit = core
+    rr, cc = np.where(fit)
     Xe = cc*px_x                     # east meters
     Yn = -rr*px_y                    # north meters (row+ is south)
     A = np.c_[Xe, Yn, np.ones(len(Xe))]
-    (a, b, d0), *_ = np.linalg.lstsq(A, surf[core], rcond=None)
+    (a, b, d0), *_ = np.linalg.lstsq(A, surf[fit], rcond=None)
     tilt_pct = math.hypot(a, b)*100.0                 # dominant plane tilt
-    resid = surf[core] - A.dot([a, b, d0])
+    resid = surf[fit] - A.dot([a, b, d0])
     undul_ft = float((resid.max()-resid.min()))*3.28084 if len(resid) else 0.0
     # plane downhill in pixel space: east=+col -> dcol=-a ; north=-row -> drow=+b
     pdc, pdr = -a, b
@@ -201,7 +231,8 @@ def green_summary(arr, mask, px_x, px_y):
     conf = "firm" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "subtle"
     return surf, core, dict(slope=slope, dcol=dcol, drow=drow, relief_m=relief_m,
                             med_slope=med_slope, tilt_pct=tilt_pct, undul_ft=undul_ft,
-                            pdc=pdc, pdr=pdr, span_m=span_m, rise_ft=rise_ft, conf=conf)
+                            pdc=pdc, pdr=pdr, span_m=span_m, rise_ft=rise_ft, conf=conf,
+                            putt=fit)
 
 
 def render(hole, tournament=False):
@@ -366,13 +397,21 @@ def render(hole, tournament=False):
     contours = f'<g stroke="#3c5a34" stroke-width="0.5" opacity="0.55">{"".join(segs)}</g>'
 
     # flow arrows, dense in BOTH modes (allowed within the scale limit)
+    # Drawn on PUTTING SURFACE only, the same cells the printed feed word is fitted to. An arrow is a
+    # claim about which way a putt runs, so ground the card colours-but-does-not-number is not
+    # somewhere to make it -- and because length scales with slope, bank cells produced the LONGEST,
+    # most eye-catching arrows on the card ("longer = steeper", says the legend), pulling the reader
+    # toward a break that is not a putt. It also keeps the two statements of the same claim honest
+    # with each other: word and arrows now describe the same ground.
     arrows = []
-    smax = max(np.percentile(slope[core], 92), 1.0) if core.any() else 5.0
+    arw_x = arw_y = 0.0
+    putt = S['putt']
+    smax = max(np.percentile(slope[putt], 92), 1.0) if putt.any() else 5.0
     a_step = 6
     a_min = 0.4
     for r in range(3, H-3, a_step):
         for c in range(3, W-3, a_step):
-            if not core[r, c]: continue
+            if not putt[r, c]: continue
             m = slope[r, c]
             if m < a_min: continue
             L = 2.2 + 3.4*min(m/smax, 1.0)
@@ -385,11 +424,27 @@ def render(hole, tournament=False):
                 continue
             ang = math.atan2(vy, vx)
             h = 1.7
+            arw_x += vx; arw_y += vy      # length-weighted, so steeper arrows count for more
             arrows.append(
                 f'<line x1="{c}" y1="{r}" x2="{ex:.1f}" y2="{ey:.1f}"/>'
                 f'<polygon points="{ex:.1f},{ey:.1f} {ex-h*math.cos(ang-0.5):.1f},{ey-h*math.sin(ang-0.5):.1f} '
                 f'{ex-h*math.cos(ang+0.5):.1f},{ey-h*math.sin(ang+0.5):.1f}"/>')
     arrowg = f'<g stroke="#15271b" stroke-width="0.7" fill="#15271b" stroke-linecap="round">{"".join(arrows)}</g>'
+
+    # The card states the fall TWICE: this one word, and the arrows the reader actually looks at. They
+    # answer slightly different questions -- a plane over the whole putting surface against every local
+    # gradient -- so they are SUPPOSED to differ a little, and across the corpus they run to a median
+    # 11 deg and a 90th percentile of 27. But when they point more than 90 degrees apart the card is
+    # handing a golfer two different breaks, and the honest reading is that the surface does not
+    # determine one. micke-grove 2 is the case that forced this: 0.5% of tilt, plane and arrows 177 deg
+    # apart, where naming either direction is a coin toss dressed up as a read. So refuse the word and
+    # keep the measured percentage, which is still true.
+    #
+    # Deliberately a self-consistency test and not a tilt floor: it fires on the greens where the two
+    # derivations actually conflict, rather than on a number tuned to today's corpus.
+    if (arw_x or arw_y) and (pdc or pdr):
+        if (pdc*arw_x + pdr*arw_y) / (math.hypot(pdc, pdr)*math.hypot(arw_x, arw_y)) < 0.0:
+            best = NO_CLEAR_FALL
 
     poly_d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in poly) + " Z"
     outline = f'<path d="{poly_d}" fill="none" stroke="#20402a" stroke-width="1.3"/>'

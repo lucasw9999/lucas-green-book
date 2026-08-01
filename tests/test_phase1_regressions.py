@@ -7558,3 +7558,99 @@ def test_the_cross_flight_check_shares_the_renderers_plane_fit():
     assert rg.count("lstsq") == 1, (
         "render_green.py fits a least-squares plane in more than one place, so the card and the "
         "cross-flight check can disagree about the same green")
+
+
+@needs_corpus
+def test_the_printed_read_is_fitted_to_putting_surface_only():
+    """The tilt, the feed word and the arrows must all describe ground the card calls puttable.
+
+    A green outline comes from OpenStreetMap. One drawn a little generously laps onto the surrounding
+    bank, and `erode(mask, 3)` trims only about 1.2 m of collar while such a bank reaches 8 m inside
+    the outline. philadelphia 18 is the worked case: 21% slope, 4.1 cm of surface texture against
+    1.2 cm over the rest of the green, sitting 0.9 ft above it. Fitting the plane through it printed
+    "3.6%, feeds LEFT" where the putting surface alone reads "2.6%, feeds FRONT-LEFT" -- and the same
+    card's legend tells the reader that ground over 10% is shown by colour precisely BECAUSE it is not
+    a puttable read. The book was contradicting itself in two lines.
+
+    Checked structurally rather than by re-deriving the numbers: the plane fit must be restricted by
+    SLOPE_LABEL_MAX_PCT, the arrows must be drawn on that same restricted set, and the arrow loop must
+    not fall back to the unrestricted core -- which is what it did before, putting the LONGEST arrows
+    on the card ("longer = steeper") over ground that is not a putt.
+    """
+    import render_green
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as f:
+        src = f.read()
+
+    body = src.split("def green_summary(", 1)[1].split("\ndef ", 1)[0]
+    assert "SLOPE_LABEL_MAX_PCT" in body, (
+        "green_summary no longer restricts anything by SLOPE_LABEL_MAX_PCT, so the printed tilt and "
+        "feed word are being fitted to bank and surround the card itself calls unputtable")
+    fitline = [l for l in body.splitlines() if l.strip().startswith("fit = core")]
+    assert fitline, "green_summary lost its `fit` selection"
+    assert "SLOPE_LABEL_MAX_PCT" in fitline[0], f"the plane fit is not slope-restricted: {fitline[0]}"
+    assert "surf[fit]" in body and "np.where(fit)" in body, (
+        "the least-squares plane is not being fitted to `fit` -- the restriction is computed and "
+        "then ignored, which is worse than not having it")
+
+    # the arrows must use the same set, and must NOT have reverted to `core`
+    arrows = src.split("# flow arrows", 1)[1].split("arrowg =", 1)[0]
+    assert "putt[r, c]" in arrows, (
+        "arrows are no longer gated on the putting-surface set; an arrow is a claim about which way a "
+        "putt runs, and length scales with slope, so bank cells draw the longest arrows on the card")
+    assert "core[r, c]" not in arrows, "the arrow loop is back to `core`, including unputtable ground"
+    assert "slope[putt]" in arrows, (
+        "arrow LENGTH is still normalised over `core`, so bank cells inflate the scale and every real "
+        "green arrow is drawn shorter than it should be")
+
+    # and the sentinel path must exist, since the fit can now leave a green with no supportable word
+    assert hasattr(render_green, "NO_CLEAR_FALL"), "the no-clear-fall sentinel is gone"
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as f:
+        gen = f.read()
+    assert "NO_CLEAR_FALL" in gen, (
+        "generate.py no longer special-cases the sentinel, so a green with no supportable direction "
+        "would print 'feeds no clear fall' -- which reads as a direction")
+
+
+@needs_corpus
+def test_a_green_whose_plane_and_arrows_conflict_names_no_direction():
+    """When the card's two derivations of the fall point opposite ways, it must not pick one.
+
+    Each green states which way the ball rolls twice: the footer word, from a plane over the putting
+    surface, and the arrows, from every local gradient. They answer slightly different questions and
+    are expected to differ a little -- median 11 deg across the corpus, 90th percentile 27. Past 90
+    deg they are giving opposite breaks, and no honest word exists. micke-grove 2 is the one: 0.5% of
+    tilt, plane and arrows 177 deg apart, where naming either is a coin toss dressed as a read.
+
+    So the refusal must actually reach print. Asserted on the built books rather than on the source,
+    because a sentinel the renderer sets and the layout drops would leave the contradiction on the
+    card while every unit-level check passed.
+    """
+    import render_green
+    found, seen = [], set()
+    for ref in BOOKS:
+        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not os.path.exists(p):
+            continue
+        seen.add(ref)
+        with open(p, encoding="utf-8") as f:
+            html = f.read()
+        for blk in re.split(r'<div class="panel hole">', html)[1:]:
+            hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            if not hn:
+                continue
+            if render_green.NO_CLEAR_FALL in blk:
+                found.append(f"{ref} hole {hn.group(1)}")
+                # it must NOT be phrased as a direction
+                assert f'feeds <b>{render_green.NO_CLEAR_FALL}' not in blk, (
+                    f"{ref} hole {hn.group(1)} prints 'feeds {render_green.NO_CLEAR_FALL}', which "
+                    f"reads as a compass direction -- the whole point is to name none")
+                # the measured tilt is still true and must still be shown
+                assert re.search(r'&middot; [\d.]+%', blk), (
+                    f"{ref} hole {hn.group(1)} refuses the direction AND drops the measured tilt; "
+                    f"the percentage is still a fact and the card should keep it")
+    assert_no_course_skipped(seen, "test_a_green_whose_plane_and_arrows_conflict_names_no_direction")
+    assert found, (
+        "no green in the corpus prints the no-clear-fall wording. micke-grove 2 did (0.5% tilt, plane "
+        "and arrows 177 deg apart). If a data or threshold change made every green consistent that is "
+        "good news, but verify it rather than assuming: an unreachable refusal path is a refusal that "
+        "will not fire when it is next needed.")

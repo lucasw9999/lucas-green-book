@@ -80,7 +80,7 @@ def _cover(meta, mask, lon, lat):
     return len(set(zip(cx[inside].tolist(), cy[inside].tolist())))/float(mask.sum())
 
 
-def _summary(meta, grid, lon, lat, z, zscale):
+def _summary(meta, grid, lon, lat, z, zscale, putt=None):
     """Grid one pass's points on the shipped tile's own grid and return the card's numbers."""
     import render_green as rg
     W, H, px_x, px_y, mask = grid
@@ -91,9 +91,27 @@ def _summary(meta, grid, lon, lat, z, zscale):
     if not mask.any() or np.isnan(zi[mask]).all():
         return None
     arr = np.where(np.isnan(zi), float(np.nanmedian(zi[mask])), zi)
-    _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
+    _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y, putt=putt)
     S['aim_deg'] = math.degrees(math.atan2(S['pdc'], -S['pdr'])) % 360.0
     return S
+
+
+def _shipped_putt(meta, grid):
+    """Which cells count as putting surface, decided ONCE from the shipped surface.
+
+    Each pass covers the green a little differently, so each would classify slightly different cells
+    as too steep to putt, and the comparison would then be measuring that reclassification rather
+    than a difference in the ground. Holding one definition fixed for both passes isolates the
+    question actually being asked: did the SURFACE change between the surveys?
+    """
+    import render_green as rg
+    W, H, px_x, px_y, mask = grid
+    arr = np.load(f"{meta['_dir']}/dem_hd/hole{meta['hole']:02d}.npy")
+    if not mask.any() or np.isnan(arr[mask]).all():
+        return None
+    arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)
+    _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
+    return S['putt']
 
 
 def check(slug, verbose=True):
@@ -109,6 +127,7 @@ def check(slug, verbose=True):
     for p in sorted(glob.glob(f"{cdir}/dem_hd/hole*.json")):
         m = json.load(open(p))
         if not m.get('insufficient'):
+            m['_dir'] = cdir
             metas[m['hole']] = m
     if not metas:
         return 0, []
@@ -149,6 +168,7 @@ def check(slug, verbose=True):
     bad, n, skipped, flips = [], 0, 0, 0
     for h in sorted(metas):
         grid = _grid(metas[h])
+        putt = _shipped_putt(metas[h], grid)
         got = {}
         for d, chunks in sorted(per[h].items()):
             A = np.vstack(chunks)
@@ -158,7 +178,7 @@ def check(slug, verbose=True):
             if cov < MIN_COVER:
                 skipped += 1
                 continue
-            S = _summary(metas[h], grid, A[:, 0], A[:, 1], A[:, 2], zscale)
+            S = _summary(metas[h], grid, A[:, 0], A[:, 1], A[:, 2], zscale, putt=putt)
             if S:
                 S['cover'] = cov
                 S['n'] = len(A)

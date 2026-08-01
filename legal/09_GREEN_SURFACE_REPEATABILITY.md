@@ -22,14 +22,19 @@ fitted to a sliver. So a pass is only compared when it independently put a groun
 of that green's interior cells**. 47 pass/green pairs were excluded on that basis; 33 greens had two
 qualifying passes.
 
+Which cells count as putting surface is decided **once, from the shipped surface**, and held fixed
+for both passes. Each pass covers a green slightly differently and would otherwise classify slightly
+different cells as too steep to putt, so the comparison would be measuring that reclassification
+instead of the ground.
+
 ## Result
 
 **33 greens, each independently surveyed twice. Every pair agrees.**
 
 | | worst observed |
 |---|---|
-| dominant tilt | **0.04 percentage points** (e.g. 6.12% vs 6.16%) |
-| feed direction | **4.3°** |
+| dominant tilt | **0.06 percentage points** |
+| feed direction | **3.9°** |
 | `firm` / `subtle` qualifier | never differed |
 
 The strongest single case is Philadelphia Country Club, whose two passes are **101 days apart**

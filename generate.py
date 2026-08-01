@@ -175,6 +175,11 @@ def green_honesty(hole, s):
     if s.get('insufficient'):
         return label, None
     tilt = (f'{s["tilt_pct"]}% <b>&#9888;</b>' if outdated else f'{s["tilt_pct"]}%')
+    # A green whose plane fit and whose own arrows point opposite ways has no fall direction the data
+    # supports, and render_green refuses to name one. Print the measured tilt, which is still true,
+    # but NOT inside "feeds ..." -- "feeds no clear fall" would read as a direction.
+    if s["feeds"] == render_green.NO_CLEAR_FALL:
+        return label, f'<b>no clear fall</b> ({esc(s["conf"])}) &middot; {tilt}'
     return label, f'feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}'
 
 
@@ -418,6 +423,19 @@ def _flown_line():
     return out
 
 
+def _no_fall_note():
+    """Explain the no-clear-fall wording ONLY in a book that actually uses it.
+
+    It is the vocabulary of one green in the corpus today, so putting it on every course's guide card
+    would be clutter that describes nothing in that book. Keyed off what was actually rendered."""
+    if not any(sm.get("feeds") == render_green.NO_CLEAR_FALL for _svg, sm in GREENS.values()):
+        return ''
+    return ('  <div class="legrow"><span><b>&ldquo;no clear fall&rdquo;</b> on a green means the '
+            'surface is too level for this data to name a side &mdash; the plane through it and the '
+            'arrows on it disagree, so no direction is claimed. The measured slope % is still '
+            'printed. Read that one with your own eyes.</span></div>\n')
+
+
 def guide_panel():
     return '''<div class="panel guide">
   <div class="gtitle">How to read a green</div>
@@ -433,6 +451,7 @@ def guide_panel():
     <b>Print in colour</b> &mdash; over 10% has colour and no number, and bunkers fade into the fairway.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
+''' + _no_fall_note() + '''
   <div class="legrow"><span><b>green N ft above/below</b> = the <b>measured</b> height of the green
     against its back tee. It is <b>not</b> a yardage adjustment &mdash; how much club that is worth
     depends on your own ball flight, so <b>you</b> make that call.</span></div>
@@ -904,6 +923,7 @@ def coach_about_card():
     <b>Contours</b> join equal height. <b>Colour</b>: green flat &rarr; yellow &rarr; red (steep).
     "feeds" = the low side putts run toward. <b>Print in colour</b> &mdash; ground over 10% is shown
     by colour only, and bunkers all but vanish in black &amp; white.</span></div>
+''' + _no_fall_note() + '''
   <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
     this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
     Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
