@@ -107,11 +107,33 @@ def depth_width_yd(meta):
 
 
 def _blank_green(meta, tournament, rebuilt=False):
-    """A green we will NOT read: either the LiDAR never measured this surface (honesty gate in
-    fetch_dem_hd.py) or the green was rebuilt after the flight, so the data describes a surface
-    that no longer exists. Draw the real outline -- that geometry IS measured, it comes from OSM --
-    with ruled lines to mark your own read, and say plainly why there are no arrows. Printing
-    invented or expired contours here would be the one thing this project promises never to do."""
+    """A green we will NOT read. Draw the real outline -- that geometry IS measured, it comes from
+    OSM -- with ruled lines to mark your own read, and say plainly why there are no arrows. Printing
+    invented or expired contours here would be the one thing this project promises never to do.
+
+    Two reasons, and only the first one currently happens:
+
+    * `rebuilt=False` -- the LiDAR never measured this surface (fetch_dem_hd.py's honesty gate). This
+      is the live path.
+
+    * `rebuilt=True` -- the green was rebuilt after the flight, so real measured data describes a
+      surface that no longer exists. NOTHING REACHES THIS TODAY, and that is deliberate, not an
+      oversight. It is NOT what `greens_possibly_outdated` does: a green whose rebuild is merely
+      SUSPECTED still has genuinely measured data, so the policy is to print the map and label it
+      "pre-rebuild data" with a warning mark rather than withhold it -- see the comment at the
+      `insufficient` check in render(), which is where that decision lives. philadelphia 10-18 are
+      the nine greens in that state; the Flynn restoration is phased and whether it has reached the
+      back nine is unknown, so a hedged read beats no read.
+      This branch is for a green whose rebuild is CONFIRMED, per green. Nothing in the corpus is in
+      that state today (the one course awaiting post-rebuild data is built in yardage mode, which
+      prints no green panels at all, so this function is never called for it).
+      Kept rather than deleted because the capability is real -- a course with some confirmed-rebuilt
+      greens and some current ones cannot be handled by yardage mode, which is all-or-nothing -- and
+      its behaviour is pinned by test_a_confirmed_rebuild_says_so_rather_than_no_coverage so that it
+      works the day it is wired up. An earlier version of this docstring named the rebuild case
+      first, which read as though a suspected rebuild were blanked; that is the opposite of the
+      policy, in the same module.
+    """
     poly = poly_to_px(meta['polygon'], meta['bbox'], meta['W'], meta['H'])
     xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
     pad = 8

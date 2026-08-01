@@ -8229,3 +8229,61 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
                 f"{pred:.1f}. That is too far to be course difficulty; check the transcription.")
     assert not problems, ("hand-transcribed scorecard facts break their own arithmetic:\n  "
                           + "\n  ".join(problems[:10]))
+
+
+def test_a_confirmed_rebuild_says_so_rather_than_no_coverage(gate_course):
+    """_blank_green's rebuilt=True path is unreachable today. Pin it anyway, so it works when wired.
+
+    render_green has two reasons to refuse a green, and they must not print the same words. "no LiDAR
+    coverage" means nobody measured this surface; "rebuilt after survey" means it WAS measured and the
+    green has since been reshaped. A reader who sees the wrong one draws the wrong conclusion about
+    whether better data could exist.
+
+    Only the first is reachable from render(). That is deliberate: a green whose rebuild is merely
+    SUSPECTED keeps its map with a "pre-rebuild data" label -- printing a hedged read beats withholding
+    a measured one -- so `greens_possibly_outdated` never routes here. Which leaves the rebuilt branch
+    dark, and dark branches rot: this one carries two distinct strings and a distinct `feeds` value, all
+    currently produced by nothing and asserted by nothing.
+
+    So exercise it directly. The alternative is deleting it, but the capability is real -- a course with
+    some confirmed-rebuilt greens and some current ones cannot use yardage mode, which is
+    all-or-nothing -- and a rotted branch discovered on the day it is needed is worse than a tested one
+    that waits.
+
+    Also asserts the two reasons stay DISTINCT, which is the property that actually matters: they are
+    the card's explanation of why it has no arrows.
+    """
+    import render_green
+    tilt = lambda r, c: 100.0 + 0.03 * r
+    _synth_green(gate_course, 3, tilt, insufficient=True)
+    mp = os.path.join(ROOT, "courses", gate_course, "dem_hd", "hole03.json")
+    with open(mp, encoding="utf-8") as f:
+        meta = json.load(f)
+
+    svg_nc, s_nc = render_green._blank_green(meta, True, rebuilt=False)
+    svg_rb, s_rb = render_green._blank_green(meta, True, rebuilt=True)
+
+    assert "no LiDAR coverage" in svg_nc, "the never-measured card must say so"
+    assert "rebuilt after survey" in svg_rb, "the confirmed-rebuild card must say so"
+    assert "no LiDAR coverage" not in svg_rb, (
+        "a green that WAS measured and then rebuilt must not tell the reader there is no coverage -- "
+        "that says better data cannot exist, when in fact it merely does not exist yet")
+    assert s_nc["feeds"] == "not surveyed" and s_rb["feeds"] == "rebuilt since survey", (
+        f"the two refusals must carry different feeds labels, got {s_nc['feeds']!r} and "
+        f"{s_rb['feeds']!r}")
+    for s in (s_nc, s_rb):
+        assert s["insufficient"] is True and s["conf"] == "no data" and s["tilt_pct"] == 0.0, (
+            "a refused green must report no slope, not 0.0% dressed as a reading")
+    assert "mark your own read" in svg_rb, "a refused green must still invite the player's own read"
+    # both must draw the real OSM outline: that geometry is measured even when the surface is not
+    assert svg_rb.count("<path") >= 1 and "&#9650; approach" in svg_rb
+
+    # and record the fact that nothing routes here, so this test's subject is understood
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as f:
+        src = f.read()
+    live = [l for l in src.splitlines() if "_blank_green(" in l and "def " not in l]
+    assert live, "no call sites found; _blank_green may have been renamed"
+    assert not any("rebuilt=True" in l for l in live), (
+        "something now reaches _blank_green(rebuilt=True). That is a real policy change -- a green is "
+        "being withheld rather than printed with a pre-rebuild label -- so update this test and the "
+        "docstring at _blank_green, which both record that the branch is deliberately dark.")
