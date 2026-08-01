@@ -191,9 +191,14 @@ def _check_response(j, path, out):
             # required to carry every FETCHED feature the cache had; it is simply no longer asked to
             # carry the ones this project added itself.
             def _fetchable(els):
+                # _digitized is a TAG; _from_relation is a TOP-LEVEL key (written that way at line 94).
+                # Reading both from tags filtered nothing, so the guard still refused 9 of 11 courses --
+                # and my verification of that fix used a probe that read the same wrong key, so it agreed
+                # with itself. Measured on valley-hi: 18 elements carry _from_relation at top level,
+                # 0 inside tags.
                 return [e for e in els
                         if '_digitized' not in (e.get('tags') or {})
-                        and not (e.get('tags') or {}).get('_from_relation')]
+                        and e.get('_from_relation') is None]
             oc, nc = census(_fetchable(old)), census(j['elements'])
             lost = {k: (oc[k], nc[k]) for k in oc if oc[k] >= 4 and nc[k] < oc[k]}
             if lost:

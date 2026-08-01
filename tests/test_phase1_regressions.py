@@ -7849,6 +7849,19 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
             shutil.rmtree(dst, ignore_errors=True)
 
     assert reproduced, "no course was cold-built -- nothing was verified"
+    # AND A MAJORITY MUST ACTUALLY HAVE BEEN COMPARED. `assert reproduced` alone passes on ONE course,
+    # so once a network failure became a refusal rather than a problem (see above), a bad Overpass day
+    # could verify 1 of 11 and still read as a clean reproducibility run -- the exact silent skip the
+    # comment below warns about, reintroduced by the fix for the false accusation. Failing here is the
+    # honest outcome: this test is gated behind COLD_BUILD=1, i.e. it is run deliberately, and "the
+    # service was busy so we checked one course" is a result the operator needs told, not hidden.
+    _built = {n.split("/")[0] for n, _ in reproduced}
+    _want = {ref for ref in CORPUS
+             if os.path.exists(os.path.join(ROOT, "courses", ref, "greenbook.html"))}
+    assert len(_built) * 2 > len(_want), (
+        f"only {len(_built)} of {len(_want)} courses could be cold-built ({sorted(_want - _built)} were "
+        f"refused), so this run is not evidence of reproducibility either way. If the refusals are "
+        f"network failures, re-run when Overpass is quiet; the books themselves are not implicated.")
     # A silent skip would pass this test while verifying less than it claims, which is exactly how the
     # enlarged edition stayed outside the guarantee in the first place. So name what MUST have been
     # compared: every course that ships an enlarged book.

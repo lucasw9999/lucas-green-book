@@ -567,6 +567,32 @@ def _flown_line():
     return out
 
 
+def _no_tree_note():
+    """Define "no tree data" in the ENLARGED edition, only in a book that prints it.
+
+    It printed on 3 of monarch-bay's 40 enlarged cards with nothing in that book explaining it -- the
+    same two-edition drift that left the enlarged guide card without the red ring, the grey ladder and
+    the bunker/water key.
+
+    Enlarged only, deliberately, and this is the honest scope: the POCKET edition defines it inline on
+    the colour row, unconditionally, so 11 of the 12 pocket books carry six words for a mark they never
+    print. Moving that to a conditional row of its own was tried and overflowed monarch-bay's guide
+    card -- the book with 1.19 px of clearance and the only book that prints the mark. Six wasted words
+    on eleven cards is the cheaper error than a clipped licence line, so the pocket half stays inline.
+    An earlier draft of this docstring claimed both editions were gated; they are not.
+
+    The wording matters more than most: an empty tree layer looks like open ground, and the mark says
+    the survey did not reach -- the opposite reading. It is the one caveat whose misreading is the
+    dangerous direction.
+    """
+    if not any(not _tree_markers(h) and _course_has_trees() for h in config.HOLE_NUMS):
+        return ''
+    # ONE line: the enlarged guide card has 21.75 px of clearance and a row there costs 12.13 px per
+    # line, so a two-line version overflows it. Same wording as the pocket edition's inline copy.
+    return ('  <div class="legrow"><span><b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open '
+            'ground.</span></div>\n')
+
+
 def _faint_note():
     """Define "(faint)" ONLY in a book that prints it, same as _no_fall_note.
 
@@ -710,7 +736,11 @@ def tees_panel():
     per_hole = set(config.TEES)
     unbacked = [t for t in config.TEE_TABLE if t.get("name") not in per_hole]
     rows = "".join(
-        f'<tr><td>{esc(t["name"][:7])}'
+        # [:12], not [:7]. "Championship" is the only tee name in the corpus over 7 characters and it
+        # printed as "Champio" in merion's rating/slope table while the same book spells it in full 19
+        # other times. Measured in-browser: the column holds 12 characters at this size with the table
+        # still inside the card.
+        f'<tr><td>{esc(t["name"][:12])}'
         + ("<sup>&dagger;</sup>" if t.get("name") not in per_hole else "")
         + f'</td><td>{cell(t["yards"])}</td><td>{cell(t.get("rating"))}</td><td>{cell(t.get("slope"))}</td></tr>'
         for t in config.TEE_TABLE)
@@ -777,7 +807,7 @@ def legend_panel():
   <div class="dsign">Crafted by <b>Lucas Wu</b></div>
   <div class="dweb"><div class="dwebtag">VISIT</div><div class="dweburl">lucasgreenbook.org</div></div>
   {qr}
-  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Free to share, not for sale &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
+  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. ''' + sharing_line() + '''</div>
 </div>'''
 
 def notes_panel(title, holes_range):
@@ -1154,7 +1184,7 @@ def coach_about_card():
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to
     green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add
     up.</span></div>
-''' + _faint_note() + _no_fall_note() + '''
+''' + _faint_note() + _no_fall_note() + _no_tree_note() + '''
   <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
     conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a
@@ -1196,7 +1226,7 @@ def coach_dedic_card(coach_name):
   <div class="drule"></div>
   <div class="dsign">from <b>Lucas Wu</b></div>
   <div class="dweb"><div class="dwebtag">VISIT</div><div class="dweburl">lucasgreenbook.org</div></div>
-  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Practice aid, free to share &mdash; CC&nbsp;BY-NC-ND&nbsp;4.0.</div>
+  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. Practice aid. ''' + sharing_line() + '''</div>
 </div>'''
 
 def build_coach(coach_name=""):
@@ -1313,7 +1343,7 @@ def build_coach(coach_name=""):
      legend still reads at arm's length -- which is the whole reason this edition exists. It buys
      the ~16px the restored trespass defence and liability cap need on the two tightest cards. A
      defence that is not printed is worth nothing, however large the type it would have been set in. */
-  .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 7pt; line-height: 1.3; margin-bottom: 3px; }}
+  .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 7pt; line-height: 1.3; margin-bottom: 2px; }}
   .abt {{ margin-top: 4px; border-top: 1.2px solid #cdb96a; padding-top: 3px; }}
   .abthead {{ font-size: 8pt; font-weight: 800; color: #2b6a2b; margin-bottom: 1px; }}
   /* The legal block sat at 6.6pt against the pocket book's 5.15pt, and it ran OFF the card: its last
