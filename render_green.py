@@ -152,6 +152,58 @@ MIN_RELIEF_M = 0.05            # a green flat to within 5 cm is a zero-fill, not
 MAX_PLAUSIBLE_RELIEF_M = 30.0   # 98 ft of fall inside one green outline is a data artifact
 
 
+def green_summary(arr, mask, px_x, px_y):
+    """Every number the green card prints, derived from a filled elevation grid.
+
+    ONE home on purpose. `tools/cross_flight_check.py` re-derives these figures from a single
+    flight's points to prove the printed read does not depend on which survey supplied it; if it
+    computed the plane its own way, the check would drift away from the card it claims to verify
+    the moment either side changed. Returns (surf, core, dict) -- the smoothed surface and the
+    collar-trimmed core as well, because the SVG draws from them.
+    """
+    surf = gauss(arr, 3.0)                       # ~1.5 m smoothing
+    core = erode(mask, 3)                        # trim collar (~1.5 m)
+    if core.sum() < 20: core = mask
+
+    gy, gx = np.gradient(surf, px_y, px_x)       # dz/d(row=south), dz/d(col=east) per meter
+    slope = np.hypot(gx, gy)*100.0
+    # downhill in PIXEL space (col+ = east/right, row+ = south/down): -gradient
+    dcol = -gx; drow = -gy
+
+    # --- robust summary: least-squares plane over the green core ---
+    zc = surf[core]
+    relief_m = float(zc.max()-zc.min()) if core.any() else 0.0
+    med_slope = float(np.median(slope[core])) if core.any() else 0.0
+    rr, cc = np.where(core)
+    Xe = cc*px_x                     # east meters
+    Yn = -rr*px_y                    # north meters (row+ is south)
+    A = np.c_[Xe, Yn, np.ones(len(Xe))]
+    (a, b, d0), *_ = np.linalg.lstsq(A, surf[core], rcond=None)
+    tilt_pct = math.hypot(a, b)*100.0                 # dominant plane tilt
+    resid = surf[core] - A.dot([a, b, d0])
+    undul_ft = float((resid.max()-resid.min()))*3.28084 if len(resid) else 0.0
+    # plane downhill in pixel space: east=+col -> dcol=-a ; north=-row -> drow=+b
+    pdc, pdr = -a, b
+    # confidence: is the dominant tilt above the LiDAR noise floor over the green?
+    span_m = max(math.hypot(Xe.max()-Xe.min(), Yn.max()-Yn.min()), 1.0) if len(Xe) else 1.0
+    rise_ft = tilt_pct/100.0*span_m*3.28084
+    # Tested against the UNROUNDED tilt, while the card prints it to one decimal. So six of 198 greens
+    # print "1.2%" -- three "(firm)", three "(subtle)" -- and a reader cannot see why: the difference is
+    # a true tilt of 1.24 against 1.16, plus the rise test, neither of which the card shows. 1.2% is the
+    # only printed value in the corpus that carries both words.
+    #
+    # Do NOT "fix" that by comparing round(tilt_pct, 1) >= 1.2. It looks like consistency and is a
+    # loosening: the effective floor becomes 1.15%, and this threshold exists because below it the plane
+    # fit is inside the LiDAR noise. The gate being more precise than the display is the right way round
+    # for a book whose rule is never to print a read the data does not support. The qualifier is also not
+    # a function of the printed number at all -- it depends on the FALL as well as the tilt -- so tying it
+    # to one decimal would make it less informative to look more tidy.
+    conf = "firm" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "subtle"
+    return surf, core, dict(slope=slope, dcol=dcol, drow=drow, relief_m=relief_m,
+                            med_slope=med_slope, tilt_pct=tilt_pct, undul_ft=undul_ft,
+                            pdc=pdc, pdr=pdr, span_m=span_m, rise_ft=rise_ft, conf=conf)
+
+
 def render(hole, tournament=False):
     mp = f"{DEM}/hole{hole:02d}.json"
     if not os.path.exists(mp):
@@ -243,44 +295,12 @@ def render(hole, tournament=False):
             return _blank_green(meta, tournament)
     arr = np.where(np.isnan(arr), float(np.nanmedian(arr[inside])) if inside.any() else 0.0, arr)
 
-    surf = gauss(arr, 3.0)                       # ~1.5 m smoothing
-    core = erode(mask, 3)                        # trim collar (~1.5 m)
-    if core.sum() < 20: core = mask
-
-    gy, gx = np.gradient(surf, px_y, px_x)       # dz/d(row=south), dz/d(col=east) per meter
-    slope = np.hypot(gx, gy)*100.0
-    # downhill in PIXEL space (col+ = east/right, row+ = south/down): -gradient
-    dcol = -gx; drow = -gy
-
-    # --- robust summary: least-squares plane over the green core ---
-    zc = surf[core]
-    relief_m = float(zc.max()-zc.min()) if core.any() else 0.0
-    med_slope = float(np.median(slope[core])) if core.any() else 0.0
-    rr, cc = np.where(core)
-    Xe = cc*px_x                     # east meters
-    Yn = -rr*px_y                    # north meters (row+ is south)
-    A = np.c_[Xe, Yn, np.ones(len(Xe))]
-    (a, b, d0), *_ = np.linalg.lstsq(A, surf[core], rcond=None)
-    tilt_pct = math.hypot(a, b)*100.0                 # dominant plane tilt
-    resid = surf[core] - A.dot([a, b, d0])
-    undul_ft = float((resid.max()-resid.min()))*3.28084 if len(resid) else 0.0
-    # plane downhill in pixel space: east=+col -> dcol=-a ; north=-row -> drow=+b
-    pdc, pdr = -a, b
-    # confidence: is the dominant tilt above the LiDAR noise floor over the green?
-    span_m = max(math.hypot(Xe.max()-Xe.min(), Yn.max()-Yn.min()), 1.0) if len(Xe) else 1.0
-    rise_ft = tilt_pct/100.0*span_m*3.28084
-    # Tested against the UNROUNDED tilt, while the card prints it to one decimal. So six of 198 greens
-    # print "1.2%" -- three "(firm)", three "(subtle)" -- and a reader cannot see why: the difference is
-    # a true tilt of 1.24 against 1.16, plus the rise test, neither of which the card shows. 1.2% is the
-    # only printed value in the corpus that carries both words.
-    #
-    # Do NOT "fix" that by comparing round(tilt_pct, 1) >= 1.2. It looks like consistency and is a
-    # loosening: the effective floor becomes 1.15%, and this threshold exists because below it the plane
-    # fit is inside the LiDAR noise. The gate being more precise than the display is the right way round
-    # for a book whose rule is never to print a read the data does not support. The qualifier is also not
-    # a function of the printed number at all -- it depends on the FALL as well as the tilt -- so tying it
-    # to one decimal would make it less informative to look more tidy.
-    conf = "firm" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "subtle"
+    surf, core, S = green_summary(arr, mask, px_x, px_y)
+    slope, dcol, drow = S['slope'], S['dcol'], S['drow']
+    relief_m, med_slope = S['relief_m'], S['med_slope']
+    tilt_pct, undul_ft, rise_ft = S['tilt_pct'], S['undul_ft'], S['rise_ft']
+    pdc, pdr = S['pdc'], S['pdr']
+    conf = S['conf']
 
     # rotation so approach bearing points UP on screen
     B = meta['approach_bearing']

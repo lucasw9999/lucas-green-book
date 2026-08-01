@@ -125,11 +125,19 @@ Two more tools, useful when a course looks wrong rather than on every build:
 ```bash
 python3 tools/check_osm_bbox.py --all # every printed hole's 45 m corridor lies inside its fetch box
 COURSE=<slug> python3 tools/lidar_dates.py   # decodes the flight date from the LiDAR point records
+python3 tools/cross_flight_check.py --all    # do two surveys of the same green print the same read?
 ```
 `check_osm_bbox.py` catches a fetch box so tight that features beside the hole were never downloaded —
 the map then agrees with the footer because both count only what arrived. `lidar_dates.py` is where
 the flight dates in the provenance table come from; a USGS *project name* is not a flight date, and
 four courses were mislabelled by 2–12 years before these were decoded from the points themselves.
+
+`cross_flight_check.py` exists because five of the twelve courses were flown across more than one
+date, so their greens are built from a blend of passes — harmless if the passes agree, and a surface
+spliced from two *different* greens if the course changed under the sensor between them. It grids
+each pass separately and runs the same `render_green.green_summary()` the card prints from. It is
+also the project's only measurement of how repeatable these surfaces are: see
+[`legal/09_GREEN_SURFACE_REPEATABILITY.md`](legal/09_GREEN_SURFACE_REPEATABILITY.md).
 
 ## Editions &amp; extras
 - **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex, top‑flip; slips into a back‑pocket

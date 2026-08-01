@@ -7516,3 +7516,45 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     missed = sorted(want_coach - got)
     assert not missed, f"enlarged book(s) never compared by the cold build: {missed}"
     assert not problems, "cold build is not reproducible:\n  " + "\n  ".join(problems)
+
+
+def test_the_cross_flight_check_shares_the_renderers_plane_fit():
+    """A checker with its own copy of the arithmetic verifies a number nobody prints.
+
+    `tools/cross_flight_check.py` is the project's only evidence that the printed slope read is
+    reproducible across independent surveys (legal/09_GREEN_SURFACE_REPEATABILITY.md). That evidence
+    is only about the CARD if the tool derives its figures the way the card does, which is why
+    `green_summary` was lifted to module scope in render_green.py. Inline the plane fit into the tool
+    and both sides keep passing while the tool quietly measures its own arithmetic instead.
+
+    So: the tool must CALL green_summary, and must not carry a second least-squares plane fit. The
+    call is checked after the import, because an import alone satisfies a substring search -- that
+    exact hole made an earlier cKDTree assertion vacuous.
+    """
+    tool = os.path.join(ROOT, "tools", "cross_flight_check.py")
+    assert os.path.exists(tool), "tools/cross_flight_check.py is gone; delete this test or the claim"
+    with open(tool, encoding="utf-8") as f:
+        src = f.read()
+
+    assert "green_summary" in src, (
+        "cross_flight_check.py no longer mentions render_green.green_summary, so whatever it now "
+        "measures is not what the green card prints")
+    after = src.split("import render_green", 1)[-1]
+    assert "green_summary(" in after, (
+        "cross_flight_check.py imports render_green but never calls green_summary() after it -- an "
+        "import is not a use, and the repeatability claim rests on the call")
+    assert "lstsq" not in src, (
+        "cross_flight_check.py has grown its own least-squares plane fit. That is the exact drift "
+        "green_summary was extracted to prevent: the tool would then agree with itself about a "
+        "number the book does not print. Call render_green.green_summary() instead.")
+
+    # and the renderer must still be getting its numbers from the same shared function
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as f:
+        rg = f.read()
+    assert "def green_summary(" in rg, "green_summary is no longer defined at module scope"
+    body = rg.split("def green_summary(", 1)[1]
+    nxt = body.split("\ndef ", 1)[0]
+    assert "lstsq" in nxt, "green_summary no longer fits the plane; the card's tilt comes from elsewhere"
+    assert rg.count("lstsq") == 1, (
+        "render_green.py fits a least-squares plane in more than one place, so the card and the "
+        "cross-flight check can disagree about the same green")
