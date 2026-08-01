@@ -62,6 +62,23 @@ COLS = max(1, int((PAGE_W_IN - 2*MARGIN_IN + GUTTER_IN) / (CARD_W_IN + GUTTER_IN
 ROWS = max(1, int((PAGE_H_IN - 2*MARGIN_IN + GUTTER_IN) / (CARD_H_IN + GUTTER_IN)))
 PER = COLS * ROWS
 
+# The four keys below are indexed, not .get() -- they have no sensible default. Name them before
+# indexing, because a KeyError traceback is a bad first experience for someone who has just copied
+# examples/course.json and renamed a block. Deleting "holes" used to produce a bare
+# `KeyError: 'holes'` from this line with nothing pointing at the file or the fix.
+_REQUIRED = {
+    "name":      'the course name printed on the cover, e.g. "Merion Golf Club — East Course"',
+    "address":   'the street address printed under it, e.g. "450 Ardmore Ave, Ardmore, PA 19003"',
+    "hole_cols": 'column names for each hole row: ["par", "mens_hcp", then one per tee]',
+    "holes":     'the scorecard itself: {"1": [par, mens_hcp, yardage per tee...], "2": [...]}',
+}
+_missing = [k for k in _REQUIRED if k not in COURSE]
+if _missing:
+    raise SystemExit(
+        f"courses/{SLUG}/course.json is missing {len(_missing)} required key(s):\n"
+        + "".join(f'  "{k}" -- {_REQUIRED[k]}\n' for k in _missing)
+        + "  Compare against examples/course.json, which documents every field.")
+
 # hole -> (par, mens_hcp, <tee yardages in hole_cols order>)
 HOLES = {int(k): tuple(v) for k, v in COURSE["holes"].items()}
 HOLE_NUMS = sorted(HOLES)                          # actual holes present (9-hole courses have 1..9)

@@ -467,6 +467,32 @@ def test_no_real_course_carries_a_key_the_template_never_mentions():
                          + "\n  ".join(sorted(set(missing))))
 
 
+def test_a_missing_required_key_names_itself():
+    """A newcomer's first course.json will be wrong somehow. The error has to say how.
+
+    config indexes four keys with no sensible default -- name, address, hole_cols, holes -- and used to
+    index them bare. Deleting "holes", which is the single likeliest mistake when copying
+    examples/course.json and renaming a block, produced `KeyError: 'holes'` and a traceback: no file
+    named, no field described, no next step. That is the moment a stranger gives up, and it is the
+    cheapest possible thing to fix.
+
+    Checked as a property of the message, not just of the exit code: it must name the file, name every
+    missing key rather than one per run, and point at the template. Reporting them one at a time turns
+    four mistakes into four rounds of guessing.
+    """
+    src = open(os.path.join(ROOT, "config.py"), encoding="utf-8").read()
+    assert "_REQUIRED" in src and "is missing" in src, \
+        "config.py no longer names its required keys before indexing them"
+    for key in ("name", "address", "hole_cols", "holes"):
+        assert f'"{key}"' in src.split("_REQUIRED")[1].split("_missing")[0], \
+            f"{key} is indexed by config.py but not covered by the required-key guard"
+    guard = src.split("_missing = ")[1].split("# hole ->")[0]
+    assert "for k in _REQUIRED if k not in COURSE" in guard, \
+        "the guard must collect ALL missing keys, not stop at the first"
+    assert "examples/course.json" in guard, \
+        "the message must point at the documented template"
+
+
 def test_a_null_tee_preference_is_not_a_crash():
     """`"secondary_tee": null` means "no preference", not "index the list with None".
 
