@@ -178,7 +178,23 @@ def _check_response(j, path, out):
         # No tolerance, because these are stable mapped polygons and the documented failure cost ONE
         # green. A genuine OSM deletion is what ALLOW_SHRINK is for; it should need a human to look.
         if not os.environ.get("ALLOW_SHRINK"):
-            oc, nc = census(old), census(j['elements'])
+            # COMPARE LIKE WITH LIKE. The baseline is the cache, which holds two classes of element
+            # the raw Overpass reply CANNOT contain: hand-digitized features merged in after this
+            # check runs, and rings flattened out of multipolygon relations by a later fetch. Counting
+            # them made the guard fire on a legitimate re-fetch of 9 of the 11 courses -- valley-hi
+            # fairway 18 -> 0, monarch-bay 37 -> 1, micke-grove 23 -> 4, the-reserve 20 -> 2 -- and
+            # deterministically, so the only available action was the ALLOW_SHRINK=1 the message
+            # prescribes, which then waives the real checks too. A guard that must be switched off to
+            # do ordinary work is worse than none: it trains you to switch it off.
+            #
+            # Filtering the baseline is the honest comparison, not a loosening. The reply is still
+            # required to carry every FETCHED feature the cache had; it is simply no longer asked to
+            # carry the ones this project added itself.
+            def _fetchable(els):
+                return [e for e in els
+                        if '_digitized' not in (e.get('tags') or {})
+                        and not (e.get('tags') or {}).get('_from_relation')]
+            oc, nc = census(_fetchable(old)), census(j['elements'])
             lost = {k: (oc[k], nc[k]) for k in oc if oc[k] >= 4 and nc[k] < oc[k]}
             if lost:
                 detail = ", ".join(f"{k} {o} -> {n}" for k, (o, n) in sorted(lost.items()))
