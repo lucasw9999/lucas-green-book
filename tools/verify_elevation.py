@@ -101,7 +101,7 @@ def dem_median_over_ring(ring, px=64):
     """
     import fetch_hole_elev as fhe          # course-bound, so imported here rather than at module scope
     rla, rlo = ring
-    la0, lo0 = float(np.mean(rla)), float(np.mean(rlo))
+    la0 = float(np.mean(rla))
     pad = 1.0 / R_LAT                                  # a metre of margin so edge pixels exist
     s, n = float(rla.min()) - pad, float(rla.max()) + pad
     w, e = float(rlo.min()) - pad/math.cos(math.radians(la0)), float(rlo.max()) + pad/math.cos(math.radians(la0))

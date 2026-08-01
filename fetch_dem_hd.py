@@ -18,7 +18,6 @@ from pyproj import Transformer
 from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 import config
-import fetch_dem          # for is_seamless, one spelling of that test across the engine
 import geo
 
 DIR = config.COURSE_DIR
