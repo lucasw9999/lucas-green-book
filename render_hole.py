@@ -750,6 +750,27 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     if not origin_known:
         carries = []
 
+    # A CARRY IS A TEE-SHOT DECISION, AND A PAR 3 DOES NOT HAVE ONE. The figure answers "how far must
+    # I fly to clear the sand and land on fairway short of the green" -- which is a real question on a
+    # par 4 or 5 and no question at all on a par 3, where the shot is to the green. Nobody lays up at
+    # 90 yd on a 237 yd hole. All six par-3 carries in the corpus printed a number far short of the
+    # card, and on two of them the near edge was actively misleading:
+    #
+    #   * the-reserve 8 printed "carry 90" for a 128-vertex waste complex running from 90 to 216 yd on
+    #     a 237 yd hole -- sand ending FOUR YARDS short of the green front. Flying 90 clears nothing;
+    #     the distance that matters is ~215. A 126 yd gap, eight or nine clubs, and the near edge is
+    #     the one number on that card a player could act on and be wrong about.
+    #   * merion 13 printed "carry 82" on a 128 yd hole for a bunker running 82 to 113, where the green
+    #     front is at 107 -- again no landing area beyond it.
+    #
+    # This is the concept's own boundary, not a tuning parameter: CARRY_MIN_YD/CARRY_MAX_YD (80/300)
+    # and "greenside sand, not a tee carry" were written for a driving hole. Suppressing on par 3 drops
+    # 6 figures across 6 of 198 holes and adds no wrong number. The map still draws every bunker and
+    # the footer still counts it, so nothing is hidden -- only the false invitation to lay up is.
+    par = config.HOLES[hnum][0] if hnum in config.HOLES else None
+    if par == 3:
+        carries = []
+
     # `:g` on a rounded value, not `:.1f`: an un-widened box must print as the bare "100" it always
     # did, or all 12 pocket books change bytes for a purely cosmetic reason.
     vb=f"0 0 {round(VBW,1):g} {VBH:.1f}"

@@ -9494,6 +9494,56 @@ def test_the_naip_credit_lands_on_the_course_that_actually_used_it():
 
 
 @needs_corpus
+def test_no_par_3_prints_a_carry():
+    """"carry N" is a tee-shot decision, and a par 3 does not have one.
+
+    The figure answers "how far must I fly to clear the sand and land on fairway short of the green" --
+    a real question on a par 4 or 5, and no question at all on a par 3, where the shot is to the green.
+    All six par-3 carries in the corpus printed a number far short of the card yardage, and on two of
+    them the near edge was actively misleading:
+
+      * the-reserve 8 printed "carry 90" for a waste complex running 90 to 216 yd on a 237 yd hole --
+        sand ending four yards short of the green front. Flying 90 clears nothing; the distance that
+        matters is ~215. A 126 yd gap, eight or nine clubs.
+      * merion 13 printed "carry 82" on a 128 yd hole for sand running 82 to 113 with the green front
+        at 107 -- again no landing area beyond it.
+
+    Checked on the ARTIFACT and against the scorecard's own par, so it cannot be satisfied by reading
+    the same constant the renderer reads. The map still draws every bunker and the footer still counts
+    it, so this hides nothing -- it removes an invitation to play a shot that does not exist.
+    """
+    checked = collections.Counter()
+    offenders = []
+    for slug in CORPUS:
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        cj = os.path.join(ROOT, "courses", slug, "course.json")
+        if not (os.path.isfile(book) and os.path.isfile(cj)):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            holes = json.load(fh).get("holes") or {}
+        with open(book, encoding="utf-8") as fh:
+            html = fh.read()
+        for blk in re.split(r'<div class="panel hole', html)[1:]:
+            blk = re.split(r'<div class="panel ', blk)[0]
+            hn = re.search(r'class="hnum">(\d+)</div>', blk)
+            if not hn:
+                continue
+            par = (holes.get(hn.group(1)) or [None])[0]
+            if par is None:
+                continue
+            checked[slug] += 1
+            carry = re.search(r'carry <b>([^<]*)</b>', blk)
+            if par == 3 and carry:
+                offenders.append(f"{slug} hole {hn.group(1)} (par 3, {(holes[hn.group(1)] or [0,0,0])[2]} yd) "
+                                 f"prints carry {carry.group(1)}")
+    assert sum(checked.values()) >= 150, (
+        f"only {sum(checked.values())} hole cards examined; the corpus ships 216")
+    assert not offenders, ("a par 3 prints a carry, which invites a lay-up that does not exist:\n  "
+                           + "\n  ".join(offenders))
+    assert_no_course_skipped(checked, "test_no_par_3_prints_a_carry")
+
+
+@needs_corpus
 def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
     """A carry is measured FROM THE BACK TEE. Where the tee's position is unknown, print nothing.
 
