@@ -8110,13 +8110,18 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
     and the card prints them as fact, beside a note saying the yardages come from the official
     scorecard. A reader takes that as covering the columns next to them.
 
-    Four constraints, chosen because each catches a different slip:
+    Five constraints, chosen because each catches a different slip:
 
     * The men's stroke index must be a PERMUTATION of 1..N -- every index used exactly once. A
       duplicated or missing index is arithmetically impossible on a real card, and it is what a
       mis-keyed digit produces.
     * Slope must lie in 55..155. That is the USGA's own range, not a heuristic, so a 445 or a 45
       cannot hide.
+    * The per-hole yardages must SUM to the total the tees block states. These are transcribed from
+      different lines of the scorecard -- the hole row and the summary -- so agreement is evidence and
+      disagreement pins the fault to one of them. It is the strongest check here: a single mis-keyed
+      hole yardage is invisible to everything else and shows up in this sum at once. All 27 backed tees
+      agree to the yard.
     * A LONGER tee must not rate EASIER than a shorter one on the same course. Rating is dominated by
       length, so this catches the likeliest paste error: one tee's figures landing on another's row.
     * A rating must sit near what the corpus itself says a course of that length rates. Fitted over 53
@@ -8131,6 +8136,7 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
     """
     import numpy as np
     tees, problems, seen = [], [], set()
+    summed = unbacked = 0
     for slug in CORPUS:
         cp = os.path.join(ROOT, "courses", slug, "course.json")
         if not os.path.exists(cp):
@@ -8164,7 +8170,32 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
                 problems.append(f"{slug} {nm}: course rating {r} is impossible for {y} yards")
             if y and r:
                 tees.append((y, r, slug, nm))
-        # 3. longer must not rate easier
+        # 3. the per-hole yardages must SUM to the total the tees block states.
+        # The two are transcribed from different parts of the scorecard -- the hole row and the
+        # summary line -- so agreement is real evidence and disagreement pins the error to one of
+        # them. It is the strongest check available on this data: a single mis-keyed hole yardage
+        # is invisible to every other constraint here, and shows up in this sum immediately.
+        # Measured across the corpus: all 27 backed tees agree EXACTLY, to the yard.
+        # A tee named in the ratings table with no hole column is not an error -- the-reserve's
+        # Blu/Wht and Wht/Grn are combination tees, philadelphia's Green is published but not
+        # transcribed per hole -- and those rows are daggered and footnoted on the card
+        # (test_the_rating_table_marks_tees_it_cannot_break_down covers that). Skipped here, not
+        # silently: counted, and required to stay a small minority.
+        for y, r, s, nm in rows:
+            if nm in cols and y:
+                per = [row[cols.index(nm)] for row in j["holes"].values()
+                       if isinstance(row[cols.index(nm)], int)]
+                if len(per) == len(j["holes"]):
+                    summed += 1
+                    if sum(per) != y:
+                        problems.append(
+                            f"{slug} {nm}: the {len(per)} hole yardages sum to {sum(per)} but the "
+                            f"tees block says {y} ({sum(per)-y:+d}). These come from different lines "
+                            f"of the same scorecard, so one of them is mis-transcribed -- and if it "
+                            f"is a hole row, that hole's card prints the wrong number.")
+            elif y:
+                unbacked += 1
+        # 4. longer must not rate easier
         srt = sorted([x for x in rows if x[0] and x[1]])
         for a, b in zip(srt, srt[1:]):
             if b[1] < a[1] - 0.05:
@@ -8175,7 +8206,15 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
     assert_no_course_skipped(seen, "test_the_scorecard_facts_obey_their_own_arithmetic")
     assert len(tees) >= 30, f"only {len(tees)} rated tee sets found; nothing much was checked"
 
-    # 4. distance from the corpus's own rating/length relationship
+    assert summed >= 25, (
+        f"only {summed} tees had a full set of per-hole yardages to cross-check against their "
+        f"stated total; the corpus has 27, so this check has lost its reach")
+    assert unbacked <= summed // 3, (
+        f"{unbacked} rated tees have no per-hole yardages against {summed} that do. Those rows "
+        f"print a rating the book cannot break down, and while they are daggered and footnoted, "
+        f"a book that is mostly unbacked tees is not covering the course it claims to.")
+
+    # 5. distance from the corpus's own rating/length relationship
     Y = np.array([t[0] for t in tees], float)
     R = np.array([t[1] for t in tees], float)
     a, b = np.polyfit(Y, R, 1)
