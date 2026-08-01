@@ -1984,6 +1984,69 @@ def test_the_elevation_word_matches_the_elevation_sign():
 
 
 @needs_corpus
+def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_card():
+    """The drawn line and the scorecard are INDEPENDENT sources. Where they disagree, refuse.
+
+    OSM supplies the centreline; the club supplies the yardage. Comparing them is the one genuinely
+    independent check available on a printed distance, and across 198 holes they agree to a median
+    1.2%, with 174 inside 5%.
+
+    The 24 that differ by more than 5% are the interesting ones, and all of them are accounted for:
+      * fwd_tee -- the line starts at a FORWARD tee, so it is legitimately short of the back-tee card
+        (merion 9 is 69 yd short, merion 5 is 103). The shortfall is at the tee end, so the from-tee
+        figure is still exact.
+      * past_tee -- traced past the tee, the mirror case (castlewood-hill 4, 36 yd long).
+      * par3_straight -- a short par-3 line, where from-tee is card minus to-green on a collinear hole
+        and the line's length is never used (merion 3, 35 yd short).
+      * neither, and then NO from-tee number is printed at all. castlewood-valley 10 and 18 are drawn
+        497 and 385 against cards of 561 and 426, and their lengths match no published tee -- 497 sits
+        between a 534 and a 460, 385 between a 352 and a 426 -- so the engine cannot tell where along
+        the hole the missing yardage lives and prints nothing. That refusal is the correct answer, not
+        a gap to be filled.
+
+    So the invariant is not "the line matches the card". It is that a from-tee number is never SCALED
+    off a line the card disagrees with: either an exact mechanism applies, or the gutter stays empty.
+    Violating it would print a distance interpolated along a route that is not the route the yardage
+    describes -- wrong by up to the shortfall at the tick nearest the tee.
+    """
+    checked, big, problems, seen = 0, 0, [], set()
+    for ref in CORPUS:
+        if not os.path.exists(os.path.join(ROOT, "courses", ref, "osm_geom.json")):
+            continue
+        cfg, rh = _engine(ref)
+        seen.add(ref)
+        for hn in sorted(cfg.HOLES):
+            try:
+                svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            checked += 1
+            card, arc = info["card_yd"], info["arc_yd"]
+            if not card:
+                continue
+            gap = abs(arc - card) / card * 100.0
+            if gap <= 5.0:
+                continue
+            big += 1
+            vbw = float(re.search(r'viewBox="0 0 ([\d.]+) ', svg).group(1))
+            printed = [txt for x, txt in re.findall(r'<text x="([\d.]+)"[^>]*>([^<]+)</text>', svg)
+                       if float(x) >= vbw / 2 and txt.isdigit()]
+            exact = (info.get("fwd_tee") or info.get("past_tee") or info.get("par3_straight"))
+            if printed and not exact:
+                problems.append(
+                    f"{ref} hole {hn}: the drawn line is {arc} yd against a card of {card} "
+                    f"({gap:.0f}% apart) and no exact mechanism applies, yet it prints from-tee "
+                    f"numbers {printed}. Those are interpolated along a route the yardage does not "
+                    f"describe -- the gutter should stay empty instead.")
+    assert checked >= 150, f"only {checked} holes compared -- build the books first"
+    assert big >= 5, (f"only {big} holes disagree with their card by >5%, where 24 are expected -- "
+                      f"either the corpus shrank or the comparison is not measuring what it did")
+    assert_no_course_skipped(seen, "test_a_from_tee_number_is_never_scaled_off_a_disagreeing_line")
+    assert not problems, ("a printed from-tee distance rests on a line that contradicts the "
+                          "scorecard:\n  " + "\n  ".join(problems[:8]))
+
+
+@needs_corpus
 def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     """A player can ADD the two numbers on a row. On a dogleg they will not reach the card yardage,
     and the guide has to say so, because the arithmetic is a twelve-year-old's first instinct.
