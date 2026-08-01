@@ -111,9 +111,7 @@ def main():
     fetch_lidar.sweep_partials(f"{DIR}/laz")
     tiles = covering_tiles(config.COURSE["osm_bbox"])
     print(f"{len(tiles)} candidate tiles for {config.SLUG}")
-    got = 0
-    used = set()      # every local filename chosen so far, so copy_suffix's collision loop is live
-    failed = []
+    items = []        # every sub-project copy that exists, as a TNM-shaped record
     absent = []
     unknown = []
     for t in tiles:
@@ -134,49 +132,73 @@ def main():
             absent.append(t)
             print(f"  {t}: not in any sub-project (404) -- edge of coverage, skip")
             continue
-        for i, (sub, url, sz) in enumerate(copies):
-            # First copy keeps the plain name; extra sub-project copies get a `__Co<n>` suffix taken
-            # from the sub-project number. The suffix MUST end in digits: tools/gen_provenance.py
-            # reads the LiDAR project name off these filenames for the legal record and strips
-            # `__Co\d+$`. The previous suffix was the sub-project's last 9 characters
-            # (`__Co_3_2021`), which that strip does not match, so the generator published
-            # "CA_AlamedaCounty_2021_B21_w6162n2049__Co_3" as the project a book was built from.
-            if i == 0:
-                base = f"{PREFIX}_{t}.laz"
-            else:
-                base = fetch_lidar.copy_suffix(sub, i, f"{PREFIX}_{t}", ".laz", used)
-            used.add(base)
-            fn = f"{DIR}/laz/{base}"
-            if os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024:
-                print(f"  cached {t} [{sub[-9:]}]"); got += 1; continue
-            ok = False
-            for a in range(4):
-                try:
-                    # stage as .part and rename, so an interrupted transfer cannot be mistaken for a
-                    # complete tile by the size check above on the next run. fetch_lidar.py was fixed
-                    # this way; this module still wrote straight to the final name.
-                    urllib.request.urlretrieve(url, fn + ".part")
-                    os.replace(fn + ".part", fn)
-                    print(f"  downloaded {t} [{sub[-9:]}] ({round(os.path.getsize(fn)/1e6)} MB)")
-                    got += 1; ok = True; break
-                except Exception as e:
-                    print(f"  {t} [{sub[-9:]}] try {a+1} failed: {type(e).__name__}; retry"); time.sleep(3)
-            if not ok:
-                failed.append(f"{t} [{sub[-9:]}]")
-                if os.path.exists(fn + ".part"):
-                    os.remove(fn + ".part")
-    print(f"done -> {DIR}/laz  ({got} tile copies)")
-    if absent and not unknown:
-        print(f"  NOTE {len(absent)} candidate tile(s) are not on the server (authoritative 404): "
-              f"{', '.join(absent)}\n"
-              f"       That is the edge of the survey. Greens there will have no ground returns and\n"
-              f"       the honesty gate will leave them unread rather than invent a surface.")
+        for sub, url, sz in copies:
+            items.append({"downloadURL": url, "sizeInBytes": sz})
     if unknown:
-        # This is the case that used to masquerade as "edge of coverage".
+        # This is the case that used to masquerade as "edge of coverage". Raised BEFORE anything is
+        # downloaded: the coverage is already known to be incomplete, so there is nothing to buy by
+        # fetching part of it first.
         raise SystemExit(
             f"could not determine whether {len(unknown)} tile(s) exist: {', '.join(unknown)}\n"
             f"  These are network failures, not 404s, so the survey may well cover them. Building now\n"
             f"  would leave greens with no ground returns for a reason that is not real. Re-run.")
+    # WHICH LOCAL FILE HOLDS WHICH COPY is fetch_lidar.plan_downloads' job, not ours. It was decided
+    # here too, and the two answers disagreed in the way that costs ground returns: this module
+    # tested `os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024`, which is ONE-SIDED, so a file
+    # LARGER than expected satisfied a smaller expectation. Measured at Callippe, where cell
+    # w6165n2052 exists in two sub-projects -- CA_AlamedaCo_1_2021 at 21,981,521 bytes and
+    # CA_AlamedaCo_3_2021 at 244,776,088 (both confirmed by HEAD) -- and the 245 MB copy is on disk
+    # under the PLAIN name while the 22 MB copy sits under `__Co1`, a name this module can never
+    # generate (sub-project 1 is always probed first, so it always takes the plain name). A re-run
+    # therefore reported the Co_1 copy "cached" against the 245 MB file, then downloaded the Co_3
+    # copy again as `__Co3.laz`. fetch_dem_hd.py globs laz/*.laz and concatenates with NO
+    # de-duplication, so that cell's ground returns would be counted twice. Measured per green:
+    # 10 of Callippe's 18 (holes 1, 7, 10, 11, 12, 13, 14, 15, 17, 18) take their in-green points
+    # from that cell alone and their published density would be EXACTLY doubled -- 13.0-15.8 pts/m2
+    # becoming 26.0-31.6 -- which tools/gen_provenance.py prints into legal/03, where the Callippe row
+    # currently reads "12.4-16.1 pts/m2 over 18 greens @0.4 m". Hole 9 is the one green in the cell
+    # fed only by the Co_1 strip, so it alone would be unaffected.
+    #
+    # plan_downloads matches the cache BY SIZE over the whole directory, consuming each file as it is
+    # matched, so it finds a copy whatever it is called and cannot spend one file on two expectations.
+    # It also owns the `__Co<n>` naming (fetch_lidar.copy_suffix) and the cross-cell size-collision
+    # warning. Reusing it is the point: this module already imports fetch_lidar, and the previous
+    # arrangement was the same rule written twice with one copy wrong.
+    todo, got = fetch_lidar.plan_downloads(items, f"{DIR}/laz")
+    print(f"  {got} tile copy(ies) already on disk, {len(todo)} to download")
+    failed = []
+    for it, name in todo:
+        url, fn, sz = it["downloadURL"], f"{DIR}/laz/{name}", it.get("sizeInBytes") or 0
+        ok = False
+        for a in range(4):
+            try:
+                # stage as .part and rename, so an interrupted transfer cannot be mistaken for a
+                # complete tile by the size check on the next run. fetch_lidar.py was fixed this way;
+                # this module still wrote straight to the final name.
+                urllib.request.urlretrieve(url, fn + ".part")
+                n = os.path.getsize(fn + ".part")
+                if sz and n != sz:
+                    # A short read that still parses is the worst case: the tile looks fine and simply
+                    # has no points over part of the course. fetch_lidar.py already checked this; here
+                    # the only test was the one-sided size comparison above, which a truncated file
+                    # would fail on the NEXT run rather than this one -- after the run had reported
+                    # success.
+                    raise IOError(f"got {n:,} bytes, the server says {sz:,}")
+                os.replace(fn + ".part", fn)
+                print(f"  downloaded {name} ({round(n/1e6)} MB)")
+                got += 1; ok = True; break
+            except Exception as e:
+                print(f"  {name} try {a+1} failed: {e}; retry"); time.sleep(3)
+        if not ok:
+            failed.append(name)
+            if os.path.exists(fn + ".part"):
+                os.remove(fn + ".part")
+    print(f"done -> {DIR}/laz  ({got} tile copies)")
+    if absent:
+        print(f"  NOTE {len(absent)} candidate tile(s) are not on the server (authoritative 404): "
+              f"{', '.join(absent)}\n"
+              f"       That is the edge of the survey. Greens there will have no ground returns and\n"
+              f"       the honesty gate will leave them unread rather than invent a surface.")
     if failed:
         # Exiting 0 here would leave PARTIAL coverage. fetch_lidar.py raises for exactly this reason:
         # a green with no ground returns under it is what produced the fabricated-terrain cards the

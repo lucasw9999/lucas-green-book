@@ -7,7 +7,7 @@
 High-resolution green surfaces from RAW LiDAR ground returns.
 
 Upgrade over fetch_dem.py (which used the gridded 1 m DEM): here we read the
-course's USGS 3DEP point cloud (typically 9-33 pts/m^2 over a green),
+course's USGS 3DEP point cloud (4.7-27.9 pts/m^2 over a green in this corpus),
 keep ONLY ground-classified points (class 2), and interpolate a 0.4 m surface
 over each green — sampled on the same lat/lon grid render_green.py expects, so
 the renderer is unchanged. Output -> dem_hd/holeNN.{npy,json}.
@@ -23,6 +23,13 @@ import geo
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 RES = 0.4                                   # target metres/pixel
+OVERWRITE = bool(os.environ.get("OVERWRITE"))   # replace a working 1 m fallback with a blank green
+# Point flags the PRODUCER disowns: "do not use this measurement", and "computed, not observed".
+# Named at module scope so a test can assert the SET rather than grep main() for the words -- the
+# first version of that test searched main()'s text, where both words also appear in the comment
+# explaining them, so swapping the tuple for ("key_point",) passed every assertion while dropping
+# key points and keeping withheld ones. NOT "overlap": see the note at the filter.
+DISOWNED_FLAGS = ("withheld", "synthetic")
 MARGIN_M = 12.0
 R_LAT = 111320.0
 # Trust thresholds for a green surface. Above/below these the surface was not really measured,
@@ -33,6 +40,24 @@ COVER_R_M = 1.0                             # a green node is "measured" if a gr
                                             # within this radius of it
 UNCOVERED_MAX = 0.02                        # max share of the green interior with no return nearby
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
+
+
+def is_insufficient(nan_frac, dens, uncovered):
+    """True when a green surface was not really MEASURED, so the book must print no read for it.
+
+    The three gates together: extrapolation beyond the point cloud's hull (nan_frac), in-green density,
+    and near-node coverage. Coverage exists because nan_frac cannot see an INTERIOR void -- standing
+    water absorbs 1064 nm, so a hole in the middle of a green is spanned by the interpolation and
+    counted as measured. A demo deleting the returns in a 6 m circle at each green centre still
+    reported nan_frac 0.0000 while changing 7 of 18 printed reads.
+
+    Extracted so the TEST can call it. This was an inline boolean in main(), and its test reached the
+    coverage half only by grepping the source for the constant -- so a gate that stopped refusing would
+    have gone unnoticed. Same reason fetch_dem.is_flat_fill and keeps_existing_surface are predicates:
+    a predicate can be exercised by truth table, an inline boolean inside main() cannot.
+    """
+    return bool(nan_frac > NAN_FRAC_MAX or dens < DENSITY_MIN or uncovered > UNCOVERED_MAX)
+
 # NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19).
 # No default: falling back to -121.0 silently selected California zone 10, so a Pennsylvania course
 # (zone 18) would have every green surface projected through the wrong zone with nothing to say so.
@@ -111,16 +136,16 @@ def bearing(a_lat,a_lon,b_lat,b_lon):
 def build_targets():
     geom=json.load(open(f"{DIR}/osm_geom.json"))["elements"]
     greens=[e for e in geom if e.get('tags',{}).get('golf')=='green' and e.get('geometry')]
-    holes =[e for e in geom if e.get('tags',{}).get('golf')=='hole' and e.get('geometry')]
-    # keep only the LONGEST centerline per hole ref (OSM has dup/fragment ways where a
-    # neighbouring course pokes into the bbox) -- same rule as render_hole, so the green
-    # slope map and the course map always agree on which hole/green is which.
-    best={}
-    for h in holes:
-        ref=h['tags'].get('ref')
-        if ref and ref.isdigit() and len(h['geometry'])>len(best.get(ref,{}).get('geometry',[])):
-            best[ref]=h
-    holes=list(best.values())
+    # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,
+    # first-wins on a tie -- the exact heuristic geo.hole_lines was written to replace after it
+    # flipped under element reordering on castlewood-valley (two candidates 604 m apart, both
+    # 3 vertices). Three fetch scripts still carried their own copy of it, so the tree corridors,
+    # the green surfaces and the gap-fill DEM could each have been placed on a DIFFERENT line
+    # from the one render_hole draws and fetch_hole_elev measures against. They all agreed on all
+    # 198 holes only because the cached element order happened to favour it. geo.hole_lines picks
+    # by distance to the course centre and REFUSES a near-tie rather than guessing.
+    _loc = config.COURSE.get('location') or {}
+    holes = list(geo.hole_lines(geom, _loc.get('lat'), _loc.get('lon')).values())
     gc=[(g,*centroid(g)) for g in greens]
     targets={}
     bound={}          # hole -> green, so a green shared by two holes can be caught (see geo.py)
@@ -154,6 +179,37 @@ def build_targets():
     geo.assert_one_green_per_hole(bound, label=config.SLUG)
     return targets
 
+def keeps_existing_surface(meta_path, overwrite=False):
+    """True when meta_path holds a READABLE surface that a refused 0.4 m attempt must not replace.
+
+    The mirror of fetch_dem.keeps_existing_surface, with the seamless case INVERTED -- that one protects
+    good 0.4 m LiDAR from the coarse 1 m fill, this one protects ANY readable record from a blank green.
+
+    The inline guard this replaced tested `fetch_dem.is_seamless(prev)`, so it protected only the 6
+    seamless records in a 198-green corpus -- 3%. The other 192 are LiDAR-sourced, and re-running this
+    stage on one whose density had slipped under DENSITY_MIN would overwrite a working read with
+    insufficient=True and blank the card. The tightest live case is the-reserve hole 9 at 4.7 pts/m2
+    against a floor of 4.0: a 15% loss of in-green ground returns flips it, and the old guard would not
+    have fired. The comment above the guard said "Only one direction was guarded"; it was true one level
+    further down than it looked.
+
+    A predicate rather than an inline branch so it can be tested by truth table. The test that was meant
+    to pin the old guard asserted only that the strings 'os.environ.get("OVERWRITE")' and "is_seamless"
+    appear in the module source -- both satisfied outside the guard, the second by the word inside an
+    import COMMENT -- so deleting the whole guard left it green.
+    """
+    if overwrite or not os.path.exists(meta_path):
+        return False
+    try:
+        with open(meta_path) as f:
+            prev = json.load(f)
+    except (OSError, ValueError):
+        return False                        # unreadable: rebuilding it is the repair
+    # Any positively-sourced record that is not itself a refusal. Deliberately NOT is_seamless: a
+    # seamless 1 m surface and a good 0.4 m one are both real reads, and both beat a blank green.
+    return bool(str((prev or {}).get("source", "")).strip()) and not prev.get("insufficient")
+
+
 def main():
     pt2utm, zscale = laz_to_utm()
     print(f"LiDAR -> {UTM} reproject; vertical scale to m =", zscale)
@@ -164,6 +220,28 @@ def main():
         las=laspy.read(tf)
         cls=np.asarray(las.classification)
         g=cls==2
+        # Drop points the PRODUCER disowns. LAS carries a `withheld` bit for measurements the vendor
+        # marked as not to be used and a `synthetic` bit for points that were computed rather than
+        # measured; neither belongs in a surface this book prints a slope read off. Every tile in the
+        # corpus today has ZERO of both, so this changes no shipped surface -- it is here so the next
+        # course's tiles cannot quietly contribute rejected points to a green.
+        #
+        # Deliberately NOT filtering `overlap`, which is a different thing: those are valid returns in
+        # the strip where two flight lines meet, and USGS flags them only so derivative products CAN
+        # exclude them. Two courses here are 31% and 47% overlap by ground point, and dropping them
+        # would halve bay-view's density for no gain: gridded separately, the overlap points and the
+        # rest agree to RMS 1.16 cm over all 18 of its greens, with every printed tilt within 0.07
+        # percentage points -- below what the card resolves. Measured, see
+        # legal/09_GREEN_SURFACE_REPEATABILITY.md.
+        for _flag in DISOWNED_FLAGS:
+            try:
+                bad = np.asarray(getattr(las, _flag)).astype(bool)
+            except Exception:
+                continue                    # older point format without the bit
+            if bad.any():
+                print(f"  {os.path.basename(tf)}: dropping {int((g & bad).sum())} ground point(s) "
+                      f"flagged {_flag}")
+                g = g & ~bad
         # reproject ground points to the course UTM zone (metres); scale Z to metres
         x,y = pt2utm.transform(np.asarray(las.x)[g], np.asarray(las.y)[g])
         z = np.asarray(las.z)[g]*zscale
@@ -201,8 +279,11 @@ def main():
         # counted as measured. A demo deleting the returns in a 6 m circle at each green centre (about
         # a quarter of a 450 m^2 green) still reported nan_frac=0.0000 and insufficient=False, while
         # changing 7 of 18 printed reads. So ALSO measure real coverage: every green node must have a
-        # ground return near it. (Measured on the built corpus: worst uncovered share is 0.87%, so no
-        # existing green is affected -- this closes a blind spot rather than reclassifying anything.)
+        # ground return near it. (Measured on the built corpus: the worst uncovered share sits under
+        # 1%, well inside the 2% gate, so no existing green is affected -- this closes a blind spot
+        # rather than reclassifying anything. Stated as a bound, not an exact figure: the exact worst
+        # moves whenever a course is added or re-fetched, and this comment carried a stale 0.87%
+        # against an actual 0.71% for exactly that reason.)
         if n_in:
             tree=cKDTree(pts)
             dist,_=tree.query(grid[inside], k=1)
@@ -220,8 +301,26 @@ def main():
         n_pts_in=int(_in_polygon(px,py,t['green']['geometry']).sum())
         dens=round(n_pts_in/g_area,1) if g_area>0 else 0.0
         # A green is only trustworthy if the surface was actually measured under it.
-        insufficient = bool(nan_frac > NAN_FRAC_MAX or dens < DENSITY_MIN
-                            or uncovered > UNCOVERED_MAX)
+        insufficient = is_insufficient(nan_frac, dens, uncovered)
+        # Do not trade a WORKING 1 m fallback for a refused 0.4 m attempt. This stage shares dem_hd/
+        # with fetch_dem.py, which fills the greens this one gives up on, and re-running this stage
+        # alone -- an ordinary thing to do after changing the point filter -- overwrote that fill with
+        # an insufficient=True record. The green then prints BLANK where it previously printed a real
+        # read labelled "1 m data": a card silently loses information, and the only symptom is the
+        # blank itself.
+        #
+        # This is the exact mirror of the fault fetch_dem.keeps_existing_surface was written for, found
+        # on the same course: that one replaced good 0.4 m greens with the coarse 1 m ones, and cost
+        # Monarch Bay 1.1 MB of precision without printing a dishonest word. Only one direction was
+        # guarded. Same convention here, same escape hatch: OVERWRITE=1 to do it on purpose.
+        #
+        # A SUFFICIENT 0.4 m surface still replaces a seamless one -- that is the upgrade this stage
+        # exists for, and only the refused case is a downgrade.
+        if insufficient and keeps_existing_surface(f"{OUT}/hole{hn:02d}.json", OVERWRITE):
+            print(f"hole {hn:2d}: 0.4m refused (nan {nan_frac:.3f}, dens {dens}, unc "
+                  f"{uncovered:.3f}) -- KEEPING the existing surface. "
+                  f"OVERWRITE=1 to replace it with a blank green.")
+            continue
         np.save(f"{OUT}/hole{hn:02d}.npy",arr)
         meta=dict(hole=hn,approach_bearing=t['appr'],bbox=t['bbox'],W=t['W'],H=t['H'],
                   green_id=t['green']['id'],green_center=[t['clat'],t['clon']],

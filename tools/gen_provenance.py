@@ -38,8 +38,27 @@ def _tile_project(slug, dem_source=""):
 
     Preferred source is the tile FILENAMES on disk, because a project name recorded by hand has
     been wrong before. Some early downloads saved bare tile ids (t390135.laz) with no project in the
-    name; for those we fall back to the recorded dem_source label and say that is what we did."""
-    names = [os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz"))]
+    name; for those we fall back to the recorded dem_source label and say that is what we did.
+
+    Counts the tiles PRESENT for this course, published as "tiles held" rather than "tiles used".
+
+    Two attempts to count only what the build READ both failed, and the second failed in the
+    dangerous direction. Filtering on mtime against the newest LiDAR-derived artifact first looked
+    right -- callippe showed 10 files against a correct 7, three fetched by a later audit the build
+    never saw. But the count then swung to 11 the moment fetch_hole_elev re-ran, because the TEE
+    STAGE DOWNLOADS TILES AS IT RUNS: five of callippe's twelve are its own, over tees that sit
+    outside every green's tile. mtime cannot tell an audit's stray download from a stage's
+    legitimate one, so any count built on it moves with WHEN the stages last ran rather than with
+    what they read.
+
+    No stage records which tiles it consumed, so a true "used" count is not available from the
+    artifacts at all. Rather than publish a number whose meaning shifts under it, publish the one
+    that is exactly true -- what is on disk for this course -- and label it so it claims no more
+    than that. Overstating what the book RESTS ON is the failure that matters here; "held" asserts
+    presence and nothing about use."""
+    cdir = os.path.join(ROOT, "courses", slug)
+    tiles = glob.glob(os.path.join(cdir, "*.laz")) + glob.glob(os.path.join(cdir, "laz", "*.laz"))
+    names = [os.path.basename(p) for p in tiles]
     if not names:
         return None, 0, False
     projects = set()
@@ -62,7 +81,9 @@ def _tile_project(slug, dem_source=""):
 
 
 def _greens(slug):
-    """(count, density_lo, density_hi, n_seamless, n_insufficient) over the built green surfaces."""
+    """(count, density_lo, density_hi, n_seamless, n_insufficient, n_with_density) over the built
+    green surfaces. n_with_density is separate from count because a seamless green records none,
+    and a density RANGE must be published against the greens it was actually measured over."""
     metas = []
     for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
         try:
@@ -70,11 +91,72 @@ def _greens(slug):
         except Exception:
             pass
     if not metas:
-        return 0, None, None, 0, 0
+        return 0, None, None, 0, 0, 0
     dens = [m["density"] for m in metas if m.get("density")]
     seam = sum(1 for m in metas if "seamless" in str(m.get("source", "")).lower())
     insuf = sum(1 for m in metas if m.get("insufficient"))
-    return len(metas), (min(dens) if dens else None), (max(dens) if dens else None), seam, insuf
+    return (len(metas), (min(dens) if dens else None), (max(dens) if dens else None), seam,
+            insuf, len(dens))
+
+
+def _elevation(slug):
+    """(n_measured, n_holes_on_card, n_extrapolated) from hole_elev.json, or (0, 0, 0).
+
+    The card prints a tee-to-green height on ~130 cards across the corpus, and this table -- whose
+    whole purpose is that every printed number is traceable to an artifact -- said nothing about it.
+    It also has to distinguish the two BASES, because they are not equally direct: most holes are
+    sampled at the tee end of the mapped centreline, but on a short par 3 the tee is extrapolated
+    along the hole axis to the card yardage. A reader auditing a figure needs to know which.
+    """
+    p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+    if not os.path.isfile(p):
+        return 0, 0, 0
+    try:
+        rows = json.load(open(p)).get("holes") or {}
+    except Exception:
+        return 0, 0, 0
+    extrap = sum(1 for r in rows.values() if "extrapolated" in str(r.get("tee_basis", "")))
+    try:
+        holes = len(json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
+                    .get("holes", {})) or 18
+    except Exception:
+        holes = 18
+    return len(rows), holes, extrap
+
+
+
+def _osm_extract_date(slug):
+    """Earliest OSM data timestamp across this course's extracts, as YYYY-MM-DD, or None.
+
+    Overpass stamps every response with osm3s.timestamp_osm_base -- the instant of the planet data the
+    answer was computed from. It has been sitting unread in every extract on disk while this table went
+    to real trouble over the LiDAR side, decoding flight dates out of the point records because four
+    courses had been mislabelled by 2-12 years by their project names.
+
+    The same argument applies to geometry. The card tells a reader the hole and green SHAPES come from
+    OpenStreetMap, and it prints the flight date so they can judge whether the SLOPE is current. Without
+    the extract date they cannot judge the same thing about the shapes: a re-bunkered hole or a re-routed
+    green looks exactly as authoritative as a current one. Today every extract is a day or two old, so
+    this records a fact rather than fixing a live problem -- which is the moment to record it, before a
+    course goes two years without a refetch and nothing says so.
+
+    EARLIEST of the three files, deliberately: geometry, course features and relations are separate
+    Overpass calls a minute or so apart, and the honest claim about a book is the age of its oldest
+    ingredient.
+    """
+    stamps = []
+    for fn in ("osm_geom.json", "osm_course.json", "osm_relations.json"):
+        p = os.path.join(ROOT, "courses", slug, fn)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as fh:
+                t = (json.load(fh).get("osm3s") or {}).get("timestamp_osm_base")
+        except (OSError, ValueError):
+            continue
+        if t:
+            stamps.append(str(t))
+    return min(stamps)[:10] if stamps else None
 
 
 def _digitized(slug):
@@ -101,7 +183,7 @@ def _row(slug):
     distributable, label, _why = distribution.distribution_status(j)
     yardage_mode = distribution.is_yardage(j)
     proj, ntiles, from_names = _tile_project(slug, j.get('dem_source', ''))
-    ngreens, dlo, dhi, seam, insuf = _greens(slug)
+    ngreens, dlo, dhi, seam, insuf, ndens = _greens(slug)
     dig = _digitized(slug)
     stale = sorted(j.get("greens_possibly_outdated", []))
     flown_rec = j.get("lidar_flown") or {}
@@ -119,9 +201,24 @@ def _row(slug):
     flown_note = "" if basis.startswith("points within") else \
         " *(range measured over whole tiles, not only the points over the greens)*"
 
-    geom = "OSM (ODbL)"
-    if dig:
-        geom += f"; {len(dig)} green(s) hand-added, tagged `_digitized` (ids {', '.join(str(d) for d in dig)})"
+    # Read the geometry claim off the ARTIFACTS, like every other field in this table. This line was
+    # `geom = "OSM (ODbL)"`, hardcoded for every course -- so legal/03 asserted OSM provenance for
+    # poppy-ridge, which has no osm_geom.json, no osm_course.json, and draws zero polygons. A false
+    # source claim, in the one document whose purpose is to be handed to someone asking where the data
+    # came from, and in a file whose own header promises it "cannot drift from what was actually built".
+    #
+    # Either reading of that row was bad: if the course HAD used OSM it would be missing its ODbL 4.3
+    # notice, and since it did not, the record claimed a source that was never touched.
+    osm_files = [f for f in ("osm_geom.json", "osm_course.json")
+                 if os.path.exists(os.path.join(ROOT, "courses", slug, f))]
+    if not osm_files:
+        geom = "**none** — no OpenStreetMap data was fetched for this course"
+    else:
+        geom = "OSM (ODbL)"
+        osm_date = _osm_extract_date(slug)
+        geom += f", extract **{osm_date}**" if osm_date else ", extract date **not recorded**"
+        if dig:
+            geom += f"; {len(dig)} green(s) hand-added, tagged `_digitized` (ids {', '.join(str(d) for d in dig)})"
 
     if yardage_mode:
         slope = "**none** — yardage mode: blank greens to mark your own read"
@@ -130,44 +227,135 @@ def _row(slug):
     else:
         bits = [f"computed by us from **USGS 3DEP LiDAR** (public domain)"]
         if proj:
-            bits.append(f"project `{proj}` ({ntiles} tiles)"
+            # "tiles held", not "tiles used": no stage records which tiles it consumed, and the tee
+            # stage downloads its own as it runs, so any "used" count would be a guess. See
+            # _tile_project for the two attempts that got this wrong.
+            bits.append(f"project `{proj}` ({ntiles} tiles held)"
                         + ("" if from_names else " *(label recorded in course.json; these tiles\u2019 filenames carry no project name)*"))
         if flown:
             bits.append(f"**flown {flown}**{flown_note}")
         if dlo is not None:
-            bits.append(f"{dlo:g}–{dhi:g} pts/m² over {ngreens} greens @0.4 m")
+            # len(dens), not len(metas): a density RANGE describes the greens it was computed from.
+            # monarch-bay has 18 greens of which 6 are seamless with density None, so this published
+            # "15.2-19.5 pts/m2 over 18 greens @0.4 m" -- a range over 12 greens attributed to 18,
+            # six of which are not @0.4 m at all and are counted again in the next clause.
+            bits.append(f"{dlo:g}–{dhi:g} pts/m² over {ndens} greens @0.4 m")
         if seam:
             bits.append(f"{seam} green(s) fall back to the 1 m seamless DEM")
         slope = ", ".join(bits)
 
+    nelev, nholes, nextrap = _elevation(slug)
+    if nelev:
+        bits = [f"tee-to-green **height change measured on {nelev} of {nholes} holes** from the same "
+                f"public LiDAR (ground returns at the tee vs the green's own surface)"]
+        if nextrap:
+            bits.append(f"{nextrap} of them with the tee extrapolated along the hole axis to the card "
+                        f"yardage, because the mapped line stops short of the back tee")
+        if nelev < nholes:
+            bits.append(f"the other {nholes - nelev} print no height: the tee could not be located or "
+                        f"had no ground returns")
+        elev_note = "; ".join(bits)
+    else:
+        elev_note = ""
+
     notes = []
+    if elev_note:
+        notes.append(elev_note)
     if stale:
-        notes.append(f"greens on holes {', '.join(str(h) for h in stale)} were **rebuilt after the "
-                     f"flight** — those cards are labelled *pre-rebuild data*")
+        # The caveat AND its basis, together. "rebuilt after the flight" is an assertion about 9 of
+        # philadelphia's 18 cards, and its evidence was recorded in sources.scorecard -- which this table
+        # truncates to the first sentence for readability, so the justification never reached the row
+        # that makes the claim. A reader auditing the caveat could not see why it was made.
+        note = (f"greens on holes {', '.join(str(h) for h in stale)} were **rebuilt after the "
+                f"flight** — those cards are labelled *pre-rebuild data*")
+        basis = re.sub(r"\s+", " ", str(j.get("greens_outdated_basis") or "")).strip()
+        note += f" ({basis})" if basis else " *(basis not recorded — see greens_outdated_basis)*"
+        notes.append(note)
     if insuf:
         notes.append(f"{insuf} green(s) had no usable point cloud and print no read")
     if dig:
         notes.append("hand-added greens were traced from public-domain USDA NAIP because OSM had none")
+    # The TREE layer's coverage gap belongs here too. This table already records where the green
+    # surfaces fall back to the 1 m DEM and how many holes carry a measured height change, so the one
+    # remaining per-hole data limitation it did not report was trees: they are found by height above
+    # ground in the point cloud, so a hole the survey does not reach draws none -- and on the card that
+    # is indistinguishable from a hole that genuinely has none. Monarch Bay 1, 17 and 18 are the case,
+    # and they are exactly the three holes lidar_coverage.py reports as having centreline outside the
+    # point data, which is why the blank is the survey's edge rather than open ground.
+    tp = os.path.join(ROOT, "courses", slug, "trees_lidar.json")
+    if os.path.exists(tp):
+        try:
+            with open(tp, encoding="utf-8") as fh:
+                tl = json.load(fh)
+        except (OSError, ValueError):
+            tl = {}
+        if tl and any(tl.values()):
+            bare = sorted(int(h) for h, v in tl.items() if not v)
+            if bare:
+                notes.append(
+                    # Claims only what an empty tree list can support. This asserted that "the point
+                    # cloud does not reach those corridors" -- a CAUSE the artifact cannot supply:
+                    # trees_lidar.json writes the same empty list whether the hole has no trees, no
+                    # survey coverage, returns rejected by the height/class filter, or every marker
+                    # landed on a playing surface. generate.py says so in as many words ("it cannot
+                    # prove WHY a hole is empty, hence 'no tree data' rather than a coverage claim"),
+                    # so this exhibit was overclaiming past the engine it documents.
+                    #
+                    # It also quoted the card. The card prints three words -- "no tree data" -- and
+                    # the word "unmapped" appears in none of the 15 built books, so a legal document
+                    # was quoting card wording that does not exist.
+                    f"**no tree markers on hole{'s' if len(bare) > 1 else ''} "
+                    f"{', '.join(str(h) for h in bare)}** \u2014 the tree layer comes from LiDAR "
+                    f"returns above ground, and an empty hole cannot say WHY (no trees there, no "
+                    f"survey coverage, or returns rejected by the height/class filter), so the maps "
+                    f"show them treeless and those cards are marked \u201cno tree data\u201d")
+    # Every card prints a Rating/Slope table. Those are the only printed numbers whose source this table
+    # did not report, and 7 of 12 courses have none recorded -- while the panel's own note said "All
+    # yardages from the official scorecard", which a reader takes as covering the columns beside them.
+    # Report the gap rather than let it stay invisible; an uncited number should be visibly uncited.
+    rating_src = re.sub(r"\s+", " ", str((j.get("sources") or {}).get("rating") or "")).strip()
+    if any(t.get("rating") is not None for t in (j.get("tees") or [])):
+        notes.append(f"tee rating/slope: {rating_src}" if rating_src else
+                     "**tee rating/slope source NOT recorded** — the cards print them; nothing cites them")
     # the SAME rule any publisher uses -- see distribution.py for why this is shared (resolved above,
     # so the Status column and the slope text cannot disagree)
     status = f"**{label} ✅**" if distributable else label
 
     # first sentence of the recorded scorecard provenance, so the table stays readable
-    sc = (j.get("sources", {}) or {}).get("scorecard", "")
-    sc = re.sub(r"\s+", " ", sc).strip()
+    # The table keeps this cell short to stay readable, and that truncation has now twice DISCARDED
+    # recorded provenance: the basis for philadelphia's pre-rebuild caveat and five courses' rating/slope
+    # sources were all written into this one field and cut off. Two fixes, because a silent cut is the
+    # actual fault: say when it happened, and reproduce every source in full below the table.
+    sc_full = re.sub(r"\s+", " ", (j.get("sources", {}) or {}).get("scorecard", "")).strip()
+    sc = sc_full
     if len(sc) > 190:
         cut = sc[:190].rsplit(". ", 1)[0]
-        sc = (cut + ".") if len(cut) > 60 else sc[:190] + "…"
+        # ...and always mark it. It used to re-close the sentence with a full stop, so valley-hi's cell
+        # ended "transcribed directly; all." -- a mid-sentence cut that reads like a finished thought.
+        sc = ((cut + ". …") if len(cut) > 60 else sc[:190] + "…") + f" *(full text: [{name}](#sources-in-full))*"
     return f"| {name} | {status} | {geom} | {slope} | {sc or '—'} | {'; '.join(notes) or 'clean'} |"
 
 
 def build():
     # ignore scratch/underscore dirs: transient course folders (cold-build tests, staging) must not
-    # make the provenance doc look stale and fail the drift check
-    slugs = sorted(s for s in (os.path.basename(os.path.dirname(p))
-                              for p in glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
-                   if not s.startswith("_"))
+    # make the provenance doc look stale and fail the drift check. One spelling of that rule, shared
+    # with gen_disclaimers and cross_flight_check -- see distribution.is_corpus_slug.
+    slugs = distribution.course_slugs(ROOT)
     rows = [_row(s) for s in slugs]
+    full = []
+    for slug in slugs:
+        j = json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
+        full.append(f"### {j.get('name', slug)}")
+        for key in sorted(j.get("sources") or {}):
+            val = re.sub(r"\s+", " ", str((j.get("sources") or {})[key])).strip()
+            if val:
+                full.append(f"- **{key}** — {val}")
+        for key in ("greens_outdated_basis", "dem_source"):
+            val = re.sub(r"\s+", " ", str(j.get(key) or "")).strip()
+            if val:
+                full.append(f"- **{key}** — {val}")
+        full.append("")
+    full_text = chr(10).join(full)
     return f"""# Provenance by Course
 
 <!-- GENERATED by tools/gen_provenance.py -- do not hand-edit; re-run it instead.
@@ -175,7 +363,9 @@ def build():
      course.json), never from prose, so this table cannot drift from what was actually built.
      Verify with: python3 tools/gen_provenance.py --check -->
 
-Exactly what data built each book. "Distributed" = safe to hand out; "Personal" = do not distribute.
+Exactly what data built each book. "Distributed" = built from open, public-domain and factual inputs
+only, and handed out on that basis; "Personal" = do not distribute. This records what the build DID; it
+is not legal advice and states no legal conclusion.
 
 **Every book on this list is built only from:** OpenStreetMap geometry (ODbL 1.0), slope/contours
 computed by us from public-domain USGS 3DEP LiDAR, par/yardage/handicap **facts** from published
@@ -185,6 +375,12 @@ No Esri/Maxar, Google, Apple or Bing imagery, and nothing from any commercial gr
 **Flight dates are decoded from the LiDAR point records** (`tools/lidar_dates.py`), not from the
 project name. Four courses were mislabelled by 2–12 years before this was measured, so the dataset
 names below are taken from the actual tile filenames on disk.
+
+**Geometry carries a date for the same reason.** Each row's OSM *extract* date is the earliest
+`osm3s.timestamp_osm_base` across that course's Overpass responses — the instant of the planet data
+they were computed from, read off the files rather than recorded by hand. The flight date lets a reader
+judge whether the green SLOPE is current; without this one they cannot judge the same thing about the
+hole and green SHAPES, and a re-bunkered hole looks exactly as authoritative as a current one.
 
 | Course | Status | Geometry | Green slope | Scorecard | Notes |
 |---|---|---|---|---|---|
@@ -205,7 +401,13 @@ names below are taken from the actual tile filenames on disk.
   verified yardages with **blank greens** rather than slope maps that could be wrong.
 - **Jay Blasi routing diagram (Poppy Ridge):** only **viewed**, to establish hole numbering; never
   reproduced or embedded. Extracting factual hole positions is not copying.
-"""
+
+## Sources in full
+
+The table above shortens the Scorecard column to stay readable. Everything recorded for each course is
+reproduced here uncut, so a claim can always be traced to what was actually written down.
+
+{full_text}"""
 
 
 def main():

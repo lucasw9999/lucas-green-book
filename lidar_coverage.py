@@ -28,10 +28,23 @@ refuses. What it stops is the silent version.
 
 The check uses each tile's HEADER bounding box, which records the extent of the points actually in
 the file, not the nominal grid cell -- that distinction is the whole point above.
+
+But a header bbox is a RECTANGLE, and the points inside it are not. So this test can only ever prove
+a green is outside the data; it cannot prove one is inside it, and a green sitting in a hole within
+the rectangle reads as covered. Measured, which is why the wording below no longer claims otherwise:
+monarch-bay has SIX greens on the 1 m seamless fallback (holes 1, 9, 10, 16, 17, 18) and the bbox
+test flags only THREE of them (green ids 689151359, 689151368, 689165026). Holes 9, 10 and 16 --
+greens 689151373, 689151348, 689168293 -- fall inside a tile's header rectangle, have no ground
+returns under them, and were reported as covered. So the report also cross-checks the surfaces that
+were actually built (dem_hd/holeNN.json), because those record what the point data really produced.
 """
 import glob
 import json
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import geo  # noqa: E402
 
 
 def tile_footprints(laz_dir):
@@ -123,25 +136,21 @@ def uncovered_holes(course_dir, boxes=None, els=None):
     The greens check alone is not enough. At Castlewood Hill it flagged holes 14 and 16 but not 15
     and 17, whose centrelines also run through the same gap -- and the centreline is where
     fetch_trees.py looks for canopy returns, so those holes silently lose their trees too. Measured
-    across the corpus: 9 of 11 courses have every centreline node inside the data; Castlewood Hill
-    has 5 of 52 outside (holes 14, 15, 16, 17) and Monarch Bay 5 of 52 (holes 1, 17, 18, which are
+    across the corpus: 10 of 11 courses have every centreline node inside the data; Castlewood Hill
+    had 5 of 52 outside (holes 14, 15, 16, 17) until its missing tile copy arrived and is now 0 of 52; Monarch Bay has 5 of 52 (holes 1, 17, 18, which are
     over the bay).
     """
     if els is None:
         els = _elements(course_dir)
-    # Keep only the LONGEST centreline per hole ref, exactly as fetch_dem.py, fetch_dem_hd.py,
-    # render_hole.py and fetch_trees.py all do -- OSM carries duplicate and fragment ways where a
-    # neighbouring course pokes into the bbox. This was the fifth hole reader and the only one
-    # omitting it, so a fragment from next door could be reported as an uncovered hole and a ref
-    # could appear twice in the output.
-    best = {}
-    for e in els:
-        if not (e.get("geometry") and (e.get("tags") or {}).get("golf") == "hole"):
-            continue
-        ref = (e.get("tags") or {}).get("ref")
-        if ref and ref.isdigit() and len(e["geometry"]) > len(best.get(ref, {}).get("geometry", [])):
-            best[ref] = e
-    holes = list(best.values())
+    # ONE centreline per hole ref, via the shared chooser -- OSM carries duplicate ways where a
+    # neighbouring course pokes into the bbox, and at Castlewood two 18-hole courses share the area, so
+    # every ref has a twin. This was the fifth hole reader and the only one omitting the dedupe, so a
+    # way from next door could be reported as an uncovered hole and a ref could appear twice.
+    # The course centre comes from course.json, read here rather than from a module global because this
+    # function is deliberately course-agnostic (it takes course_dir).
+    _cjp = os.path.join(course_dir, "course.json")
+    _loc = (json.load(open(_cjp)).get("location") or {}) if os.path.isfile(_cjp) else {}
+    holes = list(geo.hole_lines(els, _loc.get("lat"), _loc.get("lon")).values())
     if boxes is None:
         boxes, _why = _footprint_boxes(course_dir)
     if not boxes or not holes:
@@ -179,6 +188,42 @@ def uncovered_greens(course_dir, boxes=None, els=None):
     return bad
 
 
+def fell_back(course_dir):
+    """{green_id: (hole, why)} for greens whose BUILT surface says the point data did not serve them.
+
+    The bbox test above is a rectangle, so it can prove a green is outside the point data but never
+    that it is inside. dem_hd/holeNN.json is the other end of the same question, recorded after the
+    fact by the stage that actually read the points: `source` names the 1 m seamless DEM when
+    fetch_dem.py had to fill the green in, and `insufficient` is set when fetch_dem_hd.py refused its
+    own 0.4 m attempt. Either way the LiDAR did not produce a usable surface there.
+
+    This is not a substitute for the bbox check -- it is only available AFTER the surfaces are built,
+    while the bbox check runs at fetch time -- but where both exist they must agree, and today they do
+    not: monarch-bay records 6 fallback greens against 3 the rectangle flags. Reporting the 3 as if
+    they were the whole answer is the silent half of exactly the fault this module was written for.
+
+    Read by green_id rather than by hole number so it can be compared with uncovered_greens(), whose
+    unit is the OSM green -- osm_geom.json routinely holds more greens than the course has holes (20
+    for 18 at monarch-bay, from a neighbouring practice green inside the bbox).
+    """
+    out = {}
+    for p in sorted(glob.glob(os.path.join(course_dir, "dem_hd", "hole*.json"))):
+        try:
+            with open(p) as f:
+                m = json.load(f)
+        except (OSError, ValueError):
+            continue                      # an unreadable meta is not evidence either way
+        gid = m.get("green_id")
+        if gid is None:
+            continue
+        src = str(m.get("source") or "")
+        if m.get("insufficient"):
+            out[gid] = (m.get("hole"), "the 0.4 m attempt was refused as insufficient")
+        elif "seamless" in src.lower():
+            out[gid] = (m.get("hole"), "built from the 1 m seamless DEM, not the point cloud")
+    return out
+
+
 def report(course_dir):
     """Print the coverage verdict. Returns (status, uncovered_greens, uncovered_holes).
 
@@ -203,19 +248,46 @@ def report(course_dir):
               f"({n} node(s) total): " + ", ".join(f"h{r}({o}/{t})" for r, o, t in holes))
         print("     Trees along those stretches come from canopy returns and will be missing.")
     bad = uncovered_greens(course_dir, boxes, els)
+    ntiles = sum(len(r) for _T, r in boxes)
     if not bad:
-        print(f"  coverage: all {len(rings)} green(s) sit inside the downloaded tiles' data "
-              f"({sum(len(r) for _T, r in boxes)} tile(s) checked)")
-        return "checked", bad, holes
-    print(f"  !! {len(bad)} green(s) are NOT fully covered by the point data on disk:")
-    for gid, out, tot in bad:
-        print(f"       green {gid}: {out} of {tot} sampled node(s) have no returns over them")
-    print("     These greens will fall back to the 1 m seamless DEM and their cards will say\n"
-          "     '1 m data'. That is honest if the survey truly does not cover them -- bayside\n"
-          "     greens over water have no ground returns at all. But check first that a tile copy\n"
-          "     is not simply missing: one geographic cell can exist in several sub-projects, each\n"
-          "     holding only its own strip, and Castlewood Hill lost two greens' 0.4 m reads that\n"
-          "     way. Re-run the fetch; it now keeps every sub-project copy under its own name.")
+        # Say what a rectangle can support and no more. This used to read "all N green(s) sit inside
+        # the downloaded tiles' DATA", which is a claim about the points; the test behind it is
+        # point-in-header-BBOX, and a green in a hole inside that rectangle reads as covered. It was
+        # printed for 10 of the 11 courses in this corpus.
+        print(f"  coverage: all {len(rings)} green(s) fall inside the downloaded tiles' header\n"
+              f"     bounding boxes ({ntiles} tile(s) checked). That is a RECTANGLE per tile, not the\n"
+              f"     point data: a green in a gap inside the box cannot be told apart from a covered\n"
+              f"     one here. See the dem_hd cross-check below for what the points produced.")
+    else:
+        print(f"  !! {len(bad)} green(s) are NOT fully covered by the point data on disk:")
+        for gid, out, tot in bad:
+            print(f"       green {gid}: {out} of {tot} sampled node(s) have no returns over them")
+        print("     These greens will fall back to the 1 m seamless DEM and their cards will say\n"
+              "     '1 m data'. That is honest if the survey truly does not cover them -- bayside\n"
+              "     greens over water have no ground returns at all. But check first that a tile copy\n"
+              "     is not simply missing: one geographic cell can exist in several sub-projects, each\n"
+              "     holding only its own strip, and Castlewood Hill lost two greens' 0.4 m reads that\n"
+              "     way. Re-run the fetch; it now keeps every sub-project copy under its own name.")
+    # CROSS-CHECK against the surfaces actually built, which is the only evidence that answers the
+    # question the rectangle cannot. See fell_back(): monarch-bay has 6 greens on the 1 m fallback and
+    # the rectangle flags 3, so the three it misses (holes 9, 10 and 16) were reported covered.
+    fb = fell_back(course_dir)
+    if fb:
+        flagged = {gid for gid, _o, _t in bad}
+        missed = sorted((hole, gid, whyfb) for gid, (hole, whyfb) in fb.items()
+                        if gid not in flagged)
+        print(f"  dem_hd cross-check: {len(fb)} of {len(rings)} green(s) did NOT get a surface from "
+              f"the point cloud")
+        for hole, gid, whyfb in missed:
+            print(f"       hole {hole} (green {gid}): inside a tile's header bbox, yet {whyfb}")
+        if missed:
+            print(f"     So the bbox test above accounts for {len(fb) - len(missed)} of the {len(fb)}; "
+                  f"the other {len(missed)} sit in a hole INSIDE a tile's rectangle.\n"
+                  f"     Their cards print '1 m data', which is honest -- but the rectangle is not\n"
+                  f"     evidence that the survey reaches them, so do not read a clean bbox report as\n"
+                  f"     one. Check whether a sub-project copy of their cell is missing.")
+    elif os.path.isdir(os.path.join(course_dir, "dem_hd")):
+        print(f"  dem_hd cross-check: every built green surface came from the point cloud")
     return "checked", bad, holes
 
 
@@ -230,8 +302,12 @@ def main():
     if status != "checked":
         return 2          # could not check -- same convention as tools/gen_provenance.py
     # holes count too: a course can have every green covered while a centreline leaves the data, and
-    # that is where fetch_trees.py looks for canopy returns
-    return 1 if (bad or holes) else 0
+    # that is where fetch_trees.py looks for canopy returns. So does a green the BBOX vouches for that
+    # the built surface says fell back to the 1 m DEM -- returning 0 for that was the under-report
+    # this module's whole purpose forbids (monarch-bay: 6 fallback greens, 3 flagged).
+    flagged = {gid for gid, _o, _t in bad}
+    unexplained = [gid for gid in fell_back(config.COURSE_DIR) if gid not in flagged]
+    return 1 if (bad or holes or unexplained) else 0
 
 
 if __name__ == "__main__":

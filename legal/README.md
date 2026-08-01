@@ -21,9 +21,11 @@ built only from **open** and **public‑domain** data plus **facts**, independen
 | `06_RULE_4.3_CONFORMANCE.md` | Why the "Designed to conform · Rule 4.3" claim is honest |
 | `07_POPPY_RIDGE_ESRI_IMAGERY.md` | The ONE flagged item and the decision on it |
 | `08_AUDIT_2026-07-13.md` | The full audit + adversarial findings + action checklist |
+| `09_GREEN_SURFACE_REPEATABILITY.md` | What the printed slope numbers are worth, measured across
+repeat LiDAR flights and flight-line overlap |
 
 ## One‑line verdict
-**All eleven distributed books are clean to give away**, and Poppy Ridge (yardage‑mode, personal)
+**All eleven distributed courses — fourteen books to give away (eleven pocket, three enlarged)**, are clean, and Poppy Ridge (yardage‑mode, personal)
 is clean too. The project contains **no Esri/Maxar, Google, Apple or Bing imagery anywhere** — the
 one such file, the Poppy Ridge aerial, was **rebuilt from public‑domain USDA NAIP on 2026‑07‑13**
 and the Esri‑derived originals were deleted (see `07_...`). Every book is built only from

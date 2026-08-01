@@ -13,8 +13,15 @@ ground returns where available (1 m seamless DEM as an honest fallback):
   * slope heat           = |gradient|, fixed golf scale (0=flat green .. >=5%=red)
 The whole drawing is rotated so the hole's APPROACH is at the bottom of the panel.
 
-Honest limit: airborne LiDAR (~10 cm vertical) resolves real overall tilt / tiers,
-not sub-inch break -- that needs an on-site survey.
+Honest limit, and it is NOT vertical noise. USGS quotes ~10 cm absolute vertical accuracy, but that
+is a datum offset: it moves a whole green up or down together and changes no read, because break
+depends on RELATIVE height inside the one green. Measured against a second independent survey of the
+same greens, the smoothed surface these contours are drawn from repeats to RMS 0.56 cm (p95 1.13),
+so the 15 cm interval is ~18x the noise -- see legal/09_GREEN_SURFACE_REPEATABILITY.md.
+What genuinely cannot be resolved is SPATIAL and non-geometric: a 0.4 m grid under ~1.5 m of
+smoothing erases anything smaller than about a metre and a half, and no elevation model knows grain,
+firmness, moisture, mowing direction or a fresh hole location. So this reads real tilt and tiers,
+never sub-inch break -- that still needs an on-site survey and your own eyes.
 """
 import json, math, os
 import numpy as np
@@ -54,8 +61,21 @@ def point_in_poly(x, y, poly):
     return inside
 
 def heat_color(slope_pct):
+    """Green -> amber -> red by steepness, with LIGHTNESS that falls monotonically.
+
+    The ramp used to brighten to a pale yellow at the 2.5% midpoint before darkening to red, so its
+    grey value FOLDED: 0.00% and 3.65% both printed grey 170. On a home mono printer -- which is how a
+    junior actually prints this -- dead flat and a severe slope were the same shade, and 26% of all
+    heat cells in the shipped books collided with a slope at least 1.5 points different. Worse, the
+    legend inverted: a 3.6% cell matched the FLAT swatch.
+
+    Fixed by darkening the mid and end stops so luminance falls 189 -> 62 with no reversal, which
+    keeps the colour reading identical (hues still 120 deg green, amber, red) while making the
+    grayscale print monotonic -- now at least 11 grey levels per 1.5 points of slope. Geometry is
+    untouched, so no scale, layout, or Rule 4.3 measurement moves.
+    """
     t = min(max(slope_pct/5.0, 0), 1)
-    stops = [(0.0,(120,190,120)),(0.5,(232,224,120)),(1.0,(210,90,70))]
+    stops = [(0.0,(150,205,150)),(0.5,(206,170,60)),(1.0,(150,40,32))]
     for a in range(len(stops)-1):
         t0,c0 = stops[a]; t1,c1 = stops[a+1]
         if t <= t1:
@@ -72,6 +92,64 @@ def rot(x, y, cx, cy, deg):
 DIRS = [(0,-1,"back"),(0.71,-0.71,"back-right"),(1,0,"right"),(0.71,0.71,"front-right"),
         (0,1,"front"),(-0.71,0.71,"front-left"),(-1,0,"left"),(-0.71,-0.71,"back-left")]
 
+def play_line_span(rp):
+    """(front_y, back_y, midx) for a rotated green: where the LINE OF PLAY enters and leaves it.
+
+    The datum for everything the card says about depth. It used to be the rotated polygon's BOUNDING
+    BOX -- max(rys) to min(rys) -- and on a green set square to the approach those are the same thing,
+    which is why it survived. On a green set DIAGONALLY they are not: the frontmost and backmost
+    vertices are corners on opposite sides of the green, and the box spans far more than the green is
+    deep anywhere a ball actually lands.
+
+    castlewood-valley 14 is the worked case. A 125 yd par 3 whose green is a clean parallelogram lying
+    ~45 degrees across the approach: the card printed "41yd deep" and ruled its grey ladder out to 40,
+    on a green that is 20 yd deep down the line the pin ring sits on. That is two clubs of margin for a
+    back pin, on the shortest hole of the round -- the single largest thing this book has told a reader
+    that its own drawing contradicts. Corpus-wide 87 of 198 greens printed a depth 3+ yd too deep and
+    53 were 5+ yd too deep.
+
+    The box was also the ladder's ZERO, so the two errors compounded: on castlewood-valley 14 the front
+    corner sits 14.8 yd nearer the approach than the front edge at the middle, so a reader standing on
+    the front-middle was already reading ~15 on a ladder captioned "yd from the front edge".
+
+    Measuring at the lateral middle fixes both with one number, and it is the line the reader plays:
+    the pin ring is drawn on it, and the ladder now zeroes where the printed depth starts, so the
+    headline figure and the top rung cannot disagree. The centre line crosses the outline exactly
+    twice on all 198 greens in the corpus, so this is single-valued everywhere -- it is not picking
+    an outer extent across a notch.
+    """
+    rxs = [q[0] for q in rp]
+    midx = (min(rxs) + max(rxs)) / 2.0
+    ys, n = [], len(rp)
+    for i in range(n):
+        x1, y1 = rp[i]; x2, y2 = rp[(i+1) % n]
+        if (x1 > midx) != (x2 > midx):
+            ys.append(y1 + (y2-y1)*(midx-x1)/(x2-x1))
+    if len(ys) < 2:
+        # Provably unreachable for any real green: ys counts state transitions of (x > midx) around a
+        # closed ring, so its length is exactly even, and midx lies strictly between min and max
+        # whenever they differ -- so there is at least one transition. The only trigger is a ring with
+        # zero lateral extent after rotation, which is not a polygon. Raise rather than fall back to the
+        # bounding box: the box is the very measure this function exists to replace, and returning it
+        # silently would print a depth that is wrong in exactly the way the card claims to have fixed.
+        raise ValueError("green ring has no lateral extent in the approach frame; cannot measure depth")
+    # PAIRS, not extremes. max(ys), min(ys) was the same min/max-of-crossings pattern that this commit
+    # replaced 40 lines below in xspans(), where it drew a ladder rung straight across a concavity.
+    # A green bitten on one side crosses the play line four times, and taking the extremes would report
+    # the notch as green: on a synthetic bite 33% of the printed span was outside the outline, and the
+    # pin ring -- drawn at the middle of this span -- landed outside its own green. No corpus green
+    # crosses more than twice today, but 55 of 198 already have a four-crossing band, the nearest just
+    # 3.12 yd from the play line on merion 9 where the interior gap is 21.3 yd. That is one OSM re-trace
+    # away, and midx itself is set by the two most extreme vertices -- precisely the ones a re-trace moves.
+    #
+    # Take the LONGEST interior run: the green's main body, which is what a player is aiming at and
+    # putting across. Identical to max/min on every green in the corpus.
+    ys.sort()
+    runs = [(ys[i+1] - ys[i], ys[i], ys[i+1]) for i in range(0, len(ys) - 1, 2)]
+    _len, lo, hi = max(runs)
+    return hi, lo, midx                   # approach edge is at the bottom, so front = max
+
+
 def depth_width_yd(meta):
     """(depth, width) in yards, measured in the APPROACH frame -- front-to-back is depth.
 
@@ -79,7 +157,7 @@ def depth_width_yd(meta):
     north-to-south, regardless of which way the hole plays; render() measures it after rotating the
     approach to point up. On a hole that plays east-west the two are the depth and the width
     swapped. Corpus-wide the disagreement ran to 18 yards -- two clubs -- with 32 greens off by more
-    than 30%, and callippe h6 printing 42 x 29 where the truth is 27 deep x 43 wide.
+    than 30%, and callippe h6 printing 42 x 29 where the truth is 22 deep x 43 wide.
 
     Nothing shipped hits it today (no built green is blank), but the whole point of the blank card is
     the case where a course has no usable LiDAR, and then it fires on all 18 holes at once."""
@@ -95,16 +173,39 @@ def depth_width_yd(meta):
     theta = -90.0 - a_ang
     cx, cy = W / 2.0, H / 2.0
     rp = [rot(x, y, cx, cy, theta) for x, y in poly]
-    rxs = [p[0] for p in rp]; rys = [p[1] for p in rp]
-    return ((max(rys) - min(rys)) * px_m / 0.9144, (max(rxs) - min(rxs)) * px_m / 0.9144)
+    rxs = [p[0] for p in rp]
+    fy, by, _midx = play_line_span(rp)
+    return ((fy - by) * px_m / 0.9144, (max(rxs) - min(rxs)) * px_m / 0.9144)
 
 
 def _blank_green(meta, tournament, rebuilt=False):
-    """A green we will NOT read: either the LiDAR never measured this surface (honesty gate in
-    fetch_dem_hd.py) or the green was rebuilt after the flight, so the data describes a surface
-    that no longer exists. Draw the real outline -- that geometry IS measured, it comes from OSM --
-    with ruled lines to mark your own read, and say plainly why there are no arrows. Printing
-    invented or expired contours here would be the one thing this project promises never to do."""
+    """A green we will NOT read. Draw the real outline -- that geometry IS measured, it comes from
+    OSM -- with ruled lines to mark your own read, and say plainly why there are no arrows. Printing
+    invented or expired contours here would be the one thing this project promises never to do.
+
+    Two reasons, and only the first one currently happens:
+
+    * `rebuilt=False` -- the LiDAR never measured this surface (fetch_dem_hd.py's honesty gate). This
+      is the live path.
+
+    * `rebuilt=True` -- the green was rebuilt after the flight, so real measured data describes a
+      surface that no longer exists. NOTHING REACHES THIS TODAY, and that is deliberate, not an
+      oversight. It is NOT what `greens_possibly_outdated` does: a green whose rebuild is merely
+      SUSPECTED still has genuinely measured data, so the policy is to print the map and label it
+      "pre-rebuild data" with a warning mark rather than withhold it -- see the comment at the
+      `insufficient` check in render(), which is where that decision lives. philadelphia 10-18 are
+      the nine greens in that state; the Flynn restoration is phased and whether it has reached the
+      back nine is unknown, so a hedged read beats no read.
+      This branch is for a green whose rebuild is CONFIRMED, per green. Nothing in the corpus is in
+      that state today (the one course awaiting post-rebuild data is built in yardage mode, which
+      prints no green panels at all, so this function is never called for it).
+      Kept rather than deleted because the capability is real -- a course with some confirmed-rebuilt
+      greens and some current ones cannot be handled by yardage mode, which is all-or-nothing -- and
+      its behaviour is pinned by test_a_confirmed_rebuild_says_so_rather_than_no_coverage so that it
+      works the day it is wired up. An earlier version of this docstring named the rebuild case
+      first, which read as though a suspected rebuild were blanked; that is the opposite of the
+      policy, in the same module.
+    """
     poly = poly_to_px(meta['polygon'], meta['bbox'], meta['W'], meta['H'])
     xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
     pad = 8
@@ -150,6 +251,99 @@ SLOPE_LABEL_MAX_PCT = 10.0      # above this a cell is not putting surface -- co
 NAN_FRAC_MAX_RENDER = 0.25      # >25% of the green interior with no elevation at all
 MIN_RELIEF_M = 0.05            # a green flat to within 5 cm is a zero-fill, not a green
 MAX_PLAUSIBLE_RELIEF_M = 30.0   # 98 ft of fall inside one green outline is a data artifact
+# Sentinel for a green whose fall direction the data does not determine; generate.py prints it
+# instead of a compass word, and never inside "feeds ...", which would be a claim.
+NO_CLEAR_FALL = "no clear fall"
+
+
+def green_summary(arr, mask, px_x, px_y, putt=None):
+    """Every number the green card prints, derived from a filled elevation grid.
+
+    ONE home on purpose. `tools/cross_flight_check.py` re-derives these figures from a single
+    flight's points to prove the printed read does not depend on which survey supplied it; if it
+    computed the plane its own way, the check would drift away from the card it claims to verify
+    the moment either side changed. Returns (surf, core, dict) -- the smoothed surface and the
+    collar-trimmed core as well, because the SVG draws from them.
+
+    `putt` overrides which cells count as putting surface. The card never passes it: it must derive
+    that from the surface in front of it. It exists for a controlled comparison of TWO surfaces of
+    the same green, where each would otherwise classify slightly different cells as steep and the
+    comparison would measure the reclassification instead of the difference in the ground.
+    """
+    surf = gauss(arr, 3.0)                       # ~1.5 m smoothing
+    core = erode(mask, 3)                        # trim collar (~1.5 m)
+    if core.sum() < 20: core = mask
+
+    gy, gx = np.gradient(surf, px_y, px_x)       # dz/d(row=south), dz/d(col=east) per meter
+    slope = np.hypot(gx, gy)*100.0
+    # downhill in PIXEL space (col+ = east/right, row+ = south/down): -gradient
+    dcol = -gx; drow = -gy
+
+    # --- robust summary: least-squares plane over the green core ---
+    # relief and median slope describe the WHOLE core, because they report the ground as it is.
+    zc = surf[core]
+    relief_m = float(zc.max()-zc.min()) if core.any() else 0.0
+    med_slope = float(np.median(slope[core])) if core.any() else 0.0
+
+    # The plane BEHIND THE PRINTED READ is fitted to putting surface only. Cells steeper than
+    # SLOPE_LABEL_MAX_PCT are dropped because that is already this renderer's definition of ground
+    # that is not a puttable read -- and the card's own legend says so to the reader: "ground over
+    # 10% is shown by colour only". Fitting the headline tilt and feed direction to ground the same
+    # card disowns two lines lower was an internal contradiction.
+    #
+    # It matters because a green outline comes from OpenStreetMap, and one drawn a little generously
+    # laps onto the surrounding bank; erode(mask, 3) trims only ~1.2 m of collar, while such a bank
+    # reaches 8 m inside the outline. philadelphia 18 is the worked case -- 21% slope, 4.1 cm of
+    # surface texture against 1.2 cm over the rest of the green, sitting 0.9 ft above it, which is a
+    # bank and not a green -- and including it printed "3.6%, feeds LEFT" where the putting surface
+    # alone reads "2.6%, feeds FRONT-LEFT". Corpus-wide this moves 32 printed tilts (the median green
+    # not at all, 0.4% of its polygon being steep) and 7 feed directions, which is the figure that
+    # tells a player which way the ball rolls.
+    #
+    # Fall back to the whole core if the exclusion leaves too little to fit: a genuinely steep green
+    # must still get a read rather than silently lose one. No green in the corpus needs it today.
+    fit = core & (slope <= SLOPE_LABEL_MAX_PCT) if putt is None else (core & putt)
+    if fit.sum() < 20:
+        fit = core
+    rr, cc = np.where(fit)
+    Xe = cc*px_x                     # east meters
+    Yn = -rr*px_y                    # north meters (row+ is south)
+    A = np.c_[Xe, Yn, np.ones(len(Xe))]
+    (a, b, d0), *_ = np.linalg.lstsq(A, surf[fit], rcond=None)
+    tilt_pct = math.hypot(a, b)*100.0                 # dominant plane tilt
+    resid = surf[fit] - A.dot([a, b, d0])
+    undul_ft = float((resid.max()-resid.min()))*3.28084 if len(resid) else 0.0
+    # plane downhill in pixel space: east=+col -> dcol=-a ; north=-row -> drow=+b
+    pdc, pdr = -a, b
+    # confidence: is the dominant tilt above the LiDAR noise floor over the green?
+    span_m = max(math.hypot(Xe.max()-Xe.min(), Yn.max()-Yn.min()), 1.0) if len(Xe) else 1.0
+    rise_ft = tilt_pct/100.0*span_m*3.28084
+    # Tested against the UNROUNDED tilt, while the card prints it to one decimal. When the card marked
+    # every green, that showed: six of 198 printed "1.2%", three of them "(firm)" and three "(subtle)",
+    # and a reader could not see why -- a true tilt of 1.24 against 1.16, plus the rise test, neither of
+    # which the card shows. Only the exception is marked now, so the ambiguity is confined to whether a
+    # 1.2% green carries "(faint)"; the reasoning below is unchanged.
+    #
+    # Do NOT "fix" that by comparing round(tilt_pct, 1) >= 1.2. It looks like consistency and is a
+    # loosening: the effective floor becomes 1.15%, and this threshold exists because below it the plane
+    # fit is inside the LiDAR noise. The gate being more precise than the display is the right way round
+    # for a book whose rule is never to print a read the data does not support. The qualifier is also not
+    # a function of the printed number at all -- it depends on the FALL as well as the tilt -- so tying it
+    # to one decimal would make it less informative to look more tidy.
+    # The VALUES are "clear"/"faint", not "firm"/"subtle". This gate measures whether the dominant fall
+    # clears the LiDAR noise floor -- it is a statement about the EVIDENCE. Printed as "(firm)", a
+    # golfer reads a statement about the TURF, which is the one thing this module's own docstring says
+    # it cannot know: "no elevation model knows grain, FIRMNESS, moisture, mowing direction or a fresh
+    # hole location". The book disclaimed firmness in prose and then printed "firm" 220 times beside a
+    # slope percentage, on every one of 252 green footers, with no definition in either legend -- and on
+    # two of the fourteen books all 18 greens said it, so it carried no information at all while looking
+    # like a turf claim. "clear"/"faint" describe what was actually tested, and they join a vocabulary
+    # the guide card already explains, ending at NO_CLEAR_FALL: clear fall -> faint -> no clear fall.
+    conf = "clear" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "faint"
+    return surf, core, dict(slope=slope, dcol=dcol, drow=drow, relief_m=relief_m,
+                            med_slope=med_slope, tilt_pct=tilt_pct, undul_ft=undul_ft,
+                            pdc=pdc, pdr=pdr, span_m=span_m, rise_ft=rise_ft, conf=conf,
+                            putt=fit)
 
 
 def render(hole, tournament=False):
@@ -243,33 +437,12 @@ def render(hole, tournament=False):
             return _blank_green(meta, tournament)
     arr = np.where(np.isnan(arr), float(np.nanmedian(arr[inside])) if inside.any() else 0.0, arr)
 
-    surf = gauss(arr, 3.0)                       # ~1.5 m smoothing
-    core = erode(mask, 3)                        # trim collar (~1.5 m)
-    if core.sum() < 20: core = mask
-
-    gy, gx = np.gradient(surf, px_y, px_x)       # dz/d(row=south), dz/d(col=east) per meter
-    slope = np.hypot(gx, gy)*100.0
-    # downhill in PIXEL space (col+ = east/right, row+ = south/down): -gradient
-    dcol = -gx; drow = -gy
-
-    # --- robust summary: least-squares plane over the green core ---
-    zc = surf[core]
-    relief_m = float(zc.max()-zc.min()) if core.any() else 0.0
-    med_slope = float(np.median(slope[core])) if core.any() else 0.0
-    rr, cc = np.where(core)
-    Xe = cc*px_x                     # east meters
-    Yn = -rr*px_y                    # north meters (row+ is south)
-    A = np.c_[Xe, Yn, np.ones(len(Xe))]
-    (a, b, d0), *_ = np.linalg.lstsq(A, surf[core], rcond=None)
-    tilt_pct = math.hypot(a, b)*100.0                 # dominant plane tilt
-    resid = surf[core] - A.dot([a, b, d0])
-    undul_ft = float((resid.max()-resid.min()))*3.28084 if len(resid) else 0.0
-    # plane downhill in pixel space: east=+col -> dcol=-a ; north=-row -> drow=+b
-    pdc, pdr = -a, b
-    # confidence: is the dominant tilt above the LiDAR noise floor over the green?
-    span_m = max(math.hypot(Xe.max()-Xe.min(), Yn.max()-Yn.min()), 1.0) if len(Xe) else 1.0
-    rise_ft = tilt_pct/100.0*span_m*3.28084
-    conf = "firm" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "subtle"
+    surf, core, S = green_summary(arr, mask, px_x, px_y)
+    slope, dcol, drow = S['slope'], S['dcol'], S['drow']
+    relief_m, med_slope = S['relief_m'], S['med_slope']
+    tilt_pct, undul_ft, rise_ft = S['tilt_pct'], S['undul_ft'], S['rise_ft']
+    pdc, pdr = S['pdc'], S['pdr']
+    conf = S['conf']
 
     # rotation so approach bearing points UP on screen
     B = meta['approach_bearing']
@@ -321,7 +494,29 @@ def render(hole, tournament=False):
                 if not (mask[r,c] or mask[r+1,c] or mask[r,c+1] or mask[r+1,c+1]):
                     continue
                 TL,TR,BL,BR = surf[r,c],surf[r,c+1],surf[r+1,c],surf[r+1,c+1]
-                cTL,cTR,cBL,cBR = (c,r),(c+1,r),(c,r+1),(c+1,r+1)
+                # +0.5 because A SAMPLE IS A CELL CENTRE, not a grid corner. fetch_dem_hd.py builds
+                # its grid with us=(np.arange(W)+0.5)/W, and poly_to_px maps the bbox EDGES to pixel
+                # 0..W, so surf[r,c] is the elevation measured at pixel (c+0.5, r+0.5) -- the algebra
+                # is exact, not an approximation. Everything else on this card already knows that: the
+                # heat rect for (r,c) spans [c,c+1], the mask tests point_in_poly(c+0.5, r+0.5), the
+                # scanline rasteriser uses yv=r+0.5, and fetch_dem.py's own interior stats do the same.
+                # Only these corners, the arrow tails/heads below and the slope-label anchors did not,
+                # so the contour/arrow/label layer sat half a cell UP AND LEFT of the heat layer and
+                # the outline it is drawn over -- 0.284 m of ground at 0.4 m sampling, 0.356 m on the
+                # six seamless greens, and 0.30-0.65 mm in print, 54% of the outline's own 1.3-unit
+                # stroke. Measured over 74,574 drawn segments: bilerp'd at the coordinate as drawn the
+                # elevation landed on a 15 cm level to 0.000 mm, and at the pixel the coordinate
+                # CLAIMS to be it was off by a median 7.8 mm and up to 74.9 mm. That is the whole
+                # defect: the lines were exact iso-contours of a surface half a cell from where the
+                # card drew everything else.
+                # Shifted in the COORDINATES rather than with a transform= on the group, because
+                # test_nothing_is_drawn_off_the_putting_surface and the two-edition contour count in
+                # test_the_contour_interval_is_the_one_the_legend_states match these <g ...> open tags
+                # literally, and an added attribute breaks their regexes in either position.
+                # No printed NUMBER moves: tilt, feed word, relief, undulation and the plane fit are
+                # computed in array space (Xe=cc*px_x, Yn=-rr*px_y), where a uniform +0.5 shifts only
+                # the intercept; depth, width, the 5-yd ladder and the pin ring come from the polygon.
+                cTL,cTR,cBL,cBR = (c+0.5,r+0.5),(c+1.5,r+0.5),(c+0.5,r+1.5),(c+1.5,r+1.5)
                 pts=[]
                 if (TL-L)*(TR-L)<0: pts.append(itp(TL,TR,cTL,cTR,L))
                 if (TR-L)*(BR-L)<0: pts.append(itp(TR,BR,cTR,cBR,L))
@@ -329,36 +524,73 @@ def render(hole, tournament=False):
                 if (TL-L)*(BL-L)<0: pts.append(itp(TL,BL,cTL,cBL,L))
                 if len(pts)>=2:
                     mx=(pts[0][0]+pts[1][0])/2; my=(pts[0][1]+pts[1][1])/2
+                    # int() and not round(): mx,my are now PIXELS, and pixel column ci spans [ci,ci+1),
+                    # so int(mx) is both the mask cell the midpoint lies in AND the nearest sample to
+                    # it (the sample at column ci sits at x=ci+0.5, and floor(x) == round(x-0.5)).
+                    # Needs no +/-0.5 of its own, and correcting the corners above is what made that
+                    # true: while they were grid corners, mx ran over [c,c+1] and this reduced to
+                    # mask[r,c] -- the TOP-LEFT of the cell's four samples, whichever way the segment
+                    # actually ran. It rejected 5,754 segments where the honest question rejects 5,076,
+                    # so 678 real contour segments were dropped for sitting in a cell whose top-left
+                    # neighbour happened to be off the green.
                     ri,ci=int(my),int(mx)
                     if 0<=ri<H and 0<=ci<W and mask[ri,ci]:
                         segs.append(f'<line x1="{pts[0][0]:.1f}" y1="{pts[0][1]:.1f}" x2="{pts[1][0]:.1f}" y2="{pts[1][1]:.1f}"/>')
     contours = f'<g stroke="#3c5a34" stroke-width="0.5" opacity="0.55">{"".join(segs)}</g>'
 
     # flow arrows, dense in BOTH modes (allowed within the scale limit)
+    # Drawn on PUTTING SURFACE only, the same cells the printed feed word is fitted to. An arrow is a
+    # claim about which way a putt runs, so ground the card colours-but-does-not-number is not
+    # somewhere to make it -- and because length scales with slope, bank cells produced the LONGEST,
+    # most eye-catching arrows on the card ("longer = steeper", says the legend), pulling the reader
+    # toward a break that is not a putt. It also keeps the two statements of the same claim honest
+    # with each other: word and arrows now describe the same ground.
     arrows = []
-    smax = max(np.percentile(slope[core], 92), 1.0) if core.any() else 5.0
+    arw_x = arw_y = 0.0
+    putt = S['putt']
+    smax = max(np.percentile(slope[putt], 92), 1.0) if putt.any() else 5.0
     a_step = 6
     a_min = 0.4
     for r in range(3, H-3, a_step):
         for c in range(3, W-3, a_step):
-            if not core[r, c]: continue
+            if not putt[r, c]: continue
             m = slope[r, c]
             if m < a_min: continue
             L = 2.2 + 3.4*min(m/smax, 1.0)
             vx, vy = dcol[r, c], drow[r, c]
             nn = math.hypot(vx, vy) or 1
             vx, vy = vx/nn*L, vy/nn*L
-            ex, ey = c+vx, r+vy
+            ex, ey = c+0.5+vx, r+0.5+vy      # +0.5: the sample is a cell CENTRE -- see the contours
             # keep the whole arrow (tip + a small head allowance) inside the green outline
+            # This cull now asks the question it always meant to. It compares against `poly`, which is
+            # in pixels, so while the tip was built from a bare (c,r) it was testing a point half a
+            # cell up-left of the arrow it was vetting: 24 of 12,161 arrows were kept or dropped on the
+            # wrong evidence.
             if not (point_in_poly(ex, ey, poly) and point_in_poly(ex+vx*0.28, ey+vy*0.28, poly)):
                 continue
             ang = math.atan2(vy, vx)
             h = 1.7
+            arw_x += vx; arw_y += vy      # length-weighted, so steeper arrows count for more
             arrows.append(
-                f'<line x1="{c}" y1="{r}" x2="{ex:.1f}" y2="{ey:.1f}"/>'
+                f'<line x1="{c+0.5}" y1="{r+0.5}" x2="{ex:.1f}" y2="{ey:.1f}"/>'
                 f'<polygon points="{ex:.1f},{ey:.1f} {ex-h*math.cos(ang-0.5):.1f},{ey-h*math.sin(ang-0.5):.1f} '
                 f'{ex-h*math.cos(ang+0.5):.1f},{ey-h*math.sin(ang+0.5):.1f}"/>')
     arrowg = f'<g stroke="#15271b" stroke-width="0.7" fill="#15271b" stroke-linecap="round">{"".join(arrows)}</g>'
+
+    # The card states the fall TWICE: this one word, and the arrows the reader actually looks at. They
+    # answer slightly different questions -- a plane over the whole putting surface against every local
+    # gradient -- so they are SUPPOSED to differ a little, and across the corpus they run to a median
+    # 11 deg and a 90th percentile of 27. But when they point more than 90 degrees apart the card is
+    # handing a golfer two different breaks, and the honest reading is that the surface does not
+    # determine one. micke-grove 2 is the case that forced this: 0.5% of tilt, plane and arrows 179.5 deg
+    # apart, where naming either direction is a coin toss dressed up as a read. So refuse the word and
+    # keep the measured percentage, which is still true.
+    #
+    # Deliberately a self-consistency test and not a tilt floor: it fires on the greens where the two
+    # derivations actually conflict, rather than on a number tuned to today's corpus.
+    if (arw_x or arw_y) and (pdc or pdr):
+        if (pdc*arw_x + pdr*arw_y) / (math.hypot(pdc, pdr)*math.hypot(arw_x, arw_y)) < 0.0:
+            best = NO_CLEAR_FALL
 
     poly_d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in poly) + " Z"
     outline = f'<path d="{poly_d}" fill="none" stroke="#20402a" stroke-width="1.3"/>'
@@ -369,26 +601,44 @@ def render(hole, tournament=False):
     # ---- depth references: 5-yd front->back grid + F/C/B ----
     px_m = (px_x + px_y) / 2.0
     rp = [rot(x, y, cx, cy, theta) for x, y in poly]      # polygon in screen space
-    rxs = [p[0] for p in rp]; rys = [p[1] for p in rp]
-    front_y, back_y = max(rys), min(rys)                  # approach edge is at bottom
-    midx = (min(rxs)+max(rxs))/2.0
+    rxs = [p[0] for p in rp]
+    # front/back down the LINE OF PLAY, not the corners of the bounding box -- see play_line_span.
+    # depth_yd, the grey 5-yd ladder below and the pin ring all hang off these two numbers, so they
+    # move together and the printed depth cannot disagree with the top rung.
+    front_y, back_y, midx = play_line_span(rp)
     depth_yd = (front_y-back_y)*px_m/0.9144
     width_yd = (max(rxs)-min(rxs))*px_m/0.9144
-    def xspan(yy):                                        # green x-extent at screen-y yy
+    def xspans(yy):
+        """The green's x-extent(s) at screen-y yy, as inside/outside PAIRS.
+
+        This returned a single (min, max) span, which draws the rung straight across a concavity --
+        over ground the card's own outline excludes. copper-valley 4 had it: one of its six rungs
+        bridged a 7.0 yd gap outside the polygon, ruling a putting-depth reference across a notch. That
+        instance is GONE -- moving the ladder's zero onto the line of play in the same commit shifted every
+        rung, and no green in the corpus now draws a multi-fragment rung. The guard is kept as the correct
+        way to draw one, not because a live case remains; do not go looking for copper-valley 4 and
+        conclude the code is wrong.
+        Sorting the crossings and taking them two at a time draws only the parts that are green, and
+        collapses to the old behaviour on the convex greens that are the vast majority.
+        """
         xs=[]
         n=len(rp)
         for i in range(n):
             x1,y1=rp[i]; x2,y2=rp[(i+1)%n]
             if (y1>yy)!=(y2>yy):
                 xs.append(x1+(x2-x1)*(yy-y1)/(y2-y1))
-        return (min(xs),max(xs)) if len(xs)>=2 else None
+        xs.sort()
+        return [(xs[i], xs[i+1]) for i in range(0, len(xs)-1, 2)]
     step = 4.572/px_m                                     # 5 yards in pixels
     glines=[]; k=1; yy=front_y-step
     while yy>back_y:
-        sp=xspan(yy)
-        if sp:
-            glines.append(f'<line x1="{sp[0]:.1f}" y1="{yy:.1f}" x2="{sp[1]:.1f}" y2="{yy:.1f}"/>'
-                          f'<text x="{sp[1]+1.5:.1f}" y="{yy+1.5:.1f}" font-size="3.4" fill="#8a8a8a" stroke="none">{k*5}</text>')
+        sps=xspans(yy)
+        if sps:
+            for a, b in sps:
+                glines.append(f'<line x1="{a:.1f}" y1="{yy:.1f}" x2="{b:.1f}" y2="{yy:.1f}"/>')
+            # one label per rung, at the right-hand edge of the green -- not once per fragment
+            glines.append(f'<text x="{sps[-1][1]+1.5:.1f}" y="{yy+1.5:.1f}" font-size="3.4" '
+                          f'fill="#8a8a8a" stroke="none">{k*5}</text>')
         yy-=step; k+=1
     gridg=f'<g stroke="#9a9a9a" stroke-width="0.35" stroke-dasharray="2,2" opacity="0.7" fill="#8a8a8a">{"".join(glines)}</g>'
     # (front/center/back yardage tags removed by request -- declutter the green)
@@ -414,7 +664,7 @@ def render(hole, tournament=False):
                 cand.append((float(slope[r,c]),r,c))
     cand.sort(reverse=True)
     for sl,r,c in cand:
-        sx,sy=rot(c,r,cx,cy,theta)
+        sx,sy=rot(c+0.5,r+0.5,cx,cy,theta)    # +0.5: the sample is a cell CENTRE -- see the contours
         # keep slope numbers inside the frame and off the top-right compass
         sx=min(max(sx, VBx+2.5), VBx+VBw-2.5)
         sy=min(max(sy, VBy+3.0), VBy+VBh-4.0)
@@ -453,11 +703,35 @@ def render(hole, tournament=False):
     # margin UNDER the Rule 4.3 cap (0.36 in : 5 yd, ~4% under 3/8) AND (b) fitting inside
     # its panel so nothing overflows/clips. Whichever is smaller wins -> consistent framing.
     if tournament:
+        # 0.36 against a 0.375 limit is a 4% margin, which is a margin against ROUNDING, not against a
+        # printer. Scaling a sheet up by 4.1% puts the worst green over the cap while the cover still
+        # says "DESIGNED TO CONFORM - RULE 4.3", so every sheet's margin note now reads PRINT AT 100%.
+        # Nothing in the book said that before: "fit to page" on A4 happens to shrink a Letter sheet,
+        # which is safe, but any deliberate enlargement is not.
         legal_kf = 0.36 * px_m / 4.572                                   # legal ceiling
         # .grn column width must match generate.py's CSS: card minus padding, minus the 1px
         # flex gap, times the .grn share (2.4 of 1.6+2.4). Measured in-browser at 2.010in.
+        # Why 2.4/4.0 and not wider. 172 of 198 greens are limited by this 2.010 in column rather than
+        # by the Rule 4.3 cap, so a wider share would draw them bigger -- but the hole map pays for it,
+        # and measured, the trade is not worth taking:
+        #     1.5/2.5 -> green 2.093 in (+4.2%), 101 of 198 hole maps shrink 6%
+        #     1.4/2.6 -> green 2.177 in (+8.3%), 119 of 198 hole maps shrink 13%
+        # Only the hole maps whose viewBox is SHORTER than 100*LAY_H/LAY_W are affected (108 of 198 are
+        # height-limited today and lose nothing), which is why the cost lands on about half of them. And
+        # the 26 greens already at the legal cap gain zero from any of this. So the whole exchange buys
+        # 0.08 in on a green that is already 2 in across, at the price of shrinking half the hole maps.
+        # Left alone deliberately; do not re-open it without re-measuring those two lines.
         grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)        # .grn column width
-        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - 0.18              # minus header + foot
+        # Footer allowance. This was a hardcoded 0.18 in, which assumed a ONE-LINE footer. It can be
+        # three: at 7.5pt with normal leading a line is ~0.125 in, and a five-tee course prints "feeds
+        # ... %" then "Nyd deep * NB NW * three tees" then the carry/elevation playline. 0.18 in
+        # under-reserves by up to 0.32 in, so a green sized against it would be too tall for its panel.
+        # Precautionary: measured across the corpus, HEIGHT binds on 0 of 198 greens -- 172 are limited
+        # by the 2.01 in column width and 26 by the Rule 4.3 cap -- so this changes no output today. It
+        # is fixed because the day a tall narrow green meets a three-line footer, the failure is a green
+        # clipped by its own panel, and nothing in the pipeline is watching for that.
+        foot_lines_in = 3 * 0.125 + 0.125                                # 3 footer lines + playline
+        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - foot_lines_in      # minus header + foot
         fit_kf = min(grn_w_in/VBw, grn_h_in/VBh)                         # fit the whole frame
         kf = min(legal_kf, fit_kf)
         wattr, hattr = f'{VBw*kf:.3f}in', f'{VBh*kf:.3f}in'

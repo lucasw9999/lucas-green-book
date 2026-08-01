@@ -149,8 +149,14 @@ If you use or share this software or the books it makes, keep this credit:
 > Built with **Lucas Green Book** by Lucas Wu — free for personal,
 > non-commercial use — https://github.com/lucasw9999/lucas-green-book
 
-This license covers the **source code** in this repository only. The **data**
-used to build the books is not owned by this project and carries its own
+This license covers **everything in this repository authored by the project** —
+the source code, the documentation (`README.md`, `PIPELINE.md`, `legal/*.md`), the
+`assets/` artwork, `examples/course.json`, and the printable binding model
+(`green book binding.stl`). It previously said "source code only", which left the
+banner, the STL and the docs with no stated license at all — including the STL the
+README offers as a deliverable.
+
+The **data** used to build the books is not owned by this project and carries its own
 licenses, which you must also honor and attribute:
 
 - Hole & green geometry: © **OpenStreetMap** contributors, under the
@@ -160,10 +166,19 @@ licenses, which you must also honor and attribute:
 
 ## The books it produces
 
-The generated **books (PDFs)** are a separate work from this source code. They
-are released for free, personal use under **Creative Commons Attribution-
-NonCommercial-NoDerivatives 4.0** (CC BY-NC-ND 4.0): you may print and share them
-with attribution, but **not sell them and not distribute altered versions**.
+The generated **books (PDFs)** are a separate work from this source code. A book
+built from open data — geometry from OpenStreetMap, slope computed from public-domain
+USGS elevation, scorecard facts — is released for free, personal use under **Creative
+Commons Attribution-NonCommercial-NoDerivatives 4.0** (CC BY-NC-ND 4.0): you may print
+and share it with attribution, but **not sell it and not distribute altered versions**.
+
+**Not every book qualifies, and the engine enforces that rather than trusting this
+paragraph.** A course whose data cannot support a distributable book — no current open
+geometry, for instance — is built in yardage mode, and `distribution.py` marks it
+personal. Those books print **"PERSONAL USE ONLY · PLEASE DO NOT SHARE"** on the cover
+and **all rights reserved** in place of the CC line, and they are not offered under
+CC BY-NC-ND. The cover and the footer of the book you are holding are authoritative;
+this file describes the ordinary case.
 
 ## Trademark
 

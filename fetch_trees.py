@@ -4,10 +4,24 @@
 # https://github.com/lucasw9999/lucas-green-book
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
-Extract TREES from the LiDAR point cloud (high-vegetation returns, class 5) for a
-course, so trees appear at real locations even where OpenStreetMap has none.
+Extract TREES from the LiDAR point cloud for a course, so trees appear at real
+locations even where OpenStreetMap has none.
 
-Reads COURSE_DIR/laz/*.laz + osm_geom.json (hole centerlines), keeps class-5
+NOT from a vegetation classification. 10 of the 11 courses with tiles have ZERO
+class-5 (high vegetation) points -- their tiles are unclassified, class 1 + 2 only
+-- so a marker is any return 2.5-35 m ABOVE LOCAL GROUND that is not classified
+ground, building, noise, water or bridge deck. See the comment at the candidate
+filter; do not "restore" a class-5 filter, it would empty the tree layer on almost
+every course.
+
+What that means for what is drawn: this finds TALL THINGS, and cannot tell a tree
+from a hedge, a light pole, netting or a flagstick. On a golf corridor tall things
+are overwhelmingly trees, and the two systematic false positives are handled --
+buildings by footprint, and anything standing on a playing surface (mower, cart,
+person, flagstick) by on_playing_surface() below. No species, height or canopy
+validation is claimed beyond that.
+
+Reads COURSE_DIR/laz/*.laz + osm_geom.json (hole centerlines), keeps candidate
 points within a corridor of each hole, thins them to a grid so each clump gives a
 few markers, and writes COURSE_DIR/trees_lidar.json = {hole: [[lat,lon],...]}.
 
@@ -97,13 +111,25 @@ def load_playing_surfaces():
     surfaces=[]
     for e in els:
         t=e.get('tags',{})
+        # WATER belongs here. The filter caught golf surfaces and buildings -- and it catches those
+        # perfectly, zero markers land on either across all 11 courses -- but not ponds, so canopy height
+        # measured over open water was drawn as trees. 535 of 68,884 shipped markers sat inside a mapped
+        # water polygon, 151 more than 5 m from the bank and 40 more than 10 m in; the worst is 22.0 m
+        # inside a pond on the-reserve 2, a card that draws that water in its own footer ("5B 2W") with
+        # 339 tree dots on top of it. A tree standing in a pond is the same defect class as the 1,107
+        # markers once drawn on roofs, 53 of them on Merion's clubhouse.
         is_surface = (t.get('golf') in ('fairway','green','tee','bunker')
-                      or t.get('building') not in (None, 'no'))
+                      or t.get('building') not in (None, 'no')
+                      or t.get('natural') == 'water'
+                      or t.get('landuse') in ('reservoir', 'basin'))
         if is_surface and e.get('geometry'):
             poly=[(p['lon'],p['lat']) for p in e['geometry']]
             xs=[c[0] for c in poly]; ys=[c[1] for c in poly]
             # building='no' means NOT a building -- must not be treated as a surface at all
-            kind='building' if t.get('building') not in (None,'no') else 'golf'
+            kind = ('building' if t.get('building') not in (None,'no')
+                    else 'water' if (t.get('natural') == 'water'
+                                     or t.get('landuse') in ('reservoir','basin'))
+                    else 'golf')
             surfaces.append((min(xs),min(ys),max(xs),max(ys),poly,kind))
     return surfaces
 
@@ -122,7 +148,13 @@ def main():
         raise SystemExit("no LAZ tiles in "+DIR+"/laz  (download the course point cloud first)")
     pt2utm, zscale = laz_to_utm()
     surfaces = load_playing_surfaces()
-    n_golf=sum(1 for s in surfaces if s[5]=='golf'); n_bld=len(surfaces)-n_golf
+    # Counted by KIND, not as a remainder. `len(surfaces) - n_golf` was a building count until water
+    # joined the exclusion list, at which point every pond inflated the printed building figure and
+    # -- worse -- could satisfy the `n_bld == 0` hard stop below, so a cache that genuinely predates
+    # the way[building] query would sail through on ponds alone and draw roofs as trees again.
+    n_golf=sum(1 for s in surfaces if s[5]=='golf')
+    n_bld=sum(1 for s in surfaces if s[5]=='building')
+    n_water=sum(1 for s in surfaces if s[5]=='water')
     _allow = os.environ.get("ALLOW_NO_BUILDINGS", "").lower() not in ("", "0", "false", "no")
     if n_bld == 0 and not _allow:
         # A cache fetched before way[building] was added silently disables the footprint test, and
@@ -135,19 +167,49 @@ def main():
     if n_bld == 0:
         print("WARNING: ALLOW_NO_BUILDINGS set -- building footprint test DISABLED; "
               "roofs may be drawn as trees")
+    # The same fault one query deeper. fetch_osm.py's MULTIPOLYGON pass was added after some caches
+    # were built, and a building, pond or fairway mapped as a relation is invisible to a cache that
+    # predates it -- so load_playing_surfaces() above never sees that footprint and its roof or its
+    # open water comes back as canopy. That is the identical failure the ALLOW_NO_BUILDINGS gate
+    # exists for (53 markers on Merion's clubhouse; 615 of 68,884 shipped markers inside a mapped
+    # pond, worst 22.0 m in), and there was no equivalent check for it.
+    #
+    # The marker is the FILE, not a count of relations: a cache with zero flattened rings is either a
+    # course that genuinely has no multipolygons or a cache that never asked, and those two are not
+    # the same claim. osm_relations.json exists exactly when the pass ran, so its presence records
+    # "we asked" and a reply of zero relations is then a positive answer.
+    #
+    # Measured over this corpus: castlewood-hill and castlewood-valley are the only two caches with
+    # no osm_relations.json, and they are also the only two with zero `_from_relation` elements; the
+    # other nine carry 1 to 36 flattened rings (monarch-bay 36 fairways, micke-grove 19,
+    # the-reserve 19, valley-hi 18). Re-queried live on 2026-08-01, both Castlewood bboxes return
+    # ZERO golf / natural=water / building relations, so nothing is in fact missing from those two
+    # books -- but that could not be known without asking, which is the whole point. Re-running
+    # fetch_osm.py records the zero and clears this.
+    _rel = f"{DIR}/osm_relations.json"
+    _allow_rel = os.environ.get("ALLOW_NO_RELATIONS", "").lower() not in ("", "0", "false", "no")
+    if not os.path.exists(_rel) and not _allow_rel:
+        raise SystemExit("no osm_relations.json -- this cache predates fetch_osm.py's multipolygon\n"
+                         "  pass, so a building, pond or fairway mapped as a RELATION is missing from\n"
+                         "  osm_course.json and its roof or its open water would be drawn as trees.\n"
+                         "  Re-run: COURSE=%s python3 fetch_osm.py   (or set ALLOW_NO_RELATIONS=1 if\n"
+                         "  you have confirmed this bbox has no multipolygon features)" % config.SLUG)
+    if not os.path.exists(_rel):
+        print("WARNING: ALLOW_NO_RELATIONS set -- multipolygon buildings and ponds are NOT in this\n"
+              "         cache; their roofs and their water may be drawn as trees")
     geom = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
-    holes = [e for e in geom if e.get('tags',{}).get('golf')=='hole' and e.get('geometry')]
-    # hole centerlines as UTM segment lists -- keep the LONGEST way per ref (OSM has
-    # dup/fragment ways where a neighbouring course pokes into the bbox); matches
-    # render_hole / fetch_dem so trees are collected around the correct hole.
-    best={}
-    for h in holes:
-        ref=h['tags'].get('ref')
-        if ref and ref.isdigit() and len(h['geometry'])>len(best.get(ref,{}).get('geometry',[])):
-            best[ref]=h
-    hlines={}
-    for ref,h in best.items():
-        hlines[int(ref)]=[FWD.transform(p['lon'],p['lat']) for p in h['geometry']]
+    # hole centrelines as UTM segment lists.
+    # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,
+    # first-wins on a tie -- the exact heuristic geo.hole_lines was written to replace after it
+    # flipped under element reordering on castlewood-valley (two candidates 604 m apart, both
+    # 3 vertices). Three fetch scripts still carried their own copy of it, so the tree corridors,
+    # the green surfaces and the gap-fill DEM could each have been placed on a DIFFERENT line
+    # from the one render_hole draws and fetch_hole_elev measures against. They all agreed on all
+    # 198 holes only because the cached element order happened to favour it. geo.hole_lines picks
+    # by distance to the course centre and REFUSES a near-tie rather than guessing.
+    _loc = config.COURSE.get('location') or {}
+    hlines={hn: [FWD.transform(p['lon'], p['lat']) for p in h['geometry']]
+            for hn, h in geo.hole_lines(geom, _loc.get('lat'), _loc.get('lon')).items()}
     BUF=42.0                      # metres either side of the centerline
     CELL=5.0                      # thinning grid (m) -> ~one marker per clump
     GC=4.0                        # ground grid cell (m) for height-above-ground
@@ -209,7 +271,7 @@ def main():
     tot=sum(len(v) for v in out.values())
     print(f"wrote trees_lidar.json: {tot} tree markers across {len(out)} holes "
           f"(dropped {dropped_surface} on green/fairway/tee/bunker, {dropped_building} on buildings; "
-          f"{n_golf} golf + {n_bld} building polygons; e.g. hole1={len(out.get('1',[]))})")
+          f"{n_golf} golf + {n_bld} building + {n_water} water polygons; e.g. hole1={len(out.get('1',[]))})")
 
 if __name__=="__main__":
     main()

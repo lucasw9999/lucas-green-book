@@ -12,7 +12,9 @@ Generic OSM fetch for a course (reads config.osm_bbox, writes into COURSE_DIR):
 Run:  COURSE=<slug> python3 fetch_osm.py
 """
 import urllib.parse, urllib.request, json, time, os, math
+from collections import Counter
 import config
+import geo
 
 S, W, N, E = config.COURSE["osm_bbox"]   # [south, west, north, east]
 BB = f"{S},{W},{N},{E}"
@@ -101,6 +103,39 @@ def _flatten_relations(elements):
     return out
 
 
+def census(elements):
+    """Features grouped by the KIND a consumer looks for, as {kind: count}.
+
+    ONE spelling of "what is in this reply", used for the shrink guard and for the post-fetch
+    printout, because they have to be counting the same thing.
+
+    `building` is tested FIRST and on its own. It was missing from the printout's key chain
+    (`golf or natural or landuse or waterway`), so every building landed in `other` -- on
+    castlewood-hill all 145 of them, on callippe all 540, on the-reserve 1,529 of 1,530. That is
+    precisely the number fetch_trees.py hard-stops on ("no building polygons in osm_course.json --
+    this cache predates the way[building] query, so roofs would be drawn as trees", 53 markers on
+    Merion's clubhouse), so the one figure that would have predicted that refusal was the one figure
+    the fetch never printed. Buildings come first for the same reason: fetch_trees.py's footprint test
+    asks `building not in (None, 'no')` before it looks at anything else, so counting a
+    golf-tagged clubhouse as golf here would make this census disagree with the check it exists to
+    anticipate.
+    """
+    c = Counter()
+    for e in elements:
+        t = e.get('tags') or {}
+        if t.get('building') not in (None, 'no'):
+            c['building'] += 1
+        elif t.get('golf'):
+            c[t['golf']] += 1
+        elif t.get('natural') == 'water' or t.get('waterway'):
+            c['water'] += 1
+        elif t.get('natural') or t.get('landuse'):
+            c[t.get('natural') or t.get('landuse')] += 1
+        else:
+            c['other'] += 1
+    return c
+
+
 def _check_response(j, path, out):
     """Validate the INCOMING Overpass reply before it is allowed to replace a good cache.
 
@@ -110,9 +145,9 @@ def _check_response(j, path, out):
     the course. Downstream nothing errors: holes bind to their nearest surviving green, so a course
     silently rebinds (measured: bay-view hole 9 to hole 7's green, 47.8 m away).
 
-    Two checks: refuse a remark-bearing reply outright, and refuse a reply whose golf-feature count
-    has collapsed against the cache we are about to overwrite. Set ALLOW_SHRINK=1 to override the
-    second when OSM genuinely lost features.
+    Three checks: refuse a remark-bearing reply outright, refuse a reply that has lost features of any
+    KIND against the cache we are about to overwrite, and refuse one whose total golf-feature count
+    has collapsed. Set ALLOW_SHRINK=1 to override the last two when OSM genuinely lost features.
     """
     if not isinstance(j, dict) or not isinstance(j.get('elements'), list):
         raise SystemExit(f"ABORT: Overpass reply for {out} is not an element list -- refusing to write.")
@@ -128,9 +163,53 @@ def _check_response(j, path, out):
     new_n = ngolf(j['elements'])
     if os.path.exists(path):
         try:
-            old_n = ngolf(json.load(open(path)).get('elements', []))
+            old = json.load(open(path)).get('elements', [])
         except Exception:
-            old_n = 0
+            old = []
+        old_n = ngolf(old)
+        # PER KIND, because the aggregate cannot see the loss that matters. osm_geom.json holds
+        # greens AND hole centrelines, i.e. about 2x the hole count, so `new_n < old_n * 0.5` lets a
+        # reply drop up to HALF the golf features silently -- and where holes >= greens that is EVERY
+        # GREEN. Counted on this corpus: bay-view (18 greens, 18 holes), valley-hi (18, 18) and
+        # castlewood-valley (19, 20) could lose every single green and still pass; the other eight
+        # could lose all but one to six of them. A reply with all the holes and none of the greens is
+        # exactly the truncated reply that bound bay-view hole 9 to hole 7's green.
+        #
+        # No tolerance, because these are stable mapped polygons and the documented failure cost ONE
+        # green. A genuine OSM deletion is what ALLOW_SHRINK is for; it should need a human to look.
+        if not os.environ.get("ALLOW_SHRINK"):
+            # COMPARE LIKE WITH LIKE. The baseline is the cache, which holds two classes of element
+            # the raw Overpass reply CANNOT contain: hand-digitized features merged in after this
+            # check runs, and rings flattened out of multipolygon relations by a later fetch. Counting
+            # them made the guard fire on a legitimate re-fetch of 9 of the 11 courses -- valley-hi
+            # fairway 18 -> 0, monarch-bay 37 -> 1, micke-grove 23 -> 4, the-reserve 20 -> 2 -- and
+            # deterministically, so the only available action was the ALLOW_SHRINK=1 the message
+            # prescribes, which then waives the real checks too. A guard that must be switched off to
+            # do ordinary work is worse than none: it trains you to switch it off.
+            #
+            # Filtering the baseline is the honest comparison, not a loosening. The reply is still
+            # required to carry every FETCHED feature the cache had; it is simply no longer asked to
+            # carry the ones this project added itself.
+            def _fetchable(els):
+                # _digitized is a TAG; _from_relation is a TOP-LEVEL key (written that way at line 94).
+                # Reading both from tags filtered nothing, so the guard still refused 9 of 11 courses --
+                # and my verification of that fix used a probe that read the same wrong key, so it agreed
+                # with itself. Measured on valley-hi: 18 elements carry _from_relation at top level,
+                # 0 inside tags.
+                return [e for e in els
+                        if '_digitized' not in (e.get('tags') or {})
+                        and e.get('_from_relation') is None]
+            oc, nc = census(_fetchable(old)), census(j['elements'])
+            lost = {k: (oc[k], nc[k]) for k in oc if oc[k] >= 4 and nc[k] < oc[k]}
+            if lost:
+                detail = ", ".join(f"{k} {o} -> {n}" for k, (o, n) in sorted(lost.items()))
+                raise SystemExit(
+                    f"ABORT: Overpass returned FEWER features than the existing cache for {out}:\n"
+                    f"    {detail}\n"
+                    f"  Overwriting would silently rebind holes to the wrong greens -- a card then\n"
+                    f"  prints a confident, correctly-computed read of the WRONG putting surface.\n"
+                    f"  Re-run; if OSM really did lose these features, set ALLOW_SHRINK=1\n"
+                    f"  deliberately.")
         if old_n >= 4 and new_n < old_n * 0.5 and not os.environ.get("ALLOW_SHRINK"):
             raise SystemExit(
                 f"ABORT: Overpass returned {new_n} golf features for {out} but the existing cache has\n"
@@ -139,10 +218,98 @@ def _check_response(j, path, out):
                 f"  these features, set ALLOW_SHRINK=1 deliberately.")
 
 
+def _bindings(elements, out):
+    """{hole_number: green_element} for a reply, or None when it carries no hole centrelines."""
+    greens = [e for e in elements
+              if (e.get('tags') or {}).get('golf') == 'green' and e.get('geometry')]
+    holes = [e for e in elements
+             if (e.get('tags') or {}).get('golf') == 'hole' and e.get('geometry')]
+    if not holes:
+        return None     # not a geometry reply (the relation pass returns untagged member ways)
+    if not greens:
+        raise SystemExit(
+            f"ABORT: the reply for {out} has {len(holes)} hole centreline(s) and NO green polygons.\n"
+            f"  Every card would bind to nothing, or -- worse, once one green reappears -- all of them\n"
+            f"  to that one. Refusing to write it over the existing cache.")
+    loc = config.COURSE.get('location') or {}
+    return {hn: geo.match_green(h['geometry'], greens, label=f"{out} hole {hn}")[0]
+            for hn, h in geo.hole_lines(elements, loc.get('lat'), loc.get('lon')).items()}
+
+
+def _check_bindings(elements, out, prev=()):
+    """Refuse a reply that would leave a hole bound to a NEIGHBOUR's green -- before it is written.
+
+    geo.assert_one_green_per_hole was called from fetch_dem.py and fetch_dem_hd.py and nowhere else,
+    so it only ever ran when the SURFACES were rebuilt. A re-fetch that dropped greens followed by a
+    generate.py-only rebuild never reached it, and generate.py/render_hole.py call geo.match_green,
+    which is blind to the near case by construction: it is called once per hole and has no view of
+    the others. Measured across this corpus: 47 of the 198 holes have a green that is not their own
+    within 40 m of their TEE end -- 20.2 to 39.5 m, worst cases castlewood-hill 13 at 20.2 m and
+    monarch-bay 1 at 22.1 m -- all inside the GREEN_BIND_MAX_M cap. So for those 47, losing the
+    hole's own green rebinds the card to the neighbour's silently, and nothing on the page or in the
+    build disagrees.
+
+    Here is the right place for it, because here is where a reply becomes the cache. It runs on the
+    elements about to be WRITTEN, after the hand-digitized greens have been merged back in -- bay-view
+    carries two of those (ids 900000005, 900000007) and OSM's own reply does not contain them, so
+    checking the raw reply would refuse every re-fetch of that course over a green that is not
+    missing at all.
+
+    TWO checks, because the shared-green test alone is not enough. Deleting the own green of each of
+    ten at-risk holes, one course at a time: assert_one_green_per_hole caught seven, and missed
+    monarch-bay 1, callippe 1 and the-reserve 1 -- because those extracts hold MORE greens than the
+    course has holes (20 for 18 at monarch-bay and callippe, 21 for 18 at the-reserve, a practice
+    green or a neighbour inside the bbox), so the green the hole wrongly reached for was not bound to
+    any other hole and no clash existed to detect. What does see all ten is the cache we are about to
+    replace: comparing hole -> green against the PREVIOUS binding catches a rebind whether or not it
+    collides. ALLOW_REBIND=1 to accept one deliberately, e.g. when OSM has genuinely redrawn a green
+    under a new id.
+    """
+    bound = _bindings(elements, out)
+    if bound is None:
+        return
+    geo.assert_one_green_per_hole(bound, label=f"{config.SLUG} ({out})")
+    if not prev or os.environ.get("ALLOW_REBIND"):
+        return
+    try:
+        was = _bindings(prev, out)
+    except SystemExit:
+        return          # the old cache cannot be bound either; nothing to compare against
+    if not was:
+        return
+    moved = [(hn, (was[hn] or {}).get('id'), (bound[hn] or {}).get('id'))
+             for hn in sorted(set(bound) & set(was))
+             if (was[hn] or {}).get('id') != (bound[hn] or {}).get('id')]
+    if moved:
+        lines = "\n".join(f"    hole {hn}: green {a} -> green {b}" for hn, a, b in moved)
+        raise SystemExit(
+            f"ABORT: {len(moved)} hole(s) would bind to a DIFFERENT green than the existing cache:\n"
+            f"{lines}\n"
+            f"  A hole whose own green vanished from the extract binds to the nearest survivor, and 47\n"
+            f"  of this corpus's holes have a neighbour's green within {geo.GREEN_BIND_MAX_M:.0f} m of\n"
+            f"  their tee end -- so this is what a truncated reply looks like from the outside. The\n"
+            f"  card would print a confident, correctly-computed read of the WRONG putting surface.\n"
+            f"  Re-run; if OSM has genuinely redrawn a green, set ALLOW_REBIND=1 deliberately.")
+
+
+
+def _cached_elements(path):
+    """The element list of an existing cache, or [] -- for comparing a reply against what it replaces.
+
+    Never raises: _digitized_of already hard-stops on a cache it cannot parse, and it is called first,
+    so reaching here with a broken file is impossible. [] simply means there is nothing to compare.
+    """
+    try:
+        return json.load(open(path)).get('elements') or []
+    except Exception:
+        return []
+
+
 def fetch(query, out):
     url = "https://overpass-api.de/api/interpreter?data=" + urllib.parse.quote(query)
     path = os.path.join(config.COURSE_DIR, out)
     kept = _digitized_of(path)            # read BEFORE the network call, so a fetch can never race it
+    prev = _cached_elements(path)         # ...and so can the binding we are about to change
     for attempt in range(4):
         try:
             req = urllib.request.Request(url, headers={'Accept': 'application/json', 'User-Agent': 'greenbook/1.0'})
@@ -184,6 +351,8 @@ def fetch(query, out):
                 j.setdefault('elements', []).extend(add)
                 data = json.dumps(j, indent=2).encode()
                 print(f"  {out}: preserved {len(add)} of {len(kept)} digitized feature(s)")
+            # Last gate before the bytes land: would this cache bind a hole to the wrong green?
+            _check_bindings(j.get('elements') or [], out, prev)
             # write atomically: a crash or a full disk must not leave a half-written cache behind
             tmp = path + ".part"
             with open(tmp, "wb") as f:
@@ -254,14 +423,18 @@ out geom;''', "osm_relations.json")
     os.replace(tmp, cpath)
     if flat:
         print(f"  osm_course.json rewritten with {len(flat)} flattened ring(s)")
-    from collections import Counter
-    c = Counter()
-    for e in course['elements']:
-        t = e.get('tags', {})
-        key = (t.get('golf') or t.get('natural') or t.get('landuse')
-               or ('water' if t.get('waterway') else 'other'))
-        c[key] += 1
+    c = census(course['elements'])
     print("osm_course.json feature counts:", dict(c))
+    if not c.get('building'):
+        # fetch_trees.py REFUSES to run on a cache with no buildings, because a roof is 2.5-35 m above
+        # ground and reads exactly like canopy on the unclassified tiles most of this corpus uses (53
+        # markers stood on Merion's clubhouse before the footprint test existed). Say it here, where
+        # the fetch that would have supplied them just finished, rather than leaving it to be
+        # discovered two stages later.
+        print("  WARNING no building polygons in this reply. fetch_trees.py will refuse to run:\n"
+              "          a clubhouse roof arrives as an unclassified return and only its FOOTPRINT\n"
+              "          identifies it. If this bbox genuinely has no buildings, run fetch_trees.py\n"
+              "          with ALLOW_NO_BUILDINGS=1 deliberately.")
 
 if __name__ == "__main__":
     main()

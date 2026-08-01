@@ -7,7 +7,12 @@ Apple imagery anywhere** — verified. The whole project is now open‑data / pu
 - Deleted: `aerial_src.jpeg`, `GREENS_LETTERED.jpg` (both Esri‑derived).
 - Rebuilt: `aerial_reference_PERSONAL.pdf` and `greenbook.pdf` page 1 now use **USDA NAIP**,
   clearly labeled **"Pre‑2025 layout — public domain — old routing, does not match current holes."**
-- Kept: `GREENS_LETTERED_coords.txt` (derived factual coordinates, no imagery).
+- Kept at the time: `GREENS_LETTERED_coords.txt` (derived factual coordinates, no imagery).
+  **Re‑checked 2026‑07‑31: that file is no longer in the tree.** It lived under gitignored
+  `courses/`, so its removal is not recorded anywhere and cannot be dated. This does not weaken the
+  position — it strengthens it: nothing Esri‑derived remains at all, not even the factual
+  coordinates that had been retained. Noted rather than quietly corrected, because a resolution
+  record that lists a file which is not there sends an auditor looking for evidence that is gone.
 
 **Remaining honesty caveat (not a legal issue):** NAIP's latest flight predates the 2025
 rebuild, so the aerial shows the **OLD** course. It is labeled as such and marked "site/area

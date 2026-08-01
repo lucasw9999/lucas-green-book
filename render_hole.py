@@ -60,6 +60,178 @@ def match_green(hole_line, greens, label=""):
     """Delegates to geo.match_green, which carries the distance cap. See there for why."""
     return geo.match_green(hole_line, greens, label=label)
 
+def dist_to_poly_m(pt, poly, em):
+    """Metres from a projected point to a polygon: 0 when inside, else the nearest edge."""
+    P = [em(p['lat'], p['lon']) for p in (poly.get('geometry') or [])]
+    if not P:
+        return 1e9
+    x, y = pt
+    inside = False
+    for i in range(len(P)):
+        x1, y1 = P[i]; x2, y2 = P[(i+1) % len(P)]
+        if (y1 > y) != (y2 > y) and x < x1 + (y-y1)*(x2-x1)/((y2-y1) or 1e-12):
+            inside = not inside
+    if inside:
+        return 0.0
+    return min(dist_pt_seg(x, y, P[i][0], P[i][1], P[(i+1) % len(P)][0], P[(i+1) % len(P)][1])
+               for i in range(len(P)))
+
+
+DIGIT_EM = 0.556                  # Helvetica/Arial Bold digit advance, in em
+PAR3_STRAIGHT_MAX = 1.02          # arc / chord
+
+# A watercourse only belongs on the card if a golfer can SEE it. Two separate exclusions:
+#
+#  * PIPED. A waterway carrying tunnel=culvert / covered=yes / location=underground runs under the
+#    ground. It is not a hazard, it is not visible, and it cannot be played from. Nine holes counted one,
+#    and merion 13 printed "1W" whose only blue mark on the page was a 14.7 m culverted section -- a card
+#    telling a junior there is water on a hole where none is visible. 27 such features exist in the
+#    corpus, on 7 of the 12 courses.
+#  * NOT WATER. waterway=dam / weir / lock_gate / sluice_gate are structures beside water, not water.
+#    Drawn and counted as water they both overstate the hazard and misplace it: the structure sits where
+#    the water is held back, which is exactly where the water is not.
+#
+# At module scope so it can be tested by truth table rather than through a whole rendered card.
+# 'covered' belongs in this tuple because it is a legal VALUE of `tunnel`, not only a key of its
+# own. Omitting it let castlewood-valley way 926093107 through -- an 11.5 m `tunnel=covered`
+# reach of the Arroyo de la Laguna -- and that hole went 0W to 2W on the strength of 3 mm of blue
+# for a buried channel 43.5 m away and 37 m BEHIND the tee. That is merion 13's defect, the one
+# this predicate was written to fix, recreated by the fix on a hole that used to print none.
+PIPED = ('culvert', 'yes', 'building_passage', 'covered')
+NOT_WATER = ('dam', 'weir', 'lock_gate', 'sluice_gate', 'fish_pass')
+HIDDEN_LOCATION = ('underground', 'underwater')
+
+
+def watercourse_identity(feature):
+    """A key that is the same for every OSM way belonging to ONE physical watercourse.
+
+    "3W" beside "14B" is read as "there are three waters on this hole", and it was counting OSM WAYS.
+    A creek is routinely split into several ways at every road crossing and tag change, so one stream
+    printed as several: copper-valley 11 printed 7W where six of the seven ways carry the SAME NHD reach
+    code 18040051001111 -- one reach -- and merion 13 printed 2W for two ways both named "Cobbs Creek".
+    20 of 198 cards printed a bigger W than there is water.
+
+    The key is already in the data on 137 of the corpus's 179 waterways: the source hydrography's own
+    reach identifier, else the name. A way with neither is counted on its own, because nothing available
+    says it is the same water as its neighbour -- guessing from shared endpoints would merge a tributary
+    into the creek it joins.
+
+    Deduplicates the COUNT only. Every segment is still DRAWN: a golfer looking at the card should see
+    all the blue that is there, and the honesty rule that matters is that no counted water lacks ink.
+    """
+    t = feature.get('tags') or {}
+    for k in ('nhd:reach_code', 'pasda:SEGID', 'scvwd:ROUTEID'):
+        if t.get(k):
+            return (k, t[k])
+    if t.get('name'):
+        return ('name', t['name'])
+    return ('id', feature.get('id'))
+
+
+def is_visible_watercourse(feature):
+    """True when this OSM feature is a watercourse a golfer standing on the hole could see."""
+    t = feature.get('tags') or {}
+    w = t.get('waterway')
+    if not w or w in NOT_WATER:
+        return False
+    if t.get('tunnel') in PIPED or t.get('covered') in PIPED:
+        return False
+    return t.get('location') not in HIDDEN_LOCATION
+
+
+def par3_exact_from_tee(par, arc_m, chord_m):
+    """True when a tick's distance FROM THE TEE can be derived exactly as (card - to_green).
+
+    Only a par 3 qualifies. Its played line IS the straight tee-to-green line, so tee, tick and green
+    are collinear and the two numbers must sum to the card -- no arc, no proportional scaling, and
+    nothing assumed about where a card-vs-line length mismatch lives. That is what lets the from-tee
+    number be printed on a par 3 whose OSM centreline stops short of the back tee (4 of the 22 short
+    holes), which the proportional model cannot do.
+
+    A par 4 or 5 is excluded because its card yardage follows a played route that can dogleg, so
+    (card - to_green) would mix a walked measure with a straight-line one -- up to 42 yd wrong.
+
+    The straightness check refuses a par 3 whose drawn line is NOT straight: a par 3 cannot bend, so
+    that means bad data, and collinearity would not hold. Kept as a pure function because the corpus
+    cannot exercise this guard -- its one non-straight par 3 (copper-valley 13, arc/chord 1.0237)
+    happens to agree with the proportional value within tolerance, so removing the guard changed no
+    printed number and no corpus sweep could catch it.
+    """
+    return par == 3 and arc_m <= PAR3_STRAIGHT_MAX * (chord_m or 1.0)
+
+
+def line_runs_from_a_forward_tee(arc_yd, back_yd, tee_yds, start_at_tee_m):
+    """True when the drawn line is a COMPLETE tee-to-green route that simply starts at a FORWARD tee.
+
+    This is what lets the from-tee number be printed on a hole whose line is shorter than the back-tee
+    card. The line is not truncated mid-fairway: it runs from some tee to the green, and the only thing
+    missing is the stretch from the back tee up to that forward tee -- which is at the TEE end. So
+    (back-tee card - the walk still left to the green) is the distance from the back tee, both terms
+    being walked measures, the same one the scorecard uses.
+
+    Two independent things must hold, because neither alone is enough:
+
+      * The line STARTS ON a mapped tee box (start_at_tee_m). Measured against a control: 99% of the
+        176 holes whose line does span the back-tee card also start on one, so this is OSM's
+        convention, and 17 of the 18 short par 4/5 holes satisfy it. A line starting mid-fairway
+        (valley-hi 17, 98.6 m from any tee) fails and is refused.
+      * The line's LENGTH matches one of this hole's own published forward-tee yardages. Equivalently,
+        the shortfall equals the published tee-to-tee difference: merion 5 runs 397.9 yd against a
+        Middle tee of 394 and is short of the 501 Championship card by 103 against a published gap of
+        107; merion 8 is short by 23 against a published 21.
+
+    Why BOTH: on its own the yardage match is weak -- it fires on 78% of the real holes but also on
+    41% of decoys (the same forward-tee columns of other holes of the same par), because holes of one
+    par have similar yardages and the tolerance is wide. The tee-box test is the strong one.
+
+    Observed in the corpus, and the reason two cards carry no from-tee number at all:
+    castlewood-valley 10 and 18 start ON a tee box (0 m) yet run 497 and 385 yd against cards of 561 and
+    426. Their arc/chord is 1.000 and 1.038 -- the drawn lines are straight, or nearly so, while the
+    played route bends -- so OSM has cut the dogleg and the card measures the corner. Their lengths land
+    between published tees (497 sits between a 534 and a 460; 385 between a 352 and a 426), so the
+    yardage test refuses and the gutter stays empty. That is the right answer: the shortfall is spread
+    along the hole rather than sitting at the tee, so nothing here can say where it is.
+    Digitizing a TEE would not help -- the tee is already mapped and the line already starts on it. The
+    fix is a corrected CENTRELINE, ideally upstream in OSM.
+
+    Residual failure mode, stated rather than hidden: a line that starts at the BACK tee but cuts the
+    corner of a dogleg would also satisfy both tests if its length happened to land near a forward-tee
+    figure. Then the missing length is spread along the hole, not at the tee, and the from-tee number
+    would read high by up to the shortfall at the tick nearest the tee, converging to correct at the
+    green. That is the risk this trade accepts; refusing instead left 4 of Merion's 18 cards with an
+    empty gutter, which reads as a broken book rather than as a careful one.
+    """
+    if arc_yd >= back_yd:
+        return False          # not short at all, or OVERSHOOTING the card: a line traced PAST the tee
+                             # has extra length at the tee end, so subtracting the remaining walk from
+                             # the card understates the distance instead of recovering it
+    if start_at_tee_m > 20.0:
+        return False
+    return any(abs(arc_yd - y) <= max(15.0, 0.05*y) for y in tee_yds)
+
+WANDER_MAX = 1.02       # arc / chord above which a line's extra length may be mid-line, not at an end
+
+
+def line_traced_past_the_tee(arc_yd, back_yd, chord_yd):
+    """True when the drawn line runs BEYOND the back tee, so its extra length is at the TEE end.
+
+    The mirror of line_runs_from_a_forward_tee, and it needs no tee evidence at all: the line's green
+    end is at the green on all 198 corpus holes, so a line LONGER than the back-tee card must start
+    behind that tee. The one alternative is a line that wanders in the middle -- extra length not at
+    either end -- and a straight line cannot do that, which is what the chord test rules out. (A
+    doglegged overshoot would be ambiguous; none exists in the corpus, and it refuses.)
+
+    Why it matters: without this the two overshoot holes measured every along-line distance from a
+    point ~36 yd behind their real tee. castlewood-hill 4 printed "carry 85" for sand that is 49 yd
+    off the tee -- not a carry decision at all -- and callippe 3 printed 269 for a real 233.
+    """
+    if arc_yd <= back_yd:
+        return False
+    if arc_yd - back_yd <= max(15.0, 0.05*back_yd):
+        return False                                  # within tolerance: the line spans, no shift
+    return arc_yd <= WANDER_MAX * (chord_yd or 1.0)
+
+
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy
     if L2<1e-9: return math.hypot(px-ax,py-ay)
@@ -70,8 +242,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     course, geom = load()
     greens=[e for e in geom if e.get('tags',{}).get('golf')=='green' and e.get('geometry')]
     holes =[e for e in geom if e.get('tags',{}).get('golf')=='hole'  and e.get('geometry')]
-    hole=max((h for h in holes if h['tags'].get('ref')==str(hnum)),
-             key=lambda h: len(h.get('geometry') or []))   # longest centerline if dup refs
+    _loc = config.COURSE.get('location') or {}
+    hole = geo.hole_lines(geom, _loc.get('lat'), _loc.get('lon'))[hnum]   # see geo.hole_lines
     line=hole['geometry']
     green, green_end, tee_end = match_green(line, greens)
 
@@ -104,7 +276,58 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and in_corridor(g,40)]
     waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water') and g.get('geometry') and frac_in(g,45)>=0.35]
-    creeks =[g for g in course if g.get('tags',{}).get('waterway') and g.get('geometry') and in_corridor(g,45)]
+    def _near_played_line(pe, pn, buf):
+        """(within buf, and the nearest point is on the PLAYED line rather than off either end).
+
+        dist_to_line is a capsule: it clamps each segment's projection to [0, 1], so the corridor
+        includes a buf-radius half-disc BEHIND the tee and PAST the green. Water sitting in those caps
+        is not on the hole at all. Nine counted watercourses were reachable only through them, and two
+        cards went 0W -> 1W on a river whose nearest approach is 40.5 m away and 39.6 m behind the tee
+        (castlewood-valley 7) and 43.6 m away at the green (castlewood-valley 2).
+
+        So also require the nearest point to project INSIDE the polyline -- t strictly within (0, 1) on
+        some segment, or anywhere on an interior segment. A feature that only rounds the tee or the green
+        is then excluded, which is what the reader means by water on this hole.
+        """
+        best, interior = buf, False
+        n = len(line_em) - 1
+        for i in range(n):
+            ax, ay = line_em[i]; bx, by = line_em[i+1]
+            dx, dy = bx-ax, by-ay
+            L2 = dx*dx + dy*dy
+            if L2 < 1e-9:
+                continue
+            t = ((pe-ax)*dx + (pn-ay)*dy) / L2
+            tc = max(0.0, min(1.0, t))
+            d = math.hypot(pe-(ax+tc*dx), pn-(ay+tc*dy))
+            if d >= buf:
+                continue
+            # off the tee end only if this is the first segment and the projection fell before it;
+            # off the green end only if this is the last and it fell past it
+            off_end = (i == 0 and t <= 0.0) or (i == n-1 and t >= 1.0)
+            if not off_end:
+                interior = True
+            best = min(best, d)
+        return best < buf, interior
+
+    def any_within(g, buf):
+        """True when part of the feature comes within buf of the PLAYED length of this centerline.
+
+        The right test for a LINE, and the wrong one for an area -- which is why it is used only for
+        watercourses. in_corridor tests the CENTROID, and a creek is typically long and mostly
+        elsewhere: a stream that crosses this fairway has its centroid two holes away, so it was
+        excluded. That hid 49 open watercourses on 31 holes, one of them passing 0.7 m from the
+        centreline. Meanwhile the same centroid test INCLUDED features whose midpoint happens to sit
+        near the line while no part of them is visible from it.
+        """
+        pts = g.get('geometry') or []
+        for p in pts:
+            near, interior = _near_played_line(*em(p['lat'], p['lon']), buf)
+            if near and interior:
+                return True
+        return False
+
+    creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g,45)]
     tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g,38)]
     fairways=[g for g in course if g.get('tags',{}).get('golf')=='fairway' and g.get('geometry') and frac_in(g,34)>=0.40]
     roughs  =[g for g in course if g.get('tags',{}).get('golf')=='rough' and g.get('geometry') and frac_in(g,48)>=0.40]
@@ -138,22 +361,44 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # viewBox hugs the hole; width normalized to 100 units, height follows the hole's
     # aspect. TB = proportional top/bottom breathing room so labels/trees at the ends
     # are never cut. LG = side gutters for the distance numbers.
-    VBW=100.0; LG=12.0
-    s=(VBW-2*LG)/wW
+    CONTENT_W=100.0; LG=12.0
+    s=(CONTENT_W-2*LG)/wW
     contentH=wH*s
     TB=max(8.0, 0.06*contentH)
     VBH=contentH+2*TB
-    ox=LG-wx0*s; oy=TB-wy0*s
-    def TX(x): return x*s+ox
-    def TY(y): return y*s+oy
+    oy=TB-wy0*s
     # Physically CONSISTENT label sizes on every hole: each hole's viewBox is scaled by
     # `fit` (inches per view-unit) to fill the map column, so we size fonts inversely to
     # `fit` -> the printed text is the same size on every hole regardless of its scale.
     LAY_W_IN=(config.CARD_W_IN-2*0.07)*(1.6/4.0)      # map column width (see .lay flex)
     LAY_H_IN=config.CARD_H_IN-2*0.07-0.50-0.18        # minus header + foot
-    fit=min(LAY_W_IN/VBW, LAY_H_IN/VBH)               # in per view-unit after meet-fit
+    fit=min(LAY_W_IN/CONTENT_W, LAY_H_IN/VBH)         # in per view-unit after meet-fit
     FS=round(0.100/fit*font_scale,1)        # GRN / BLA  (~7.2 pt printed, consistent; scaled up for enlarged editions)
     FSN=round(0.092/fit*font_scale,1)       # distance numbers (~6.6 pt printed, consistent)
+    # The BOX may be wider than the content, because the two gutter numbers have to fit BESIDE the
+    # map and the space for them does not otherwise grow with the type. At font_scale 2 the pair
+    # stopped fitting between the fixed gutters and the from-tee yardage was dropped rather than
+    # overprinted -- 21 numbers on 5 of the enlarged edition's 54 cards, all of them present in the
+    # pocket book. The enlarged edition losing data the small one prints is the wrong trade, and it
+    # was happening while ~65% of the enlarged card's width sat blank: the map is a tall ribbon that
+    # meet-fits by HEIGHT, so widening the box costs nothing at all.
+    #
+    # Demand-driven, so the pocket book is untouched: at 1x nothing needs more room than the 100
+    # units it already has (verified across all 198 holes), so `pad` is 0 and every coordinate,
+    # `fit` and font size below is bit-identical to before.
+    #
+    # The two caps are what keep this honest. `s`, `contentH`, `VBH` and `fit` are all computed from
+    # CONTENT_W, never from the widened box, so the drawn map keeps its size and scale -- the box
+    # only grows OUTWARD. And the box may not out-grow the panel's own aspect ratio, or meet-fit
+    # would start fitting by width and shrink the map to buy room for its labels, which is the same
+    # mistake in the other direction.
+    need_w = 18.0 + 2*(DIGIT_EM*FSN*3) + 0.24*FSN     # 9-unit gutters + two 3-digit numbers + halos
+    box_cap = VBH * (LAY_W_IN/LAY_H_IN)               # widest box that still meet-fits by height
+    VBW = max(CONTENT_W, min(need_w, box_cap))
+    pad = (VBW-CONTENT_W)/2.0
+    ox=LG+pad-wx0*s
+    def TX(x): return x*s+ox
+    def TY(y): return y*s+oy
     def path(g,close=True):
         d="M "+" L ".join(f"{TX(x):.1f},{TY(y):.1f}" for x,y in poly_pts(g))
         return d+(" Z" if close else "")
@@ -182,7 +427,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     pin=f'<circle cx="{gcx:.1f}" cy="{gcy:.1f}" r="2.6" fill="none" stroke="#c0392b" stroke-width="1.1"/>'
     tx=TX(proj(tee_end['lat'],tee_end['lon'])[0]); ty=TY(proj(tee_end['lat'],tee_end['lon'])[1])
     import config as _cfg
-    back_tee = (_cfg.TEES[0][:3].upper() if _cfg.TEES else "TEE")
+    back_tee = (_cfg.BACK_NAME[:3].upper() if _cfg.BACK_NAME else "TEE")
     def txt(x,y,sn,fill,fs=None):
         fs=FS if fs is None else fs
         hw=fs*0.60*len(sn)/2                       # keep the whole label inside the frame
@@ -201,9 +446,13 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # line. Both are drawn in the frame gutters; a row is dropped if it would collide vertically
     # with the row above, and the right number is dropped if the two would overprint horizontally.
     def etxt(x, y, sn, fill, anchor):
+        # `:g` on a rounded x, for the same reason the viewBox uses it: the right gutter is now
+        # VBW-9 rather than the literal 91, and a bare float would print "91.0" and rewrite every
+        # pocket book's bytes without moving a single glyph.
+        x = f"{round(x,1):g}"
         return (f'<text x="{x}" y="{y:.1f}" font-size="{FSN:.1f}" text-anchor="{anchor}" '
                 f'paint-order="stroke" stroke="#fff" stroke-width="{FSN*0.28:.1f}" fill="{fill}" font-weight="700">{sn}</text>')
-    total_yd = HOLES[hnum][2]                 # BACK (championship) tee scorecard yardage
+    total_yd = HOLES[hnum][_cfg.BACK_I]       # the tee THIS BOOK is built on (config.BACK_I)
     # Geometry of the drawn playing line, tee end first. arc_m is its true walked length, which the
     # from-tee label is derived from -- course yardage follows the line you walk, not the chord.
     same = lambda a, b: abs(a['lat']-b['lat']) < 1e-9 and abs(a['lon']-b['lon']) < 1e-9
@@ -213,12 +462,37 @@ def render_hole(hnum, HOLES, font_scale=1.0):
            for i in range(len(pts_em)-1)]
     arc_m = sum(seg) or 1.0
     arc_yd = arc_m / 0.9144
-    # Does the drawn line actually span the hole? On 22 of 198 holes it does not: 20 stop short of
-    # the back tee and 2 OVERSHOOT it (OSM traced past the tee). Either way no from-tee distance
+    # Does the drawn line actually span the hole? On 21 of 198 holes it does not: 19 stop short of
+    # the back tee and 2 OVERSHOOT it (OSM traced past the tee). Was 22/20/2 until valley-hi 17's
+    # too-tight osm_bbox was widened on 2026-07-31 and the re-fetch replaced a hand-drawn 220 yd stub
+    # with the real 360 yd centreline, moving that hole into the spanning set. Either way no from-tee distance
     # can be derived, so that label is omitted rather than guessed -- the to-green number, which
     # is what you club off, is unaffected. Note the overshoot case still needs the yd < total_yd
     # bound below; suppressing the label alone does not bound the radius.
     tee_ok = abs(arc_yd - total_yd) <= max(15.0, 0.05*total_yd)
+    # Where the line is SHORT of the back-tee card, is it a truncated line or a complete route from a
+    # forward tee? See line_runs_from_a_forward_tee. Distance from the line's start to the nearest
+    # mapped tee box, 1e9 when the course has no tee polygons at all (then this stays refused).
+    start_at_tee_m = min((dist_to_poly_m(pts_em[0], t, em) for t in tees), default=1e9)
+    fwd_tee = (not tee_ok and line_runs_from_a_forward_tee(
+        arc_yd, total_yd,
+        # Row length from the ROW, not from len(_cfg.TEES). This function takes HOLES as an argument
+        # but reads BACK_I and the tee names from the module-global config, so a caller whose HOLES has
+        # fewer tee columns than the bound course crashed with IndexError -- found by running the suite
+        # in a shuffled order, where a synthetic 2-tee fixture inherited a real 5-tee binding left
+        # behind by an earlier test. Production never hit it because generate.py passes the HOLES of the
+        # course it has bound, but nothing said the two must agree, and the argument is the honest
+        # source for its own width.
+        [HOLES[hnum][i] for i in range(2, len(HOLES[hnum])) if i != _cfg.BACK_I], start_at_tee_m))
+    # The mirror case: a line traced PAST the tee. Same conclusion -- the length difference is at the
+    # tee end -- so the same signed shift and the same from-tee derivation apply.
+    past_tee = not tee_ok and line_traced_past_the_tee(arc_yd, total_yd, L/0.9144)
+
+    # A PAR 3 is the one case where the from-tee distance needs no model at all -- see
+    # par3_exact_from_tee for why, and why par 4/5 are excluded. This also CORRECTS the 64 par-3 rows
+    # that already printed: the proportional value differed from the exact one by a median 2 yd and
+    # up to 11 yd, always because arc_m disagreed with the card.
+    par3_straight = par3_exact_from_tee(HOLES[hnum][0], arc_m, L)
 
     # A golfer clubs off "yards to the green" -- the STRAIGHT-LINE distance a rangefinder reads, not
     # how far there is left to walk. So place each tick where the centerline crosses the circle of
@@ -281,12 +555,37 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # along the line the tick actually is -- not by whether its from-tee label is printable,
         # which is what previously discarded perfectly good to-green numbers on holes whose
         # centerline does not span the card.
-        if arc_from_tee / 0.9144 < 25.0:
+        # A from-tee figure is worth printing down to 30 yd -- but 30 yd is noise on a 500-yd hole
+        # and a fifth of a 128-yd one, where "28 from the tee" is real information. Scale it, which
+        # only loosens below 150 yd.
+        ft_floor = min(30.0, 0.20*total_yd)
+        if par3_straight:
+            # The exact from-tee distance is known here, so ONE threshold governs the row: keep it
+            # only if its from-tee number is printable. Judging the row on the drawn line instead
+            # left merion 13 with no gutter numbers at all (its only tick sits 18 yd along a line
+            # 10 yd shy of the card, though it is 28 yd from the real tee); judging the row and the
+            # number by DIFFERENT thresholds instead added a to-green tick on philadelphia 15 whose
+            # brown partner was then suppressed, i.e. a new half-empty row.
+            if total_yd - yd < ft_floor:
+                continue
+        elif arc_from_tee / 0.9144 < 25.0:
             continue
-        # From-tee label: scale the card yardage by how far along the drawn line this point is.
-        # Only meaningful when the line spans the hole; otherwise print the to-green number alone.
-        ft = round(total_yd * arc_from_tee / arc_m) if tee_ok else None
-        if ft is not None and ft < 30:
+        # From-tee label: on a straight par 3 it is exact (see par3_straight above). Otherwise scale
+        # the card yardage by how far along the drawn line this point is -- only meaningful when the
+        # line spans the hole; otherwise print the to-green number alone.
+        if par3_straight:
+            ft = round(total_yd - yd)
+        elif tee_ok:
+            ft = round(total_yd * arc_from_tee / arc_m)
+        elif fwd_tee or past_tee:
+            # Complete route from a forward tee, or traced past the back tee: either way the length
+            # difference sits at the tee end, so the back-tee distance is the card minus the walk left.
+            # Both are walked measures, so this does not mix a straight-line radius into a route
+            # length -- the mistake that made (card - to_green) up to 42 yd wrong on a dogleg.
+            ft = round(total_yd - (arc_m - arc_from_tee)/0.9144)
+        else:
+            ft = None
+        if ft is not None and ft < ft_floor:
             ft = None          # keep the row: its to-green number is still true and is the one a
                                # golfer clubs off -- only the from-tee figure is not worth printing
         sx, sy = proj(la, lo)
@@ -296,33 +595,185 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # Vertical guard: one printed row needs ~0.998*FSN of baseline separation (0.718 cap height +
     # two 0.14 halo strokes), so 1.35 clears it with margin while not needlessly dropping the
     # radius-spaced ticks. Measured tightest realised gap: 1.365*FSN (coach edition, bay-view h9).
-    DIGIT_EM = 0.556                          # Helvetica/Arial Bold digit advance
     for Y0,Xc,yd,ft in cands:
         if Y0-lastY < FSN*1.35:
             continue
         lastY=Y0
-        # Horizontal budget. The gutters are fixed at x=9 (start-anchored) and x=91 (end-anchored)
-        # while FSN scales with font_scale, so at the 2x coach scale the numbers ran into each other
+        # Horizontal budget. The gutters sit at x=9 (start-anchored) and x=VBW-9 (end-anchored), and
+        # VBW is only 100 when the numbers fit inside it -- see the box-widening note above, which
+        # exists because these two used to be pinned at 9 and 91 no matter how big the type got.
+        # FSN scales with font_scale, so at the 2x coach scale the numbers ran into each other
         # -- the brown one paints second WITH a white halo, so it erased digits of the to-green
         # yardage (monarch-bay h16 printed "1(498"). Budget the glyph advance plus the halo's
         # 0.14-em reach.
         wl = DIGIT_EM*FSN*len(str(yd))
         wr = DIGIT_EM*FSN*len(str(ft)) if ft is not None else 0.0
         left_end  = 9 + wl + 0.12*FSN
-        right_beg = (91 - wr - 0.12*FSN) if ft is not None else 100.0
+        right_beg = (VBW-9 - wr - 0.12*FSN) if ft is not None else VBW
         show_ft = ft is not None and left_end <= right_beg
         # The tick MARK must not sit under a number either: at 2x the labels reach far enough in
         # that the mark was drawn beneath their halos (67 of 814 rows). Clip it to the clear band,
         # and drop it entirely if nothing legible is left -- the two numbers already mark the row.
-        mx0, mx1 = max(Xc-4, left_end), min(Xc+4, right_beg if show_ft else 100.0)
+        # The row is a LEADER, not a tick. It used to be clipped to +-4 units either side of the line,
+        # which is fine when the line sits mid-frame -- but the frame is sized to hold every drawn
+        # feature, so a lake or a tree belt on one side pushes the line off-centre while the numbers
+        # stay pinned in the gutters at x=9 and x=VBW-9. On valley-hi 16 that left "110" and "60"
+        # floating in white space ~40% of the panel from anything, with no mark reaching them. Span
+        # the whole clear band between the two numbers instead, dashed and light so five of them
+        # crossing a long hole read as guides rather than as fairway features.
+        mx0 = left_end
+        mx1 = right_beg if show_ft else VBW
         if mx1 - mx0 >= 2.0:
             rings += (f'<line x1="{mx0:.1f}" y1="{Y0:.1f}" x2="{mx1:.1f}" y2="{Y0:.1f}" '
-                      f'stroke="#9a9a9a" stroke-width="0.7"/>')
+                      f'stroke="#b4b4b4" stroke-width="0.45" stroke-dasharray="1.6,1.6"/>')
         rings += etxt(9, Y0+FSN*0.35, str(yd), "#2f5a26", "start")      # LEFT = to green
         if show_ft:
-            rings += etxt(91, Y0+FSN*0.35, str(ft), "#7a4a12", "end")   # RIGHT = from back tee
+            rings += etxt(VBW-9, Y0+FSN*0.35, str(ft), "#7a4a12", "end")   # RIGHT = from back tee
 
-    vb=f"0 0 100 {VBH:.1f}"
+    # --- CARRY DISTANCES to the bunkers a tee shot has to deal with ---------------------------
+    # Standard yardage-book content the card was missing. proj() already gives along-line distance
+    # from the tee, so a bunker's near and far edges are its carry window. Three filters keep this
+    # honest and useful:
+    #   * only bunkers inside the tee CORRIDOR (they are already, by construction of `bunkers`)
+    #   * only those the tee shot can reach and must clear -- past CARRY_MIN_YD, and short of the
+    #     green, so a GREENSIDE bunker is not printed as a tee carry (Merion 18's greenside pair sits
+    #     at 401-429 yd and would otherwise read as a driving carry)
+    #   * only those near enough to the line to be in play, not a neighbouring hole's sand
+    # A bunker straddling the line (offset ~0) is the one that matters most, so offset is not used to
+    # rank -- distance is, because that is what a player is choosing a club against.
+    # The window is what a TEE SHOT is clubbed against. Below 80 yd nobody is carrying anything off
+    # the tee; past 300 yd nobody is reaching it, and that upper bound is also what stops a genuine
+    # fairway bunker far up a long hole from reading as a driving decision (Merion 18's pair at
+    # 401-429 on a 502 yd hole). Both ends chosen for the reader, not the data.
+    CARRY_MIN_YD, CARRY_MAX_YD = 80.0, 300.0
+    # Offset is measured from the straight tee-to-green CHORD, not from the drawn polyline that the
+    # 45 m drawing corridor uses. That INCONSISTENCY is deliberate, and it is conservative: 68 bunkers
+    # across 43 holes lie within 30 m of the drawn line yet more than 30 m off the chord, so they are
+    # drawn on the map but not quantified in the footer. Switching the test to the polyline was
+    # prototyped and rejected -- it moves the printed carries on 37 holes in BOTH directions (merion 7
+    # loses its only one, monarch-bay 5 goes from 85 to 254), because chord and polyline diverge each
+    # way on a dogleg, and the bunkers it admits sit 40-100 m off the chord where the along-chord
+    # projection understates the real carry. Doing it properly means also redefining the printed number
+    # as the straight-line tee-to-edge distance. Until that is measured and validated, under-reporting a
+    # hazard the map still shows beats printing a distance that is wrong as a carry.
+    CARRY_OFF_M  = 30.0        # further off the CHORD than this is not quantified
+    # SAND ONLY, and that is a decision rather than an oversight. Applying this same test to water
+    # finds 62 features in the tee-shot corridor corpus-wide, but 41 of them span 300-1300 yd ALONG
+    # the line: they are streams running WITH the hole, where a single "carry N" is meaningless. Of the
+    # 21 that genuinely cross (under 60 yd of along-line extent), 10 straddle the chord, and only 4 of
+    # those carry a golf water tag -- bay-view 11 and 16, merion 9, philadelphia 5. The rest are
+    # `waterway=drain` or `stream`, which in OSM covers culverted and seasonally dry channels that are
+    # not a hazard anyone carries.
+    #
+    # So quantifying water would mean inventing a crosses-versus-runs-along heuristic and trusting OSM
+    # to distinguish a real hazard from a storm drain, on four holes. Printing "carry 86" for a culverted
+    # drain is precisely the confident-but-unsupported number this book exists not to print, and the
+    # failure is worse than the omission: the map already draws every one of these in blue and the
+    # footer counts them ("1W"), so the reader is told the water is there, just not measured.
+    #
+    # The card says so rather than leaving it to be inferred -- the legend reads "carry N = yd ... to
+    # where fairway SAND starts" (see generate.py), which is why that wording is asserted by a test.
+    # Revisit only with something better than the tag to go on.
+    # Every along-line distance here is measured from where the LINE starts, and on a forward-tee hole
+    # that is not the back tee. Left unshifted, merion 5 printed "carry 173" for sand that is nearer
+    # 276 from the Championship tee -- a 103 yd understatement of the one number a player actually
+    # clubs against, and worse than the empty gutter it sat beside. Shift by the same tee-to-tee gap
+    # the from-tee gutter numbers are derived through, BEFORE the filters, so the 80-300 yd window and
+    # the greenside test judge back-tee distances too. That also fixes two spurious carries: merion 9's
+    # greenside bunker lands at 215 on a 231 yd hole and is correctly dropped, and valley-hi 6's at 303
+    # is past anyone's tee shot.
+    # Signed, and correct in both directions: positive where the line starts at a forward tee, negative
+    # where it was traced past the back tee.
+    tee_shift_yd = (total_yd - arc_yd) if (fwd_tee or past_tee) else 0.0
+    carries = []
+    for g in bunkers:
+        alongs, offs = [], []
+        for p in (g.get('geometry') or []):
+            e, n = em(p['lat'], p['lon'])
+            dx, dy = e - tee[0], n - tee[1]
+            alongs.append(dx*ux + dy*uy)
+            offs.append(abs(dx*perp[0] + dy*perp[1]))
+        if not alongs:
+            continue
+        near_yd = min(alongs)/0.9144 + tee_shift_yd
+        far_yd  = max(alongs)/0.9144 + tee_shift_yd
+        # The shift is only trustworthy for sand well UP the hole, where the direction from the back
+        # tee is nearly the chord direction. Close to the tee the back tee's unknown lateral offset
+        # dominates, and shifting swept in bunkers lying BEHIND the forward tee: merion 5 grew a
+        # "carry 81" and "105" from sand at -22 and +2 yd along its own line. So the reach test must
+        # also pass on the UNSHIFTED distance -- a carry has to be a real carry from the mapped tee too.
+        if min(alongs)/0.9144 < CARRY_MIN_YD:
+            continue
+        if not (CARRY_MIN_YD <= near_yd <= CARRY_MAX_YD) or min(offs) > CARRY_OFF_M:
+            continue
+        if near_yd > total_yd - 40:        # greenside sand, not a tee carry
+            continue
+        carries.append((near_yd, far_yd))
+    # Merge windows that overlap or nearly touch: a cluster of three bunkers spanning 149-187 is one
+    # decision, and printing "149 163 167" spends the card's scarcest resource on noise.
+    carries.sort()
+    merged = []
+    for a, b in carries:
+        if merged and a - merged[-1][1] <= 8:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    carries = [(round(a), round(b)) for a, b in merged][:3]
+    # A CARRY NEEDS AN ORIGIN THE GEOMETRY CORROBORATES. Every distance above is measured along the line
+    # from where the line STARTS, shifted by tee_shift_yd. That shift only exists when tee_ok, fwd_tee or
+    # past_tee established where the back tee is. Two holes printed carries with no such evidence:
+    #
+    #  * castlewood-valley 10 -- the from-tee gutter is BLANK on all five rows precisely because the code
+    #    cannot say where the line's 64 yd shortfall lives. The carries were printed anyway, from the
+    #    line's start, which asserts that start is the Black tee -- the very assumption the empty gutter
+    #    refuses to make. The mapped Black tee is 51-66 yd further back, so "carry 139" understated by
+    #    ~51-64 yd, and "carry 277" is 328-341 yd from the real tee, past CARRY_MAX_YD: a second-shot
+    #    bunker printed as a driving carry on a 561 yd par 5. A shift cannot rescue it -- the shortfall is
+    #    a cut dogleg spread along the hole, not a gap at the tee.
+    #
+    #  * merion 3 -- par3_exact supplies the gutter by asserting the tee sits `card` (250 yd) from the
+    #    green centre, but that assertion has no geometric backing: the furthest vertex of ANY mapped tee
+    #    polygon is 229.4 yd out, and tee_shift_yd stays 0, so the card printed gutters from a 250 yd
+    #    origin and "carry 170" from a 215 yd one -- two origins 35 yd apart on one card.
+    #
+    # par3_straight is deliberately NOT in this list, and that is the whole decision. Propagating its
+    # card-derived origin to the carries was the obvious fix and it is the wrong one: on merion 3 it would
+    # print 205 for sand the mapped geometry puts at 184, trading a 14 yd understatement for a 21 yd
+    # OVERSTATEMENT. Too long is the dangerous direction -- it tells a player they have room they do not
+    # have -- which is what test_a_printed_carry_never_overstates_what_it_clears exists to forbid. On the
+    # seven other par-3-exact holes the shift IS corroborated by a mapped tee box, but they all satisfy
+    # tee_ok as well, so they keep their numbers either way.
+    #
+    # Refusing is the only move that adds no wrong number: it drops 3 figures across 2 of 198 holes and
+    # changes nothing else. The map still draws the sand, and the footer still counts it as "NB".
+    origin_known = bool(tee_ok or fwd_tee or past_tee)
+    if not origin_known:
+        carries = []
+
+    # A CARRY IS A TEE-SHOT DECISION, AND A PAR 3 DOES NOT HAVE ONE. The figure answers "how far must
+    # I fly to clear the sand and land on fairway short of the green" -- which is a real question on a
+    # par 4 or 5 and no question at all on a par 3, where the shot is to the green. Nobody lays up at
+    # 90 yd on a 237 yd hole. All six par-3 carries in the corpus printed a number far short of the
+    # card, and on two of them the near edge was actively misleading:
+    #
+    #   * the-reserve 8 printed "carry 90" for a 128-vertex waste complex running from 90 to 216 yd on
+    #     a 237 yd hole -- sand ending FOUR YARDS short of the green front. Flying 90 clears nothing;
+    #     the distance that matters is ~215. A 126 yd gap, eight or nine clubs, and the near edge is
+    #     the one number on that card a player could act on and be wrong about.
+    #   * merion 13 printed "carry 82" on a 128 yd hole for a bunker running 82 to 113, where the green
+    #     front is at 107 -- again no landing area beyond it.
+    #
+    # This is the concept's own boundary, not a tuning parameter: CARRY_MIN_YD/CARRY_MAX_YD (80/300)
+    # and "greenside sand, not a tee carry" were written for a driving hole. Suppressing on par 3 drops
+    # 6 figures across 6 of 198 holes and adds no wrong number. The map still draws every bunker and
+    # the footer still counts it, so nothing is hidden -- only the false invitation to lay up is.
+    par = config.HOLES[hnum][0] if hnum in config.HOLES else None
+    if par == 3:
+        carries = []
+
+    # `:g` on a rounded value, not `:.1f`: an un-widened box must print as the bare "100" it always
+    # did, or all 12 pocket books change bytes for a purely cosmetic reason.
+    vb=f"0 0 {round(VBW,1):g} {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
          f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
          f'{trow_svg}{tdot_svg}{rings}{labels}</svg>')
@@ -336,11 +787,24 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # computes; the footer sitting under the map is something a 12-year-old reads directly. So the
     # footer describes the map, and a bunker between two parallel holes legitimately appears on both
     # cards -- it is in play on both.
+    # The footer's water count must cover every blue mark the map DRAWS, not just the polygons OSM
+    # tagged golf=water_hazard. A stream or ditch inside the corridor is drawn in the same blue and
+    # is just as wet, but it was excluded: 17 cards printed "0W" over a map showing blue, and merion 5
+    # printed it over five separate lines of Cobbs Creek. The guide's legend calls all of it "water
+    # (blue)", so the footer was contradicting both the map beside it and the legend that explains it.
     info=dict(bunkers=len(bunkers),
-              waters=len(waters),
+              # distinct PHYSICAL waters: the area hazards plus the deduplicated watercourses. See
+              # watercourse_identity -- counting OSM ways made one split creek read as several.
+              waters=len(waters)+len({watercourse_identity(g) for g in creeks}),
+              water_hazards=len(waters), watercourses=len(creeks),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
-              arc_yd=round(arc_yd), card_yd=total_yd, tee_ticks=tee_ok)
+              arc_yd=round(arc_yd), card_yd=total_yd,
+              tee_ticks=tee_ok or par3_straight or fwd_tee or past_tee,
+              line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee, past_tee=past_tee,
+              carry_origin_known=origin_known,
+              start_at_tee_m=round(start_at_tee_m, 1),
+              carries=carries)
     return svg, info
 
 if __name__=="__main__":

@@ -22,11 +22,13 @@ Every input used to build the books, its license, our obligation, and how we mee
     dataset. If we ever do, that dataset must ship under ODbL.
   - **§4.6 — the on‑request offer, which §4.4 alone does not cover.** Publicly using a Produced Work
     that was made *from a Derivative Database* obliges us, **on request**, to offer recipients
-    machine‑readable access to either that database or a file of our alterations. Two courses are
-    affected, because for those we added geometry OSM did not have: **Bay View** and **Valley Hi**
-    (2 hand‑digitized greens each, tagged `_digitized`). The other nine are unmodified extracts, for
+    machine‑readable access to either that database or a file of our alterations. **One** course is
+    affected, because for that one we added geometry OSM did not have: **Bay View** (2 hand‑digitized
+    greens, tagged `_digitized`). Valley Hi appeared here in an earlier revision; its hole‑16 tracing
+    was dropped and zero `_digitized` features remain there — §4a records that history. The other
+    eleven are unmodified extracts, for
     which OSMF's own guidance is simply to refer people to openstreetmap.org — which the About panel
-    already does. The alterations are small (2 features per course, well under OSMF's
+    already does. The alterations are small (2 features on one course, well under OSMF's
     "less than 100 features" insubstantiality threshold), but the obligation is cheap to honour:
     **on request we will supply those `_digitized` features under ODbL 1.0.** Anyone wanting them can
     ask at the contact address printed in every book.
@@ -66,7 +68,11 @@ Every input used to build the books, its license, our obligation, and how we mee
 - **License:** **U.S. public domain** (a U.S. Government work, 17 U.S.C. §105). No attribution is
   legally required; we credit it anyway.
 - **Where used:** the Poppy Ridge aerial reference, and as the tracing source for a small number of
-  greens that OpenStreetMap did not map at all (Bay View 2, Valley Hi 2 — tagged `_digitized`).
+  greens that OpenStreetMap did not map at all (Bay View 2 — tagged `_digitized`, ways 900000005 and
+  900000007). Valley Hi's hole‑16 green was traced from NAIP in an earlier build; `check_osm_bbox.py`
+  then found that course's OSM box ~46 m short at hole 16, a widened box recovered the REAL green
+  1.3 m away (33 vertices against the tracing's 17), and the tracing was dropped — so no
+  NAIP‑derived geometry remains in that book, and it no longer prints the NAIP credit.
 - **What is derived:** **coordinates only.** No NAIP pixels are embedded in any book. Tracing the
   outline of a real putting surface records a fact about the ground; it is not copying an image, and
   the image is public domain in any case.

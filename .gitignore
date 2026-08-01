@@ -35,3 +35,34 @@ Thumbs.db
 # Local tooling / personal assets (kept out of the repo)
 .claude/
 lucaswu.golf_qr*.png
+
+# Personal outreach drafts (letters to architects, clubs, associations). Recovered from a gitignored
+# worktree where they were the only copy in existence -- git had never seen them, so pruning that
+# worktree would have deleted them. Kept in the working tree so they survive; never committed, because
+# they are private correspondence and this repo is public.
+outreach/
+
+# Coverage artifacts. `.coverage` is a SQLite database written by `coverage run`; it holds absolute
+# paths from the machine that produced it and is meaningless anywhere else. It appeared untracked
+# during a coverage audit of the test suite, which is exactly when it would have been swept into a
+# commit by a careless `git add`.
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Local-only legal working notes. These stay OUT of the public repo deliberately.
+#
+# 04 is written as a hand-to-a-challenger script ("Why each legal theory fails"). Publishing it
+# names presumed adversaries, publishes our own read of our weakest points, and asserts legal
+# conclusions -- including patent non-infringement, which nobody has run a freedom-to-operate search
+# to support. An unsupported public assertion of non-infringement is the one line in this folder that
+# could cut against us rather than for us. The FACTS that make the project defensible are in 01-03,
+# which stay public; 04 only added argument.
+legal/04_INDEPENDENT_CREATION_DEFENSE.md
+
+# 08 is a dated internal audit snapshot carrying the same severity ratings ("Weak", "Frivolous") and
+# an internal action checklist whose pre-release boxes read as unchecked. Its factual outcome -- the
+# Esri imagery removed and rebuilt from public-domain NAIP -- is fully recorded in 07 and 01, which
+# stay public. What is local is the self-assessment, not the facts.
+legal/08_AUDIT_2026-07-13.md

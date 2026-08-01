@@ -48,6 +48,7 @@ Everything is built from open data anyone can use:
 | Hole &amp; green geometry | [OpenStreetMap](https://www.openstreetmap.org) contributors | ODbL 1.0 |
 | Slope / contours / arrows | **USGS 3DEP** LiDAR — 0.4 m ground returns (1 m seamless DEM fallback) | U.S. public domain |
 | Par / yardage / handicap | Facts from the published scorecard | facts (not copyrightable) |
+| Aerial tracing (2 greens OSM had not mapped) | **USDA NAIP** imagery | U.S. public domain |
 
 > **No commercial green‑reading product's data, imagery, artwork, layout, or trade dress is used,
 > copied, or referenced. No Google / Apple / Esri / Maxar imagery is embedded.** The project is
@@ -61,9 +62,12 @@ fetch_osm.py            # OpenStreetMap geometry (greens, holes, fairways, bunke
 fetch_lidar.py          # download USGS 3DEP LiDAR tiles covering the course (via The National Map)
 fetch_lidar_alameda.py  #   Alameda County 2021 tile-name decoder (when TNM naming needs it)
 fetch_dem_hd.py         # 0.4 m green surfaces from the raw LiDAR ground returns
+                        #   (keeps an existing 1 m fill rather than blanking a green it now refuses;
+                        #    OVERWRITE=1 to blank it on purpose)
 fetch_dem.py            #   THEN USGS 3DEP seamless 1 m for the greens it refused (fills gaps;
                         #   OVERWRITE=1 to replace a good 0.4 m surface on purpose)
-fetch_trees.py          # trees from LiDAR canopy returns (never placed on greens/fairways/tees/bunkers)
+fetch_trees.py          # trees from LiDAR returns 2.5-35 m above ground (never on greens/fairways/tees/bunkers)
+fetch_hole_elev.py      # tee-to-green height change from the same LiDAR -> hole_elev.json (--write)
 lidar_coverage.py       # checks the downloaded tiles' DATA actually reaches the greens & holes
 distribution.py         # one rule: may this book be handed out? (used by the legal record too)
 render_green.py         # green slope map (arrows, contours, slope %, 5-yard depth grid)
@@ -86,19 +90,57 @@ mkdir -p courses/my-course
 cp examples/course.json courses/my-course/course.json    # then replace every value
 COURSE=my-course python3 fetch_osm.py                    # then follow PIPELINE.md
 ```
-Two checks worth running on anything you build:
+Checks worth running on anything you build:
 ```bash
 python3 -m pytest tests/ -q          # regression tests (skip cleanly with no course data)
 python3 tools/check_scale.py         # measures the LAID-OUT green scale against Rule 4.3
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
+Run the suite in a **shuffled order** now and then, not just as collected. This file rebinds
+`COURSE` and drops modules from `sys.modules` at 69 sites, so a test can silently reconfigure the next
+one, and file order alone will never show it — a real `IndexError` in `render_hole` hid behind that for
+its whole life and only appeared under shuffling:
+```bash
+python3 -m pytest tests/ -q --collect-only | grep '^tests/' | sed 's/ .*//' | sort -R > /tmp/ids
+python3 -m pytest $(tr '\n' ' ' < /tmp/ids) -q      # shuffled
+```
+An autouse fixture now restores the `COURSE` binding after every test, so leakage should be structurally
+impossible; the shuffle is how you find out it still is.
+
 `tools/check_scale.py` is the important one. It lays each book out in a real browser under print
 media and measures the drawn green there, rather than trusting the SVG's own attributes — a
 stylesheet can override those, which is exactly how 15 greens once printed over the legal scale
 while every attribute looked correct. It exits non‑zero if any green exceeds 3/8 in : 5 yd. (It also
-reports the printed 5‑yd bar length from the PDF, but that figure is informational and does not
-gate.) `tools/export_pdf.py --check` is the companion: it proves the PDF you would actually print
+measures the printed 5‑yd bar in the PDF, and **that figure gates too** &mdash; the Rule 4.3 claim is
+about the artifact a player carries, not the HTML it came from.) `tools/export_pdf.py --check` is the companion: it proves the PDF you would actually print
 came from the HTML on disk.
+
+**After adding a course, regenerate the two derived legal docs** — the test suite fails until you do,
+and the failure names staleness rather than telling you which command fixes it:
+```bash
+python3 tools/gen_provenance.py       # rewrites legal/03_PROVENANCE_BY_COURSE.md from the artifacts
+python3 tools/gen_disclaimers.py      # rewrites legal/05_DISCLAIMER_TEXT.md from what the books print
+```
+Both take `--check` instead, which is what CI and the suite use. Neither is optional: they are derived
+from the build outputs precisely so the legal record cannot drift from what was actually printed.
+
+Two more tools, useful when a course looks wrong rather than on every build:
+```bash
+python3 tools/check_osm_bbox.py --all # every printed hole's 45 m corridor lies inside its fetch box
+COURSE=<slug> python3 tools/lidar_dates.py   # decodes the flight date from the LiDAR point records
+python3 tools/cross_flight_check.py --all    # do two surveys of the same green print the same read?
+```
+`check_osm_bbox.py` catches a fetch box so tight that features beside the hole were never downloaded —
+the map then agrees with the footer because both count only what arrived. `lidar_dates.py` is where
+the flight dates in the provenance table come from; a USGS *project name* is not a flight date, and
+four courses were mislabelled by 2–12 years before these were decoded from the points themselves.
+
+`cross_flight_check.py` exists because five of the twelve courses were flown across more than one
+date, so their greens are built from a blend of passes — harmless if the passes agree, and a surface
+spliced from two *different* greens if the course changed under the sensor between them. It grids
+each pass separately and runs the same `render_green.green_summary()` the card prints from. It is
+also the project's only measurement of how repeatable these surfaces are: see
+[`legal/09_GREEN_SURFACE_REPEATABILITY.md`](legal/09_GREEN_SURFACE_REPEATABILITY.md).
 
 ## Editions &amp; extras
 - **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex, top‑flip; slips into a back‑pocket
@@ -108,6 +150,11 @@ came from the HTML on disk.
   the tournament scale, so not a conforming competition book).
 - **3D‑printable binding** — [`green book binding.stl`](green%20book%20binding.stl), a printable
   cover/binding for the trimmed card deck.
+
+**Print in colour.** Colour is a real data channel here, not decoration: ground steeper than 10% is
+shown by colour *only* and deliberately carries no number, and a fairway bunker's sand sits within
+3% grey of the fairway it lies in, so on a mono printer the bunkers all but disappear. Both books say
+so on the guide card.
 
 ## What's in this repo
 - **Included:** the engine (Python), the build docs, `requirements.txt`, a documented

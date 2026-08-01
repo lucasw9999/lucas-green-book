@@ -41,8 +41,14 @@ Confirmed by audit:
   nominative trademark use, non‑affiliation, removal‑on‑request, no‑warranty, Rule‑4.3
   designed‑not‑guaranteed).
 
-**Those eleven are safe to hand out and safe to host online. Poppy Ridge is not — it is
-personal-use only, for the reason above.**
+**Those eleven are built only from open, public-domain and factual inputs, which is why they are
+the ones handed out. Poppy Ridge is not — it is personal-use only, for the reason above.**
+
+*(This folder records what the project DID and where every input came from. It is not legal
+advice and states no legal conclusion — none of it was written by a lawyer. An earlier revision
+of this line asserted the books were "safe to hand out and safe to host online"; that is a
+judgement for a lawyer to make, not a fact this audit can establish, and anyone reusing this
+engine should reach their own.)*
 
 ### ✅ Poppy Ridge Esri issue — RESOLVED (2026‑07‑13)
 Poppy Ridge was rebuilt in 2025, so no open (OSM/USGS) data of the new layout exists yet. Its
@@ -53,16 +59,17 @@ Apple imagery anywhere.** The Poppy **yardage cards** (scorecard facts) are clea
 Honest caveat: NAIP predates the rebuild, so its aerial shows the old course (labeled as such).
 See `07_POPPY_RIDGE_ESRI_IMAGERY.md`.
 
-## Risk ranking (from the adversarial review)
-| # | Item | Severity |
-|---|---|---|
-| 1 | Esri/Maxar imagery in Poppy aerial | **RESOLVED** — removed, rebuilt from public-domain NAIP |
-| 2 | Competitor copyright / trade dress / trademark vs. the distributed books | Weak → Frivolous |
-| 3 | Course names / depicting a private club | Weak (nominative use) → handled |
-| 4 | "Designed to conform · Rule 4.3" / no‑warranty | Weak, well‑mitigated |
-| 5 | Viewing (not copying) the Jay Blasi routing diagram | Frivolous |
-| 6 | OSM ODbL / USGS public domain compliance | Clean |
-| 7 | Internal "StrackaLine" text in README/code comments (not in books) | Cosmetic — cleaned |
+## Risk review
+
+An adversarial "opposing counsel" pass was run over every distributed book, covering
+competitor copyright and trade dress, course names and private-club depiction, the Rule 4.3
+wording, OSM/USGS licence compliance, and the (since removed) Esri imagery. Its findings were
+acted on — the imagery was deleted and rebuilt from public-domain NAIP, the Rule 4.3 wording
+was fixed to "designed to conform", and competitor names were removed from code comments.
+
+The ranked severity table it produced is kept **locally, not published**: it is this project's
+own assessment of where it is weakest, which is not something to hand to a stranger. What
+belongs in public is the provenance record — `01`–`03` — which is verifiable.
 
 ## The rule we live by
 Distributed books use **open data + public domain + facts only**. If a source is

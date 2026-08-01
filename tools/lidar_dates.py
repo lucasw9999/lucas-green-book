@@ -48,6 +48,32 @@ LEAP_SECONDS = 18          # GPS - UTC since 2017-01-01; LiDAR here is all post-
 # tool runs once per course, so there is nothing to buy with a prefix.
 CHUNK = 2_000_000
 MAX_TILE_SPAN_DAYS = 730   # a tile whose gps_time spans more than two years is not one acquisition
+# MAX_TILE_SPAN_DAYS above cannot fail on the case it was written for, and a guard that cannot fail
+# reads as one. ONE junk-but-positive gps_time sets an endpoint, and the span it produces is usually
+# well inside two years. Reproduced on a real-shaped tile -- 126 points spanning the true Alameda
+# acquisition 2021-06-21..2021-07-02 plus a single value of 2.618e8 -- the tool reported
+# 2019-12-31..2021-07-02, a span of 549 days, ACCEPTED. --write puts that label into course.json and
+# it is printed verbatim on every card and in legal/03. Tightening the threshold is not available:
+# philadelphia's 18TVK474434.laz genuinely spans 100.23 days.
+#
+# What separates the two is not the span but ISOLATION IN TIME. A flight pass returns points
+# continuously -- consecutive returns are microseconds apart -- so a real endpoint always has another
+# point right beside it, while a bad clock reading sits alone. So walk in from each extreme while the
+# value is separated from the very next one by more than MAX_ENDPOINT_GAP_S, and refuse the tile
+# outright once more than MAX_ISOLATED_VALUES have to be discarded at one end (at that point it is a
+# cluster we cannot dismiss as a misreading, i.e. the times are not one clock).
+#
+# MEASURED before choosing the numbers, over every tile in the corpus, for the green-near set and the
+# whole tile alike: taking the Nth-from-each-end value for every N up to 400 never changed the
+# calendar date of either endpoint, and the largest shift of any kind was 916.6 s (bay-view
+# 16009875, whole tile) with every other tile under 10 s. So no real endpoint has a neighbour more
+# than 916.6 s away, and a 3600 s gap clears the worst case by 3.9x while still isolating a junk
+# value that is hours, months or years out. ENDPOINT_WINDOW is how far in we can look at all; it
+# only has to exceed MAX_ISOLATED_VALUES, and 64 leaves room to tell "discarded 8 and still
+# isolated" from "ran out of window".
+MAX_ENDPOINT_GAP_S = 3600.0
+MAX_ISOLATED_VALUES = 8
+ENDPOINT_WINDOW = 64
 # Collar around a green's own footprint, for deciding which points DATE it. Deliberately wider than
 # the 12 m margin fetch_dem_hd.py builds the surface from (MARGIN_M): the question here is "was this
 # tile flown over this green", and a flight line that clipped the collar is the same pass. Note the
@@ -55,6 +81,109 @@ MAX_TILE_SPAN_DAYS = 730   # a tile whose gps_time spans more than two years is 
 # contributed to the surface, so `basis` says "points within 30 m of a green" rather than claiming
 # these are the returns the surface was built from.
 GREEN_PAD_M = 30.0
+
+
+class _Extremes:
+    """The ENDPOINT_WINDOW smallest and largest gps_times of a streamed set, plus how many were seen.
+
+    Exists so an endpoint of the printed flight range can be checked for isolation in time rather
+    than taken as a bare min()/max(). See MAX_ENDPOINT_GAP_S for the measurement and for the label
+    this stops being printed.
+
+    Bounded on purpose: the largest tile in this corpus holds 125,181,111 points, so keeping the
+    gps_time column in order to sort it would be a gigabyte of float64 per tile.
+    """
+
+    def __init__(self, k=ENDPOINT_WINDOW):
+        self.k = k
+        self.n = 0
+        self._lo = np.empty(0, dtype="float64")
+        self._hi = np.empty(0, dtype="float64")
+
+    def add(self, v):
+        """Fold in one chunk's values, which the caller has already filtered to > 0."""
+        if not v.size:
+            return
+        self.n += int(v.size)
+        m = min(self.k, v.size)
+        # np.partition, not np.sort: only the m extreme values of a 2M-point chunk are ever kept, and
+        # sorting the whole chunk instead costs about 20x more for the same answer.
+        lo = np.partition(v, m - 1)[:m]
+        hi = np.partition(v, v.size - m)[v.size - m:]
+        self._lo = np.sort(np.concatenate([self._lo, lo]))[:self.k]
+        self._hi = np.sort(np.concatenate([self._hi, hi]))[-self.k:]
+
+    def raw(self):
+        """(min, max) over every value seen, or None if none were."""
+        return (float(self._lo[0]), float(self._hi[-1])) if self.n else None
+
+    def endpoints(self):
+        """(first, last, n_dropped_low, n_dropped_high), or None when an end cannot be resolved.
+
+        None means one end is a run of more than MAX_ISOLATED_VALUES values each separated from the
+        next by more than MAX_ENDPOINT_GAP_S -- or that there is only one value in the set at all.
+        Either way we cannot tell a bad clock from a real sparse pass, and the caller refuses the
+        tile rather than printing a date it cannot defend.
+        """
+        lo = self._resolve(self._lo)                  # ascending, walked upward
+        hi = self._resolve(self._hi[::-1])            # descending, walked downward
+        if lo is None or hi is None:
+            return None
+        return lo[0], hi[0], lo[1], hi[1]
+
+    def _resolve(self, inward):
+        """(value, n_dropped) for the first value in a run ordered FROM the extreme INWARD that the
+        BULK supports, or None.
+
+        Support is measured across MAX_ISOLATED_VALUES + 1 positions, not against the single next
+        neighbour. Against the neighbour alone, TWO junk readings close to each other vouch for one
+        another and the endpoint is published with n_dropped = 0 and no message at all -- the gap test
+        is satisfied by the pair before it ever reaches the bulk. Reproduced end-to-end: two points of
+        merion 18TVK472428.laz's 127,832 green-covering returns (0.0016%) moved a 2024-12-17 flight to
+        "ACQUIRED: 2023-01-17 to 2024-12-17", and --write would have put that on every card and into
+        legal/03. Spacing sweep on the old rule: 1 s, 3599 s and 3600 s apart all published silently;
+        only 3601 s was caught. MAX_ISOLATED_VALUES was unreachable, so the only backstop left was the
+        730-day span check, which passes drags of 100, 365 and 700 days.
+
+        A cluster of up to MAX_ISOLATED_VALUES bad readings is now isolated from the bulk however
+        tightly it is packed, because the distance is measured past the whole cluster. Legitimately
+        sparse tiles are unaffected: the corpus's real endpoints have hundreds of returns within the
+        window, and every recorded label reproduces byte-identically under this rule.
+        """
+        n = len(inward)
+        # The candidate must belong to the BULK, defined as the largest run of readings each within
+        # MAX_ENDPOINT_GAP_S of the next. Measuring support at a fixed offset of
+        # MAX_ISOLATED_VALUES + 1 positions let a cluster LARGER than that window vouch for ITSELF:
+        # with 10 junk readings, position 0 found its supporter at j = 9, still inside the junk and
+        # 0.09 s away. The walk accepted the extreme value and reported n_dropped = 0, so nothing
+        # warned and nothing refused. Reliability inverted with the size of the corruption -- 8 junk
+        # readings were trimmed with a warning, 9 were refused, and 10 published silently; a 100-point
+        # cluster published a date two decades from the flight, and --write puts that on every card.
+        #
+        # Identifying the bulk by RUN LENGTH fixes the family rather than moving the threshold. A real
+        # flight is thousands of contiguous returns; junk is a handful, whatever its size, and however
+        # tightly packed. No window to outgrow.
+        runs, start = [], 0
+        for k in range(1, n):
+            if abs(inward[k] - inward[k - 1]) > MAX_ENDPOINT_GAP_S:
+                runs.append((start, k - 1))
+                start = k
+        runs.append((start, n - 1))
+        bulk_lo, bulk_hi = max(runs, key=lambda r: r[1] - r[0])
+        for i in range(n - 1):
+            if bulk_lo <= i <= bulk_hi:
+                # HOW FAR the trim reached matters as much as how many it dropped. Trimming is for a
+                # clock GLITCH; a value years from the bulk is not a glitch, it is a second epoch, and
+                # a tile holding two epochs cannot be dated at all. Widening the support window made
+                # such a cluster trimmable where the old rule had (accidentally, via the 730-day span
+                # check on the resulting range) refused it -- so the bound is stated here instead of
+                # depending on a downstream check that no longer sees the discarded values.
+                if i and abs(inward[0] - inward[i]) > MAX_TILE_SPAN_DAYS * 86400.0:
+                    return None
+                return float(inward[i]), i
+            if i >= MAX_ISOLATED_VALUES:
+                return None
+        return None
 
 
 def green_rings(course_dir):
@@ -149,8 +278,10 @@ def tile_dates(path, rings=()):
 
     `first`/`last` are narrowed to the points lying over a green when `rings` is supplied and any
     were found; `whole_first`/`whole_last` always span every point in the tile, so the caller can
-    contrast the two. `crs_placeable` is False when the tile declares no CRS, which is a fact about
-    us rather than about the survey.
+    contrast the two. Neither pair is a bare min/max: an endpoint must have another point within
+    MAX_ENDPOINT_GAP_S of it, so one bad clock reading can neither set the range nor pass unremarked.
+    `crs_placeable` is False when the tile declares no CRS, which is a fact about us rather than
+    about the survey.
 
     global_encoding bit 0 == 0 means GPS WEEK TIME: seconds since the start of the current GPS week,
     0..604800, with the week number recorded nowhere in the file. The absolute date is therefore NOT
@@ -192,6 +323,8 @@ def tile_dates(path, rings=()):
                 min(b[2] for b in boxes), max(b[3] for b in boxes)) if boxes else None
         lo = hi = None            # over points near a green, when we can tell
         wlo = whi = None          # over the whole tile, always
+        near_ext = _Extremes()    # ...kept as a WINDOW of extremes, so an isolated value can be seen
+        whole_ext = _Extremes()
         nnear = 0
         for chunk in f.chunk_iterator(CHUNK):
             t = np.asarray(chunk.gps_time)
@@ -199,8 +332,7 @@ def tile_dates(path, rings=()):
             if not keep.any():
                 continue
             tk = t[keep]                      # one boolean-index copy, not two
-            wlo = min(wlo, float(tk.min())) if wlo is not None else float(tk.min())
-            whi = max(whi, float(tk.max())) if whi is not None else float(tk.max())
+            whole_ext.add(tk)
             if boxes is None:
                 continue
             x, y = np.asarray(chunk.x), np.asarray(chunk.y)
@@ -215,16 +347,35 @@ def tile_dates(path, rings=()):
             if sel.any():
                 tn = t[idx[sel]]
                 nnear += int(tn.size)
-                lo = min(lo, float(tn.min())) if lo is not None else float(tn.min())
-                hi = max(hi, float(tn.max())) if hi is not None else float(tn.max())
-        near = lo is not None
-        if not near:
-            # No points over any green. Either this tile is a neighbour that feeds nothing, or we
-            # could not place the greens in its CRS. Report the whole-tile range and let the caller
-            # decide -- it must NOT be folded into the flight range the book prints.
-            lo, hi = wlo, whi
-        if lo is None:
+                near_ext.add(tn)
+        near = near_ext.n > 0
+        # The set that DATES this tile: the points over a green when there are any, otherwise the
+        # whole tile -- whose range must NOT be folded into what the book prints, which is why the
+        # caller is handed `nnear`. Deliberately NOT "refuse whenever the whole tile carries an
+        # isolated value": a bad gps_time 2 km from any green must not cost us a tile whose green
+        # returns are clean, for the same reason the range itself is narrowed to the greens.
+        dating = near_ext if near else whole_ext
+        if not dating.n:
+            return None                       # no usable gps_time anywhere in this tile
+        res = dating.endpoints()
+        if res is None:
+            print(f"    {os.path.basename(path)}: neither end of its gps_time range has another "
+                  f"point within {MAX_ENDPOINT_GAP_S:.0f} s of it, even after discarding "
+                  f"{MAX_ISOLATED_VALUES} value(s) -- the times in this tile are not one clock; "
+                  f"refusing to date it")
             return None
+        lo, hi, n_lo, n_hi = res
+        if n_lo or n_hi:
+            # Say it out loud. These are values no other point in the tile comes within an hour of,
+            # so they are not part of any pass -- but silently narrowing a published range is the
+            # mirror of silently widening it, and this line is the difference between a guard and a
+            # guess. The whole point of the module is that the printed date is checkable.
+            raw_lo, raw_hi = dating.raw()
+            print(f"    {os.path.basename(path)}: discarded {n_lo}+{n_hi} isolated gps_time value(s) "
+                  f"(raw range reaches {gps_to_utc(raw_lo)}..{gps_to_utc(raw_hi)}); no other point in "
+                  f"the tile is within {MAX_ENDPOINT_GAP_S:.0f} s of them, so they date nothing")
+        wres = whole_ext.endpoints()
+        wlo, whi = wres[:2] if wres else whole_ext.raw()
         # A tile with times spanning years is raw (unadjusted) GPS time; sanity-check the result.
         def plausible(d):
             return d is not None and (dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc) < d
@@ -245,12 +396,13 @@ def tile_dates(path, rings=()):
         # rests on; better to have no date than an invented one.
         if not plausible(first) or not plausible(last) or last < first:
             return None
-        # A single tile cannot span years. One junk-but-positive gps_time is enough to break the
-        # range: with adjusted time, 1.0 decodes to 1980-01-06 + 1e9 s = 2011-09-14, which IS inside
-        # the 2000-2040 window and so cannot be excluded by any plausibility filter -- it is
-        # indistinguishable from a genuine 2011 flight. What gives it away is the SPAN. A real
-        # acquisition is days; anything past a couple of years means the times in this tile are not
-        # all the same clock, and the honest answer is no date for it.
+        # A single tile cannot span years, whatever its endpoints are supported by. This is now the
+        # BACKSTOP behind the isolation test above, not the primary guard: it was written for the
+        # one-junk-point case ("1.0 decodes to 1980-01-06 + 1e9 s = 2011-09-14, inside the 2000-2040
+        # window, indistinguishable from a genuine 2011 flight") and it cannot catch it -- one point
+        # produces a span of months, not years. What it still catches is a CLUSTER of bad values that
+        # corroborate each other and so survive the isolation walk: two junk times half a second
+        # apart are each other's neighbour, and only the decade-wide span gives them away.
         if (last - first) > dt.timedelta(days=MAX_TILE_SPAN_DAYS):
             print(f"    {os.path.basename(path)}: gps_time spans {(last - first).days} days "
                   f"({first.date()}..{last.date()}) -- not one acquisition; refusing to date it")
@@ -277,7 +429,7 @@ def main():
     # Date the points that actually built the green surfaces, not whole tiles. The tile set is
     # chosen by bbox overlap with the whole course, so it routinely includes neighbours that cover no
     # green at all -- and the union over whole tiles then widens the range the book prints. Measured
-    # at The Reserve: t390135.laz spans 2017-12-16..2018-01-21 and has NO point within 60 m of any
+    # at The Reserve: t390135.laz spans 2017-12-16..2018-01-21 and has NO point within GREEN_PAD_M (30 m) of any
     # green (its nearest green is 1336 m from its earliest point, 1382 m from its latest), while the
     # three tiles that do feed greens span only 2017-12-16..2017-12-17. The book printed "flown
     # 2017-12-15 to 2018-01-21" -- 38 days -- for greens flown on two.

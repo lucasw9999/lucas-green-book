@@ -88,6 +88,21 @@ NAN_FRAC_MAX = 0.02          # matches fetch_dem_hd.py's gate
 MIN_RELIEF_M = 0.05          # 5 cm across a whole green patch: not a green, a zero-fill
 
 
+def is_flat_fill(n_in, nan_frac, relief):
+    """True when a patch is a zero-fill or a constant raster rather than a green -- refuse it.
+
+    Extracted so the TEST can call it. test_fetch_dem_gate_measures_only_the_green_interior carried its
+    own byte-identical copy of this expression, so it verified its own rule and not this one: setting
+    `flat = False` here left it green (found by a mutation survey). A test that re-implements the
+    producer's rule can only ever catch a wrong APPLICATION of it, never a wrong rule -- and the rule is
+    the honesty gate.
+
+    Same shape and reason as fetch_dem_hd.keeps_existing_surface: a predicate can be exercised by truth
+    table, an inline boolean inside main() cannot.
+    """
+    return bool(n_in and nan_frac < 1.0 and relief < MIN_RELIEF_M)
+
+
 def _green_interior_stats(arr, bbox, W, H, polygon):
     """(nan fraction, cells tested, relief in m) over the GREEN INTERIOR only.
 
@@ -136,14 +151,16 @@ def main():
     d = json.load(open(f"{DIR}/osm_geom.json"))
     els = d['elements']
     greens = [e for e in els if e.get('tags', {}).get('golf') == 'green' and e.get('geometry')]
-    holes  = [e for e in els if e.get('tags', {}).get('golf') == 'hole'  and e.get('geometry')]
-    # keep only the longest centerline per hole ref (OSM sometimes has dup/fragment ways)
-    best = {}
-    for h in holes:
-        ref = h['tags'].get('ref')
-        if ref and ref.isdigit() and len(h['geometry']) > len(best.get(ref, {}).get('geometry', [])):
-            best[ref] = h
-    holes = list(best.values())
+    # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,
+    # first-wins on a tie -- the exact heuristic geo.hole_lines was written to replace after it
+    # flipped under element reordering on castlewood-valley (two candidates 604 m apart, both
+    # 3 vertices). Three fetch scripts still carried their own copy of it, so the tree corridors,
+    # the green surfaces and the gap-fill DEM could each have been placed on a DIFFERENT line
+    # from the one render_hole draws and fetch_hole_elev measures against. They all agreed on all
+    # 198 holes only because the cached element order happened to favour it. geo.hole_lines picks
+    # by distance to the course centre and REFUSES a near-tie rather than guessing.
+    _loc = config.COURSE.get('location') or {}
+    holes = list(geo.hole_lines(els, _loc.get('lat'), _loc.get('lon')).values())
     gc = [(g, *centroid(g)) for g in greens]
 
     # Bind EVERY hole to its green and check the invariant BEFORE deciding what to write. Building
@@ -218,7 +235,7 @@ def main():
         # min 0.0, max 0.0, one unique value) rather than any NoData marker -- so a nan_frac test
         # alone reported insufficient=False for a green with no measurement at all, and the book
         # printed 18 cards of "feeds back (subtle) - 0.0%". A real green is never perfectly flat.
-        flat = bool(n_in and nan_frac < 1.0 and relief < MIN_RELIEF_M)
+        flat = is_flat_fill(n_in, nan_frac, relief)
         insufficient = bool(n_in == 0 or nan_frac > NAN_FRAC_MAX or flat)
         if flat:
             print(f"hole {hn}: CONSTANT surface across the green ({relief*100:.1f} cm of relief) -- "
