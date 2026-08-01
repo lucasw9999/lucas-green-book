@@ -4602,7 +4602,11 @@ def test_fetch_dem_gate_measures_only_the_green_interior():
 
     def flat_of(arr):
         nf, ni, rel = fd._green_interior_stats(arr, bbox, n, n, poly)
-        return bool(ni and nf < 1.0 and rel < fd.MIN_RELIEF_M)
+        # THE PRODUCER'S predicate, not a copy of it. This line was byte-identical to
+        # fetch_dem.py's inline expression, so the test graded its own rule: setting `flat = False`
+        # in the producer left this green. A test that re-implements the rule catches a wrong
+        # application of it and never a wrong rule -- and here the rule IS the honesty gate.
+        return fd.is_flat_fill(ni, nf, rel)
 
     assert flat_of(np.where(interior, 0.0, slope)), \
         "green zero-filled with a real margin must still be refused"

@@ -88,6 +88,21 @@ NAN_FRAC_MAX = 0.02          # matches fetch_dem_hd.py's gate
 MIN_RELIEF_M = 0.05          # 5 cm across a whole green patch: not a green, a zero-fill
 
 
+def is_flat_fill(n_in, nan_frac, relief):
+    """True when a patch is a zero-fill or a constant raster rather than a green -- refuse it.
+
+    Extracted so the TEST can call it. test_fetch_dem_gate_measures_only_the_green_interior carried its
+    own byte-identical copy of this expression, so it verified its own rule and not this one: setting
+    `flat = False` here left it green (found by a mutation survey). A test that re-implements the
+    producer's rule can only ever catch a wrong APPLICATION of it, never a wrong rule -- and the rule is
+    the honesty gate.
+
+    Same shape and reason as fetch_dem_hd.keeps_existing_surface: a predicate can be exercised by truth
+    table, an inline boolean inside main() cannot.
+    """
+    return bool(n_in and nan_frac < 1.0 and relief < MIN_RELIEF_M)
+
+
 def _green_interior_stats(arr, bbox, W, H, polygon):
     """(nan fraction, cells tested, relief in m) over the GREEN INTERIOR only.
 
@@ -220,7 +235,7 @@ def main():
         # min 0.0, max 0.0, one unique value) rather than any NoData marker -- so a nan_frac test
         # alone reported insufficient=False for a green with no measurement at all, and the book
         # printed 18 cards of "feeds back (subtle) - 0.0%". A real green is never perfectly flat.
-        flat = bool(n_in and nan_frac < 1.0 and relief < MIN_RELIEF_M)
+        flat = is_flat_fill(n_in, nan_frac, relief)
         insufficient = bool(n_in == 0 or nan_frac > NAN_FRAC_MAX or flat)
         if flat:
             print(f"hole {hn}: CONSTANT surface across the green ({relief*100:.1f} cm of relief) -- "
