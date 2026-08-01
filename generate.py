@@ -534,7 +534,9 @@ def _flown_line():
     stale = sorted(config.COURSE.get("greens_possibly_outdated", []))
     if stale:
         holes = _hole_runs(stale)
-        out += ('  <div class="legrow"><span><b>&#9888; Holes ' + esc(holes) + '</b>: '
+        # holes comes from _hole_runs, which is integers and one &ndash; entity -- NOT user text, and
+        # esc() would turn that entity's "&" into "&amp;" so the card printed the literal "16&ndash;18".
+        out += ('  <div class="legrow"><span><b>&#9888; Holes ' + holes + '</b>: '
                 '<b>rebuilt after</b> that survey, marked <b>&ldquo;pre-rebuild data&rdquo;</b> '
                 '&mdash; shapes and tiers may have changed. A guide only; trust your own '
                 'read.</span></div>\n')
@@ -546,7 +548,7 @@ def _flown_line():
                     if 'seamless' in str(summ.get('source', '')).lower())
     if coarse:
         holes = _hole_runs(coarse)
-        out += ('  <div class="legrow"><span><b>Holes ' + esc(holes) + '</b> had no usable point '
+        out += ('  <div class="legrow"><span><b>Holes ' + holes + '</b> had no usable point '   # see above
                 'cloud (tree cover or water), so their greens come from the coarser <b>1 m</b> '
                 'national model, marked <b>&ldquo;1 m data&rdquo;</b>. The tilt is real, just less '
                 'sharp &mdash; small tiers may smooth away.</span></div>\n')

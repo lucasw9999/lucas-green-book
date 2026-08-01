@@ -4419,8 +4419,20 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
                             txt = "".join(c.get("c", "") for c in sp.get("chars", [])).strip()
                             if re.fullmatch(r"\d{1,3}", txt):
                                 by.setdefault((pg.number, sp["font"]), set()).add(int(txt))
-        return {k: v for k, v in by.items()
-                if all(x < 100 for x in v) and any(x % 5 for x in v)}
+        # `all(x < 100)` alone. An earlier version also required at least one value not a multiple of
+        # 5, on the theory that ladder rungs and gutter ticks are always multiples. Measured, that
+        # clause excluded 0 of 252 resources -- zero discriminating power -- while carrying all the
+        # risk: it DISCARDED {40}, {5,40}, {15,40}, {5,10,40}, so the one value this test exists to
+        # catch was never examined. Patching a real shipped PDF to print 40, 5, 5, 5, 5, 5, 5 passed.
+        # The stale-export defect in the docstring prints 15/20/25/30/35/40 -- every one a multiple of
+        # 5 -- so the clause was precisely wrong for the case it was written for. Two live cards are one
+        # glyph from it: callippe p4 is {5,6} and castlewood-hill p1 is {3,5}.
+        #
+        # The real discriminators are the two structural facts: the ladder rungs are drawn with
+        # stroke="none" and land in a Type0 font, so they never enter this dict at all; and the gutter
+        # resource always carries a 3-digit to-green radius alongside its 1-2 digit from-tee number, so
+        # all(x < 100) excludes it.
+        return {k: v for k, v in by.items() if all(x < 100 for x in v)}
 
     checked = 0
     for pdf in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
@@ -4437,7 +4449,12 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         # One resource per green card, so the count is a floor on having found the layer at all. A
         # rewrite that stops emitting per-green fonts, or a discriminator that stops matching, would
         # otherwise silently examine nothing and pass.
-        assert len(sets) >= 15, (
+        # The engine knows this number: one resource per green card. `>= 15` tolerated three greens
+        # silently dropped per book, 42 across the corpus.
+        n_green_cards = len(re.findall(r'font-size="4\.6"[^>]*font-weight="700"',
+                                       open(html, encoding="utf-8").read())) and \
+            len(re.findall(r'class="minilab">GREEN', open(html, encoding="utf-8").read()))
+        assert len(sets) >= max(15, n_green_cards or 15), (
             f"{os.path.relpath(pdf, ROOT)}: only {len(sets)} slope-label font resource(s) isolated for a "
             f"book with green cards. Expected roughly one per green. The discriminator has stopped "
             f"finding the layer, so this test is examining nothing -- fix it rather than let it pass.")
