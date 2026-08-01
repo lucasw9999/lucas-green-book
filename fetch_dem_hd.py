@@ -18,11 +18,13 @@ from pyproj import Transformer
 from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 import config
+import fetch_dem          # for is_seamless, one spelling of that test across the engine
 import geo
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 RES = 0.4                                   # target metres/pixel
+OVERWRITE = bool(os.environ.get("OVERWRITE"))   # replace a working 1 m fallback with a blank green
 MARGIN_M = 12.0
 R_LAT = 111320.0
 # Trust thresholds for a green surface. Above/below these the surface was not really measured,
@@ -247,6 +249,31 @@ def main():
         # A green is only trustworthy if the surface was actually measured under it.
         insufficient = bool(nan_frac > NAN_FRAC_MAX or dens < DENSITY_MIN
                             or uncovered > UNCOVERED_MAX)
+        # Do not trade a WORKING 1 m fallback for a refused 0.4 m attempt. This stage shares dem_hd/
+        # with fetch_dem.py, which fills the greens this one gives up on, and re-running this stage
+        # alone -- an ordinary thing to do after changing the point filter -- overwrote that fill with
+        # an insufficient=True record. The green then prints BLANK where it previously printed a real
+        # read labelled "1 m data": a card silently loses information, and the only symptom is the
+        # blank itself.
+        #
+        # This is the exact mirror of the fault fetch_dem.keeps_existing_surface was written for, found
+        # on the same course: that one replaced good 0.4 m greens with the coarse 1 m ones, and cost
+        # Monarch Bay 1.1 MB of precision without printing a dishonest word. Only one direction was
+        # guarded. Same convention here, same escape hatch: OVERWRITE=1 to do it on purpose.
+        #
+        # A SUFFICIENT 0.4 m surface still replaces a seamless one -- that is the upgrade this stage
+        # exists for, and only the refused case is a downgrade.
+        if insufficient and not OVERWRITE:
+            try:
+                with open(f"{OUT}/hole{hn:02d}.json") as _f:
+                    _prev = json.load(_f)
+            except (OSError, ValueError):
+                _prev = None
+            if _prev is not None and fetch_dem.is_seamless(_prev):
+                print(f"hole {hn:2d}: 0.4m refused (nan {nan_frac:.3f}, dens {dens}, unc "
+                      f"{uncovered:.3f}) -- KEEPING the existing 1 m seamless surface. "
+                      f"OVERWRITE=1 to replace it with a blank green.")
+                continue
         np.save(f"{OUT}/hole{hn:02d}.npy",arr)
         meta=dict(hole=hn,approach_bearing=t['appr'],bbox=t['bbox'],W=t['W'],H=t['H'],
                   green_id=t['green']['id'],green_center=[t['clat'],t['clon']],

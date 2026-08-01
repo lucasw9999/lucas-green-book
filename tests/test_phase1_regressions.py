@@ -8640,3 +8640,59 @@ def test_render_refuses_a_green_that_falls_metres_inside_its_own_outline(gate_co
         "2.5 m of fall across a green is severe but real -- refusing it would blank legitimate greens, "
         "and this corpus has surfaces with over 2 m of relief")
     assert s2["tilt_pct"] > 0, "a real sloping green must still report a tilt"
+
+
+@needs_corpus
+def test_re_running_the_surface_builder_cannot_blank_a_working_fallback():
+    """fetch_dem_hd shares dem_hd/ with fetch_dem, and must not trade a working 1 m fill for a blank.
+
+    The two stages write the same directory. fetch_dem_hd builds 0.4 m surfaces from LiDAR ground
+    returns; fetch_dem fills the greens it gives up on from the seamless 1 m DEM, and those cards print a
+    real read labelled "1 m data". Re-running fetch_dem_hd ALONE -- an ordinary thing to do after
+    changing the point filter -- overwrote that fill with an insufficient=True record, and the green then
+    prints BLANK. A card silently loses information and the only symptom is the blank itself.
+
+    Found by doing it: re-running the stage on monarch-bay turned hole 10 from "1 m data" into a refused
+    green (its 0.4 m attempt reports nan 1.000, density 0.0 -- a bayside green with essentially no ground
+    returns). It is the exact mirror of the fault fetch_dem.keeps_existing_surface was written for, on the
+    same course: that one replaced good 0.4 m greens with coarse 1 m ones and cost 1.1 MB of precision
+    without printing a dishonest word. Only one direction had been guarded.
+
+    Checked on the ARTIFACTS rather than in the source, because the clobber has a signature there: it
+    leaves a green sourced from LiDAR and marked insufficient, where a seamless-sourced readable one used
+    to be. So the corpus invariant is that nothing shipped is insufficient, and the fallback count has not
+    quietly fallen.
+    """
+    insufficient, seamless, seen = [], [], set()
+    for mf in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        ref = os.path.basename(os.path.dirname(os.path.dirname(mf)))
+        if ref.startswith("_"):
+            continue
+        seen.add(ref)
+        with open(mf, encoding="utf-8") as f:
+            m = json.load(f)
+        if m.get("insufficient"):
+            insufficient.append(f"{ref} hole {m.get('hole')}")
+        if "seamless" in str(m.get("source", "")).lower():
+            seamless.append(f"{ref} hole {m.get('hole')}")
+    assert seen, "no built greens found"
+    assert not insufficient, (
+        "green surface(s) on disk are marked insufficient, so their cards print blank:\n  "
+        + "\n  ".join(insufficient)
+        + "\n  If this followed a re-run of fetch_dem_hd.py, it overwrote a working 1 m fallback. "
+          "Re-run fetch_dem.py to restore the fill, or use OVERWRITE=1 if blanking was the intent.")
+    assert len(seamless) >= 6, (
+        f"only {len(seamless)} green(s) are on the 1 m seamless fallback; monarch-bay alone has 6. A "
+        f"drop means fetch_dem_hd replaced a fill -- with a GOOD 0.4 m surface that is an upgrade and "
+        f"this floor should be lowered deliberately, but with a refused one it is a blanked green.")
+
+    # the escape hatch has to exist, or the guard becomes a wall
+    with open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8") as f:
+        src = f.read()
+    assert 'os.environ.get("OVERWRITE")' in src, (
+        "fetch_dem_hd.py no longer READS the OVERWRITE environment variable. fetch_dem.py uses that "
+        "exact name for the mirror case, and a guard with no deliberate override is a wall rather than "
+        "a safety net. (Checked as the env read, not as the bare word: the word survives in comments.)")
+    assert "is_seamless" in src, (
+        "fetch_dem_hd.py no longer asks whether the surface it is about to replace came from the 1 m "
+        "DEM, so it can blank a working fallback again")
