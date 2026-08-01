@@ -28,6 +28,17 @@ The run now prints the signed bias for that reason. It is evidence about the REF
 the figures being checked, which is why a NEGATIVE bias would be the interesting result -- and it would
 have been invisible.
 
+It also reports the ABSOLUTE agreement, which costs no extra network and closes a gap the
+cross-flight repeatability check explicitly cannot: that check compares our processing to ITSELF
+(two surveys, both gridded by us), so a constant offset introduced by our own handling -- a vertical
+unit read wrong, a CRS or grid misalignment, a geoid/ellipsoid mixup -- cancels out of every height
+CHANGE and stays invisible. Comparing a green's absolute elevation against a raster this project does
+not build catches exactly that class. Measured over 55 greens across all 11 courses: median 0.07 m,
+worst 0.47 m. A US-survey-foot cloud read as metres would show tens of metres here, a geoid confusion
+about 30 m in California, and the foot/metre fault above showed a median 298 ft. What this still does
+NOT bound is the source program's own datum or a turfgrass ground-classification bias, since the
+seamless DEM comes from the same LiDAR -- recorded as still open in legal/09.
+
 That spread is also what justifies the card's 3 ft floor: below it, two honest sources disagree by
 enough that a printed "green 2 ft above" would be inside the gap between them (see elev_phrase in
 generate.py).
@@ -135,7 +146,7 @@ def check_course(slug):
     holes = geo.hole_lines(els, _loc.get("lat"), _loc.get("lon"))
 
     print(f"{slug}  (independent check against the 3DEP seamless DEM, tolerance {TOL_FT:g} ft)")
-    diffs, signed, unreachable = [], [], 0
+    diffs, signed, absolute, unreachable = [], [], [], 0
     for hn in sorted(int(k) for k in rec):
         if hn not in holes:
             continue
@@ -158,6 +169,22 @@ def check_course(slug):
         diffs.append((abs(d), hn, ours_ft, indep_ft))
         flag = "" if abs(d) <= TOL_FT else "   <== DISAGREES"
         signed.append(indep_ft - ours_ft)
+        # ABSOLUTE agreement, free of extra network: d_grn is already in hand. The height CHANGE is a
+        # difference, so it cancels any constant offset in our own processing -- a vertical unit read
+        # wrong, a CRS or grid misalignment, a geoid/ellipsoid mixup. Those are exactly the faults the
+        # cross-flight repeatability check cannot see, because that compares our processing to itself.
+        # Comparing the green's absolute elevation against a raster this project does NOT build closes
+        # that gap. This is not hypothetical: a foot/metre fault once put 74 of 175 holes' elevations
+        # out by a median 298 ft. A US-survey-foot cloud read as metres shows tens of metres here; a
+        # geoid confusion about 30 m in California. Measured across 55 greens: median 0.07 m, worst
+        # 0.47 m. See legal/09_GREEN_SURFACE_REPEATABILITY.md.
+        try:
+            _a = np.load(meta_p.replace(".json", ".npy"))
+            _fin = _a[np.isfinite(_a)]
+            if _fin.size:
+                absolute.append(d_grn - float(np.median(_fin)))
+        except Exception:
+            pass
         print(f"  hole {hn:2d}: ours {ours_ft:+7.1f} ft   DEM {indep_ft:+7.1f} ft   "
               f"diff {d:+6.1f}{flag}")
     if not diffs:
@@ -175,6 +202,14 @@ def check_course(slug):
     # raster smooths a raised tee pad toward the ground around it, so it under-reads the tee -- so it
     # says something about the REFERENCE, not about the figures being checked. A run that came out
     # NEGATIVE would be the anomaly worth chasing, and it was invisible before.
+    if absolute:
+        am = float(np.median(absolute))
+        aw = max(absolute, key=abs)
+        tag = ("" if abs(aw) <= 2.0 else
+               "  <== a metre or more of ABSOLUTE offset is a processing fault (unit, CRS, datum), "
+               "not terrain; see the module docstring")
+        print(f"     absolute green elevation vs the DEM: median {am:+.2f} m, worst {aw:+.2f} m "
+              f"over {len(absolute)} green(s){tag}")
     if signed:
         pos = sum(1 for v in signed if v > 0)
         sm = float(np.median(signed))

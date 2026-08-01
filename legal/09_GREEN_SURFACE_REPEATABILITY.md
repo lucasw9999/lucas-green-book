@@ -118,13 +118,24 @@ finding shape in randomness. For a book that prints a tilt to one decimal, this 
 had to hold, and it holds with two orders of magnitude of margin.
 
 **Does not:**
-1. **This is precision, not accuracy.** Both passes come from the same USGS program, sensor class and
-   processing chain. A *systematic* bias — a vertical datum offset, a consistent ground‑classification
-   bias in turfgrass — would be present in both and invisible here. Bounding that needs a
-   ground‑truth survey, which this project does not have and cannot get from public data. For the
-   contour and break claims this matters less than it sounds, because a bias shared by the whole green
-   cancels out of every height *difference*; it would matter for an absolute elevation, which no green
-   card prints.
+1. **This is precision, not accuracy** — with one part of that now bounded separately. Both passes come
+   from the same USGS program, sensor class and processing chain, so a *systematic* bias would be
+   present in both and invisible to the comparisons above. Two kinds of systematic bias are worth
+   separating, because only one of them stays open:
+   - **Our own processing** — a vertical unit read wrong, a CRS or grid misalignment, a geoid/ellipsoid
+     mixup. This IS bounded, by checking the *absolute* elevation of our surfaces against the 3DEP
+     seamless DEM, a separately produced raster this project does not build. Over 55 greens across all
+     11 courses the two agree to a **median 0.07 m and a worst case of 0.47 m**. A US‑survey‑foot cloud
+     read as metres would show tens of metres; a geoid/ellipsoid confusion about 30 m in California.
+     Neither is present. (This project has shipped a foot/metre fault before — it put 74 of 175 holes'
+     elevations out by a median 298 ft — so the check is not hypothetical.)
+   - **The source program itself** — its absolute vertical datum, or a consistent
+     ground‑classification bias in turfgrass. That remains open: the seamless DEM is derived from the
+     same LiDAR, so it cannot independently confirm the program's own datum, and both products take
+     class‑2 ground returns. Bounding it needs a ground‑truth survey this project cannot get from
+     public data. For the contour and break claims it matters less than it sounds, because a bias
+     shared by the whole green cancels out of every height *difference* — and no green card prints an
+     absolute elevation.
 2. **It validates the dominant plane and the surface the contours follow, not every feature.** Tilt,
    aim, the firm/subtle qualifier and the 15 cm interval are what were compared. It does not establish
    that any individual arrow on a subtle green points the right way — and one green, micke‑grove 2, is
