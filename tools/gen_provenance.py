@@ -284,10 +284,9 @@ def _row(slug):
 
 def build():
     # ignore scratch/underscore dirs: transient course folders (cold-build tests, staging) must not
-    # make the provenance doc look stale and fail the drift check
-    slugs = sorted(s for s in (os.path.basename(os.path.dirname(p))
-                              for p in glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
-                   if not s.startswith("_"))
+    # make the provenance doc look stale and fail the drift check. One spelling of that rule, shared
+    # with gen_disclaimers and cross_flight_check -- see distribution.is_corpus_slug.
+    slugs = distribution.course_slugs(ROOT)
     rows = [_row(s) for s in slugs]
     full = []
     for slug in slugs:

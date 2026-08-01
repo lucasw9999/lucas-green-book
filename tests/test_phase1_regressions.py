@@ -367,7 +367,19 @@ def _bind_a_course():
     change: file order, reverse order, three shuffle seeds, and all 137 tests each in their own process.
     """
     prev = os.environ.get("COURSE")
-    if CORPUS and not prev:
+    # UNCONDITIONAL when there is a corpus. `if CORPUS and not prev` meant the binding was skipped
+    # whenever COURSE was already set -- which defeated the isolation this fixture's docstring promises,
+    # because the module-scoped synth_engine fixture is set up BEFORE any function-scoped fixture and
+    # binds COURSE=_synth_ticks during its own setup. Every test from the first synthetic one to the end
+    # of the session then saw prev="_synth_ticks", declined to rebind, and RESTORED it on teardown -- so
+    # the whole tail of the suite silently ran against a 2-hole, 1-tee authored course. That is what made
+    # three green tests fail in a full run and pass in isolation, and what turned the fixture's cleanup
+    # into a landmine: the moment courses/_synth_ticks stops existing, every later `import config` dies
+    # with "no course.json for COURSE='_synth_ticks'".
+    #
+    # Safe for the synthetic tests themselves: _engine(slug) hands back modules ALREADY imported against
+    # their course, so rebinding the env afterwards cannot reach them.
+    if CORPUS:
         os.environ["COURSE"] = CORPUS[0]
     try:
         yield
@@ -1355,7 +1367,12 @@ def test_only_the_conforming_edition_claims_to_conform():
         assert "DESIGNED TO CONFORM" not in html, (
             f"{ref}: the enlarged edition carries the conformance badge, which belongs only to the "
             f"pocket book it is measured on")
-        assert re.search(r"use the standard pocket edition for competition", flat), (
+        # Matched on substance, not on one sentence. The literal phrase "use the standard pocket
+        # edition for competition" was pinned here, so tightening that legend row to fit the card --
+        # the row had grown a line and was clipping the About & legal text below it -- failed this test
+        # for wording while the claim it protects was still made. What matters is that the disclaimer
+        # names the pocket edition as the alternative, in the same breath as competition.
+        assert re.search(r"[Uu]se the (standard )?pocket edition (for|in) competition", flat), (
             f"{ref}: the enlarged edition disclaims conformance without naming the edition that does "
             f"conform, which leaves the reader with no usable alternative")
     if checked == 0:
@@ -2824,7 +2841,10 @@ SYNTH = {
 def synth_engine(tmp_path_factory):
     """A course whose geometry is authored, not downloaded: straight north-running centerlines
     ending on a green centred at the origin, so every tick position is known in closed form."""
-    slug = "_synth_ticks"                       # leading _ keeps it out of the corpus scan
+    slug = "_synth_ticks"                       # scratch, per distribution.is_corpus_slug
+    # The leading underscore is not self-enforcing -- glob("courses/*/course.json") matches it
+    # happily, and tools/cross_flight_check.py had no filter at all until this comment was
+    # checked. The convention now has one implementation that every audit tool shares.
     cdir = os.path.join(ROOT, "courses", slug)
     os.makedirs(cdir, exist_ok=True)
     lat0, lon0 = 40.0, -75.0
@@ -3487,23 +3507,53 @@ def test_the_card_footer_cannot_break_mid_phrase():
     monarch-bay orphaned "3.1%" onto its own line and split "Gol403 / Gre338 /" from "Red288", on holes 1,
     3 and 5. Five courses have five tee columns (callippe, copper-valley, monarch-bay, poppy, the-reserve).
 
-    Exactly the fault the playline had, which is why that row was given its own line. Asserted on the CSS
-    because text layout cannot be measured here -- crude, but it pins the two rules the fix depends on,
-    and losing either brings the orphaning straight back."""
+    Exactly the fault the playline had, which is why that row was given its own line.
+
+    This asserted only that the SUBSTRINGS ".foot span" and "white-space: nowrap" appear in the HTML --
+    and they did, inside CSS the browser threw away. Both rules sat in an f-string with one brace too
+    many on each side, so the emitted stylesheet read `.foot span {{ white-space: nowrap; }}` with a
+    stray `}` on the rule above it. Chrome discarded the whole block: `.foot span` was not in
+    document.styleSheets at all and getComputedStyle(span).whiteSpace was "normal". The test was green
+    for as long as the rule had never once worked. Its own docstring called the approach crude; the
+    suite already drives Playwright, so it is now measured where it matters -- in the renderer that
+    prints the book."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
     checked = 0
-    for slug in CORPUS:
-        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
-        if not os.path.isfile(book):
-            continue
-        html = open(book, encoding="utf-8").read()
-        if '<div class="foot">' not in html:
-            continue
-        checked += 1
-        assert "flex-wrap: wrap" in html, (
-            f"{slug}: .foot has no flex-wrap, so an over-long span breaks mid-phrase instead of the "
-            f"footer moving to a second line")
-        assert ".foot span" in html and "white-space: nowrap" in html, (
-            f"{slug}: .foot span is not nowrap, so a phrase can still be split across lines")
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page()
+        try:
+            for slug in CORPUS:
+                book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+                if not os.path.isfile(book):
+                    continue
+                if '<div class="foot">' not in open(book, encoding="utf-8").read():
+                    continue
+                checked += 1
+                page.goto("file://" + os.path.abspath(book))
+                page.emulate_media(media="print")
+                got = page.evaluate("""() => {
+                  const sp = document.querySelector('.foot span');
+                  const ft = document.querySelector('.foot');
+                  return { ws: getComputedStyle(sp).whiteSpace,
+                           wrap: getComputedStyle(ft).flexWrap,
+                           display: getComputedStyle(ft).display };
+                }""")
+                assert got["ws"] == "nowrap", (
+                    f"{slug}: the browser computes white-space:{got['ws']} on a .foot span, so a phrase "
+                    f"can still be split across lines. The CSS text may LOOK right -- check the brace "
+                    f"count in the f-string that emits it, which is how this broke before.")
+                assert got["wrap"] == "wrap", (
+                    f"{slug}: .foot computes flex-wrap:{got['wrap']}, so an over-long span breaks "
+                    f"mid-phrase instead of the footer moving to a second line")
+                assert got["display"] == "flex", (
+                    f"{slug}: .foot computes display:{got['display']}, not flex -- the whole footer rule "
+                    f"was dropped by the parser")
+        finally:
+            browser.close()
     assert checked >= 10, f"only {checked} books checked"
 
 
@@ -4146,8 +4196,15 @@ def _pdf_numbers(pdf):
                         if "Type3" not in sp.get("font", ""):
                             continue
                         txt = "".join(c.get("c", "") for c in sp.get("chars", []))
-                        if re.fullmatch(r"\d{1,3}", txt):
-                            out.append(int(txt))
+                        # .strip(): Chrome emits a real leading ' ' glyph ahead of some text-anchor="end"
+                        # labels at the enlarged edition's font size, and the unstripped match dropped 25
+                        # of them -- 15 in monarch-bay's coach book, 10 in philadelphia's, all yardages.
+                        # Those 25 were then exempt from test_every_number_printed_in_a_pdf_exists_in_its
+                        # _html, in exactly the two books whose right-anchored numbers it cannot see.
+                        # Harmless for the slope view today (all 25 are 135-499, above its v < 100 filter)
+                        # but a two-digit slope label would hide the same way.
+                        if re.fullmatch(r"\d{1,3}", txt.strip()):
+                            out.append(int(txt.strip()))
     return out
 
 
@@ -4237,7 +4294,7 @@ HONESTY_CASES = {
 
 
 def _fake_summary(**over):
-    s = dict(feeds="front-left", conf="firm", tilt_pct=3.1, depth_yd=33, width_yd=25,
+    s = dict(feeds="front-left", conf="clear", tilt_pct=3.1, depth_yd=33, width_yd=25,
              relief_ft=2.4, median_slope=3.0, undul_ft=0.5, scale_max_in=None,
              source="USGS 3DEP LiDAR ground returns @0.4m")
     s.update({k: v for k, v in over.items() if not k.startswith("_")})
@@ -5041,7 +5098,7 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
         clat = meta["green_center"][0]
         px_x = (xmax - xmin) * _mlon(clat) / W
         px_y = (ymax - ymin) * R_LAT / H
-        k = 0.03                                     # a 3% plane: unambiguously "firm"
+        k = 0.03                                     # a 3% plane: fall unambiguously "clear"
         z = np.fromfunction(
             lambda r, c: 100.0 - k * math.sin(th) * px_x * c + k * math.cos(th) * px_y * r,
             (H, W), dtype=float)
@@ -5051,7 +5108,11 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
         assert summ["feeds"] == want, (
             f"a plane falling toward bearing {bearing} deg (approach due north) must read "
             f"{want!r}, got {summ['feeds']!r} -- the card frame is rotated wrongly")
-        assert summ["conf"] == "firm", f"a 3% plane should be firm, got {summ['conf']!r}"
+        assert summ["conf"] == "clear", (
+            f"a 3% plane's fall should read 'clear', got {summ['conf']!r}. The values are\n"
+            f"clear/faint, describing the EVIDENCE -- whether the fall stands above the survey noise.\n"
+            f"They were firm/subtle, which a golfer reads as a claim about the TURF, the one thing\n"
+            f"render_green's own docstring says it cannot know.")
         # tilt % is the other number this card prints from the same plane fit, so pin it here where
         # the answer is exact. Cross-checked on the corpus by re-fitting 108 greens with an
         # independent Gaussian and least-squares: worst disagreement 0.05 percentage points, which is
@@ -6857,6 +6918,10 @@ def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
         dict(type="way", id=3, tags={"building": "no"},        geometry=box(0.008, 0.0)),
         dict(type="way", id=4, tags={"leisure": "pitch"},      geometry=box(0.012, 0.0)),
     ]
+    # prev is read BEFORE the try. Assigned inside it -- as it was -- any raise from the three
+    # json.dump calls below made the finally clause die with UnboundLocalError, replacing the real
+    # error with a bogus one at the exact moment you need to read it.
+    prev = os.environ.get("COURSE")
     try:
         json.dump(dict(elements=els), open(os.path.join(cdir, "osm_course.json"), "w"))
         json.dump(dict(elements=[]), open(os.path.join(cdir, "osm_geom.json"), "w"))
@@ -6867,7 +6932,6 @@ def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
                        holes={"1": [72, 1, 100]},
                        osm_bbox=[lat0 - 0.01, lon0 - 0.01, lat0 + 0.01, lon0 + 0.01], sources={}),
                   open(os.path.join(cdir, "course.json"), "w"))
-        prev = os.environ.get("COURSE")
         os.environ["COURSE"] = slug          # bind explicitly; do not inherit another test's course
         for m in ("config", "fetch_trees"):
             sys.modules.pop(m, None)
@@ -6884,13 +6948,13 @@ def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
         assert at(0.012) is False, "a non-golf, non-building polygon is not a playing surface"
         assert at(0.050) is False, "outside every polygon"
     finally:
-        for f in ("osm_course.json", "osm_geom.json", "course.json"):
-            fp = os.path.join(cdir, f)
-            if os.path.exists(fp):
-                os.remove(fp)
-        if os.path.isdir(cdir):
-            os.rmdir(cdir)
+        # Restore FIRST, then clean up -- the same ordering fault synth_engine had. os.rmdir raises on
+        # a non-empty directory, and the raise skipped the restore, leaving COURSE bound to a slug whose
+        # course.json had just been deleted; every later test that imported config then died. rmtree does
+        # not care what is in the way.
         _restore_course(prev)
+        import shutil
+        shutil.rmtree(cdir, ignore_errors=True)
 
 
 @needs_corpus
@@ -7664,9 +7728,23 @@ def test_the_printed_read_is_fitted_to_putting_surface_only():
         printed = {}
         for blk in re.split(r'<div class="panel hole">', html)[1:]:
             hn = re.search(r'class="hnum">(\d+)<', blk)
-            rd = re.search(r'(?:feeds <b>[^<]*</b>|<b>no clear fall</b>) \(\w+\) &middot; ([\d.]+)%', blk)
+            # The qualifier is OPTIONAL and only ever "(faint)": it prints on the minority of greens
+            # whose fall is inside the survey noise, and on none of the rest. This pattern required it,
+            # so when the card stopped printing "(firm)" on every green the parse silently returned
+            # None for 195 of 198 holes and the comparison below had nothing left to compare -- a test
+            # that would have gone quiet rather than red if the format had drifted the other way.
+            rd = re.search(r'(?:feeds <b>[^<]*</b>|<b>no clear fall</b>)(?: \(faint\))?'
+                           r' &middot; ([\d.]+)%', blk)
             if hn and rd:
                 printed[int(hn.group(1))] = float(rd.group(1))
+            elif hn and 'class="gwrap"' in blk and 'GREEN' in blk:
+                # A green panel whose slope phrase did not parse. Either the green is legitimately
+                # unread (the honesty gate refused it, so no % prints at all) or this pattern has gone
+                # stale. Only the first is allowed to be silent.
+                assert 'no slope' in blk or '%' not in blk.split('class="gwrap"')[1][:400], (
+                    f"{slug} hole {hn.group(1)}: a green card prints a slope % that this test could not "
+                    f"parse, so it was skipped rather than checked. The footer format has drifted away "
+                    f"from the pattern above -- fix the pattern, do not let the check go quiet.")
         for mp in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
             with open(mp, encoding="utf-8") as fh:
                 meta = json.load(fh)
@@ -8692,7 +8770,7 @@ def test_render_refuses_a_green_that_falls_metres_inside_its_own_outline(gate_co
 
 
 @needs_corpus
-def test_re_running_the_surface_builder_cannot_blank_a_working_fallback():
+def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path):
     """fetch_dem_hd shares dem_hd/ with fetch_dem, and must not trade a working 1 m fill for a blank.
 
     The two stages write the same directory. fetch_dem_hd builds 0.4 m surfaces from LiDAR ground
@@ -8735,16 +8813,49 @@ def test_re_running_the_surface_builder_cannot_blank_a_working_fallback():
         f"drop means fetch_dem_hd replaced a fill -- with a GOOD 0.4 m surface that is an upgrade and "
         f"this floor should be lowered deliberately, but with a refused one it is a blanked green.")
 
-    # the escape hatch has to exist, or the guard becomes a wall
+    # The guard itself, by TRUTH TABLE. The two assertions here used to be greps over the module
+    # source -- 'os.environ.get("OVERWRITE")' and "is_seamless" -- and BOTH were satisfied from outside
+    # the guard: the first by the module-scope OVERWRITE read, the second by the word "is_seamless"
+    # inside an import COMMENT. Deleting the entire guard left this test green, which is the whole
+    # failure mode the artifact assertions above also share (they read files written days ago and never
+    # invoke the module). Now the decision is a predicate and the test exercises it.
+    import fetch_dem_hd
+    def keeps(rec, overwrite=False):
+        if rec is None:
+            return fetch_dem_hd.keeps_existing_surface(str(tmp_path / "absent.json"), overwrite)
+        mp = tmp_path / "prev.json"
+        mp.write_text(rec if isinstance(rec, str) else json.dumps(rec), encoding="utf-8")
+        return fetch_dem_hd.keeps_existing_surface(str(mp), overwrite)
+
+    LIDAR = {"source": "USGS 3DEP LiDAR ground returns @0.4m", "insufficient": False}
+    SEAMLESS = {"source": "USGS 3DEP 1 m seamless DEM", "insufficient": False}
+    cases = [
+        (LIDAR, False, True, "a good 0.4 m LiDAR surface -- the 192-green majority. The old guard "
+                             "tested is_seamless, so it protected ONLY the 6 seamless records and would "
+                             "have let a refused re-run blank any of the other 192."),
+        (SEAMLESS, False, True, "a working 1 m seamless fill -- the case the guard was written for"),
+        ({**LIDAR, "insufficient": True}, False, False,
+         "a record that was ALREADY a refusal is not worth keeping; rebuilding it is the repair"),
+        ({"insufficient": False}, False, False,
+         "no source field at all: unknown provenance, so leave it fillable rather than protect it on a "
+         "guess -- same rule as fetch_dem.keeps_existing_surface"),
+        ("{not json", False, False, "an unreadable file must be rebuilt, not protected"),
+        (None, False, False, "nothing on disk yet"),
+        (LIDAR, True, False, "OVERWRITE=1 must still be able to do it on purpose, or the guard is a "
+                             "wall rather than a safety net"),
+    ]
+    for rec, ow, want, why in cases:
+        got = keeps(rec, ow)
+        assert got is want, (
+            f"fetch_dem_hd.keeps_existing_surface returned {got}, expected {want}: {why}")
+
+    # and main() must actually consult it -- a correct predicate nobody calls protects nothing
     with open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8") as f:
         src = f.read()
-    assert 'os.environ.get("OVERWRITE")' in src, (
-        "fetch_dem_hd.py no longer READS the OVERWRITE environment variable. fetch_dem.py uses that "
-        "exact name for the mirror case, and a guard with no deliberate override is a wall rather than "
-        "a safety net. (Checked as the env read, not as the bare word: the word survives in comments.)")
-    assert "is_seamless" in src, (
-        "fetch_dem_hd.py no longer asks whether the surface it is about to replace came from the 1 m "
-        "DEM, so it can blank a working fallback again")
+    body = src.split("def main(", 1)[1]
+    assert "keeps_existing_surface(" in body, (
+        "fetch_dem_hd.main() no longer calls keeps_existing_surface, so a refused 0.4 m attempt can "
+        "overwrite a working surface again and blank the card")
 
 
 def test_one_normalised_spelling_of_build_mode_across_the_engine(tmp_path):

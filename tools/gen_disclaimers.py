@@ -25,6 +25,8 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import distribution  # noqa: E402  (path set above)
 OUT = os.path.join(ROOT, "legal", "05_DISCLAIMER_TEXT.md")
 
 # The rationale section is genuine legal reasoning, not extracted text, so it is authored here and
@@ -75,7 +77,7 @@ def _books(pattern):
     book(s): _ccrit_noloc, bay-view-golf-club, ...") and --check told you to regenerate, i.e. to
     falsify the document."""
     for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", pattern))):
-        if not os.path.basename(os.path.dirname(f)).startswith("_"):
+        if distribution.is_corpus_slug(os.path.basename(os.path.dirname(f))):
             yield f
 
 

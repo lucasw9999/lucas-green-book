@@ -162,6 +162,37 @@ def build_targets():
     geo.assert_one_green_per_hole(bound, label=config.SLUG)
     return targets
 
+def keeps_existing_surface(meta_path, overwrite=False):
+    """True when meta_path holds a READABLE surface that a refused 0.4 m attempt must not replace.
+
+    The mirror of fetch_dem.keeps_existing_surface, with the seamless case INVERTED -- that one protects
+    good 0.4 m LiDAR from the coarse 1 m fill, this one protects ANY readable record from a blank green.
+
+    The inline guard this replaced tested `fetch_dem.is_seamless(prev)`, so it protected only the 6
+    seamless records in a 198-green corpus -- 3%. The other 192 are LiDAR-sourced, and re-running this
+    stage on one whose density had slipped under DENSITY_MIN would overwrite a working read with
+    insufficient=True and blank the card. The tightest live case is the-reserve hole 9 at 4.7 pts/m2
+    against a floor of 4.0: a 15% loss of in-green ground returns flips it, and the old guard would not
+    have fired. The comment above the guard said "Only one direction was guarded"; it was true one level
+    further down than it looked.
+
+    A predicate rather than an inline branch so it can be tested by truth table. The test that was meant
+    to pin the old guard asserted only that the strings 'os.environ.get("OVERWRITE")' and "is_seamless"
+    appear in the module source -- both satisfied outside the guard, the second by the word inside an
+    import COMMENT -- so deleting the whole guard left it green.
+    """
+    if overwrite or not os.path.exists(meta_path):
+        return False
+    try:
+        with open(meta_path) as f:
+            prev = json.load(f)
+    except (OSError, ValueError):
+        return False                        # unreadable: rebuilding it is the repair
+    # Any positively-sourced record that is not itself a refusal. Deliberately NOT is_seamless: a
+    # seamless 1 m surface and a good 0.4 m one are both real reads, and both beat a blank green.
+    return bool(str((prev or {}).get("source", "")).strip()) and not prev.get("insufficient")
+
+
 def main():
     pt2utm, zscale = laz_to_utm()
     print(f"LiDAR -> {UTM} reproject; vertical scale to m =", zscale)
@@ -269,17 +300,11 @@ def main():
         #
         # A SUFFICIENT 0.4 m surface still replaces a seamless one -- that is the upgrade this stage
         # exists for, and only the refused case is a downgrade.
-        if insufficient and not OVERWRITE:
-            try:
-                with open(f"{OUT}/hole{hn:02d}.json") as _f:
-                    _prev = json.load(_f)
-            except (OSError, ValueError):
-                _prev = None
-            if _prev is not None and fetch_dem.is_seamless(_prev):
-                print(f"hole {hn:2d}: 0.4m refused (nan {nan_frac:.3f}, dens {dens}, unc "
-                      f"{uncovered:.3f}) -- KEEPING the existing 1 m seamless surface. "
-                      f"OVERWRITE=1 to replace it with a blank green.")
-                continue
+        if insufficient and keeps_existing_surface(f"{OUT}/hole{hn:02d}.json", OVERWRITE):
+            print(f"hole {hn:2d}: 0.4m refused (nan {nan_frac:.3f}, dens {dens}, unc "
+                  f"{uncovered:.3f}) -- KEEPING the existing surface. "
+                  f"OVERWRITE=1 to replace it with a blank green.")
+            continue
         np.save(f"{OUT}/hole{hn:02d}.npy",arr)
         meta=dict(hole=hn,approach_bearing=t['appr'],bbox=t['bbox'],W=t['W'],H=t['H'],
                   green_id=t['green']['id'],green_center=[t['clat'],t['clon']],

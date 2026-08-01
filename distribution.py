@@ -25,6 +25,43 @@ than slope that could be wrong -- and for Poppy Ridge the aerial also predates t
 
 
 YARDAGE = "yardage"
+# A directory under courses/ whose name starts with this is SCRATCH, not a course: a synthetic fixture
+# a test authored, a cold-build staging copy, a hand-made probe. Never a real green book.
+SCRATCH_PREFIX = "_"
+
+
+def is_corpus_slug(name):
+    """Is this directory name a real course, or somebody's scratch?
+
+    The rule already existed three times -- gen_provenance.py, gen_disclaimers.py and the test suite
+    each carried their own `startswith("_")` -- and tools/cross_flight_check.py, added later, carried
+    none. That is the tool whose output IS the evidence in legal/09_GREEN_SURFACE_REPEATABILITY.md, so
+    a leaked fixture directory would have been scanned, printed and counted as one of the surveyed
+    courses in a document about how trustworthy the surveys are.
+
+    gen_disclaimers.py's docstring records the same fault already happening once, with the receipt:
+    a throwaway directory became a named distributed green book in a legal record ("Variant A1 --
+    printed on 11 book(s): _ccrit_noloc, bay-view-golf-club, ...") and --check then told you to
+    regenerate, i.e. to falsify the document.
+
+    It is not hypothetical here either. The synth_engine fixture's teardown removed its directory
+    BEFORE restoring COURSE, so an os.rmdir that raised on a leftover file skipped the restore and left
+    courses/_synth_ticks behind -- which is how it was found. Both ends are fixed: the fixture cleans up
+    with rmtree after restoring, and a leak that does happen can no longer reach a published record.
+
+    One spelling, in the module that already answers "may this be published?", because "what counts as
+    a course" is the same class of question.
+    """
+    return bool(name) and not name.startswith(SCRATCH_PREFIX)
+
+
+def course_slugs(root="."):
+    """Every real course slug under root/courses, sorted. Scratch directories excluded."""
+    import glob
+    import os
+    return sorted(s for s in (os.path.basename(os.path.dirname(p))
+                              for p in glob.glob(os.path.join(root, "courses", "*", "course.json")))
+                  if is_corpus_slug(s))
 
 
 def build_mode(course):

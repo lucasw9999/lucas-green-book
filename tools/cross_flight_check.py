@@ -34,6 +34,7 @@ from pyproj import Transformer
 from scipy.interpolate import griddata
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import distribution                                      # noqa: E402  (path set above)
 from lidar_dates import course_tz, gps_to_utc            # noqa: E402  (same dir)
 
 # A pass that merely clips the edge of a green cannot be compared with one that covered it: its
@@ -170,7 +171,14 @@ def check(slug, verbose=True):
         with laspy.open(lp) as f:
             crs = f.header.parse_crs()
             if crs is None:
-                continue
+                # Same shape as the undated tile below, so the same answer. Silently dropping this tile
+                # from the comparison can collapse a green to a single pass, which the loop then skips
+                # as "not independently covered" -- and the run exits 0. fetch_dem_hd.laz_to_utm only
+                # hard-stops when NO tile has a CRS, so a MIXED course reaches here with some tiles
+                # readable, which is exactly when the silent drop is invisible.
+                print(f"    {os.path.basename(lp)}: no CRS in the header, so its points cannot be "
+                      f"placed and this course cannot be examined")
+                return REFUSED
             # Separating passes means DECODING each point's date, and that decode is only valid for
             # Adjusted Standard GPS time. lidar_dates.py checks this and refuses otherwise, with the
             # worked failure: GPS WEEK TIME carries no week number, so the old interpretation landed
@@ -268,9 +276,12 @@ def check(slug, verbose=True):
 
 
 def main():
-    slugs = ([os.path.basename(os.path.dirname(p)) for p in sorted(glob.glob("courses/*/course.json"))]
-             if "--all" in sys.argv else [os.environ.get("COURSE") or sys.exit(
-                 "set COURSE=<slug> or pass --all")])
+    # distribution.course_slugs, not a raw glob: a scratch directory under courses/ (a synthetic test
+    # fixture, a staging copy) would otherwise be scanned and counted here, and this tool's output is
+    # the evidence in legal/09_GREEN_SURFACE_REPEATABILITY.md -- a document about how trustworthy the
+    # surveys are must not name a course that was never surveyed.
+    slugs = (distribution.course_slugs() if "--all" in sys.argv
+             else [os.environ.get("COURSE") or sys.exit("set COURSE=<slug> or pass --all")])
     total, bad, skipped, flips, surfd, refused = 0, [], 0, 0, [], []
     for s in slugs:
         j = json.load(open(f"courses/{s}/course.json"))

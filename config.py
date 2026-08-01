@@ -41,7 +41,11 @@ if not os.path.exists(_CJ):
            f"    cp examples/course.json courses/my-course/course.json   # then edit every value\n"
            f"    COURSE=my-course python3 fetch_osm.py                   # see PIPELINE.md\n"))
 
-with open(_CJ) as f:
+# encoding="utf-8" on the READ side too: course.json holds hand-typed course names, and five in the
+# corpus carry an em-dash. They survive today only because they happen to be written as \u2014
+# escapes; a hand-typed one would come back mojibake under a non-utf-8 locale and generate.py's
+# _title_lines would stop splitting the cover title on it.
+with open(_CJ, encoding="utf-8") as f:
     COURSE = json.load(f)
 
 # ---- physical card + print layout (inches) -------------------------------
