@@ -174,9 +174,9 @@ def main():
         #
         # Deliberately NOT filtering `overlap`, which is a different thing: those are valid returns in
         # the strip where two flight lines meet, and USGS flags them only so derivative products CAN
-        # exclude them. Two courses here are 31% and 55% overlap by ground point, and dropping them
+        # exclude them. Two courses here are 31% and 47% overlap by ground point, and dropping them
         # would halve bay-view's density for no gain: gridded separately, the overlap points and the
-        # rest agree to RMS 1.16 cm over all 18 of its greens, with every printed tilt within 0.05
+        # rest agree to RMS 1.16 cm over all 18 of its greens, with every printed tilt within 0.07
         # percentage points -- below what the card resolves. Measured, see
         # legal/09_GREEN_SURFACE_REPEATABILITY.md.
         for _flag in ("withheld", "synthetic"):

@@ -2,8 +2,9 @@
 
 Measured 2026‑07‑31 with `tools/cross_flight_check.py --all`. Reproduce it with that command.
 
-Every green card prints a dominant tilt to one decimal (`2.7%`), a qualifier (`firm` / `subtle`), a
-feed direction, and 15 cm contours. The governing rule of this project is that it must never print a
+Every green card prints a dominant tilt to one decimal (`2.7%`), a qualifier (`firm` / `subtle`) and
+15 cm contours, and all but one name a feed direction — micke‑grove 2 is flat enough that the plane
+and the arrows disagree, so that card names none (see note 2). The governing rule of this project is that it must never print a
 number the data does not support — but until this measurement, **nothing recorded what the data
 supports.** The accuracy disclaimers were honest in intent and unevidenced in fact. This is the
 evidence.
@@ -37,7 +38,7 @@ instead of the ground.
 | feed direction | **3.9°** |
 | `firm` / `subtle` qualifier | never differed |
 
-The strongest single case is Philadelphia Country Club, whose two passes are **101 days apart**
+The strongest single case is Philadelphia Country Club, whose two passes are **100 days apart**
 (2024‑12‑17 and 2025‑03‑27) and straddle a phased course restoration — the exact circumstance in
 which a green *should* be caught changing. On the five greens both passes covered:
 
@@ -58,7 +59,7 @@ reports it as such rather than as a failure.
 
 ## The contour interval
 
-Every green card also asserts **"Contours join equal height (15 cm each)"**. That is a separate claim
+The guide card asserts, once per book, **"Contours join equal height (15 cm each)"**. That is a separate claim
 from the tilt, and it needed its own check: if two surveys of the same green disagree by anything near
 15 cm, then adjacent contour lines are inside the survey noise and the card is drawing detail it
 cannot support.
@@ -78,7 +79,7 @@ the card is — over all 33 greens and 87,589 cells inside the green cores:
 | worst single cell | 7.93 cm |
 
 The 15 cm contour interval is therefore about **18× the noise floor** of the surface it is drawn from.
-The claim holds with a wide margin. Averaging 13–28 ground returns per square metre and then smoothing
+The claim holds with a wide margin. Averaging roughly 10–28 ground returns per square metre and then smoothing
 over ~1.5 m beats single-pulse accuracy by a large factor, which is why the relative figure is an
 order of magnitude better than the absolute spec.
 
@@ -86,7 +87,7 @@ order of magnitude better than the absolute spec.
 
 The cross-flight check above splits the data by DATE. LAS also lets it be split by **swath**: every point
 in the strip where two flight lines meet carries an `overlap` flag, which USGS sets so derivative
-products *can* exclude those returns. Two courses here are heavily overlapped — bay-view at **55%** of
+products *can* exclude those returns. Two courses here are heavily overlapped — bay-view at **47%** of
 its ground points and the-reserve at **31%**.
 
 Nothing in this pipeline filters them, so it is worth knowing whether they degrade the surface. Gridding
@@ -97,7 +98,7 @@ bay-view's overlap points and its non-overlap points **separately**, over all 18
 | RMS difference | **1.16 cm** |
 | 95th percentile | 2.23 cm |
 | worst single cell | 3.60 cm |
-| printed tilt | agrees within **0.05 pp** on every hole (below the 0.1 pp the card resolves) |
+| printed tilt | agrees within **0.07 pp** on every hole (below the 0.1 pp the card resolves) |
 
 That is the same answer the date split gave (RMS 0.85 cm) from a completely different decomposition of
 the data — two independent flight lines of the same green, and two independent surveys months apart,
