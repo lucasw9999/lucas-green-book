@@ -2009,7 +2009,7 @@ def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_ca
     Violating it would print a distance interpolated along a route that is not the route the yardage
     describes -- wrong by up to the shortfall at the tick nearest the tee.
     """
-    checked, big, problems, seen = 0, 0, [], set()
+    checked, big, problems, seen, refused = 0, 0, [], set(), []
     for ref in CORPUS:
         if not os.path.exists(os.path.join(ROOT, "courses", ref, "osm_geom.json")):
             continue
@@ -2024,14 +2024,18 @@ def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_ca
             card, arc = info["card_yd"], info["arc_yd"]
             if not card:
                 continue
-            gap = abs(arc - card) / card * 100.0
-            if gap <= 5.0:
-                continue
-            big += 1
             vbw = float(re.search(r'viewBox="0 0 ([\d.]+) ', svg).group(1))
             printed = [txt for x, txt in re.findall(r'<text x="([\d.]+)"[^>]*>([^<]+)</text>', svg)
                        if float(x) >= vbw / 2 and txt.isdigit()]
+            gap = abs(arc - card) / card * 100.0
+            if gap <= 5.0:
+                if not printed:
+                    refused.append(f"{ref} h{hn}")
+                continue
+            big += 1
             exact = (info.get("fwd_tee") or info.get("past_tee") or info.get("par3_straight"))
+            if not printed:
+                refused.append(f"{ref} h{hn}")
             if printed and not exact:
                 problems.append(
                     f"{ref} hole {hn}: the drawn line is {arc} yd against a card of {card} "
@@ -2041,6 +2045,13 @@ def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_ca
     assert checked >= 150, f"only {checked} holes compared -- build the books first"
     assert big >= 5, (f"only {big} holes disagree with their card by >5%, where 24 are expected -- "
                       f"either the corpus shrank or the comparison is not measuring what it did")
+    # An empty gutter is correct where the line cuts a dogleg, but it is also what a REGRESSION looks
+    # like: loosen a guard and holes stop printing from-tee numbers silently. 2 of 198 refuse today,
+    # both castlewood-valley, both because their line is straight (arc/chord 1.000 and 1.038) against a
+    # card that measures the corner. Pin the count so the refusal cannot quietly spread.
+    assert len(refused) <= 4, (
+        f"{len(refused)} holes print no from-tee number, against 2 expected: {refused[:8]}. Either a "
+        f"guard has tightened or a course's centrelines have changed.")
     assert_no_course_skipped(seen, "test_a_from_tee_number_is_never_scaled_off_a_disagreeing_line")
     assert not problems, ("a printed from-tee distance rests on a line that contradicts the "
                           "scorecard:\n  " + "\n  ".join(problems[:8]))

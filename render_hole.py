@@ -125,6 +125,16 @@ def line_runs_from_a_forward_tee(arc_yd, back_yd, tee_yds, start_at_tee_m):
     41% of decoys (the same forward-tee columns of other holes of the same par), because holes of one
     par have similar yardages and the tolerance is wide. The tee-box test is the strong one.
 
+    Observed in the corpus, and the reason two cards carry no from-tee number at all:
+    castlewood-valley 10 and 18 start ON a tee box (0 m) yet run 497 and 385 yd against cards of 561 and
+    426. Their arc/chord is 1.000 and 1.038 -- the drawn lines are straight, or nearly so, while the
+    played route bends -- so OSM has cut the dogleg and the card measures the corner. Their lengths land
+    between published tees (497 sits between a 534 and a 460; 385 between a 352 and a 426), so the
+    yardage test refuses and the gutter stays empty. That is the right answer: the shortfall is spread
+    along the hole rather than sitting at the tee, so nothing here can say where it is.
+    Digitizing a TEE would not help -- the tee is already mapped and the line already starts on it. The
+    fix is a corrected CENTRELINE, ideally upstream in OSM.
+
     Residual failure mode, stated rather than hidden: a line that starts at the BACK tee but cuts the
     corner of a dogleg would also satisfy both tests if its length happened to land near a forward-tee
     figure. Then the missing length is spread along the hole, not at the tee, and the from-tee number
