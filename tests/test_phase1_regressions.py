@@ -8500,3 +8500,50 @@ def test_the_provenance_record_dates_the_geometry_not_just_the_lidar():
             f"book is a day fresher than its oldest geometry actually is.")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_surface_builder_drops_points_the_producer_disowns():
+    """LAS `withheld` and `synthetic` points must never reach a green surface.
+
+    Those bits are the producer's own verdict: withheld means "this measurement should not be used",
+    synthetic means "computed, not observed". A book that prints a slope read off them is printing a
+    number its own source disclaims. Nothing filtered them for the life of the project.
+
+    Every tile in the corpus carries ZERO of both, which is exactly why this needs a test rather than a
+    measurement -- there is no data to notice a regression with. Rebuilding bay-view with the filter
+    produced all 36 dem_hd files byte-identical, so it is a no-op today and a guard for the next course.
+
+    `overlap` is deliberately NOT filtered and that is asserted too, because it looks like the same kind
+    of flag and is not. Overlap points are valid returns where two flight lines meet; USGS flags them so
+    derivative products *can* drop them. Two courses here are 31% and 55% overlap by ground point, and
+    gridded separately the overlap points agree with the rest to RMS 1.16 cm over all 18 bay-view greens,
+    every printed tilt within 0.05 pp. Dropping them would halve that course's density for nothing.
+    """
+    with open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8") as f:
+        src = f.read()
+    body = src.split("def main(", 1)[-1] if "def main(" in src else src
+
+    for flag in ("withheld", "synthetic"):
+        assert flag in body, (
+            f"fetch_dem_hd.py no longer mentions the LAS `{flag}` bit, so points the producer disowns "
+            f"can reach a green surface the book prints a slope read off")
+    # it must actually narrow the ground mask, not merely name the flags
+    assert re.search(r"g\s*=\s*g\s*&\s*~\s*bad", body), (
+        "the withheld/synthetic flags are read but the ground mask is not narrowed by them -- computing "
+        "a filter and discarding it is worse than not having one, because the comment claims it works")
+    assert "cls==2" in body.replace(" ", ""), "the ground-class selection itself is gone"
+
+    # And overlap must stay OUT of the drop list. Aimed at the flag tuple itself: a first version of
+    # this checked for an `overlap` filtering IDIOM, and adding "overlap" to the existing tuple sailed
+    # straight past it -- the third time in this suite a pattern-shaped assertion missed the real edit.
+    droploop = re.search(r"for _flag in \(([^)]*)\)", body)
+    assert droploop, "the withheld/synthetic drop loop is gone"
+    assert "overlap" not in droploop.group(1), (
+        "fetch_dem_hd.py now filters `overlap`. Those are valid returns where two flight lines meet, not "
+        "rejected ones: bay-view is 55% overlap by ground point and its overlap-only surface agrees with "
+        "the rest to RMS 1.16 cm, every tilt within 0.05 pp. Filtering halves the density and buys "
+        "nothing -- see legal/09_GREEN_SURFACE_REPEATABILITY.md before changing this.")
+
+    # the reasoning has to travel with the code, or the next reader re-litigates it from scratch
+    assert "overlap" in src and re.search(r"NOT filtering|not filtering", src), (
+        "the note explaining why `overlap` is kept is gone; without it the flag reads like an oversight")

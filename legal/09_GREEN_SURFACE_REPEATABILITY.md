@@ -82,6 +82,34 @@ The claim holds with a wide margin. Averaging 13–28 ground returns per square 
 over ~1.5 m beats single-pulse accuracy by a large factor, which is why the relative figure is an
 order of magnitude better than the absolute spec.
 
+## A second, independent line of evidence: flight-line overlap
+
+The cross-flight check above splits the data by DATE. LAS also lets it be split by **swath**: every point
+in the strip where two flight lines meet carries an `overlap` flag, which USGS sets so derivative
+products *can* exclude those returns. Two courses here are heavily overlapped — bay-view at **55%** of
+its ground points and the-reserve at **31%**.
+
+Nothing in this pipeline filters them, so it is worth knowing whether they degrade the surface. Gridding
+bay-view's overlap points and its non-overlap points **separately**, over all 18 greens:
+
+| | |
+|---|---|
+| RMS difference | **1.16 cm** |
+| 95th percentile | 2.23 cm |
+| worst single cell | 3.60 cm |
+| printed tilt | agrees within **0.05 pp** on every hole (below the 0.1 pp the card resolves) |
+
+That is the same answer the date split gave (RMS 0.85 cm) from a completely different decomposition of
+the data — two independent flight lines of the same green, and two independent surveys months apart,
+agree to about a centimetre either way. So the overlap points stay: dropping them would halve bay-view's
+ground density in exchange for nothing measurable.
+
+`withheld` and `synthetic` are a different matter and are now filtered out in `fetch_dem_hd.py`. Those
+bits mark points the producer disowns — measurements it says not to use, and points computed rather than
+observed — and neither belongs under a printed slope read. Every tile in the corpus carries **zero** of
+both, so the filter changes no shipped surface: rebuilding bay-view with it produced all 36 files
+byte-identical. It is there for the next course's tiles.
+
 ## What this does and does not establish
 
 **Does:** the printed read is *reproducible*. Re-fly the course and the card comes out the same. The

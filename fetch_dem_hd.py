@@ -164,6 +164,28 @@ def main():
         las=laspy.read(tf)
         cls=np.asarray(las.classification)
         g=cls==2
+        # Drop points the PRODUCER disowns. LAS carries a `withheld` bit for measurements the vendor
+        # marked as not to be used and a `synthetic` bit for points that were computed rather than
+        # measured; neither belongs in a surface this book prints a slope read off. Every tile in the
+        # corpus today has ZERO of both, so this changes no shipped surface -- it is here so the next
+        # course's tiles cannot quietly contribute rejected points to a green.
+        #
+        # Deliberately NOT filtering `overlap`, which is a different thing: those are valid returns in
+        # the strip where two flight lines meet, and USGS flags them only so derivative products CAN
+        # exclude them. Two courses here are 31% and 55% overlap by ground point, and dropping them
+        # would halve bay-view's density for no gain: gridded separately, the overlap points and the
+        # rest agree to RMS 1.16 cm over all 18 of its greens, with every printed tilt within 0.05
+        # percentage points -- below what the card resolves. Measured, see
+        # legal/09_GREEN_SURFACE_REPEATABILITY.md.
+        for _flag in ("withheld", "synthetic"):
+            try:
+                bad = np.asarray(getattr(las, _flag)).astype(bool)
+            except Exception:
+                continue                    # older point format without the bit
+            if bad.any():
+                print(f"  {os.path.basename(tf)}: dropping {int((g & bad).sum())} ground point(s) "
+                      f"flagged {_flag}")
+                g = g & ~bad
         # reproject ground points to the course UTM zone (metres); scale Z to metres
         x,y = pt2utm.transform(np.asarray(las.x)[g], np.asarray(las.y)[g])
         z = np.asarray(las.z)[g]*zscale
