@@ -5915,10 +5915,27 @@ def test_the_density_and_coverage_gate_measures_the_green_itself():
     assert abs(got - side_m * side_m) / (side_m * side_m) < 0.02, \
         f"a {side_m}x{side_m} m ring should measure ~{side_m**2} m2, got {got:.1f}"
 
-    # the gate must consider coverage, not only hull membership
+    # THE VERDICT, BY TRUTH TABLE. This reached the coverage half only by grepping the source for
+    # "uncovered > UNCOVERED_MAX" -- so a gate that stopped refusing would have gone unnoticed, and in a
+    # file whose comments quote that very expression the grep was one edit from being satisfied by
+    # prose. Coverage is the gate that matters most here: nan_frac cannot see an INTERIOR void, because
+    # standing water absorbs 1064 nm and the interpolation spans the hole and counts it as measured. A
+    # demo deleting the returns in a 6 m circle at each green centre reported nan_frac 0.0000 while
+    # changing 7 of 18 printed reads.
+    for (nf, dens, unc), want, why in (
+            ((0.0, 10.0, 0.0), False, "a well-measured green must be read"),
+            ((fdh.NAN_FRAC_MAX + 0.01, 10.0, 0.0), True, "extrapolated past the hull gate"),
+            ((0.0, fdh.DENSITY_MIN - 0.1, 0.0), True, "too few returns per m2 inside the ring"),
+            ((0.0, 10.0, fdh.UNCOVERED_MAX + 0.01), True,
+             "an INTERIOR void -- the case nan_frac and density both miss"),
+            ((0.0, fdh.DENSITY_MIN, fdh.UNCOVERED_MAX), False,
+             "exactly at both floors must still be read, or the gate refuses what it accepts")):
+        assert fdh.is_insufficient(nf, dens, unc) is want, (
+            f"fetch_dem_hd.is_insufficient({nf}, {dens}, {unc}) returned "
+            f"{fdh.is_insufficient(nf, dens, unc)}, expected {want}: {why}")
     src = open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8").read()
-    assert "UNCOVERED_MAX" in src and "uncovered > UNCOVERED_MAX" in src, \
-        "the insufficient verdict must include the coverage test, not just nan_frac and density"
+    assert "is_insufficient" in _code_only(src.split("def is_insufficient", 1)[1]), (
+        "fetch_dem_hd defines the gate but main() never calls it, so nothing is refused")
     # after the import, so removing the query while keeping `from scipy.spatial import cKDTree`
     # cannot satisfy this -- the same import-vs-use hole that let a proxy string stand in for the
     # scorecard's nine-hole branch elsewhere in this file

@@ -40,6 +40,24 @@ COVER_R_M = 1.0                             # a green node is "measured" if a gr
                                             # within this radius of it
 UNCOVERED_MAX = 0.02                        # max share of the green interior with no return nearby
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
+
+
+def is_insufficient(nan_frac, dens, uncovered):
+    """True when a green surface was not really MEASURED, so the book must print no read for it.
+
+    The three gates together: extrapolation beyond the point cloud's hull (nan_frac), in-green density,
+    and near-node coverage. Coverage exists because nan_frac cannot see an INTERIOR void -- standing
+    water absorbs 1064 nm, so a hole in the middle of a green is spanned by the interpolation and
+    counted as measured. A demo deleting the returns in a 6 m circle at each green centre still
+    reported nan_frac 0.0000 while changing 7 of 18 printed reads.
+
+    Extracted so the TEST can call it. This was an inline boolean in main(), and its test reached the
+    coverage half only by grepping the source for the constant -- so a gate that stopped refusing would
+    have gone unnoticed. Same reason fetch_dem.is_flat_fill and keeps_existing_surface are predicates:
+    a predicate can be exercised by truth table, an inline boolean inside main() cannot.
+    """
+    return bool(nan_frac > NAN_FRAC_MAX or dens < DENSITY_MIN or uncovered > UNCOVERED_MAX)
+
 # NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19).
 # No default: falling back to -121.0 silently selected California zone 10, so a Pennsylvania course
 # (zone 18) would have every green surface projected through the wrong zone with nothing to say so.
@@ -283,8 +301,7 @@ def main():
         n_pts_in=int(_in_polygon(px,py,t['green']['geometry']).sum())
         dens=round(n_pts_in/g_area,1) if g_area>0 else 0.0
         # A green is only trustworthy if the surface was actually measured under it.
-        insufficient = bool(nan_frac > NAN_FRAC_MAX or dens < DENSITY_MIN
-                            or uncovered > UNCOVERED_MAX)
+        insufficient = is_insufficient(nan_frac, dens, uncovered)
         # Do not trade a WORKING 1 m fallback for a refused 0.4 m attempt. This stage shares dem_hd/
         # with fetch_dem.py, which fills the greens this one gives up on, and re-running this stage
         # alone -- an ordinary thing to do after changing the point filter -- overwrote that fill with
