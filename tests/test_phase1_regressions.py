@@ -1177,7 +1177,24 @@ def test_the_contour_interval_is_the_one_the_legend_states():
     import numpy as np
     cfg, _rh = _engine(a_course())
     import render_green
-    stated_cm = 15
+    # READ THE LEGEND, do not hardcode what it says. `stated_cm = 15` made this a comparison between
+    # render_green.CINT_M and a literal in the test -- so a legend that said "20 cm each" over contours
+    # drawn at 15 passed, which is precisely the disagreement this test is named for. Proven by mutation.
+    # Parsed from every built book so both editions are covered and a divergence between them fails too.
+    stated = set()
+    for name in ("greenbook.html", "greenbook_coach.html"):
+        for slug in CORPUS:
+            fp = os.path.join(ROOT, "courses", slug, name)
+            if not os.path.isfile(fp):
+                continue
+            with open(fp, encoding="utf-8") as fh:
+                book = fh.read()
+            for m in re.finditer(r"join equal height[^0-9]{0,12}(\d+)&nbsp;cm", book):
+                stated.add(int(m.group(1)))
+    assert stated, ("no book states a contour interval, so this test would pass vacuously -- the legend "
+                    "wording changed and this pattern no longer finds it")
+    assert len(stated) == 1, f"the books disagree about the contour interval: {sorted(stated)} cm"
+    stated_cm = stated.pop()
     assert abs(render_green.CINT_M * 100 - stated_cm) < 0.01, (
         f"render_green.CINT_M is {render_green.CINT_M} m, so the legend's '{stated_cm} cm each' is "
         f"wrong on every card in every book")
@@ -3735,7 +3752,10 @@ def test_both_editions_share_one_playline_definition():
     for fn_name in ("main", "build_coach"):
         src = inspect.getsource(getattr(generate, fn_name))
         assert "is_upright_back(" in src, f"{fn_name} no longer uses the shared upright-back rule"
-        assert "len(cards)-1" not in src.replace(" ", "") or "is_upright_back(" in src, (
+        # The right disjunct was already asserted on the line above, so `A or B` was `A or True`.
+        # What this means to say is that the last-card test is not RE-INLINED here: the helper is
+        # called and the raw index comparison is absent. Both, not either.
+        assert "len(cards)-1" not in _code_only(src).replace(" ", ""), (
             f"{fn_name} tests the last-card condition itself again")
 
 
@@ -8280,7 +8300,9 @@ def test_the_tree_finder_does_not_filter_on_a_vegetation_class():
         src = f.read()
 
     body = src.split('"""', 2)[-1]        # skip the module docstring
-    assert "cls==5" not in body.replace(" ", "") or "cls!=5" in body.replace(" ", ""), (
+    # `A or B` where B is a near-guarantee. On tokenised code -- so a comment mentioning the class
+    # cannot satisfy it -- the candidate mask must simply not select on class 5 at all.
+    assert "cls==5" not in _code_only(body).replace(" ", ""), (
         "fetch_trees.py now selects candidates by classification 5. Ten of eleven courses have no "
         "class-5 points, so this empties the tree layer while the hole-map legend still promises "
         "trees. The filter must stay height-above-ground.")
@@ -8293,7 +8315,11 @@ def test_the_tree_finder_does_not_filter_on_a_vegetation_class():
 
     # and the docstring must not go back to claiming a vegetation class it does not use
     doc = src.split('"""')[1]
-    assert "class 5" not in doc or "NOT" in doc, (
+    # This was `A or B` with B permanently true: fetch_trees' docstring already contains the word
+    # "NOT". Require instead that any mention of class 5 in the docstring is a mention of NOT using
+    # it -- checked in the same sentence, not anywhere in the file.
+    _sent = [t for t in re.split(r"(?<=[.;])\s+", doc) if "class 5" in t or "class-5" in t]
+    assert all(("not" in t.lower() or "no " in t.lower()) for t in _sent), (
         "fetch_trees.py's docstring claims a class-5 vegetation filter again; the code uses height "
         "above ground, and the two disagreeing is what sent this looking in the first place")
 
