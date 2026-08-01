@@ -25,6 +25,12 @@ DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 RES = 0.4                                   # target metres/pixel
 OVERWRITE = bool(os.environ.get("OVERWRITE"))   # replace a working 1 m fallback with a blank green
+# Point flags the PRODUCER disowns: "do not use this measurement", and "computed, not observed".
+# Named at module scope so a test can assert the SET rather than grep main() for the words -- the
+# first version of that test searched main()'s text, where both words also appear in the comment
+# explaining them, so swapping the tuple for ("key_point",) passed every assertion while dropping
+# key points and keeping withheld ones. NOT "overlap": see the note at the filter.
+DISOWNED_FLAGS = ("withheld", "synthetic")
 MARGIN_M = 12.0
 R_LAT = 111320.0
 # Trust thresholds for a green surface. Above/below these the surface was not really measured,
@@ -179,7 +185,7 @@ def main():
         # rest agree to RMS 1.16 cm over all 18 of its greens, with every printed tilt within 0.07
         # percentage points -- below what the card resolves. Measured, see
         # legal/09_GREEN_SURFACE_REPEATABILITY.md.
-        for _flag in ("withheld", "synthetic"):
+        for _flag in DISOWNED_FLAGS:
             try:
                 bad = np.asarray(getattr(las, _flag)).astype(bool)
             except Exception:

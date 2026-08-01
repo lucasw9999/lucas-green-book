@@ -8522,45 +8522,54 @@ def test_the_surface_builder_drops_points_the_producer_disowns():
 
     Those bits are the producer's own verdict: withheld means "this measurement should not be used",
     synthetic means "computed, not observed". A book that prints a slope read off them is printing a
-    number its own source disclaims. Nothing filtered them for the life of the project.
+    number its own source disclaims. Every tile in the corpus carries ZERO of both, which is why this
+    needs a test rather than a measurement -- there is no data to notice a regression with.
 
-    Every tile in the corpus carries ZERO of both, which is exactly why this needs a test rather than a
-    measurement -- there is no data to notice a regression with. Rebuilding bay-view with the filter
-    produced all 36 dem_hd files byte-identical, so it is a no-op today and a guard for the next course.
+    Asserted as the SET of flags, read out of the source. The first version of this test searched main()
+    for their NAMES, and that was vacuous: main() contains a prose comment explaining both flags, so
+    replacing the tuple with ("key_point",) satisfied every assertion -- "withheld" in body, "synthetic"
+    in body, the `g = g & ~bad` narrowing, and the "overlap" negative -- while the code dropped KEY
+    POINTS and kept the withheld ones. A one-line edit to the very line the test guards, passing all of
+    its assertions, corrupting the ground mask every printed slope, tilt and contour is measured from.
+    The flag set was lifted to module scope so this test can read it instead of grepping for it.
 
-    `overlap` is deliberately NOT filtered and that is asserted too, because it looks like the same kind
-    of flag and is not. Overlap points are valid returns where two flight lines meet; USGS flags them so
-    derivative products *can* drop them. Two courses here are 31% and 55% overlap by ground point, and
-    gridded separately the overlap points agree with the rest to RMS 1.16 cm over all 18 bay-view greens,
-    every printed tilt within 0.05 pp. Dropping them would halve that course's density for nothing.
+    `overlap` must stay OUT, asserted too, because it looks like the same kind of flag and is not.
+    Overlap points are valid returns where two flight lines meet; USGS flags them so derivative products
+    *can* drop them. Two courses here are 31% and 47% overlap by ground point, and gridded separately the
+    overlap points agree with the rest to RMS 1.16 cm over all 18 bay-view greens, every printed tilt
+    within 0.07 pp. Dropping them would halve that course's density for nothing.
     """
     with open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8") as f:
         src = f.read()
-    body = src.split("def main(", 1)[-1] if "def main(" in src else src
 
-    for flag in ("withheld", "synthetic"):
-        assert flag in body, (
-            f"fetch_dem_hd.py no longer mentions the LAS `{flag}` bit, so points the producer disowns "
-            f"can reach a green surface the book prints a slope read off")
-    # it must actually narrow the ground mask, not merely name the flags
-    assert re.search(r"g\s*=\s*g\s*&\s*~\s*bad", body), (
-        "the withheld/synthetic flags are read but the ground mask is not narrowed by them -- computing "
-        "a filter and discarding it is worse than not having one, because the comment claims it works")
-    assert "cls==2" in body.replace(" ", ""), "the ground-class selection itself is gone"
-
-    # And overlap must stay OUT of the drop list. Aimed at the flag tuple itself: a first version of
-    # this checked for an `overlap` filtering IDIOM, and adding "overlap" to the existing tuple sailed
-    # straight past it -- the third time in this suite a pattern-shaped assertion missed the real edit.
-    droploop = re.search(r"for _flag in \(([^)]*)\)", body)
-    assert droploop, "the withheld/synthetic drop loop is gone"
-    assert "overlap" not in droploop.group(1), (
-        "fetch_dem_hd.py now filters `overlap`. Those are valid returns where two flight lines meet, not "
-        "rejected ones: bay-view is 55% overlap by ground point and its overlap-only surface agrees with "
-        "the rest to RMS 1.16 cm, every tilt within 0.05 pp. Filtering halves the density and buys "
+    ns = {}
+    for line in src.splitlines():
+        if line.startswith("DISOWNED_FLAGS"):
+            exec(line, ns)                  # noqa: S102 -- a literal tuple from this repo's own source
+            break
+    flags = ns.get("DISOWNED_FLAGS")
+    assert flags is not None, (
+        "fetch_dem_hd.py no longer defines DISOWNED_FLAGS at module scope. It was lifted there so this "
+        "test could assert the SET; searching main() for the words is vacuous, because the comment that "
+        "explains them contains them.")
+    assert set(flags) == {"withheld", "synthetic"}, (
+        f"the disowned-point flag set is {sorted(flags)}, expected ['synthetic', 'withheld']. Points the "
+        f"producer marks unusable would reach a green the book prints a slope read off.")
+    assert "overlap" not in flags, (
+        "fetch_dem_hd.py now drops `overlap`. Those are valid returns where two flight lines meet, not "
+        "rejected ones: bay-view is 47% overlap by ground point and its overlap-only surface agrees with "
+        "the rest to RMS 1.16 cm, every tilt within 0.07 pp. Filtering halves the density and buys "
         "nothing -- see legal/09_GREEN_SURFACE_REPEATABILITY.md before changing this.")
 
-    # the reasoning has to travel with the code, or the next reader re-litigates it from scratch
-    assert "overlap" in src and re.search(r"NOT filtering|not filtering", src), (
+    # and the set must actually narrow the ground mask, not merely exist
+    body = src.split("def main(", 1)[-1]
+    assert "DISOWNED_FLAGS" in body, (
+        "main() no longer consults DISOWNED_FLAGS -- the set is defined and unused, which is worse than "
+        "absent, because the comment beside it claims it works")
+    assert re.search(r"g\s*=\s*g\s*&\s*~\s*bad", body), (
+        "the flags are read but the ground mask is not narrowed by them")
+    assert "cls==2" in body.replace(" ", ""), "the ground-class selection itself is gone"
+    assert re.search(r"NOT filtering|not filtering", src), (
         "the note explaining why `overlap` is kept is gone; without it the flag reads like an oversight")
 
 
@@ -8834,3 +8843,129 @@ def test_the_card_only_claims_an_official_scorecard_where_one_is_recorded():
         f"every book now makes the SAME claim ({off_n} official, {pub_n} published), so this test cannot "
         f"tell the two apart any more. The corpus had 4 and 7; if that really changed, re-measure.")
     assert not problems, "the tees card overstates where its yardages came from:\n  " + "\n  ".join(problems)
+
+
+@needs_corpus
+def test_the_naip_credit_lands_on_the_course_that_actually_used_it():
+    """The USDA NAIP credit was printed on the wrong course, and withheld from the right one.
+
+    Two different uses, decided from two different kinds of evidence:
+      * TRACING geometry from NAIP is checkable against the artifact -- the traced feature carries a
+        `_digitized` tag naming NAIP.
+      * Using NAIP as a site REFERENCE leaves nothing in the geometry, so it can only come from the
+        record, under sources.aerial.
+
+    Gating the whole thing on "does the word naip appear anywhere in sources" inverted it. valley-hi's
+    sources.geometry still said it digitized hole 16's green from NAIP -- true once, until check_osm_bbox
+    found its OSM bbox ~46 m short at that hole, a widened box recovered the REAL green 1.3 m away (33
+    vertices against the tracing's 17), and the tracing was dropped. Zero `_digitized` features remain, so
+    the book credited NAIP for geometry it no longer contains. Meanwhile bay-view, holding the corpus's
+    only two NAIP-traced greens (ways 900000005 and 900000007), credited nothing, because its
+    sources.geometry says only "OpenStreetMap contributors (ODbL)".
+
+    NAIP is public domain, so no notice is legally owed either way. What is owed is that a book which
+    enumerates its sources enumerates the right ones -- and a credit on a course that did not use it is
+    the same class of error as a missing one.
+    """
+    checked, problems, printed, seen = 0, [], [], set()
+    for ref in BOOKS:
+        cp = os.path.join(ROOT, "courses", ref, "course.json")
+        bp = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not (os.path.exists(cp) and os.path.exists(bp)):
+            continue
+        seen.add(ref)
+        checked += 1
+        with open(cp, encoding="utf-8") as f:
+            j = json.load(f)
+        traced = False
+        for fn in ("osm_geom.json", "osm_course.json"):
+            fp = os.path.join(ROOT, "courses", ref, fn)
+            if not os.path.isfile(fp):
+                continue
+            with open(fp, encoding="utf-8") as f:
+                for e in (json.load(f).get("elements") or []):
+                    if "naip" in str((e.get("tags") or {}).get("_digitized", "")).lower():
+                        traced = True
+                        break
+            if traced:
+                break
+        referenced = "naip" in str((j.get("sources") or {}).get("aerial") or "").lower()
+        with open(bp, encoding="utf-8") as f:
+            credits = "USDA NAIP" in f.read()
+        if credits:
+            printed.append(ref)
+        want = traced or referenced
+        if credits and not want:
+            problems.append(
+                f"{ref}: credits USDA NAIP but has no NAIP-traced geometry (`_digitized`) and no NAIP "
+                f"under sources.aerial. The book is enumerating a source it did not use.")
+        if want and not credits:
+            problems.append(
+                f"{ref}: {'traced geometry from NAIP' if traced else 'records NAIP under sources.aerial'} "
+                f"and credits it nowhere. A book that lists its sources should list all of them.")
+    assert checked >= 10, f"only {checked} books checked"
+    assert_no_course_skipped(seen, "test_the_naip_credit_lands_on_the_course_that_actually_used_it")
+    assert printed, (
+        "no book credits USDA NAIP at all. bay-view holds two NAIP-traced greens, so if that is gone the "
+        "geometry changed and this test now proves nothing -- re-measure rather than lowering the bar.")
+    assert not problems, "the NAIP credit is on the wrong course:\n  " + "\n  ".join(problems)
+
+
+@needs_corpus
+def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
+    """A carry is measured FROM THE BACK TEE. Where the tee's position is unknown, print nothing.
+
+    Every carry distance is measured along the drawn line from where the line starts, plus tee_shift_yd
+    -- and that shift only exists when tee_ok, fwd_tee or past_tee has established where the back tee is.
+    Two holes printed carries with no such evidence:
+
+      * castlewood-valley 10 printed "carry 139 / 277" while its from-tee gutter is BLANK on all five
+        rows, precisely because the code cannot say where the line's 64 yd shortfall lives. The carries
+        asserted the line's start IS the Black tee -- the assumption the empty gutter refuses to make.
+        The mapped Black tee is 51-66 yd further back, so 139 understated by that much and 277 is
+        328-341 yd from the real tee, past CARRY_MAX_YD: a second-shot bunker printed as a driving
+        carry on a 561 yd par 5.
+      * merion 3 printed gutters from a 250 yd origin (par3_exact, asserted from the card) and
+        "carry 170" from a 215 yd one -- two origins 35 yd apart on one card.
+
+    par3_straight is deliberately NOT an origin-establishing condition, and that is the substance of this
+    test rather than an implementation detail. Propagating its card-derived origin to the carries is the
+    obvious fix and it is the wrong one: on merion 3 it would print 205 for sand the mapped geometry puts
+    at 184, trading a 14 yd understatement for a 21 yd OVERSTATEMENT. Too long is the dangerous direction
+    -- it tells a player they have room they do not have.
+
+    Asserted over the whole corpus so the rule cannot be satisfied by special-casing two holes, and in
+    both directions: a hole WITH a corroborated origin must keep printing its carries, or a fix that
+    silenced the footer everywhere would pass.
+    """
+    with_origin, without, seen = 0, [], set()
+    for slug in geometry_courses():
+        os.environ["COURSE"] = slug
+        os.environ["QUIET_TEE_CHECK"] = "1"
+        for m in ("config", "geo", "render_hole"):
+            sys.modules.pop(m, None)
+        import config
+        import render_hole
+        seen.add(slug)
+        for h in sorted(config.HOLES, key=lambda x: int(x)):
+            _svg, i = render_hole.render_hole(int(h), config.HOLES)
+            known = bool(i["line_spans"] or i["fwd_tee"] or i["past_tee"])
+            assert i["carry_origin_known"] == known, (
+                f"{slug} hole {h}: carry_origin_known={i['carry_origin_known']} but line_spans/fwd_tee/"
+                f"past_tee say {known} -- the exported flag has drifted from the condition")
+            if i.get("carries"):
+                if known:
+                    with_origin += 1
+                else:
+                    without.append((slug, int(h), i["carries"], i["par3_straight"]))
+    assert_no_course_skipped(seen, "test_a_printed_carry_has_an_origin_the_geometry_corroborates")
+    assert not without, (
+        "hole(s) print a carry measured from an origin nothing corroborates:\n  "
+        + "\n  ".join(f"{s} hole {h}: {c} (par3_exact={p3}) -- if par3_exact is the only reason this "
+                      f"hole has a gutter, its origin comes from the card alone and the mapped tees may "
+                      f"contradict it; refuse the carry rather than print it long"
+                      for s, h, c, p3 in without))
+    assert with_origin >= 80, (
+        f"only {with_origin} holes print a carry with a corroborated origin; the corpus has 90. A rule "
+        f"that silenced the footer broadly would satisfy the check above, so this floor is the other "
+        f"half of it.")

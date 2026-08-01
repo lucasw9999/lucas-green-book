@@ -410,9 +410,42 @@ def _naip_line():
     should list all of them.
 
     Deliberately worded to cover both uses without overstating either -- "traced a green outline"
-    would be false for poppy-ridge, whose greens are blank; per-course detail is in legal/03."""
-    blob = str(config.COURSE.get("sources", {})).lower()
-    if "naip" not in blob:
+    would be false for poppy-ridge, whose greens are blank; per-course detail is in legal/03.
+
+    The two uses are decided from DIFFERENT evidence, because they are different claims and one of them
+    went stale. Tracing geometry is checkable against the artifact: a NAIP-traced feature carries a
+    `_digitized` tag naming NAIP. Using NAIP as a site reference is not in the geometry at all, so it
+    can only come from the record, and sources.aerial is where it is recorded.
+
+    Gating the whole thing on "does the word naip appear anywhere in sources" got the credit onto
+    exactly the wrong course. valley-hi's sources.geometry still says it digitized hole 16's green from
+    NAIP; that was true once, and then check_osm_bbox found its OSM bbox was ~46 m short at hole 16, a
+    widened box recovered the REAL green 1.3 m away (33 vertices against the tracing's 17), and the
+    tracing was dropped. Zero `_digitized` features remain there -- so the book credited NAIP for
+    geometry it no longer contains. Meanwhile bay-view, which holds the corpus's only two NAIP-traced
+    greens (ways 900000005 and 900000007), credited nothing at all, because its sources.geometry says
+    only "OpenStreetMap contributors (ODbL)".
+
+    Derived from the artifact, the prose cannot drift away from the book again.
+    """
+    traced = False
+    for fn in ("osm_geom.json", "osm_course.json"):
+        fp = os.path.join(config.COURSE_DIR, fn)
+        if not os.path.isfile(fp):
+            continue
+        try:
+            with open(fp, encoding="utf-8") as fh:
+                els = json.load(fh).get("elements") or []
+        except (OSError, ValueError):
+            continue
+        for e in els:
+            if "naip" in str((e.get("tags") or {}).get("_digitized", "")).lower():
+                traced = True
+                break
+        if traced:
+            break
+    referenced = "naip" in str((config.COURSE.get("sources") or {}).get("aerial") or "").lower()
+    if not (traced or referenced):
         return ""
     return (' <b>USDA NAIP</b> aerial imagery (a U.S. Government work, public domain) was used as a '
             'mapping reference for this course.')

@@ -609,6 +609,36 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         else:
             merged.append([a, b])
     carries = [(round(a), round(b)) for a, b in merged][:3]
+    # A CARRY NEEDS AN ORIGIN THE GEOMETRY CORROBORATES. Every distance above is measured along the line
+    # from where the line STARTS, shifted by tee_shift_yd. That shift only exists when tee_ok, fwd_tee or
+    # past_tee established where the back tee is. Two holes printed carries with no such evidence:
+    #
+    #  * castlewood-valley 10 -- the from-tee gutter is BLANK on all five rows precisely because the code
+    #    cannot say where the line's 64 yd shortfall lives. The carries were printed anyway, from the
+    #    line's start, which asserts that start is the Black tee -- the very assumption the empty gutter
+    #    refuses to make. The mapped Black tee is 51-66 yd further back, so "carry 139" understated by
+    #    ~51-64 yd, and "carry 277" is 328-341 yd from the real tee, past CARRY_MAX_YD: a second-shot
+    #    bunker printed as a driving carry on a 561 yd par 5. A shift cannot rescue it -- the shortfall is
+    #    a cut dogleg spread along the hole, not a gap at the tee.
+    #
+    #  * merion 3 -- par3_exact supplies the gutter by asserting the tee sits `card` (250 yd) from the
+    #    green centre, but that assertion has no geometric backing: the furthest vertex of ANY mapped tee
+    #    polygon is 229.4 yd out, and tee_shift_yd stays 0, so the card printed gutters from a 250 yd
+    #    origin and "carry 170" from a 215 yd one -- two origins 35 yd apart on one card.
+    #
+    # par3_straight is deliberately NOT in this list, and that is the whole decision. Propagating its
+    # card-derived origin to the carries was the obvious fix and it is the wrong one: on merion 3 it would
+    # print 205 for sand the mapped geometry puts at 184, trading a 14 yd understatement for a 21 yd
+    # OVERSTATEMENT. Too long is the dangerous direction -- it tells a player they have room they do not
+    # have -- which is what test_a_printed_carry_never_overstates_what_it_clears exists to forbid. On the
+    # seven other par-3-exact holes the shift IS corroborated by a mapped tee box, but they all satisfy
+    # tee_ok as well, so they keep their numbers either way.
+    #
+    # Refusing is the only move that adds no wrong number: it drops 3 figures across 2 of 198 holes and
+    # changes nothing else. The map still draws the sand, and the footer still counts it as "NB".
+    origin_known = bool(tee_ok or fwd_tee or past_tee)
+    if not origin_known:
+        carries = []
 
     # `:g` on a rounded value, not `:.1f`: an un-widened box must print as the bare "100" it always
     # did, or all 12 pocket books change bytes for a purely cosmetic reason.
@@ -639,6 +669,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               arc_yd=round(arc_yd), card_yd=total_yd,
               tee_ticks=tee_ok or par3_straight or fwd_tee or past_tee,
               line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee, past_tee=past_tee,
+              carry_origin_known=origin_known,
               start_at_tee_m=round(start_at_tee_m, 1),
               carries=carries)
     return svg, info

@@ -8,7 +8,7 @@ Covers **12** built books. Blocks differ per course where the data differs (a re
 course, a NAIP-traced green), so each variant is listed with the courses that print it.
 
 ## A. Pocket edition "About & legal"
-### Variant A1 -- printed on 10 book(s): bay-view-golf-club, callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park
+### Variant A1 -- printed on 10 book(s): callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park, valley-hi-country-club
 > A free, independent green book for junior golfers, not for sale. Hole & green shapes, and the
 > carry distances measured from them, are a Produced Work from OpenStreetMap data (©
 > OpenStreetMap contributors, ODbL 1.0, osm.org/copyright); slope, contours, arrows & elevation
@@ -31,26 +31,7 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 > lucasgreenbook.org; contact / removal requests: info@lucasgreenbook.org. © 2026 Lucas Wu ·
 > Lucas Green Book™. This book: free to share, not for sale — CC BY-NC-ND 4.0.
 
-### Variant A2 -- printed on 1 book(s): poppy-ridge-golf-course
-> A free, independent yardage book for junior golfers, not for sale. Par, yardage & handicap
-> (HCP = men’s stroke index) are facts from the published scorecard. This course was rebuilt in
-> 2025 with new greens, and accurate post-construction green-surface data is not yet publicly
-> available — so rather than print slope maps that could be wrong, the greens are left blank to
-> mark your own read. (Our other books compute slope from public-domain USGS 3DEP elevation;
-> that data does not yet reflect this rebuilt course, so we do not use it here.) USDA NAIP
-> aerial imagery (a U.S. Government work, public domain) was used as a mapping reference for
-> this course. No proprietary data, images, artwork, layout or trade dress from any commercial
-> green-reading product was used, copied or referenced. Not affiliated with, endorsed or
-> sponsored by any course, club, association or product; course names & trademarks belong to
-> their owners and are used only to identify the course — if a course would prefer not to be
-> included, contact the maker for removal. Provided free and as-is, with no warranty of any
-> kind; use at your own risk. Confirm materials/equipment rules with your Committee before
-> competition. lucasgreenbook.org · contact/removal info@lucasgreenbook.org. © 2026 Lucas Wu ·
-> Lucas Green Book™. This copy is for personal use only — please do not share or redistribute
-> it, because its greens are blank for want of trustworthy survey data and a reader elsewhere
-> cannot know that. Not for sale. All rights reserved.
-
-### Variant A3 -- printed on 1 book(s): valley-hi-country-club
+### Variant A2 -- printed on 1 book(s): bay-view-golf-club
 > A free, independent green book for junior golfers, not for sale. Hole & green shapes, and the
 > carry distances measured from them, are a Produced Work from OpenStreetMap data (©
 > OpenStreetMap contributors, ODbL 1.0, osm.org/copyright); slope, contours, arrows & elevation
@@ -73,6 +54,25 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 > maker is not liable for any loss, penalty or damage from use of this book. Learn more at
 > lucasgreenbook.org; contact / removal requests: info@lucasgreenbook.org. © 2026 Lucas Wu ·
 > Lucas Green Book™. This book: free to share, not for sale — CC BY-NC-ND 4.0.
+
+### Variant A3 -- printed on 1 book(s): poppy-ridge-golf-course
+> A free, independent yardage book for junior golfers, not for sale. Par, yardage & handicap
+> (HCP = men’s stroke index) are facts from the published scorecard. This course was rebuilt in
+> 2025 with new greens, and accurate post-construction green-surface data is not yet publicly
+> available — so rather than print slope maps that could be wrong, the greens are left blank to
+> mark your own read. (Our other books compute slope from public-domain USGS 3DEP elevation;
+> that data does not yet reflect this rebuilt course, so we do not use it here.) USDA NAIP
+> aerial imagery (a U.S. Government work, public domain) was used as a mapping reference for
+> this course. No proprietary data, images, artwork, layout or trade dress from any commercial
+> green-reading product was used, copied or referenced. Not affiliated with, endorsed or
+> sponsored by any course, club, association or product; course names & trademarks belong to
+> their owners and are used only to identify the course — if a course would prefer not to be
+> included, contact the maker for removal. Provided free and as-is, with no warranty of any
+> kind; use at your own risk. Confirm materials/equipment rules with your Committee before
+> competition. lucasgreenbook.org · contact/removal info@lucasgreenbook.org. © 2026 Lucas Wu ·
+> Lucas Green Book™. This copy is for personal use only — please do not share or redistribute
+> it, because its greens are blank for want of trustworthy survey data and a reader elsewhere
+> cannot know that. Not for sale. All rights reserved.
 
 ## B. Coach / ENLARGED edition "About & legal"
 ### Variant B1 -- printed on 3 book(s): merion-golf-club, monarch-bay-golf-club, philadelphia-country-club
