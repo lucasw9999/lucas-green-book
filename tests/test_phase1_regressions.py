@@ -8031,7 +8031,12 @@ def test_no_card_silently_clips_its_own_text():
     its content is conditional (the no-clear-fall note appears only where a green needs it), so this
     grows with the caveats a course happens to require.
     """
-    books = [f for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html")))
+    # BOTH editions. Globbing only greenbook.html is how this guard missed a live defect: the enlarged
+    # edition's About & legal card was overflowing by 27 px on two courses, clipping the licence line,
+    # the warranty disclaimer and the contact address off the printed page, and the test that exists to
+    # catch exactly that never opened the file. The coach book is the MORE likely one to overflow -- same
+    # 3.5x5in card, larger type -- so checking only the pocket edition inverts the risk.
+    books = [f for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html")))
              if not os.path.basename(os.path.dirname(f)).startswith("_")]
     if not books:
         pytest.skip("no book built")
@@ -8331,17 +8336,27 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
             continue                     # no tree layer at all: nothing to distinguish, no caveat owed
         checked += 1
         bare = sorted(int(h) for h, v in tl.items() if not v)
-        with open(book, encoding="utf-8") as f:
-            html = f.read()
-        marked = set()
-        for blk in re.split(r'<div class="panel hole">', html)[1:]:
-            hn = re.search(r'class="hnum">(\d+)</div>', blk)
-            if hn and "no tree data" in blk:
-                marked.add(int(hn.group(1)))
         bare_total += len(bare)
-        if marked != set(bare):
+        # BOTH editions. Checking only the pocket book is how this caveat reached one edition and not the
+        # other: the enlarged edition drew monarch-bay 1, 17 and 18 as open ground with nothing to say the
+        # survey does not reach them, and this test passed the whole time.
+        editions = [("pocket edition", book)]
+        _coach = os.path.join(ROOT, "courses", ref, "greenbook_coach.html")
+        if os.path.exists(_coach):
+            editions.append(("enlarged edition", _coach))
+        for ed, bpath in editions:
+            with open(bpath, encoding="utf-8") as f:
+                html = f.read()
+            marked = set()
+            for blk in re.split(r'<div class="panel hole">', html)[1:]:
+                hn = re.search(r'class="hnum">(\d+)</div>', blk)
+                if hn and "no tree data" in blk:
+                    marked.add(int(hn.group(1)))
+            if marked == set(bare):
+                continue
             problems.append(
-                f"{ref}: holes {sorted(set(bare)-marked)} draw NO trees and their cards do not say so"
+                f"{ref} ({ed}): holes {sorted(set(bare)-marked)} draw NO trees and their cards do not "
+                f"say so"
                 f"{'; holes ' + str(sorted(marked-set(bare))) + ' are marked but do have trees' if marked-set(bare) else ''}"
                 f". The map shows an unmeasured corridor as open ground while the legend promises trees.")
         if bare and not re.search(r"no tree markers on holes? "

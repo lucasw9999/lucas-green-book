@@ -971,7 +971,7 @@ def coach_map_card(hole):
       <span class="yalt">{row[FRONT_I]} {esc(FRONT_NAME)}</span></div>
   </div>
   <div class="cmap"><div class="minilab">HOLE &middot; tee &rarr; green</div>{lsvg}</div>
-  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water</span><span>course layout</span></div>
+  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_tree_markers(hole) or not _course_has_trees()) else ' &middot; <b>no tree data</b>'}</span><span>course layout</span></div>
   {playline}
 </div>'''
 
@@ -996,19 +996,23 @@ def coach_green_card(hole):
 def coach_about_card():
     return '''<div class="panel guide">
   <div class="gtitle">Enlarged edition</div>
-  <div class="legrow"><span>This is an <b>enlarged</b> copy: each hole is split onto two big cards &mdash;
-    the <b>course map on top</b>, the <b>green on the bottom</b> &mdash; so the greens read easily at a
-    glance. Flip up one more page for the green; flip again for the next hole.</span></div>
+  <div class="legrow"><span>An <b>enlarged</b> copy: each hole takes two big cards &mdash; the course
+    map, then the green on its <b>reverse</b>. Flip for the green; flip again for the next hole.</span></div>
   <div class="legrow"><span><b>Arrows</b> point downhill (the way the ball rolls; longer = steeper).
-    <b>Contours</b> join equal height. <b>Colour</b>: green flat &rarr; yellow &rarr; red (steep).
-    "feeds" = the low side putts run toward. <b>Print in colour</b> &mdash; ground over 10% is shown
-    by colour only, and bunkers all but vanish in black &amp; white.</span></div>
+    <b>Contours</b> join equal height, <b>15&nbsp;cm each</b>. <b>Colour</b>: green flat &rarr; yellow
+    &rarr; red (&ge;5%). Small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
+  <div class="legrow"><span><b>Numbers</b> on a green = slope % there. Ground over <b>10%</b> is not
+    putting surface (a bank or bunker face inside the mapped edge): colour only, no number. <b>Print in
+    colour</b> &mdash; bunkers all but vanish in black &amp; white.</span></div>
+  <div class="legrow"><span><b>Left</b> = to green (straight), <b>right</b> = from the tee (walked)
+    &mdash; on a dogleg they do <b>not</b> add up.</span></div>
 ''' + _no_fall_note() + '''
   <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
     this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
     Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a
-    yardage adjustment. <b>carry N</b> = yd to where fairway sand starts; it can run past N.</span></div>
+    yardage adjustment. <b>carry N</b> = yd from the back tee to where fairway
+    sand starts; it can run past N.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> green book. Hole &amp; green shapes, and the <b>carry</b>
@@ -1150,7 +1154,12 @@ def build_coach(coach_name=""):
   .playline {{ font-size: 8pt; color: #666; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .cover {{ position: relative; overflow: hidden; padding: 0; }}
   .gtitle, .cardtitle {{ font-size: 12pt; font-weight: 800; color: #2b6a2b; border-bottom: 2px solid #2b6a2b; padding-bottom: 2px; margin-bottom: 4px; }}
-  .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 8pt; line-height: 1.3; margin-bottom: 5px; }}
+  /* 7pt, down from 8. The enlarged edition's premise is that the GREEN MAPS read at arm's length,
+     not that the reference legend does -- the pocket book's is 6.6pt. Buying that back is what
+     paid for the six caveats this card was missing, and for its About & legal block to stop
+     overflowing: at 8pt it clipped the licence line, the warranty disclaimer and the contact
+     address off two of the three enlarged books. 7.0 is the largest size the full card fits at. */
+  .legrow {{ display: flex; gap: 4px; align-items: flex-start; font-size: 7pt; line-height: 1.3; margin-bottom: 5px; }}
   .abt {{ margin-top: 4px; border-top: 1.2px solid #cdb96a; padding-top: 3px; }}
   .abthead {{ font-size: 8pt; font-weight: 800; color: #2b6a2b; margin-bottom: 1px; }}
   /* The legal block sat at 6.6pt against the pocket book's 5.15pt, and it ran OFF the card: its last
