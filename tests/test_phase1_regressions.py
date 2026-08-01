@@ -5209,14 +5209,25 @@ def test_contours_join_equal_height_at_the_stated_interval():
                 ax, ay, bx, by = map(float, (x1, y1, x2, y2))
                 if min(ax, bx) < 10 or min(ay, by) < 10 or max(ax, bx) > W - 11 or max(ay, by) > H - 11:
                     continue      # skip the band where zero-padded smoothing differs from mine
-                z1, z2 = bilerp(z, ax, ay), bilerp(z, bx, by)
+                # -0.5 to read the array at the pixel the contour is DRAWN at. A drawn coordinate is a
+                # PIXEL and z[r,c] is the sample at pixel (c+0.5, r+0.5) -- fetch_dem_hd.py builds the
+                # grid on cell centres -- so bilerp(z, ax, ay) asks for the elevation half a cell up
+                # and left of the line it is checking. It agreed anyway while render_green drew the
+                # marching-squares corners at bare (c,r): the test embedded the renderer's own
+                # off-by-half, so the two errors cancelled and this assertion could not see either.
+                # With the renderer corrected it reported "a contour sits 74.1 mm off any 15 cm level"
+                # on a corpus whose contours are exact to 0.000 mm.
+                z1, z2 = bilerp(z, ax - 0.5, ay - 0.5), bilerp(z, bx - 0.5, by - 0.5)
                 checked += 1
                 worst_iso = max(worst_iso, abs(z1 - z2))
                 mid = (z1 + z2) / 2.0
                 worst_level = max(worst_level, abs(mid / cint - round(mid / cint)) * cint)
     assert checked > 2000, f"only {checked} interior contour segments examined"
-    # measured on this corpus: 11.8 mm and 5.8 mm. The bounds are a third of the interval, which is
+    # measured on this corpus: 8.4 mm and 4.0 mm. The bounds are a third of the interval, which is
     # loose enough to survive a smoothing difference and tight enough that a real break fails.
+    # Both figures were 11.8 mm and 5.8 mm while the renderer and this test shared an off-by-half;
+    # correcting both TIGHTENED them, which is the corroboration that the registration was the fault
+    # and not the smoothing.
     assert worst_iso < cint / 3, \
         f"a contour segment's ends differ by {worst_iso*1000:.1f} mm -- not iso-elevation"
     assert worst_level < cint / 3, \

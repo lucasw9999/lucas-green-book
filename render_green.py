@@ -481,7 +481,29 @@ def render(hole, tournament=False):
                 if not (mask[r,c] or mask[r+1,c] or mask[r,c+1] or mask[r+1,c+1]):
                     continue
                 TL,TR,BL,BR = surf[r,c],surf[r,c+1],surf[r+1,c],surf[r+1,c+1]
-                cTL,cTR,cBL,cBR = (c,r),(c+1,r),(c,r+1),(c+1,r+1)
+                # +0.5 because A SAMPLE IS A CELL CENTRE, not a grid corner. fetch_dem_hd.py builds
+                # its grid with us=(np.arange(W)+0.5)/W, and poly_to_px maps the bbox EDGES to pixel
+                # 0..W, so surf[r,c] is the elevation measured at pixel (c+0.5, r+0.5) -- the algebra
+                # is exact, not an approximation. Everything else on this card already knows that: the
+                # heat rect for (r,c) spans [c,c+1], the mask tests point_in_poly(c+0.5, r+0.5), the
+                # scanline rasteriser uses yv=r+0.5, and fetch_dem.py's own interior stats do the same.
+                # Only these corners, the arrow tails/heads below and the slope-label anchors did not,
+                # so the contour/arrow/label layer sat half a cell UP AND LEFT of the heat layer and
+                # the outline it is drawn over -- 0.284 m of ground at 0.4 m sampling, 0.356 m on the
+                # six seamless greens, and 0.30-0.65 mm in print, 54% of the outline's own 1.3-unit
+                # stroke. Measured over 74,574 drawn segments: bilerp'd at the coordinate as drawn the
+                # elevation landed on a 15 cm level to 0.000 mm, and at the pixel the coordinate
+                # CLAIMS to be it was off by a median 7.8 mm and up to 74.9 mm. That is the whole
+                # defect: the lines were exact iso-contours of a surface half a cell from where the
+                # card drew everything else.
+                # Shifted in the COORDINATES rather than with a transform= on the group, because
+                # test_nothing_is_drawn_off_the_putting_surface and the two-edition contour count in
+                # test_the_contour_interval_is_the_one_the_legend_states match these <g ...> open tags
+                # literally, and an added attribute breaks their regexes in either position.
+                # No printed NUMBER moves: tilt, feed word, relief, undulation and the plane fit are
+                # computed in array space (Xe=cc*px_x, Yn=-rr*px_y), where a uniform +0.5 shifts only
+                # the intercept; depth, width, the 5-yd ladder and the pin ring come from the polygon.
+                cTL,cTR,cBL,cBR = (c+0.5,r+0.5),(c+1.5,r+0.5),(c+0.5,r+1.5),(c+1.5,r+1.5)
                 pts=[]
                 if (TL-L)*(TR-L)<0: pts.append(itp(TL,TR,cTL,cTR,L))
                 if (TR-L)*(BR-L)<0: pts.append(itp(TR,BR,cTR,cBR,L))
@@ -489,6 +511,15 @@ def render(hole, tournament=False):
                 if (TL-L)*(BL-L)<0: pts.append(itp(TL,BL,cTL,cBL,L))
                 if len(pts)>=2:
                     mx=(pts[0][0]+pts[1][0])/2; my=(pts[0][1]+pts[1][1])/2
+                    # int() and not round(): mx,my are now PIXELS, and pixel column ci spans [ci,ci+1),
+                    # so int(mx) is both the mask cell the midpoint lies in AND the nearest sample to
+                    # it (the sample at column ci sits at x=ci+0.5, and floor(x) == round(x-0.5)).
+                    # Needs no +/-0.5 of its own, and correcting the corners above is what made that
+                    # true: while they were grid corners, mx ran over [c,c+1] and this reduced to
+                    # mask[r,c] -- the TOP-LEFT of the cell's four samples, whichever way the segment
+                    # actually ran. It rejected 5,754 segments where the honest question rejects 5,076,
+                    # so 678 real contour segments were dropped for sitting in a cell whose top-left
+                    # neighbour happened to be off the green.
                     ri,ci=int(my),int(mx)
                     if 0<=ri<H and 0<=ci<W and mask[ri,ci]:
                         segs.append(f'<line x1="{pts[0][0]:.1f}" y1="{pts[0][1]:.1f}" x2="{pts[1][0]:.1f}" y2="{pts[1][1]:.1f}"/>')
@@ -516,15 +547,19 @@ def render(hole, tournament=False):
             vx, vy = dcol[r, c], drow[r, c]
             nn = math.hypot(vx, vy) or 1
             vx, vy = vx/nn*L, vy/nn*L
-            ex, ey = c+vx, r+vy
+            ex, ey = c+0.5+vx, r+0.5+vy      # +0.5: the sample is a cell CENTRE -- see the contours
             # keep the whole arrow (tip + a small head allowance) inside the green outline
+            # This cull now asks the question it always meant to. It compares against `poly`, which is
+            # in pixels, so while the tip was built from a bare (c,r) it was testing a point half a
+            # cell up-left of the arrow it was vetting: 24 of 12,161 arrows were kept or dropped on the
+            # wrong evidence.
             if not (point_in_poly(ex, ey, poly) and point_in_poly(ex+vx*0.28, ey+vy*0.28, poly)):
                 continue
             ang = math.atan2(vy, vx)
             h = 1.7
             arw_x += vx; arw_y += vy      # length-weighted, so steeper arrows count for more
             arrows.append(
-                f'<line x1="{c}" y1="{r}" x2="{ex:.1f}" y2="{ey:.1f}"/>'
+                f'<line x1="{c+0.5}" y1="{r+0.5}" x2="{ex:.1f}" y2="{ey:.1f}"/>'
                 f'<polygon points="{ex:.1f},{ey:.1f} {ex-h*math.cos(ang-0.5):.1f},{ey-h*math.sin(ang-0.5):.1f} '
                 f'{ex-h*math.cos(ang+0.5):.1f},{ey-h*math.sin(ang+0.5):.1f}"/>')
     arrowg = f'<g stroke="#15271b" stroke-width="0.7" fill="#15271b" stroke-linecap="round">{"".join(arrows)}</g>'
@@ -616,7 +651,7 @@ def render(hole, tournament=False):
                 cand.append((float(slope[r,c]),r,c))
     cand.sort(reverse=True)
     for sl,r,c in cand:
-        sx,sy=rot(c,r,cx,cy,theta)
+        sx,sy=rot(c+0.5,r+0.5,cx,cy,theta)    # +0.5: the sample is a cell CENTRE -- see the contours
         # keep slope numbers inside the frame and off the top-right compass
         sx=min(max(sx, VBx+2.5), VBx+VBw-2.5)
         sy=min(max(sy, VBy+3.0), VBy+VBh-4.0)
