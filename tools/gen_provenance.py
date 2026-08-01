@@ -38,8 +38,27 @@ def _tile_project(slug, dem_source=""):
 
     Preferred source is the tile FILENAMES on disk, because a project name recorded by hand has
     been wrong before. Some early downloads saved bare tile ids (t390135.laz) with no project in the
-    name; for those we fall back to the recorded dem_source label and say that is what we did."""
-    names = [os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz"))]
+    name; for those we fall back to the recorded dem_source label and say that is what we did.
+
+    Counts only tiles that could actually have FED the book. A tile downloaded after every
+    LiDAR-derived artifact was written contributed nothing, and counting it overstates a published
+    legal claim about what the book was made from. Found with callippe-preserve: 10 files on disk
+    against 9 in the record, because a later audit fetched a tile the build never saw.
+
+    The cutoff is the NEWEST LiDAR-derived artifact, not the oldest. Three stages consume the point
+    cloud -- green surfaces (dem_hd), tee-to-green elevation (hole_elev.json) and canopy returns
+    (trees_lidar.json) -- and they are written at different times, so a tile arriving between them is
+    genuinely used by the later stages. Cutting at the oldest surface undercounted callippe to 7,
+    disowning two tiles the elevation and tree stages really did read."""
+    cdir = os.path.join(ROOT, "courses", slug)
+    tiles = glob.glob(os.path.join(cdir, "*.laz")) + glob.glob(os.path.join(cdir, "laz", "*.laz"))
+    derived = (glob.glob(os.path.join(cdir, "dem_hd", "hole*.json"))
+               + [os.path.join(cdir, n) for n in ("hole_elev.json", "trees_lidar.json")])
+    stamps = [os.path.getmtime(d) for d in derived if os.path.exists(d)]
+    if stamps:
+        cutoff = max(stamps)
+        tiles = [t for t in tiles if os.path.getmtime(t) <= cutoff]
+    names = [os.path.basename(p) for p in tiles]
     if not names:
         return None, 0, False
     projects = set()

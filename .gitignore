@@ -41,3 +41,12 @@ lucaswu.golf_qr*.png
 # worktree would have deleted them. Kept in the working tree so they survive; never committed, because
 # they are private correspondence and this repo is public.
 outreach/
+
+# Coverage artifacts. `.coverage` is a SQLite database written by `coverage run`; it holds absolute
+# paths from the machine that produced it and is meaningless anywhere else. It appeared untracked
+# during a coverage audit of the test suite, which is exactly when it would have been swept into a
+# commit by a careless `git add`.
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
