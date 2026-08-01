@@ -9520,6 +9520,106 @@ def test_the_naip_credit_lands_on_the_course_that_actually_used_it():
     assert not problems, "the NAIP credit is on the wrong course:\n  " + "\n  ".join(problems)
 
 
+@pytest.mark.slow          # grids one real green from its point cloud
+@needs_corpus
+def test_the_cross_flight_grid_matches_the_surface_it_checks():
+    """cross_flight_check must grid a pass the way the shipped surface was gridded, or it compares a
+    different green.
+
+    It gridded with `linspace(ymin, ymax, H)` -- row 0 at the SOUTH edge, sampling bbox EDGES -- while
+    fetch_dem_hd writes north-up on cell centres ("row0=top=ymax") and both the green mask and the
+    plane fit assume that. So the one tool that checks the printed read against itself was comparing a
+    vertically MIRRORED surface, half a cell out. Over 90 corpus greens: a median 0.42 pp of tilt and
+    76 degrees of aim, 62 of 90 past TOL_TILT_PP and 84 of 90 past TOL_AIM_DEG -- the tolerances were
+    calibrated on those numbers. Correcting it took the noise floor from RMS 0.85 cm to 0.56 and the
+    contour interval from 18x it to 27x, i.e. the whole of legal/09 moved.
+
+    THREE EARLIER ATTEMPTS TO GUARD THIS COULD NOT FAIL, and the reasons are worth keeping:
+      * the sibling delegation test tilts a SQUARE green EAST -- invariant under a vertical flip, which
+        is how the tool shipped mirrored for its whole life with a test watching it;
+      * a source grep for "linspace(ymin, ymax" is satisfied by the COMMENT in the tool that explains
+        the fix -- this codebase writes long explanatory comments, so source greps are unreliable in it;
+      * recomputing the expected cell centres inside the test compares them only against themselves.
+
+    So this grids a REAL green from its own LAZ through the tool's own `_summary` and differences the
+    result against the shipped `.npy`. A mirrored grid shows up as a vertical flip: the correlation
+    against the shipped surface collapses while the correlation against its row-reversal is high. No
+    sign convention to get right, and nothing a comment can satisfy.
+    """
+    import numpy as np
+    laspy = pytest.importorskip("laspy")
+    pytest.importorskip("scipy")
+
+    slug = next((c for c in CORPUS
+                 if glob.glob(os.path.join(ROOT, "courses", c, "laz", "*.laz"))
+                 and os.path.isfile(os.path.join(ROOT, "courses", c, "dem_hd", "hole01.json"))), None)
+    if slug is None:
+        pytest.skip("no course with both a point cloud and a built surface")
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    for m in ("config", "geo", "render_green", "cross_flight_check", "fetch_dem_hd"):
+        sys.modules.pop(m, None)
+    os.environ["COURSE"] = slug
+    import cross_flight_check as cfc
+    from fetch_dem_hd import laz_to_utm
+    from pyproj import Transformer
+
+    cdir = os.path.join(ROOT, "courses", slug)
+    meta = json.load(open(os.path.join(cdir, "dem_hd", "hole01.json"), encoding="utf-8"))
+    if meta.get("insufficient") or "seamless" in str(meta.get("source", "")).lower():
+        pytest.skip("hole 1 is not a point-cloud surface on this course")
+    shipped = np.load(os.path.join(cdir, "dem_hd", "hole01.npy")).astype(float)
+    _pt2utm, zscale = laz_to_utm()
+
+    x0, y0, x1, y1 = meta["bbox"]
+    lons, lats, zs = [], [], []
+    for tile in sorted(glob.glob(os.path.join(cdir, "laz", "*.laz"))):
+        with laspy.open(tile) as f:
+            crs = f.header.parse_crs()
+            if crs is None:
+                continue
+            inv = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+            for ch in f.chunk_iterator(4_000_000):
+                g = np.asarray(ch.classification) == 2
+                if not g.any():
+                    continue
+                lo, la = inv.transform(np.asarray(ch.x)[g], np.asarray(ch.y)[g])
+                sel = (lo > x0) & (lo < x1) & (la > y0) & (la < y1)
+                if sel.any():
+                    lons.append(lo[sel]); lats.append(la[sel]); zs.append(np.asarray(ch.z)[g][sel])
+        if sum(len(a) for a in lons) > 40_000:
+            break
+    if not lons:
+        pytest.skip("no ground returns recovered over this green")
+
+    grid = cfc._grid(meta)
+    S = cfc._summary(meta, grid, np.concatenate(lons), np.concatenate(lats),
+                     np.concatenate(zs), zscale)
+    assert S is not None, "the tool could not summarise a green it has point data for"
+    mask = grid[4]
+    got = S["surf"]
+    assert got.shape == shipped.shape, f"grid shape {got.shape} vs shipped {shipped.shape}"
+
+    def corr(a, b):
+        u, v = a[mask].ravel(), b[mask].ravel()
+        ok = np.isfinite(u) & np.isfinite(v)
+        if ok.sum() < 100 or np.std(u[ok]) == 0 or np.std(v[ok]) == 0:
+            return 0.0
+        return float(np.corrcoef(u[ok], v[ok])[0, 1])
+
+    upright = corr(got, shipped)
+    flipped = corr(got, shipped[::-1, :])
+    assert upright > flipped, (
+        f"tools/cross_flight_check.py grids {slug} hole 1 UPSIDE-DOWN: its surface correlates "
+        f"{flipped:.3f} with the vertical mirror of the shipped one and only {upright:.3f} with the "
+        f"shipped one itself. Every tilt and aim it reports is then measured on a different green from "
+        f"the one the card prints, and legal/09 rests on those numbers. The shipped convention is "
+        f"cell centres with row 0 at the NORTH edge -- see fetch_dem_hd.py's 'row0=top=ymax'.")
+    assert upright > 0.9, (
+        f"cross_flight_check's surface correlates only {upright:.3f} with the shipped one over the "
+        f"green interior; the orientation is right but something else about the grid is not")
+
+
 @needs_corpus
 def test_no_par_3_prints_a_carry():
     """"carry N" is a tee-shot decision, and a par 3 does not have one.
