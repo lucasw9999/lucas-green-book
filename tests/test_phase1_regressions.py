@@ -7551,94 +7551,160 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
 def test_the_cross_flight_check_shares_the_renderers_plane_fit():
     """A checker with its own copy of the arithmetic verifies a number nobody prints.
 
-    `tools/cross_flight_check.py` is the project's only evidence that the printed slope read is
-    reproducible across independent surveys (legal/09_GREEN_SURFACE_REPEATABILITY.md). That evidence
-    is only about the CARD if the tool derives its figures the way the card does, which is why
-    `green_summary` was lifted to module scope in render_green.py. Inline the plane fit into the tool
-    and both sides keep passing while the tool quietly measures its own arithmetic instead.
+    tools/cross_flight_check.py is the project's only evidence that the printed slope read is
+    reproducible across independent surveys, and that the 15 cm contour interval sits well above the
+    noise floor (legal/09_GREEN_SURFACE_REPEATABILITY.md). That evidence is only about the CARD if the
+    tool derives its figures the way the card does, which is why green_summary was lifted to module
+    scope in render_green.py. Inline a second plane fit into the tool and both sides keep passing while
+    the tool quietly measures its own arithmetic.
 
-    So: the tool must CALL green_summary, and must not carry a second least-squares plane fit. The
-    call is checked after the import, because an import alone satisfies a substring search -- that
-    exact hole made an earlier cKDTree assertion vacuous.
+    Checked by OBSERVING THE CALL, not by grepping the source. An earlier version asserted "lstsq" was
+    absent from the tool and "green_summary(" present after the import -- a proxy, and this suite has
+    now watched proxies fail twice: the fresh-clone guard pattern-matched for a property and missed
+    three real violations, and a scrollHeight probe could not see the overflow it existed to catch. A
+    tool that computed its own plane through np.linalg.solve, or via a helper in another module, would
+    satisfy every string the old test wanted.
+
+    So: replace render_green.green_summary with a recorder, run the tool's own summary path over a
+    synthetic green, and require that the recorder was called. If the tool stops routing through the
+    renderer's function, nothing gets recorded and this fails.
     """
+    import numpy as np
     tool = os.path.join(ROOT, "tools", "cross_flight_check.py")
     assert os.path.exists(tool), "tools/cross_flight_check.py is gone; delete this test or the claim"
-    with open(tool, encoding="utf-8") as f:
-        src = f.read()
 
-    assert "green_summary" in src, (
-        "cross_flight_check.py no longer mentions render_green.green_summary, so whatever it now "
-        "measures is not what the green card prints")
-    after = src.split("import render_green", 1)[-1]
-    assert "green_summary(" in after, (
-        "cross_flight_check.py imports render_green but never calls green_summary() after it -- an "
-        "import is not a use, and the repeatability claim rests on the call")
-    assert "lstsq" not in src, (
-        "cross_flight_check.py has grown its own least-squares plane fit. That is the exact drift "
-        "green_summary was extracted to prevent: the tool would then agree with itself about a "
-        "number the book does not print. Call render_green.green_summary() instead.")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    for m in ("config", "geo", "render_green", "cross_flight_check"):
+        sys.modules.pop(m, None)
+    os.environ["COURSE"] = a_course()
+    import render_green as rg
+    import cross_flight_check as cfc
 
-    # and the renderer must still be getting its numbers from the same shared function
+    real = rg.green_summary
+    calls = []
+
+    def recorder(arr, mask, px_x, px_y, putt=None):
+        calls.append((arr.shape, int(mask.sum()), putt is not None))
+        return real(arr, mask, px_x, px_y, putt=putt)
+
+    # a small synthetic green: a plane tilted east, inside a square outline
+    W = H = 40
+    yy, xx = np.mgrid[0:H, 0:W]
+    meta = {"W": W, "H": H, "bbox": [-100.0, 40.0, -99.999, 40.001], "hole": 1,
+            "polygon": [[40.0002, -99.9998], [40.0002, -99.9992],
+                        [40.0008, -99.9992], [40.0008, -99.9998]],
+            "green_center": [40.0005, -99.9995]}
+    rg.green_summary = recorder
+    try:
+        grid = cfc._grid(meta)
+        assert grid[4].sum() > 50, "the synthetic outline did not rasterise; fix the fixture"
+        lon = (-100.0) + (xx.ravel()/W)*0.001
+        lat = 40.0 + (yy.ravel()/H)*0.001
+        z = (xx.ravel()/W)*2.0                      # 2 m of fall across the green
+        S = cfc._summary(meta, grid, lon, lat, z, 1.0)
+    finally:
+        rg.green_summary = real
+
+    assert calls, (
+        "tools/cross_flight_check.py did not call render_green.green_summary while summarising a "
+        "green, so whatever it measures is no longer what the card prints. That is the exact drift "
+        "green_summary was lifted to module scope to prevent.")
+    assert S is not None and "tilt_pct" in S, "the tool's summary path returned nothing usable"
+    assert S["tilt_pct"] > 0.5, (
+        f"the tool read {S['tilt_pct']:.2f}% tilt off a surface with 2 m of fall across it, so it is "
+        f"not actually measuring the surface it was handed")
+
+    # and the renderer must still get its numbers from that same shared function
     with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as f:
-        rg = f.read()
-    assert "def green_summary(" in rg, "green_summary is no longer defined at module scope"
-    body = rg.split("def green_summary(", 1)[1]
-    nxt = body.split("\ndef ", 1)[0]
-    assert "lstsq" in nxt, "green_summary no longer fits the plane; the card's tilt comes from elsewhere"
-    assert rg.count("lstsq") == 1, (
+        src = f.read()
+    assert src.count("lstsq") == 1, (
         "render_green.py fits a least-squares plane in more than one place, so the card and the "
         "cross-flight check can disagree about the same green")
 
 
 @needs_corpus
 def test_the_printed_read_is_fitted_to_putting_surface_only():
-    """The tilt, the feed word and the arrows must all describe ground the card calls puttable.
+    """The tilt on the card must come from putting surface, not from bank inside the mapped outline.
 
     A green outline comes from OpenStreetMap. One drawn a little generously laps onto the surrounding
-    bank, and `erode(mask, 3)` trims only about 1.2 m of collar while such a bank reaches 8 m inside
-    the outline. philadelphia 18 is the worked case: 21% slope, 4.1 cm of surface texture against
-    1.2 cm over the rest of the green, sitting 0.9 ft above it. Fitting the plane through it printed
-    "3.6%, feeds LEFT" where the putting surface alone reads "2.6%, feeds FRONT-LEFT" -- and the same
-    card's legend tells the reader that ground over 10% is shown by colour precisely BECAUSE it is not
-    a puttable read. The book was contradicting itself in two lines.
+    bank, and erode(mask, 3) trims only about 1.2 m of collar while such a bank reaches 8 m inside the
+    outline. philadelphia 18 is the worked case: 21% slope in one corner, 4.1 cm of surface texture
+    against 1.2 cm over the rest of the green, sitting 0.9 ft above it. Fitting the plane through it
+    printed "3.6%, feeds LEFT" where the putting surface alone reads "2.6%, feeds FRONT-LEFT" -- while
+    the same card's legend tells the reader that ground over 10% is shown by colour precisely BECAUSE
+    it is not a puttable read.
 
-    Checked structurally rather than by re-deriving the numbers: the plane fit must be restricted by
-    SLOPE_LABEL_MAX_PCT, the arrows must be drawn on that same restricted set, and the arrow loop must
-    not fall back to the unrestricted core -- which is what it did before, putting the LONGEST arrows
-    on the card ("longer = steeper") over ground that is not a putt.
+    Checked BEHAVIOURALLY, against the shipped books. An earlier version of this test asserted on the
+    source -- that `fit = core & (slope <= SLOPE_LABEL_MAX_PCT)` appeared, that the plane used
+    surf[fit] -- which is a proxy, and proxies have failed twice in this suite: the fresh-clone guard
+    pattern-matched for a property and missed three real violations, and a scrollHeight probe could not
+    see the overflow it was written to catch. A restructure that preserved every one of those strings
+    while changing the answer would have passed. So instead: re-derive each green's tilt twice, once as
+    shipped and once with the restriction lifted, and where the two disagree require the BOOK to print
+    the restricted figure.
+
+    31 of 198 greens distinguish the two, which is what gives the test teeth -- on the other 167 the
+    question does not arise, and a test that only saw those would be measuring nothing.
     """
-    import render_green
-    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as f:
-        src = f.read()
-
-    body = src.split("def green_summary(", 1)[1].split("\ndef ", 1)[0]
-    assert "SLOPE_LABEL_MAX_PCT" in body, (
-        "green_summary no longer restricts anything by SLOPE_LABEL_MAX_PCT, so the printed tilt and "
-        "feed word are being fitted to bank and surround the card itself calls unputtable")
-    fitline = [l for l in body.splitlines() if l.strip().startswith("fit = core")]
-    assert fitline, "green_summary lost its `fit` selection"
-    assert "SLOPE_LABEL_MAX_PCT" in fitline[0], f"the plane fit is not slope-restricted: {fitline[0]}"
-    assert "surf[fit]" in body and "np.where(fit)" in body, (
-        "the least-squares plane is not being fitted to `fit` -- the restriction is computed and "
-        "then ignored, which is worse than not having it")
-
-    # the arrows must use the same set, and must NOT have reverted to `core`
-    arrows = src.split("# flow arrows", 1)[1].split("arrowg =", 1)[0]
-    assert "putt[r, c]" in arrows, (
-        "arrows are no longer gated on the putting-surface set; an arrow is a claim about which way a "
-        "putt runs, and length scales with slope, so bank cells draw the longest arrows on the card")
-    assert "core[r, c]" not in arrows, "the arrow loop is back to `core`, including unputtable ground"
-    assert "slope[putt]" in arrows, (
-        "arrow LENGTH is still normalised over `core`, so bank cells inflate the scale and every real "
-        "green arrow is drawn shorter than it should be")
-
-    # and the sentinel path must exist, since the fit can now leave a green with no supportable word
-    assert hasattr(render_green, "NO_CLEAR_FALL"), "the no-clear-fall sentinel is gone"
-    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as f:
-        gen = f.read()
-    assert "NO_CLEAR_FALL" in gen, (
-        "generate.py no longer special-cases the sentinel, so a green with no supportable direction "
-        "would print 'feeds no clear fall' -- which reads as a direction")
+    import numpy as np
+    restricted_wins, ambiguous, seen = [], 0, set()
+    for slug in geometry_courses():
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        if not os.path.exists(book):
+            continue
+        seen.add(slug)
+        os.environ["COURSE"] = slug
+        for m in ("config", "geo", "render_green"):
+            sys.modules.pop(m, None)
+        import render_green as rg
+        from geo import R_LAT, mlon
+        with open(book, encoding="utf-8") as fh:
+            html = fh.read()
+        printed = {}
+        for blk in re.split(r'<div class="panel hole">', html)[1:]:
+            hn = re.search(r'class="hnum">(\d+)<', blk)
+            rd = re.search(r'(?:feeds <b>[^<]*</b>|<b>no clear fall</b>) \(\w+\) &middot; ([\d.]+)%', blk)
+            if hn and rd:
+                printed[int(hn.group(1))] = float(rd.group(1))
+        for mp in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            with open(mp, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            if meta.get("insufficient"):
+                continue
+            arr = np.load(mp.replace(".json", ".npy"))
+            H, W = arr.shape
+            x0, y0, x1, y1 = meta["bbox"]
+            px_x = (x1-x0)*mlon(meta["green_center"][0])/W
+            px_y = (y1-y0)*R_LAT/H
+            poly = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+            X, Y = np.meshgrid(np.arange(W)+0.5, np.arange(H)+0.5)
+            mask = np.zeros((H, W), bool)
+            n = len(poly); j = n-1
+            for i in range(n):
+                xi, yi = poly[i]; xj, yj = poly[j]
+                mask ^= ((yi > Y) != (yj > Y)) & (X < (xj-xi)*(Y-yi)/(yj-yi+1e-12)+xi)
+                j = i
+            if mask.sum() < 50:
+                continue
+            arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)
+            _s, _c, S = rg.green_summary(arr, mask, px_x, px_y)
+            _s2, _c2, U = rg.green_summary(arr, mask, px_x, px_y, putt=np.ones_like(mask))
+            r_t, u_t = round(S["tilt_pct"], 1), round(U["tilt_pct"], 1)
+            if r_t == u_t:
+                ambiguous += 1
+                continue
+            got = printed.get(meta["hole"])
+            restricted_wins.append((slug, meta["hole"], got, r_t, u_t))
+    assert_no_course_skipped(seen, "test_the_printed_read_is_fitted_to_putting_surface_only")
+    assert len(restricted_wins) >= 20, (
+        f"only {len(restricted_wins)} greens distinguish a putting-surface fit from an unrestricted "
+        f"one ({ambiguous} could not tell them apart), so this test has almost no purchase. If the "
+        f"corpus really changed that much, re-measure; do not just lower this number.")
+    wrong = [(s, h, g, r, u) for s, h, g, r, u in restricted_wins if g != r]
+    assert not wrong, (
+        "the book printed a tilt fitted to ground the same card calls unputtable:\n  "
+        + "\n  ".join(f"{s} hole {h}: book prints {g}%, putting surface reads {r}%, "
+                       f"including the bank gives {u}%" for s, h, g, r, u in wrong[:8]))
 
 
 @needs_corpus
