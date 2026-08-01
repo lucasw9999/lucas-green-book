@@ -4,10 +4,24 @@
 # https://github.com/lucasw9999/lucas-green-book
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
-Extract TREES from the LiDAR point cloud (high-vegetation returns, class 5) for a
-course, so trees appear at real locations even where OpenStreetMap has none.
+Extract TREES from the LiDAR point cloud for a course, so trees appear at real
+locations even where OpenStreetMap has none.
 
-Reads COURSE_DIR/laz/*.laz + osm_geom.json (hole centerlines), keeps class-5
+NOT from a vegetation classification. 10 of the 11 courses with tiles have ZERO
+class-5 (high vegetation) points -- their tiles are unclassified, class 1 + 2 only
+-- so a marker is any return 2.5-35 m ABOVE LOCAL GROUND that is not classified
+ground, building, noise, water or bridge deck. See the comment at the candidate
+filter; do not "restore" a class-5 filter, it would empty the tree layer on almost
+every course.
+
+What that means for what is drawn: this finds TALL THINGS, and cannot tell a tree
+from a hedge, a light pole, netting or a flagstick. On a golf corridor tall things
+are overwhelmingly trees, and the two systematic false positives are handled --
+buildings by footprint, and anything standing on a playing surface (mower, cart,
+person, flagstick) by on_playing_surface() below. No species, height or canopy
+validation is claimed beyond that.
+
+Reads COURSE_DIR/laz/*.laz + osm_geom.json (hole centerlines), keeps candidate
 points within a corridor of each hole, thins them to a grid so each clump gives a
 few markers, and writes COURSE_DIR/trees_lidar.json = {hole: [[lat,lon],...]}.
 

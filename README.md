@@ -63,7 +63,7 @@ fetch_lidar_alameda.py  #   Alameda County 2021 tile-name decoder (when TNM nami
 fetch_dem_hd.py         # 0.4 m green surfaces from the raw LiDAR ground returns
 fetch_dem.py            #   THEN USGS 3DEP seamless 1 m for the greens it refused (fills gaps;
                         #   OVERWRITE=1 to replace a good 0.4 m surface on purpose)
-fetch_trees.py          # trees from LiDAR canopy returns (never placed on greens/fairways/tees/bunkers)
+fetch_trees.py          # trees from LiDAR returns 2.5-35 m above ground (never on greens/fairways/tees/bunkers)
 fetch_hole_elev.py      # tee-to-green height change from the same LiDAR -> hole_elev.json (--write)
 lidar_coverage.py       # checks the downloaded tiles' DATA actually reaches the greens & holes
 distribution.py         # one rule: may this book be handed out? (used by the legal record too)

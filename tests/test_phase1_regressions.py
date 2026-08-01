@@ -7730,3 +7730,41 @@ def test_a_mapped_green_is_mostly_puttable_ground():
     assert_no_course_skipped(seen, "test_a_mapped_green_is_mostly_puttable_ground")
     assert not bad, "green outline(s) do not describe a putting surface:\n  " + "\n  ".join(bad)
     assert worst[0] <= CEILING, f"worst {worst[0]*100:.1f}% at {worst[1]}"
+
+
+def test_the_tree_finder_does_not_filter_on_a_vegetation_class():
+    """Restricting tree candidates to class 5 would empty the tree layer on almost every course.
+
+    fetch_trees.py's whole tree layer rests on a height-above-ground filter, NOT on the LiDAR
+    vegetation classification, because 10 of the 11 courses with tiles carry zero class-5 points --
+    their tiles are unclassified, class 1 + 2 only. A tidy-up that "correctly" restricted candidates
+    to class 5 would look more principled and would silently produce a book with no trees at all,
+    while every hole map still printed a legend promising them.
+
+    The module docstring claimed the class-5 filter for a long time while the code deliberately did
+    the opposite, which is how this became worth pinning down: the documentation was describing a
+    version of the pipeline that would not have worked.
+
+    Also checks the exclusions that make a height filter honest -- buildings, noise, water and bridge
+    decks are not trees, and a roof reads exactly like canopy.
+    """
+    with open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8") as f:
+        src = f.read()
+
+    body = src.split('"""', 2)[-1]        # skip the module docstring
+    assert "cls==5" not in body.replace(" ", "") or "cls!=5" in body.replace(" ", ""), (
+        "fetch_trees.py now selects candidates by classification 5. Ten of eleven courses have no "
+        "class-5 points, so this empties the tree layer while the hole-map legend still promises "
+        "trees. The filter must stay height-above-ground.")
+    assert "hgt>2.5" in body.replace(" ", ""), "the 2.5 m height floor is gone"
+    assert "hgt<35" in body.replace(" ", ""), "the 35 m ceiling is gone -- nothing that tall is a tree"
+    for cl, why in ((6, "buildings: a roof is 2.5-35 m up and reads exactly like canopy"),
+                    (7, "noise"), (9, "water"), (17, "bridge decks"), (18, "high noise")):
+        assert f"cls!={cl}" in body.replace(" ", ""), (
+            f"class {cl} is no longer excluded from tree candidates ({why})")
+
+    # and the docstring must not go back to claiming a vegetation class it does not use
+    doc = src.split('"""')[1]
+    assert "class 5" not in doc or "NOT" in doc, (
+        "fetch_trees.py's docstring claims a class-5 vegetation filter again; the code uses height "
+        "above ground, and the two disagreeing is what sent this looking in the first place")
