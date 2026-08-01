@@ -36,7 +36,7 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
 - **Green print scale:** rendered at **0.36 in : 5 yd**, i.e. ~4% **under** the 3/8 in (0.375 in)
   cap — a deliberate safety margin so print/rounding can't push a green over the limit.
   (See `render_green.py`: `legal_kf = 0.36 * px_m / 4.572`, then `kf = min(legal_kf, fit_kf)` —
-  0.36 is a CEILING and the panel fit usually binds first: measured, 27 of 198 greens reach it,
+  0.36 is a CEILING and the panel fit usually binds first: measured, 26 of 198 greens reach it,
   median 1:588.)
 - **Measured, not asserted.** The intended cap was once defeated by a single CSS rule: the size was
   emitted as an SVG `width=` presentation attribute, which has zero specificity, so the stylesheet

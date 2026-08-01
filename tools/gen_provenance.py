@@ -62,7 +62,9 @@ def _tile_project(slug, dem_source=""):
 
 
 def _greens(slug):
-    """(count, density_lo, density_hi, n_seamless, n_insufficient) over the built green surfaces."""
+    """(count, density_lo, density_hi, n_seamless, n_insufficient, n_with_density) over the built
+    green surfaces. n_with_density is separate from count because a seamless green records none,
+    and a density RANGE must be published against the greens it was actually measured over."""
     metas = []
     for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
         try:
@@ -70,11 +72,12 @@ def _greens(slug):
         except Exception:
             pass
     if not metas:
-        return 0, None, None, 0, 0
+        return 0, None, None, 0, 0, 0
     dens = [m["density"] for m in metas if m.get("density")]
     seam = sum(1 for m in metas if "seamless" in str(m.get("source", "")).lower())
     insuf = sum(1 for m in metas if m.get("insufficient"))
-    return len(metas), (min(dens) if dens else None), (max(dens) if dens else None), seam, insuf
+    return (len(metas), (min(dens) if dens else None), (max(dens) if dens else None), seam,
+            insuf, len(dens))
 
 
 def _elevation(slug):
@@ -161,7 +164,7 @@ def _row(slug):
     distributable, label, _why = distribution.distribution_status(j)
     yardage_mode = distribution.is_yardage(j)
     proj, ntiles, from_names = _tile_project(slug, j.get('dem_source', ''))
-    ngreens, dlo, dhi, seam, insuf = _greens(slug)
+    ngreens, dlo, dhi, seam, insuf, ndens = _greens(slug)
     dig = _digitized(slug)
     stale = sorted(j.get("greens_possibly_outdated", []))
     flown_rec = j.get("lidar_flown") or {}
@@ -197,7 +200,11 @@ def _row(slug):
         if flown:
             bits.append(f"**flown {flown}**{flown_note}")
         if dlo is not None:
-            bits.append(f"{dlo:g}–{dhi:g} pts/m² over {ngreens} greens @0.4 m")
+            # len(dens), not len(metas): a density RANGE describes the greens it was computed from.
+            # monarch-bay has 18 greens of which 6 are seamless with density None, so this published
+            # "15.2-19.5 pts/m2 over 18 greens @0.4 m" -- a range over 12 greens attributed to 18,
+            # six of which are not @0.4 m at all and are counted again in the next clause.
+            bits.append(f"{dlo:g}–{dhi:g} pts/m² over {ndens} greens @0.4 m")
         if seam:
             bits.append(f"{seam} green(s) fall back to the 1 m seamless DEM")
         slope = ", ".join(bits)
@@ -251,10 +258,22 @@ def _row(slug):
             bare = sorted(int(h) for h, v in tl.items() if not v)
             if bare:
                 notes.append(
+                    # Claims only what an empty tree list can support. This asserted that "the point
+                    # cloud does not reach those corridors" -- a CAUSE the artifact cannot supply:
+                    # trees_lidar.json writes the same empty list whether the hole has no trees, no
+                    # survey coverage, returns rejected by the height/class filter, or every marker
+                    # landed on a playing surface. generate.py says so in as many words ("it cannot
+                    # prove WHY a hole is empty, hence 'no tree data' rather than a coverage claim"),
+                    # so this exhibit was overclaiming past the engine it documents.
+                    #
+                    # It also quoted the card. The card prints three words -- "no tree data" -- and
+                    # the word "unmapped" appears in none of the 15 built books, so a legal document
+                    # was quoting card wording that does not exist.
                     f"**no tree markers on hole{'s' if len(bare) > 1 else ''} "
-                    f"{', '.join(str(h) for h in bare)}** — the point cloud does not reach those "
-                    f"corridors, so the maps show them treeless; the cards say to read the blank as "
-                    f"unmapped rather than clear")
+                    f"{', '.join(str(h) for h in bare)}** \u2014 the tree layer comes from LiDAR "
+                    f"returns above ground, and an empty hole cannot say WHY (no trees there, no "
+                    f"survey coverage, or returns rejected by the height/class filter), so the maps "
+                    f"show them treeless and those cards are marked \u201cno tree data\u201d")
     # Every card prints a Rating/Slope table. Those are the only printed numbers whose source this table
     # did not report, and 7 of 12 courses have none recorded -- while the panel's own note said "All
     # yardages from the official scorecard", which a reader takes as covering the columns beside them.

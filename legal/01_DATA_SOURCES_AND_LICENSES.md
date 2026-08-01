@@ -22,9 +22,11 @@ Every input used to build the books, its license, our obligation, and how we mee
     dataset. If we ever do, that dataset must ship under ODbL.
   - **§4.6 — the on‑request offer, which §4.4 alone does not cover.** Publicly using a Produced Work
     that was made *from a Derivative Database* obliges us, **on request**, to offer recipients
-    machine‑readable access to either that database or a file of our alterations. Two courses are
-    affected, because for those we added geometry OSM did not have: **Bay View** and **Valley Hi**
-    (2 hand‑digitized greens each, tagged `_digitized`). The other ten are unmodified extracts, for
+    machine‑readable access to either that database or a file of our alterations. **One** course is
+    affected, because for that one we added geometry OSM did not have: **Bay View** (2 hand‑digitized
+    greens, tagged `_digitized`). Valley Hi appeared here in an earlier revision; its hole‑16 tracing
+    was dropped and zero `_digitized` features remain there — §4a records that history. The other
+    eleven are unmodified extracts, for
     which OSMF's own guidance is simply to refer people to openstreetmap.org — which the About panel
     already does. The alterations are small (2 features on one course, well under OSMF's
     "less than 100 features" insubstantiality threshold), but the obligation is cheap to honour:

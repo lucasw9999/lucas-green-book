@@ -148,7 +148,13 @@ def main():
         raise SystemExit("no LAZ tiles in "+DIR+"/laz  (download the course point cloud first)")
     pt2utm, zscale = laz_to_utm()
     surfaces = load_playing_surfaces()
-    n_golf=sum(1 for s in surfaces if s[5]=='golf'); n_bld=len(surfaces)-n_golf
+    # Counted by KIND, not as a remainder. `len(surfaces) - n_golf` was a building count until water
+    # joined the exclusion list, at which point every pond inflated the printed building figure and
+    # -- worse -- could satisfy the `n_bld == 0` hard stop below, so a cache that genuinely predates
+    # the way[building] query would sail through on ponds alone and draw roofs as trees again.
+    n_golf=sum(1 for s in surfaces if s[5]=='golf')
+    n_bld=sum(1 for s in surfaces if s[5]=='building')
+    n_water=sum(1 for s in surfaces if s[5]=='water')
     _allow = os.environ.get("ALLOW_NO_BUILDINGS", "").lower() not in ("", "0", "false", "no")
     if n_bld == 0 and not _allow:
         # A cache fetched before way[building] was added silently disables the footprint test, and
@@ -235,7 +241,7 @@ def main():
     tot=sum(len(v) for v in out.values())
     print(f"wrote trees_lidar.json: {tot} tree markers across {len(out)} holes "
           f"(dropped {dropped_surface} on green/fairway/tee/bunker, {dropped_building} on buildings; "
-          f"{n_golf} golf + {n_bld} building polygons; e.g. hole1={len(out.get('1',[]))})")
+          f"{n_golf} golf + {n_bld} building + {n_water} water polygons; e.g. hole1={len(out.get('1',[]))})")
 
 if __name__=="__main__":
     main()
