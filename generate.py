@@ -947,7 +947,13 @@ def main():
   .ynotehd {{ font-size: 8pt; font-weight: 700; color: #2b6a2b; margin: 7px 0 3px; }}
   .ynote {{ flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: space-between; padding-bottom: 2px; }}
   .ynote .nl {{ border-bottom: 1px solid #cfcfcf; height: 1px; }}
-  .minilab {{ position: absolute; top: 0; left: 1px; font-size: 5.5pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
+  /* #767676 = 4.54:1 on white, the contrast this project adopted for .foot/.yalt/.playline.
+     .minilab was #9a9a9a (2.81:1) and it carries the two marks that tell a junior to trust a
+     green LESS -- 'GREEN . pre-rebuild data' and 'GREEN . 1 m data' -- so the least legible text
+     on the card was the text that most needed reading. .dcopy (the back-cover licence line) was
+     the same grey; .gsmall sat at 4.48:1, marginally under. Darkening changes no metrics, so no
+     card's layout moves. */
+  .minilab {{ position: absolute; top: 0; left: 1px; font-size: 5.5pt; color: #767676; letter-spacing: .5px; z-index: 2; }}
   /* flex-wrap + nowrap spans: the footer is too long to fit one line on a 5-tee course (three
      "other" tees make the right span 44 characters), and without these it broke MID-PHRASE --
      monarch-bay orphaned "3.1%" on its own line and split "Gol403 / Gre338 /" from "Red288".
@@ -993,10 +999,10 @@ def main():
   .dweb {{ margin-top: 8px; }}
   .dwebtag {{ font-size: 4.5pt; letter-spacing: 2px; color: #b8860b; font-weight: 700; margin-bottom: 1.5px; }}
   .dweburl {{ font-size: 7pt; font-weight: 600; color: #2b6a2b; letter-spacing: .5px; }}
-  .dcopy {{ position: absolute; bottom: 0.14in; left: 0.3in; right: 0.3in; font-size: 6pt; color: #9a9a9a; letter-spacing: .2px; line-height: 1.3; }}
+  .dcopy {{ position: absolute; bottom: 0.14in; left: 0.3in; right: 0.3in; font-size: 6pt; color: #767676; letter-spacing: .2px; line-height: 1.3; }}
   .dqr {{ margin-top: 10px; }}
   .dqr img {{ width: 0.92in; height: auto; display: block; margin: 0 auto; }}
-  .dqrcap {{ font-size: 6.4pt; color: #777; margin-top: 3px; letter-spacing: .2px; }}
+  .dqrcap {{ font-size: 6.4pt; color: #767676; margin-top: 3px; letter-spacing: .2px; }}
   .dqrcap b {{ color: #c13584; }}
 
   .gtitle, .cardtitle {{ font-size: 11pt; font-weight: 800; color: #2b6a2b;
@@ -1007,7 +1013,7 @@ def main():
   .gsub {{ font-size: 7.6pt; color: #444; margin-bottom: 3px; }}
   .guide ul {{ margin: 0; padding-left: 14px; font-size: 7.7pt; line-height: 1.28; }}
   .guide li {{ margin-bottom: 3px; }}
-  .gsmall {{ font-size: 6.7pt; color: #777; margin-top: auto; padding-top: 3px; }}
+  .gsmall {{ font-size: 6.7pt; color: #767676; margin-top: auto; padding-top: 3px; }}
   .legend ol {{ margin: 0; padding-left: 14px; font-size: 7.8pt; line-height: 1.3; }}
   .legend li {{ margin-bottom: 3px; }}
 
@@ -1323,7 +1329,7 @@ def build_coach(coach_name=""):
   .yalt {{ display: block; font-size: 8.5pt; color: #767676; }}   /* front tee: secondary, still a yardage */
   .cmap {{ flex: 1; min-height: 0; position: relative; margin: 2px 0; }}
   .cmap svg {{ width: 100%; height: 100%; }}
-  .minilab {{ position: absolute; top: 0; left: 1px; font-size: 7pt; color: #9a9a9a; letter-spacing: .5px; z-index: 2; }}
+  .minilab {{ position: absolute; top: 0; left: 1px; font-size: 7pt; color: #767676; letter-spacing: .5px; z-index: 2; }}
   /* flex-wrap + nowrap spans: the footer is too long to fit one line on a 5-tee course (three
      "other" tees make the right span 44 characters), and without these it broke MID-PHRASE --
      monarch-bay orphaned "3.1%" on its own line and split "Gol403 / Gre338 /" from "Red288".
@@ -1367,14 +1373,14 @@ def build_coach(coach_name=""):
   .dweb {{ margin-top: 10px; }}
   .dwebtag {{ font-size: 5.5pt; letter-spacing: 2.5px; color: #b8860b; font-weight: 700; margin-bottom: 2px; }}
   .dweburl {{ font-size: 9pt; font-weight: 600; color: #2b6a2b; letter-spacing: .6px; }}
-  .dcopy {{ position: absolute; bottom: 0.16in; left: 0.3in; right: 0.3in; font-size: 7pt; color: #9a9a9a; letter-spacing: .2px; line-height: 1.3; }}
+  .dcopy {{ position: absolute; bottom: 0.16in; left: 0.3in; right: 0.3in; font-size: 7pt; color: #767676; letter-spacing: .2px; line-height: 1.3; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 9pt; }}
   td {{ border: 1px solid #ddd; padding: 1px 3px; text-align: center; }}
   .th td {{ background: #2b6a2b; color: #fff; font-weight: 700; }}
   .sum td {{ background: #eef4ee; font-weight: 700; }}
   .tot td {{ background: #dcebdc; }}
   .tt td {{ font-size: 8.5pt; }}
-  .gsmall {{ font-size: 7pt; color: #777; margin-top: auto; padding-top: 3px; }}
+  .gsmall {{ font-size: 7pt; color: #767676; margin-top: auto; padding-top: 3px; }}
   @media screen {{ body {{ background: #666; padding: 16px; }}
     .sheet {{ background: #fff; margin: 0 auto 20px; box-shadow: 0 2px 12px rgba(0,0,0,.4); }} }}'''
     html = (f'<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'

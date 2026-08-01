@@ -4866,18 +4866,51 @@ def test_the_information_carrying_greys_are_readable_on_paper():
     with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
         src = fh.read()
     faint, found = [], 0
-    for cls in (".foot", ".playline", ".yalt"):
-        rules = re.findall(re.escape(cls) + r" \{\{(.*?)\}\}", src, re.S)
-        rules = [r for r in rules if "color:" in r]
-        assert rules, f"no {cls} rule with a colour found -- the check would pass vacuously"
-        for body in rules:
-            col = re.search(r"color:\s*(#[0-9a-fA-F]{3,6})", body).group(1)
-            found += 1
-            c = contrast_on_white(col)
-            if c < 4.5:
-                faint.append(f"{cls} inks {col} at {c:.2f}:1 -- it carries playing numbers, "
-                             f"and 7.5pt needs 4.5:1")
-    assert found >= 6, f"only {found} rules checked; both stylesheets must be covered"
+    # DISCOVERED, not listed. This named three selectors -- .foot, .playline, .yalt -- and passed while
+    # .minilab inked at #9a9a9a (2.81:1), .dcopy the same, and .gsmall and .dqrcap at #777 (4.48:1). The
+    # worst of those is the worst possible place for it: .minilab carries "GREEN . pre-rebuild data" and
+    # "GREEN . 1 m data", the two marks whose whole job is to tell a junior to trust that green LESS. An
+    # allow-list can only ever cover what someone thought of, so this now sweeps every rule in both
+    # stylesheets and exempts by name, with a reason, rather than including by name.
+    EXEMPT = {
+        # decorative or on a coloured ground, so white-background contrast is not the right measure
+        ".dqr": "the QR block's own caption sits on the code, checked by the QR test",
+        ".crop": "crop ticks are register marks, not text",
+        ".sheettab": "printed on the thumb-index tab's own fill",
+        ".cover": "cover ink, set on the cover's own dark ground, not on paper white",
+        ".ymain": "a SEMANTIC tee colour that must match the tee marker; covered with its own rule by "
+                  "test_every_tee_name_prints_dark_enough_to_read",
+        ".ylab": "same semantic tee colour as .ymain",
+        ".pageno": "deliberate wayfinding, carries no information a reader acts on",
+        ".sheetnote": "printer guidance in the sheet MARGIN, outside the trim -- read once with the "
+                      "sheet in hand, never on the course",
+        # Cover and back-cover typography. All of these are light inks set ON the cover's own dark
+        # ground, so contrast against paper white is simply the wrong measurement for them; the pair
+        # that matters there is ink-on-cover, which the cover's own fill controls. Listed individually
+        # rather than by prefix because they share none, and listed at all because the alternative --
+        # skipping any selector that fails -- is how the allow-list version of this test came to miss
+        # .minilab at 2.81:1.
+        ".crest": "cover crest, light ink on the cover's dark ground",
+        ".btop": "back-cover heading, on the dark ground",
+        ".bmain": "back-cover body, on the dark ground",
+        ".cchip": "cover chip label, on the dark ground",
+        ".dwebtag": "dedication card web tag, on the dark ground",
+        ".etag": "the ENLARGED corner tag, reversed out of its own fill",
+    }
+    for m in re.finditer(r"(\.[a-zA-Z][\w-]*) \{\{([^}]*color:\s*#[0-9a-fA-F]{3,6}[^}]*)\}\}", src):
+        cls, body = m.group(1), m.group(2)
+        if cls in EXEMPT:
+            continue
+        col = re.search(r"color:\s*(#[0-9a-fA-F]{3,6})", body).group(1)
+        found += 1
+        c = contrast_on_white(col)
+        if c < 4.5:
+            faint.append(f"{cls} inks {col} at {c:.2f}:1 -- printed text needs 4.5:1 on paper. If this "
+                         f"selector is decorative or sits on a coloured ground, add it to EXEMPT with a "
+                         f"reason; do not raise the threshold.")
+    assert found >= 14, (
+        f"only {found} coloured rules discovered across both stylesheets; the sweep has stopped finding "
+        f"them, which is how an allow-list version of this test missed .minilab at 2.81:1")
     assert not faint, "information-carrying text is too faint to print:\n  " + "\n  ".join(faint)
 
 
