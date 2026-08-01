@@ -3588,10 +3588,14 @@ def test_every_green_has_its_own_printed_scale_bar():
         if not os.path.isfile(os.path.join(ROOT, "courses", slug, "greenbook.pdf")):
             continue
         config, _rh = _engine(slug)
-        pm = check_scale.measure_printed(slug)
-        if pm is None:
+        # measure_printed now returns a REASON alongside the bars instead of a bare None, because
+        # every way it could fail -- no PyMuPDF, no PDF, no captioned rule -- came back as None and
+        # check_scale's caller said nothing at all, so the artifact half of the Rule 4.3 gate could
+        # vanish from the report without a word. Unpack all three and SKIP on a stated reason.
+        mx, bars, why = check_scale.measure_printed(slug)
+        if mx is None:
             continue
-        mx, bars = pm
+        assert not why, why
         checked += 1
         ngreens = sum(1 for hn in config.HOLE_NUMS
                       if os.path.isfile(os.path.join(ROOT, "courses", slug, "dem_hd",
@@ -6901,21 +6905,56 @@ def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
     assert strip_like_gen_provenance(
         "USGS_LPC_CA_AlamedaCounty_2021_B21_w6162n2049__Co_3_2021.laz") != "CA_AlamedaCounty_2021_B21", \
         "this is the naming that broke the legal record; the assertion below guards against it"
-    # Both fetchers must build the suffix with the SHARED helper -- it was encoded twice, with two
-    # different token regexes, one of them lacking collision handling.
+    # Both fetchers must reach ONE implementation of "which local file holds which copy". It was
+    # written twice and the copies disagreed: fetch_lidar.plan_downloads matches the cache BY SIZE,
+    # while fetch_lidar_alameda.py tested `os.path.getsize(fn) >= sz - 1024`, which is ONE-SIDED, so a
+    # file LARGER than expected satisfied a smaller expectation. Measured at Callippe, where cell
+    # w6165n2052 exists in CA_AlamedaCo_1_2021 at 21,981,521 bytes and CA_AlamedaCo_3_2021 at
+    # 244,776,088 (both confirmed by HEAD): the 245 MB copy is on disk under the plain name and the
+    # 22 MB one under `__Co1`, a name that module can never generate (sub-project 1 is probed first,
+    # so it always takes the plain name). A re-run therefore called the Co_1 copy cached against the
+    # 245 MB file and downloaded Co_3 again as `__Co3.laz`. fetch_dem_hd.py globs laz/*.laz with no
+    # de-duplication, so 10 of Callippe's 18 greens would have published exactly twice their real
+    # in-green density -- 13.0-15.8 pts/m2 becoming 26.0-31.6 in legal/03.
+    #
+    # Asserted as a DELEGATION, not as "the file mentions copy_suffix somewhere": that spelling was
+    # satisfied by the word appearing in a COMMENT, which is the same dead assertion this file
+    # records twice elsewhere (fetch_dem_hd's OVERWRITE guard, its DISOWNED_FLAGS set).
     ala = open(os.path.join(ROOT, "fetch_lidar_alameda.py"), encoding="utf-8").read()
-    fnlines = [ln.strip() for ln in ala.splitlines()
-               if re.match(r"fn\s*=", ln.strip()) or "copy_suffix" in ln]
-    joined = " ".join(fnlines)
-    assert "copy_suffix" in joined, f"expected the shared suffix helper, got: {joined}"
-    assert "sub[-9:]" not in joined, \
-        f"the sub-project slice in a FILENAME is what broke the provenance strip: {joined}"
-    # and the helper itself must yield __Co<digits> for every real Alameda sub-project
+    code = "\n".join(ln for ln in ala.splitlines()
+                     if ln.strip() and not ln.strip().startswith("#"))
+    assert "fetch_lidar.plan_downloads(" in code, \
+        "the Alameda fetcher must plan its downloads through the shared, size-matching implementation"
+    assert not re.search(r"getsize\([^\n]*?\)\s*(>=|<=|>|<)", code), \
+        ("the Alameda fetcher must not decide 'cached' with a size COMPARISON: "
+         "`getsize(fn) >= sz - 1024` is one-sided, so it reported a 245 MB file as a cached 22 MB "
+         "tile and re-downloaded the 245 MB copy under a second name")
+    assert "__Co" not in code, \
+        ("the Alameda fetcher must not spell the copy suffix at all -- naming belongs to "
+         "fetch_lidar.copy_suffix. It had its own spelling once (`__Co_3_2021`, the sub-project's "
+         "last 9 characters) and gen_provenance.py's `__Co\\d+` strip does not match it")
+    # and the shared helper must yield __Co<digits> for every real Alameda sub-project
     for sub, want in (("CA_AlamedaCo_1_2021", "1"), ("CA_AlamedaCo_2_2021", "2"),
                       ("CA_AlamedaCo_3_2021", "3")):
         got = fl.copy_suffix(sub, 1, "USGS_LPC_X_w1n1", ".laz", set())
         assert got == f"USGS_LPC_X_w1n1__Co{want}.laz", (sub, got)
         assert re.search(r"__Co\d+\.laz$", got), got
+    # ...and the shared planner must resolve the Callippe shape: a plain-named file holding the LARGER
+    # sub-project copy, with the smaller one under a name the fetcher would never choose.
+    cal = tmp_path / "callippe"
+    cal.mkdir()
+    stem = "USGS_LPC_CA_AlamedaCounty_2021_B21_w6165n2052"
+    for nm, sz in ((f"{stem}.laz", 244776088), (f"{stem}__Co1.laz", 21981521)):
+        with open(cal / nm, "wb") as fh:
+            fh.truncate(sz)
+    aroot = "https://x/Projects/CA_AlamedaCounty_2021_B21"
+    todo5, cached5 = fl.plan_downloads(
+        [{"downloadURL": f"{aroot}/CA_AlamedaCo_1_2021/LAZ/{stem}.laz", "sizeInBytes": 21981521},
+         {"downloadURL": f"{aroot}/CA_AlamedaCo_3_2021/LAZ/{stem}.laz", "sizeInBytes": 244776088}],
+        str(cal))
+    assert cached5 == 2 and not todo5, \
+        (f"both sub-project copies are already on disk under other names; re-fetching one duplicates "
+         f"its points and doubles the density the legal record publishes. got {todo5}")
 
 
 def test_an_unresolvable_head_is_never_reported_as_the_edge_of_the_survey():

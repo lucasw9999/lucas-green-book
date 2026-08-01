@@ -167,6 +167,36 @@ def main():
     if n_bld == 0:
         print("WARNING: ALLOW_NO_BUILDINGS set -- building footprint test DISABLED; "
               "roofs may be drawn as trees")
+    # The same fault one query deeper. fetch_osm.py's MULTIPOLYGON pass was added after some caches
+    # were built, and a building, pond or fairway mapped as a relation is invisible to a cache that
+    # predates it -- so load_playing_surfaces() above never sees that footprint and its roof or its
+    # open water comes back as canopy. That is the identical failure the ALLOW_NO_BUILDINGS gate
+    # exists for (53 markers on Merion's clubhouse; 615 of 68,884 shipped markers inside a mapped
+    # pond, worst 22.0 m in), and there was no equivalent check for it.
+    #
+    # The marker is the FILE, not a count of relations: a cache with zero flattened rings is either a
+    # course that genuinely has no multipolygons or a cache that never asked, and those two are not
+    # the same claim. osm_relations.json exists exactly when the pass ran, so its presence records
+    # "we asked" and a reply of zero relations is then a positive answer.
+    #
+    # Measured over this corpus: castlewood-hill and castlewood-valley are the only two caches with
+    # no osm_relations.json, and they are also the only two with zero `_from_relation` elements; the
+    # other nine carry 1 to 36 flattened rings (monarch-bay 36 fairways, micke-grove 19,
+    # the-reserve 19, valley-hi 18). Re-queried live on 2026-08-01, both Castlewood bboxes return
+    # ZERO golf / natural=water / building relations, so nothing is in fact missing from those two
+    # books -- but that could not be known without asking, which is the whole point. Re-running
+    # fetch_osm.py records the zero and clears this.
+    _rel = f"{DIR}/osm_relations.json"
+    _allow_rel = os.environ.get("ALLOW_NO_RELATIONS", "").lower() not in ("", "0", "false", "no")
+    if not os.path.exists(_rel) and not _allow_rel:
+        raise SystemExit("no osm_relations.json -- this cache predates fetch_osm.py's multipolygon\n"
+                         "  pass, so a building, pond or fairway mapped as a RELATION is missing from\n"
+                         "  osm_course.json and its roof or its open water would be drawn as trees.\n"
+                         "  Re-run: COURSE=%s python3 fetch_osm.py   (or set ALLOW_NO_RELATIONS=1 if\n"
+                         "  you have confirmed this bbox has no multipolygon features)" % config.SLUG)
+    if not os.path.exists(_rel):
+        print("WARNING: ALLOW_NO_RELATIONS set -- multipolygon buildings and ponds are NOT in this\n"
+              "         cache; their roofs and their water may be drawn as trees")
     geom = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
     # hole centrelines as UTM segment lists.
     # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,

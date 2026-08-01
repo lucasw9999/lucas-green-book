@@ -29,6 +29,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import sys
 
 IN_PER_5YD = 180.0              # 5 yd on the ground, in inches -- so a printed length of L inches
@@ -53,22 +54,50 @@ def mlon(lat):
 
 
 def px_m_of(course, hole):
-    """True metres per DEM pixel for one green (mean of the two axes)."""
+    """True metres per DEM pixel for one green (mean of the two axes), or None with the reason.
+
+    Returns a (value, reason) pair rather than a bare value because the caller has to be able to SAY
+    that a green went unmeasured. It used to return None on a missing dem_hd/holeNN.json and the
+    caller dropped it with `if pm:` -- no message, and no increment to the green count either, so the
+    gate reported "PASS" over a smaller book than the one on disk. Reproduced by moving one meta
+    aside: merion printed "17 greens ... PASS" and exited 0 while its PDF still carried 18 scale bars.
+    """
     p = ROOT / "courses" / course / "dem_hd" / f"hole{hole:02d}.json"
     if not p.exists():
-        return None
+        return None, f"no dem_hd/hole{hole:02d}.json, so its ground scale is unknown"
     m = json.loads(p.read_text())
     xmin, ymin, xmax, ymax = m["bbox"]
     clat = m["green_center"][0]
-    return ((((xmax - xmin) * mlon(clat)) / m["W"]) + (((ymax - ymin) * R_LAT) / m["H"])) / 2.0
+    pm = ((((xmax - xmin) * mlon(clat)) / m["W"]) + (((ymax - ymin) * R_LAT) / m["H"])) / 2.0
+    if not pm:
+        return None, f"dem_hd/hole{hole:02d}.json gives a zero ground scale"
+    return pm, ""
+
+
+def dem_hd_holes(course):
+    """Hole numbers with a built green surface on disk -- what the book is expected to draw.
+
+    The gate's own green count has to be checked against something outside the browser, or a card
+    the selector fails to find is indistinguishable from a card that is not there.
+    """
+    out = set()
+    for p in (ROOT / "courses" / course / "dem_hd").glob("hole*.json"):
+        m = re.match(r"hole(\d+)\.json$", p.name)
+        if m:
+            out.add(int(m.group(1)))
+    return out
 
 
 def measure_rendered(courses):
-    """{course: {hole: inches_representing_5_yards}} as the browser lays the book out.
+    """{course: {"per": {hole: inches_per_5yd}, "skipped": [(hole, why)], "cards": n}}, or None.
 
     Returns None when no browser is installed, so the caller can say so instead of dying: this
     check MUST be done in a browser (the whole point is that CSS can override the SVG's own
-    width), and a machine without one cannot answer the question either way."""
+    width), and a machine without one cannot answer the question either way.
+
+    `skipped` and `cards` exist so the caller can compare what was MEASURED against what was FOUND
+    and against the surfaces on disk. A green that could not be measured used to disappear here.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -100,12 +129,14 @@ def measure_rendered(courses):
                 return { hole: +(pan.querySelector('.hnum') || {}).textContent,
                          k: Math.min(r.width / 96 / vb[2], r.height / 96 / vb[3]) };
             }).filter(Boolean)""")
-            per = {}
+            per, skipped = {}, []
             for card in cards:
-                pm = px_m_of(c, card["hole"])
+                pm, why = px_m_of(c, card["hole"])
                 if pm:
                     per[card["hole"]] = card["k"] * 4.572 / pm
-            out[c] = per
+                else:
+                    skipped.append((card["hole"], why))
+            out[c] = {"per": per, "skipped": skipped, "cards": len(cards)}
         b.close()
     return out
 
@@ -115,7 +146,7 @@ BAR_SAME_COLUMN_PT = 40.0       # ...and within the same card column
 
 
 def measure_printed(course):
-    """(max, [all]) printed 5-yd bar lengths in inches, or None.
+    """(max, [all], reason) printed 5-yd bar lengths in inches; reason is "" when bars were measured.
 
     Each bar is found by its OWN caption. This used to take the longest horizontal rule anywhere in the
     book inside a 0.20-0.60 in window, and that is not the same thing: on callippe it returned 0.3554 in
@@ -127,14 +158,19 @@ def measure_printed(course):
     intent is not evidence, so the printed artifact gets measured too; a second opinion that can latch
     onto an unrelated rule is not a second opinion. It was informational only, so nothing was ever
     mis-gated -- but the number it printed was not the bar.
+
+    It now returns a REASON instead of a bare None. Every way of failing -- no PyMuPDF, no PDF, no bar
+    found -- came back as None and the caller said nothing at all, so the artifact half of the gate
+    could vanish without a word. Reproduced by moving one greenbook.pdf aside: the line for that course
+    simply lost its "| printed bars ..." half and the tool still exited 0.
     """
     try:
         import fitz
     except ImportError:
-        return None
+        return None, [], "PyMuPDF (fitz) is not installed"
     f = ROOT / "courses" / course / "greenbook.pdf"
     if not f.exists():
-        return None
+        return None, [], "no greenbook.pdf on disk -- run tools/export_pdf.py"
     bars = []
     with fitz.open(f) as d:
         for page in d:
@@ -155,7 +191,9 @@ def measure_printed(course):
                         if abs(r[2] - cy) < BAR_NEAR_LABEL_PT and abs(r[1] - cx) < BAR_SAME_COLUMN_PT]
                 if near:
                     bars.append(max(near, key=lambda r: r[0])[0])
-    return (max(bars), bars) if bars else None
+    if not bars:
+        return None, [], 'no "5 yd" caption with a rule beside it in the PDF'
+    return max(bars), bars, ""
 
 
 def main():
@@ -206,10 +244,48 @@ def main():
         print("SKIP: no browser to measure the rendered layout in; Rule 4.3 is UNVERIFIED here.")
         return 2
     failures, warned, total = [], 0, 0
+    # A green this tool cannot measure is not a green that conforms. Every one of these paths ended in
+    # silence and rc 0:
+    #   * px_m_of returned None for a missing dem_hd/holeNN.json and the caller dropped it with
+    #     `if pm:` -- no message, and `total` never counted it. Reproduced: merion printed
+    #     "17 greens ... PASS" with hole 7's meta moved aside, while its PDF still held 18 bars.
+    #   * an empty `per` printed "(no greens measured -- yardage-mode book?)" and continued, which is
+    #     indistinguishable from a selector that stopped matching .panel.hole in every book.
+    # Both are now compared against evidence outside the browser: the cards the page yielded, and the
+    # green surfaces on disk. The pocket edition CLAIMS Rule 4.3 conformance in print, so an
+    # unmeasured green has to read as unverified, not as a pass.
+    unmeasured = []
+    import distribution          # one spelling of build_mode for the whole engine
     for c in courses:
-        per = rendered.get(c) or {}
+        info = rendered.get(c) or {}
+        per = info.get("per") or {}
+        skipped = info.get("skipped") or []
+        ncards = info.get("cards", 0)
+        metas = dem_hd_holes(c)
+        cj = ROOT / "courses" / c / "course.json"
+        cjson = json.loads(cj.read_text()) if cj.exists() else None
+        yardage = distribution.is_yardage(cjson)
+        for h, whyskip in skipped:
+            unmeasured.append((c, f"hole {h}: {whyskip}"))
+        missing_cards = sorted(metas - set(per) - {h for h, _w in skipped})
+        if missing_cards:
+            # A built green surface with no card measuring it. Either the book does not draw that hole
+            # or the .panel.hole/.grn svg selector missed it -- and a selector that has stopped
+            # matching is exactly the failure the "(no greens measured)" line could not distinguish.
+            unmeasured.append((c, f"{len(missing_cards)} built green surface(s) {missing_cards} that "
+                                  f"no measured card corresponds to ({ncards} card(s) found in the "
+                                  f"page)"))
         if not per:
-            print(f"{c:34s} (no greens measured -- yardage-mode book?)"); continue
+            if yardage:
+                # The one legitimate case: a yardage-mode book prints blank greens on purpose, so
+                # there is no green image for Rule 4.3 to cap. poppy-ridge is the live example.
+                print(f"{c:34s} (no greens measured -- build_mode=yardage, blank greens by design)")
+            else:
+                unmeasured.append((c, f"0 greens measured but {len(metas)} green surface(s) on disk "
+                                      f"and {ncards} card(s) in the page, and build_mode is not "
+                                      f"'yardage'"))
+                print(f"{c:34s} !! 0 greens measured -- see the failure list below")
+            continue
         worst_h = max(per, key=per.get)
         worst = per[worst_h]
         total += len(per)
@@ -217,10 +293,13 @@ def main():
         near = {h: v for h, v in per.items() if LIMIT_IN_PER_5YD >= v > TARGET_IN_PER_5YD + 0.005}
         warned += len(near)
         failures += [(c, h, v) for h, v in over.items()]
-        pm = measure_printed(c)
-        pr = ""
-        if pm:
-            printed, bars = pm
+        printed, bars, whybars = measure_printed(c)
+        if printed is None:
+            # The independent half of the gate. Informational, but it must never go missing quietly:
+            # the tool exists because intent is not evidence, and a second opinion that is absent
+            # without saying so is not a second opinion either.
+            pr = f" | printed bars NOT MEASURED: {whybars}"
+        else:
             pr = f" | printed bars {min(bars):.4f}-{printed:.4f} in ({len(bars)})"
             # the legal claim is about the ARTIFACT, so every bar must clear the cap on its own
             over_bar = [b for b in bars if b > LIMIT_IN_PER_5YD]
@@ -230,6 +309,10 @@ def main():
             elif printed > worst + 0.01:
                 pr += (f"  !! a printed bar exceeds the measured layout scale ({worst:.4f}) -- the two "
                        f"should agree")
+            elif len(bars) != len(per):
+                # The two halves must be counting the same book. This is how a silently dropped green
+                # showed itself once the layout half stopped hiding it.
+                pr += f"  !! {len(bars)} printed bar(s) against {len(per)} measured green(s)"
         print(f"{c:34s} {len(per):3d} greens  worst h{worst_h:<2} {worst:.4f} in/5yd "
               f"(1:{IN_PER_5YD / worst:.0f})  margin {(1 - worst / LIMIT_IN_PER_5YD) * 100:5.1f}%  "
               f"{'FAIL' if over else 'PASS'}{pr}")
@@ -240,6 +323,12 @@ def main():
         # "0 greens measured ... PASS" used to exit 0, so a renamed directory or a course set that
         # failed to load would report Rule 4.3 conformance for an empty measurement.
         print("FAIL: measured 0 greens -- nothing was checked, so this is not a pass.")
+        return 1
+    if unmeasured:
+        print(f"FAIL: {len(unmeasured)} green(s)/course(s) were NOT measured, so their conformance is "
+              f"unverified rather than proven:")
+        for c, whyskip in unmeasured:
+            print(f"   {c}: {whyskip}")
         return 1
     if not card_ok:
         # Rule 4.3 caps the book SIZE as well as the scale; this was computed, printed and then
