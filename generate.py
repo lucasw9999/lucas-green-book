@@ -606,9 +606,33 @@ def tees_panel():
     <tr class="th"><td>Tee</td><td>Yds</td><td>Rate</td><td>Slp</td></tr>
     {rows}
   </table>
-  <div class="gsmall">Yardages from the official scorecard. Rating &amp; slope as published for the
+  <div class="gsmall">{_scorecard_claim()} Rating &amp; slope as published for the
     course &mdash; see the provenance record for each course's source.{note}</div>
 </div>'''
+
+
+def _scorecard_claim():
+    """How the tees card may describe where its yardages came from -- per course, not one boast.
+
+    The card said "Yardages from the official scorecard." on every book. Only 4 of 11 courses record an
+    official or printed club scorecard; the other 7 record third-party aggregators -- BlueGolf, NCGA,
+    GolfLink, Wikipedia, Golfify. For those, "official" is a claim about provenance the record does not
+    support, printed beside the very numbers it is vouching for.
+
+    The same book already says the honest version two cards away: the guide card credits "facts from the
+    PUBLISHED scorecard". So this is not a hard question about what is true, only about which of two
+    wordings a given course has earned. Derived from sources.scorecard, which is the field the provenance
+    record is built from, so the card and legal/03 cannot disagree.
+
+    Aggregator data is not less honest -- bay-view's own source note records that a third-party record
+    was WRONG and was corrected against the club's card -- which is exactly why the distinction is worth
+    printing rather than papering over.
+    """
+    src = str((config.COURSE.get("sources") or {}).get("scorecard") or "").lower()
+    official = ("official" in src) or ("printed scorecard" in src)
+    return ("Yardages from the <b>official</b> scorecard." if official else
+            "Yardages from <b>published</b> scorecard data.")
+
 
 def legend_panel():
     flag = ('<svg width="26" height="26" viewBox="0 0 26 26">'

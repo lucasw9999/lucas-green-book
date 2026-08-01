@@ -8763,3 +8763,59 @@ def test_one_normalised_spelling_of_build_mode_across_the_engine(tmp_path):
     finally:
         shutil.rmtree(cdir, ignore_errors=True)
         _restore_course(prev)
+
+
+@needs_corpus
+def test_the_card_only_claims_an_official_scorecard_where_one_is_recorded():
+    """The tees card said "Yardages from the official scorecard." on every book. 7 of 11 had none.
+
+    Only 4 courses record an official or printed club scorecard. The other 7 record third-party
+    aggregators -- BlueGolf, NCGA, GolfLink, Wikipedia, Golfify -- so "official" was a claim about
+    provenance the record does not support, printed directly beside the numbers it vouches for. The same
+    book already said the honest version two cards away: the guide card credits "facts from the PUBLISHED
+    scorecard".
+
+    Aggregator data is not the problem and this is not a downgrade for its own sake. bay-view's own source
+    note records that a third-party record was WRONG and had to be corrected against the club's card --
+    which is exactly why the distinction is worth printing rather than papering over. A reader who knows
+    the yardages came from an aggregator can weigh them; one told they came from the club cannot.
+
+    Derived from sources.scorecard, the same field the provenance record is built from, so the card and
+    legal/03 cannot disagree. Asserted in BOTH directions: a course that earned "official" must still say
+    it, or the fix would have quietly cost four books a true claim.
+    """
+    checked, problems, off_n, pub_n, seen = 0, [], 0, 0, set()
+    for ref in BOOKS:
+        cp = os.path.join(ROOT, "courses", ref, "course.json")
+        bp = os.path.join(ROOT, "courses", ref, "greenbook.html")
+        if not (os.path.exists(cp) and os.path.exists(bp)):
+            continue
+        seen.add(ref)
+        with open(cp, encoding="utf-8") as f:
+            src = str((json.load(f).get("sources") or {}).get("scorecard") or "").lower()
+        with open(bp, encoding="utf-8") as f:
+            html = f.read()
+        earned = ("official" in src) or ("printed scorecard" in src)
+        says_off = "Yardages from the <b>official</b> scorecard" in html
+        says_pub = "Yardages from <b>published</b> scorecard data" in html
+        if says_off == says_pub:
+            problems.append(f"{ref}: the tees card makes neither claim, or both -- the wording moved and "
+                            f"this test can no longer see it")
+            continue
+        checked += 1
+        off_n += says_off
+        pub_n += says_pub
+        if says_off and not earned:
+            problems.append(
+                f"{ref}: prints 'from the official scorecard' but records only {src[:60]!r}. That is a "
+                f"provenance claim the record does not support, beside the numbers it vouches for.")
+        if earned and not says_off:
+            problems.append(
+                f"{ref}: records an official scorecard ({src[:50]!r}) but prints the weaker 'published' "
+                f"claim -- it earned the stronger one and should say so.")
+    assert checked >= 10, f"only {checked} tees cards were readable"
+    assert_no_course_skipped(seen, "test_the_card_only_claims_an_official_scorecard_where_one_is_recorded")
+    assert off_n and pub_n, (
+        f"every book now makes the SAME claim ({off_n} official, {pub_n} published), so this test cannot "
+        f"tell the two apart any more. The corpus had 4 and 7; if that really changed, re-measure.")
+    assert not problems, "the tees card overstates where its yardages came from:\n  " + "\n  ".join(problems)
