@@ -198,9 +198,19 @@ def green_honesty(hole, s):
     # A green whose plane fit and whose own arrows point opposite ways has no fall direction the data
     # supports, and render_green refuses to name one. Print the measured tilt, which is still true,
     # but NOT inside "feeds ..." -- "feeds no clear fall" would read as a direction.
+    # The qualifier prints ONLY when it limits the read. It used to print on all 252 green footers --
+    # 220 "(firm)" against 32 "(subtle)" -- so the common case spent a word to say nothing, and the
+    # informative case was buried among them. Marking only the exception says strictly more, and it
+    # bought back 35 two-line footers (43 -> 8 of 252 measured in-browser), which is card space on the
+    # edition that was clipping its own licence line. It is also the only honest reading: a green whose
+    # fall is faint is a green whose printed direction is inside the survey noise, and that is worth a
+    # mark; a green whose fall is clear needs no adjective.
+    faint = ' (faint)' if s["conf"] == "faint" else ''
     if s["feeds"] == render_green.NO_CLEAR_FALL:
-        return label, f'<b>no clear fall</b> ({esc(s["conf"])}) &middot; {tilt}'
-    return label, f'feeds <b>{esc(s["feeds"])}</b> ({esc(s["conf"])}) &middot; {tilt}'
+        # "no clear fall (faint)" would say the same thing twice, and the sentinel is the stronger of
+        # the two -- the plane and the arrows disagree outright. No qualifier here.
+        return label, f'<b>no clear fall</b> &middot; {tilt}'
+    return label, f'feeds <b>{esc(s["feeds"])}</b>{faint} &middot; {tilt}'
 
 
 def _hole_elev():
@@ -466,25 +476,30 @@ def _flown_line():
     a 38-day range came to be printed for greens flown on two days."""
     fl = config.COURSE.get("lidar_flown") or {}
     label = fl.get("label")
-    if not label:
-        return ""
-    # Fail closed: a record with NO basis predates that distinction, and its label WAS the whole-tile
-    # union, so silence must read as the weaker claim rather than the stronger one.
-    basis = fl.get("basis")
-    over_greens = bool(basis) and basis.startswith("points within")
-    qual = ("" if over_greens else
-            " That range covers whole survey tiles, not only the points over these greens, so it may"
-            " be wider than the flight that actually built them.")
-    out = ('  <div class="legrow"><span><b>Measured</b> from public USGS 3DEP LiDAR flown '
-           f'<b>{esc(label)}</b>.{esc(qual)} Greens rebuilt after that date will not match &mdash; '
-           'trust what you see on the ground.</span></div>\n')
+    out = ""
+    if label:
+        # Fail closed: a record with NO basis predates that distinction, and its label WAS the whole-tile
+        # union, so silence must read as the weaker claim rather than the stronger one.
+        basis = fl.get("basis")
+        over_greens = bool(basis) and basis.startswith("points within")
+        qual = ("" if over_greens else
+                " That range covers whole survey tiles, not only the points over these greens, so it may"
+                " be wider than the flight that actually built them.")
+        out = ('  <div class="legrow"><span><b>Measured</b> from public USGS 3DEP LiDAR flown '
+               f'<b>{esc(label)}</b>.{esc(qual)} Greens rebuilt after that date will not match &mdash; '
+               'trust what you see on the ground.</span></div>\n')
+    # An ABSENT flight date used to return here, which also skipped the two caveats below -- and they
+    # have nothing to do with the date. green_honesty() stamps "pre-rebuild data" and "1 m data" on
+    # cards without consulting lidar_flown at all, so a course whose owner ran the pipeline but not
+    # tools/lidar_dates.py shipped a book with nine cards marked "pre-rebuild data" and a warning
+    # triangle, and nothing anywhere saying what that meant. That is precisely the failure the comment
+    # below records these caveats being added to end. The date sentence is now the only conditional part.
     stale = sorted(config.COURSE.get("greens_possibly_outdated", []))
     if stale:
         holes = ", ".join(str(h) for h in stale)
-        out += ('  <div class="legrow"><span><b>&#9888; Holes ' + esc(holes) + '</b> were '
-                '<b>rebuilt after</b> that survey, so their green maps are marked '
-                '<b>&ldquo;pre-rebuild data&rdquo;</b> &mdash; the shapes and tiers may have '
-                'changed. Use them as a guide only and trust your own read.</span></div>\n')
+        out += ('  <div class="legrow"><span><b>&#9888; Holes ' + esc(holes) + '</b>: '
+                '<b>rebuilt after</b> that survey, marked <b>&ldquo;pre-rebuild data&rdquo;</b> '
+                '&mdash; shapes and tiers may have changed. Trust your own read.</span></div>\n')
     # The other caveat a card can carry needs the same treatment. Six of Monarch Bay's greens print
     # "GREEN - 1 m data" and the phrase appeared NOWHERE else in either edition -- a 12-year-old
     # reading it learns nothing, and the whole point of the label is to tell him to trust that green
@@ -495,8 +510,8 @@ def _flown_line():
         holes = ", ".join(str(h) for h in coarse)
         out += ('  <div class="legrow"><span><b>Holes ' + esc(holes) + '</b> had no usable point '
                 'cloud (tree cover or water), so their greens come from the coarser <b>1 m</b> '
-                'national elevation model and are marked <b>&ldquo;1 m data&rdquo;</b>. The tilt is '
-                'real, just less sharp &mdash; small tiers may be smoothed away.</span></div>\n')
+                'national model, marked <b>&ldquo;1 m data&rdquo;</b>. The tilt is real, just less '
+                'sharp &mdash; small tiers may smooth away.</span></div>\n')
     # And the same treatment for the TREE layer, which had none. Trees are found by height above
     # ground in the point cloud, so a hole the survey does not reach draws no trees -- indistinguishable
     # on the card from a hole that genuinely has none, while the legend promises "trees". Monarch Bay 1,
@@ -512,6 +527,27 @@ def _flown_line():
     return out
 
 
+def _faint_note():
+    """Define "(faint)" ONLY in a book that prints it, same as _no_fall_note.
+
+    The word this replaced -- "(firm)" -- was defined NOWHERE, in either edition, while printing on
+    every one of 252 green footers. The only hook a reader had for it was the turf sense, which is
+    the wrong one: it is a statement about how far the measured fall stands above the survey noise,
+    not about how the green is playing that morning. A qualifier a reader can only misread is worse
+    than no qualifier, which is why the common case no longer prints one at all.
+
+    Keyed off what was actually rendered, so a book whose every green has a clear fall does not carry
+    a line explaining a mark it never uses.
+    """
+    if not any(sm.get("conf") == "faint" for _svg, sm in GREENS.values()):
+        return ''
+    # Kept to ONE line on purpose. The first draft ran four and pushed the guide card past its own
+    # bounds, clipping the licence and contact lines on three books -- the exact fault the coach
+    # edition was just fixed for. A caveat that costs the licence text is not a caveat worth printing.
+    return ('  <div class="legrow"><span><b>(faint)</b> after a feed = shallow fall, near this '
+            'survey\'s limit &mdash; trust the side less.</span></div>\n')
+
+
 def _no_fall_note():
     """Explain the no-clear-fall wording ONLY in a book that actually uses it.
 
@@ -519,10 +555,9 @@ def _no_fall_note():
     would be clutter that describes nothing in that book. Keyed off what was actually rendered."""
     if not any(sm.get("feeds") == render_green.NO_CLEAR_FALL for _svg, sm in GREENS.values()):
         return ''
-    return ('  <div class="legrow"><span><b>&ldquo;no clear fall&rdquo;</b> on a green means the '
-            'surface is too level for this data to name a side &mdash; the plane through it and the '
-            'arrows on it disagree, so no direction is claimed. The measured slope % is still '
-            'printed. Read that one with your own eyes.</span></div>\n')
+    return ('  <div class="legrow"><span><b>&ldquo;no clear fall&rdquo;</b> = too level for this data '
+            'to name a side: the plane through the green and the arrows on it disagree, so none is '
+            'claimed. The slope % still prints. Read that one with your own eyes.</span></div>\n')
 
 
 def guide_panel():
@@ -541,10 +576,9 @@ def guide_panel():
     fade into the fairway.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
-''' + _no_fall_note() + '''
+''' + _faint_note() + _no_fall_note() + '''
   <div class="legrow"><span><b>green N ft above/below</b> = the <b>measured</b> height of the green
-    against its back tee. It is <b>not</b> a yardage adjustment &mdash; how much club that is worth
-    depends on your own ball flight, so <b>you</b> make that call.</span></div>
+    against its back tee, <b>not</b> a yardage adjustment &mdash; that club call is <b>yours</b>.</span></div>
   <div class="legrow"><span><b>carry N</b> = yd from the back tee to where fairway sand <b>starts</b>,
     along the line. The sand can run well past N &mdash; check the map.</span></div>
 ''' + _flown_line() + '''  <div class="abt">
@@ -820,8 +854,8 @@ def main():
   /* #999 was 2.85:1 on white -- below the 4.5:1 needed at this size, and this row carries the
      feed direction, the tilt %, the green depth and the bunker count. Secondary, not faint. */
   .foot {{ display: flex; flex-wrap: wrap; justify-content: space-between; font-size: 7.5pt;
-           color: #767676; margin-top: 1px; }}}}
-  .foot span {{{{ white-space: nowrap; }}}}
+           color: #767676; margin-top: 1px; }}
+  .foot span {{ white-space: nowrap; }}
   .playline {{ font-size: 7.5pt; color: #666; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .sheettab {{ position: absolute; top: 2px; right: 5px; font-size: 7pt; color: #bbb; }}
 
@@ -932,7 +966,14 @@ def main():
 
     sheets_html = build_pages(panels)
     out = os.path.join(COURSE_DIR, "greenbook.html")
-    open(out, "w").write(doc(sheets_html, config.BRAND))
+    # encoding="utf-8" explicitly. Without it Python uses the platform default, while the document
+    # it is writing declares <meta charset="utf-8"> -- and every book contains 18 U+2013 en-dashes
+    # from the thumb-index tabs (generated unconditionally, "1\u201333" and friends). On a cp1252
+    # machine those become byte 0x96, which utf-8 cannot decode, so all 18 tabs render as
+    # replacement characters; under an ASCII locale the build dies with UnicodeEncodeError. Declaring
+    # one encoding and writing another is a bug that cannot reproduce on the author's machine.
+    with open(out, "w", encoding="utf-8") as _f:
+        _f.write(doc(sheets_html, config.BRAND))
     print(f"Wrote {out} (single conforming build) "
           f"-> cards {config.CARD_W_IN}x{config.CARD_H_IN}in, {config.PER}/sheet duplex")
 
@@ -1040,10 +1081,9 @@ def coach_about_card():
     colour</b> &mdash; bunkers all but vanish in black &amp; white.</span></div>
   <div class="legrow"><span><b>Left</b> = to green (straight), <b>right</b> = from the tee (walked)
     &mdash; on a dogleg they do <b>not</b> add up.</span></div>
-''' + _no_fall_note() + '''
-  <div class="legrow"><span>Because the greens here are printed <b>larger than the tournament scale</b>,
-    this enlarged edition is a <b>practice aid and is NOT a conforming competition book under
-    Rule&nbsp;4.3</b> &mdash; use the standard pocket edition for competition.</span></div>
+''' + _faint_note() + _no_fall_note() + '''
+  <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
+    conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a
     yardage adjustment. <b>carry N</b> = yd from the back tee to where fairway
     sand starts; it can run past N.</span></div>
@@ -1183,8 +1223,8 @@ def build_coach(coach_name=""):
      monarch-bay orphaned "3.1%" on its own line and split "Gol403 / Gre338 /" from "Red288".
      The same fault the playline had. Wrapping BETWEEN the two spans is fine; inside one is not. */
   .foot {{ display: flex; flex-wrap: wrap; justify-content: space-between; font-size: 8pt;
-           color: #767676; margin-top: 1px; }}}}
-  .foot span {{{{ white-space: nowrap; }}}}
+           color: #767676; margin-top: 1px; }}
+  .foot span {{ white-space: nowrap; }}
   .playline {{ font-size: 8pt; color: #666; margin-top: 0.5px; white-space: nowrap; overflow: hidden; }}
   .cover {{ position: relative; overflow: hidden; padding: 0; }}
   .gtitle, .cardtitle {{ font-size: 12pt; font-weight: 800; color: #2b6a2b; border-bottom: 2px solid #2b6a2b; padding-bottom: 2px; margin-bottom: 4px; }}
@@ -1225,7 +1265,8 @@ def build_coach(coach_name=""):
             f'<title>Enlarged Edition &mdash; {esc(COURSE)}</title><style>{css}</style>'
             f'</head><body>{"".join(pages)}</body></html>')
     out = os.path.join(COURSE_DIR, "greenbook_coach.html")
-    open(out, "w").write(html)
+    with open(out, "w", encoding="utf-8") as _f:   # see the note in the pocket writer
+        _f.write(html)
     print(f"Wrote {out} (ENLARGED edition for {coach_name}) "
           f"-> {len(cards)} cards, {len(pages)} PDF pages, {config.PER}/sheet duplex "
           f"(same layout as pocket book; each hole = 2 cards: map front / green back)")

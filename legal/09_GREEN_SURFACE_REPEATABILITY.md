@@ -2,7 +2,8 @@
 
 Measured 2026‑07‑31 with `tools/cross_flight_check.py --all`. Reproduce it with that command.
 
-Every green card prints a dominant tilt to one decimal (`2.7%`), a qualifier (`firm` / `subtle`) and
+Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where that tilt is
+close to the survey's own noise floor, and
 15 cm contours, and all but one name a feed direction — micke‑grove 2 is flat enough that the plane
 and the arrows disagree, so that card names none (see note 2). The governing rule of this project is that it must never print a
 number the data does not support — but until this measurement, **nothing recorded what the data
@@ -36,7 +37,7 @@ instead of the ground.
 |---|---|
 | dominant tilt | **0.06 percentage points** |
 | feed direction | **3.9°** |
-| `firm` / `subtle` qualifier | never differed |
+| the `(faint)` mark (internally `clear` / `faint`) | never differed |
 
 The strongest single case is Philadelphia Country Club, whose two passes are **100 days apart**
 (2024‑12‑17 and 2025‑03‑27) and straddle a phased course restoration — the exact circumstance in
@@ -44,11 +45,11 @@ which a green *should* be caught changing. On the five greens both passes covere
 
 | hole | 2024‑12‑17 | 2025‑03‑27 | Δ tilt | Δ aim |
 |---|---|---|---|---|
-| 1 | 0.83% subtle | 0.84% subtle | 0.01 pp | 2.1° |
-| 2 | 0.91% subtle | 0.92% subtle | 0.01 pp | 0.4° |
-| 6 | 1.58% firm | 1.57% firm | 0.01 pp | 0.1° |
-| 7 | 1.43% firm | 1.44% firm | 0.00 pp | 0.3° |
-| 8 | 0.27% subtle | 0.28% subtle | 0.01 pp | 1.5° |
+| 1 | 0.83% faint | 0.84% faint | 0.01 pp | 2.1° |
+| 2 | 0.91% faint | 0.92% faint | 0.01 pp | 0.4° |
+| 6 | 1.58% clear | 1.57% clear | 0.01 pp | 0.1° |
+| 7 | 1.43% clear | 1.44% clear | 0.00 pp | 0.3° |
+| 8 | 0.27% faint | 0.28% faint | 0.01 pp | 1.5° |
 
 At the raw point level those two passes agree to a **median 0.03 ft (0.4 in), 95th percentile
 0.13 ft**, over ~11,000 ground returns per green.
@@ -138,8 +139,8 @@ had to hold, and it holds with two orders of magnitude of margin.
      shared by the whole green cancels out of every height *difference* — and no green card prints an
      absolute elevation.
 2. **It validates the dominant plane and the surface the contours follow, not every feature.** Tilt,
-   aim, the firm/subtle qualifier and the 15 cm interval are what were compared. It does not establish
-   that any individual arrow on a subtle green points the right way — and one green, micke‑grove 2, is
+   aim, the `clear`/`faint` qualifier and the 15 cm interval are what were compared. It does not establish
+   that any individual arrow on a faint-fall green points the right way — and one green, micke‑grove 2, is
    flat enough that the plane and its own arrows disagree by 177°, so the card names no direction there
    at all.
 3. **n = 33 greens on 5 courses, one LiDAR program.** Four of the five course pairs are days apart and
