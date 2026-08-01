@@ -8099,3 +8099,94 @@ def test_no_card_silently_clips_its_own_text():
     assert checked, "no book was measured in a browser, so nothing was verified"
     assert_no_course_skipped(seen, "test_no_card_silently_clips_its_own_text")
     assert not problems, "text is being silently clipped:\n  " + "\n  ".join(problems[:10])
+
+
+@needs_corpus
+def test_the_scorecard_facts_obey_their_own_arithmetic():
+    """Rating, slope and stroke index are HAND-TRANSCRIBED, and each has a hard constraint.
+
+    Everything else in a card is computed from data, so a mistake in it is a bug with a cause. These
+    three are read off a published scorecard by a person, which makes a typo the realistic failure --
+    and the card prints them as fact, beside a note saying the yardages come from the official
+    scorecard. A reader takes that as covering the columns next to them.
+
+    Four constraints, chosen because each catches a different slip:
+
+    * The men's stroke index must be a PERMUTATION of 1..N -- every index used exactly once. A
+      duplicated or missing index is arithmetically impossible on a real card, and it is what a
+      mis-keyed digit produces.
+    * Slope must lie in 55..155. That is the USGA's own range, not a heuristic, so a 445 or a 45
+      cannot hide.
+    * A LONGER tee must not rate EASIER than a shorter one on the same course. Rating is dominated by
+      length, so this catches the likeliest paste error: one tee's figures landing on another's row.
+    * A rating must sit near what the corpus itself says a course of that length rates. Fitted over 53
+      tee sets the relationship is rating = 0.00465 x yards + 41.71, i.e. one stroke per 215 yards --
+      which independently matches the USGA's own rule of thumb of about a stroke per 220, and is
+      therefore evidence the transcriptions are sound rather than an assumption imposed on them.
+
+    The residual bound is deliberately loose at 4 strokes against a measured worst of 1.59. It is here
+    to catch a rating belonging to a different course, not to grade course difficulty: the two extremes
+    are Merion rating 1.3 strokes HARDER than trend and Poppy Ridge 1.6 EASIER, which is exactly the
+    real difficulty variation this must not flag.
+    """
+    import numpy as np
+    tees, problems, seen = [], [], set()
+    for slug in CORPUS:
+        cp = os.path.join(ROOT, "courses", slug, "course.json")
+        if not os.path.exists(cp):
+            continue
+        seen.add(slug)
+        with open(cp, encoding="utf-8") as f:
+            j = json.load(f)
+
+        # 1. stroke index is a permutation
+        cols = j.get("hole_cols") or []
+        if "mens_hcp" in cols:
+            i = cols.index("mens_hcp")
+            vals = [row[i] for _h, row in sorted(j["holes"].items(), key=lambda kv: int(kv[0]))]
+            n = len(vals)
+            nums = [v for v in vals if isinstance(v, int)]
+            missing = sorted(set(range(1, n+1)) - set(nums))
+            dup = sorted({v for v in nums if nums.count(v) > 1})
+            if missing or dup or len(nums) != n:
+                problems.append(
+                    f"{slug}: the men's stroke index is not a permutation of 1..{n} -- "
+                    f"missing {missing}, duplicated {dup}. A real card uses each index once, so this "
+                    f"is a transcription error and the HCP printed on some hole is wrong.")
+
+        rows = [(t.get("yards"), t.get("rating"), t.get("slope"), t.get("name"))
+                for t in (j.get("tees") or [])]
+        for y, r, s, nm in rows:
+            # 2. USGA hard bounds
+            if s is not None and not (55 <= s <= 155):
+                problems.append(f"{slug} {nm}: slope {s} is outside the USGA's 55-155 range")
+            if r is not None and not (55.0 <= r <= 80.0):
+                problems.append(f"{slug} {nm}: course rating {r} is impossible for {y} yards")
+            if y and r:
+                tees.append((y, r, slug, nm))
+        # 3. longer must not rate easier
+        srt = sorted([x for x in rows if x[0] and x[1]])
+        for a, b in zip(srt, srt[1:]):
+            if b[1] < a[1] - 0.05:
+                problems.append(
+                    f"{slug}: the {b[3]} tee is LONGER ({b[0]} yd) than {a[3]} ({a[0]} yd) but rates "
+                    f"EASIER ({b[1]} vs {a[1]}) -- two tees' figures are probably swapped")
+
+    assert_no_course_skipped(seen, "test_the_scorecard_facts_obey_their_own_arithmetic")
+    assert len(tees) >= 30, f"only {len(tees)} rated tee sets found; nothing much was checked"
+
+    # 4. distance from the corpus's own rating/length relationship
+    Y = np.array([t[0] for t in tees], float)
+    R = np.array([t[1] for t in tees], float)
+    a, b = np.polyfit(Y, R, 1)
+    assert 150 <= 1/a <= 300, (
+        f"the corpus now implies one stroke of course rating per {1/a:.0f} yards. The USGA's own rule "
+        f"of thumb is about 220, and this file's reasoning depends on the two agreeing -- if the fit "
+        f"has moved this far, a rating or a yardage is wrong somewhere.")
+    for (y, r, slug, nm), pred in zip(tees, a*Y+b):
+        if abs(r-pred) > 4.0:
+            problems.append(
+                f"{slug} {nm}: {y} yd rated {r}, where every other tee in the corpus implies about "
+                f"{pred:.1f}. That is too far to be course difficulty; check the transcription.")
+    assert not problems, ("hand-transcribed scorecard facts break their own arithmetic:\n  "
+                          + "\n  ".join(problems[:10]))
