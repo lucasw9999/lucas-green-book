@@ -815,6 +815,7 @@ def test_render_hole_reads_its_tee_columns_from_the_row_it_was_given():
         pass          # any OTHER failure is about the synthetic row's content, not this bug
 
 
+@needs_corpus
 def test_the_qr_code_says_where_it_goes():
     """A QR sits under "VISIT lucasgreenbook.org" and does NOT go there. It must say so.
 
@@ -1279,6 +1280,7 @@ def test_the_hand_written_verdict_matches_the_machine_verdict():
                        "actually decides:\n  " + "\n  ".join(wrong))
 
 
+@needs_corpus
 def test_every_sheet_tells_the_printer_not_to_scale():
     """The Rule 4.3 margin is 4%, which protects against rounding -- not against a printer.
 
@@ -1373,6 +1375,7 @@ def test_only_the_conforming_edition_claims_to_conform():
                          "'use the standard edition' instruction points at nothing")
 
 
+@needs_corpus
 def test_every_osm_using_book_carries_the_attribution_odbl_requires():
     """ODbL attribution is a LICENCE OBLIGATION, not a courtesy, and legal/02 states what it is.
 
@@ -2364,49 +2367,70 @@ def test_a_fresh_clone_gets_a_clean_suite():
     same fix ("no courses is not the same as stale") and this file already has needs_corpus, a_course()
     and an autouse COURSE binder -- whose docstring records this exact crash happening before.
 
-    It regressed anyway: 8 tests failed on an empty tree, 4 of them added in the same session that
-    was auditing for this class of fault. Four hit their own anti-vacuous floors ("only 0 greens
-    checked"), which is the floor doing its job in the wrong situation. The other four died with
-    SystemExit naming a course the stranger has never heard of, because without CORPUS the autouse
-    fixture cannot bind COURSE and config.py falls back to a hardcoded default.
+    This test used to look for the fault in the SOURCE: it listed the ways a test reaches per-course
+    data (_engine(, CORPUS[, `for x in CORPUS`) and demanded a skip on each. That is a proxy, and it
+    failed exactly as a proxy does -- three tests reached the corpus a fourth way, globbing courses/
+    directly, and so failed on a fresh clone while this test, whose whole job is to prevent that,
+    passed. Widening the pattern list then produced two FALSE positives, tests that skip on absent data
+    through an inline pytest.skip the pattern could not see. A heuristic that both misses and
+    over-reports is not worth tuning.
 
-    So the rule is checked mechanically instead of remembered: a test that reads the corpus must
-    either carry @needs_corpus or route through a_course(), both of which skip. Guarding coverage
-    with an assert and guarding availability with a skip are different jobs, and a test needs both.
+    So it now performs the actual experiment: copy every tracked file into a temp tree, leave courses/
+    empty, and run the suite there. Whatever a stranger would see, this sees. No pattern to keep in
+    step with, and a new way of reading course data is covered the day it is written.
+
+    Cheap because it is measuring the empty case: with no corpus almost everything skips and the child
+    run takes about a second.
     """
-    import ast
-    with open(__file__, encoding="utf-8") as fh:
-        src = fh.read()
-    tree = ast.parse(src)
-    lines = src.splitlines()
-    unguarded = []
-    for node in tree.body:
-        if not (isinstance(node, ast.FunctionDef) and node.name.startswith("test_")):
-            continue
-        if node.name == "test_a_fresh_clone_gets_a_clean_suite":
-            continue
-        # ast gives the decorators exactly, with no line-walking to get wrong
-        decs = " ".join(ast.unparse(d) for d in node.decorator_list)
-        if "needs_corpus" in decs or "skipif" in decs:
-            continue
-        body = "\n".join(lines[node.lineno - 1:node.end_lineno])
-        # Not every pytest.skip saves the test: the common one here is "pymupdf not installed",
-        # which fires first but says nothing about DATA. A test that skips on a missing library and
-        # then calls _engine() still raises SystemExit on an empty tree. Only a_course() -- which
-        # exists precisely to skip on an absent corpus -- counts as the escape hatch.
-        if "a_course()" in body:
-            continue
-        if re.search(r"if CORPUS|if not CORPUS|CORPUS else", body):
-            continue                      # handles the empty case itself
-        # What is never safe on an empty tree is BINDING a course: config.py then falls back to a
-        # hardcoded slug and raises SystemExit. Iterating an empty CORPUS is merely a no-op, but it
-        # still needs the marker, because these tests assert a coverage floor that 0 cannot meet.
-        if re.search(r"_engine\(|CORPUS\[|for \w+ in CORPUS\b", body):
-            unguarded.append(node.name)
-    assert not unguarded, (
-        "these tests read per-course data but do not skip when there is none, so a fresh clone "
-        "sees failures instead of skips -- add @needs_corpus or use a_course():\n  "
-        + "\n  ".join(unguarded))
+    if os.environ.get("GREENBOOK_FRESH_CLONE_CHILD"):
+        pytest.skip("child run of the fresh-clone experiment; would recurse")
+    import shutil
+    import subprocess
+    import tempfile
+    try:
+        tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True,
+                                 capture_output=True).stdout.split(b"\0")
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("not a git checkout, cannot enumerate a fresh clone")
+    files = [f.decode() for f in tracked if f]
+    assert any(f.startswith("tests/") for f in files), "no tests are tracked; nothing would run"
+    assert not any(f.startswith("courses/") for f in files), (
+        "a file under courses/ is TRACKED. Per-course data and generated books must never be "
+        "committed -- that is the standing rule for this repo, and it also means a fresh clone would "
+        "carry data this test assumes absent.")
+
+    tmp = tempfile.mkdtemp(prefix="greenbook-freshclone-")
+    try:
+        for f in files:
+            src = os.path.join(ROOT, f)
+            if not os.path.isfile(src):
+                continue
+            dst = os.path.join(tmp, f)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+        os.makedirs(os.path.join(tmp, "courses"), exist_ok=True)
+        env = dict(os.environ, GREENBOOK_FRESH_CLONE_CHILD="1")
+        env.pop("COURSE", None)
+        env.pop("COLD_BUILD", None)
+        r = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q", "--tb=line", "-p",
+                            "no:cacheprovider"], cwd=tmp, env=env, capture_output=True, text=True)
+        out = (r.stdout or "") + (r.stderr or "")
+        failed = re.findall(r"^FAILED (\S+)", out, re.M) or re.findall(r"^(\S+::\S+) FAILED", out, re.M)
+        passed = int((re.search(r"(\d+) passed", out) or [0, 0])[1])
+        skipped = int((re.search(r"(\d+) skipped", out) or [0, 0])[1])
+        assert passed + skipped > 50, (
+            f"the fresh-clone run collected almost nothing ({passed} passed, {skipped} skipped), so it "
+            f"proved nothing. Tail:\n{out[-1500:]}")
+        assert r.returncode == 0, (
+            "a fresh clone of this repo does NOT get a clean suite. A stranger with no course data "
+            f"sees {len(failed)} failure(s) and cannot tell our red from their red:\n  "
+            + "\n  ".join(f.split("::")[-1] for f in failed[:12])
+            + "\n\n  A test that reads per-course data needs BOTH an anti-vacuous floor (assert it "
+              "checked something) AND a skip when there is nothing to check -- @needs_corpus, "
+              "a_course(), or an explicit pytest.skip. Those are different jobs.\n\n"
+            + out[-1200:])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_a_nine_hole_course_is_a_first_class_course(tmp_path):
