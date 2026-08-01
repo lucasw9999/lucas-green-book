@@ -8300,8 +8300,11 @@ def test_the_tree_finder_does_not_filter_on_a_vegetation_class():
         src = f.read()
 
     body = src.split('"""', 2)[-1]        # skip the module docstring
-    # `A or B` where B is a near-guarantee. On tokenised code -- so a comment mentioning the class
-    # cannot satisfy it -- the candidate mask must simply not select on class 5 at all.
+    # `A or B` where B was a near-guarantee. On tokenised code -- so a comment mentioning the class
+    # cannot satisfy it -- the candidate mask must simply not select on class 5 at all. Proven by
+    # mutation: replacing the real mask (cls!=2)&(cls!=6)&... with cand=(cls==5) fails here. An earlier
+    # note said this leg was unproven; that was my probe looking for a "cls != 5" spelling the module
+    # does not use, not a weakness in the assertion.
     assert "cls==5" not in _code_only(body).replace(" ", ""), (
         "fetch_trees.py now selects candidates by classification 5. Ten of eleven courses have no "
         "class-5 points, so this empties the tree layer while the hole-map legend still promises "
