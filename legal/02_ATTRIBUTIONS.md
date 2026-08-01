@@ -9,9 +9,19 @@ appear on any website that hosts them.
 - **USGS:** "public‑domain USGS 3DEP" (courtesy credit; not legally required).
 - **Scorecard:** described as facts from the published scorecard.
 
-## OSM required-attribution string (canonical)
+## OSM required-attribution string
+
+**What the books actually print** (`generate.py`, both editions -- verified present in all 14 books
+that use OSM data; the 15th uses none):
+> Produced Work from **OpenStreetMap** data (© OpenStreetMap contributors, **ODbL 1.0**,
+> osm.org/copyright)
+
+OSMF's canonical long form, for reference:
 > © OpenStreetMap contributors — data available under the Open Database License (ODbL).
 > https://www.openstreetmap.org/copyright
+
+Both satisfy ODbL §4.3. This section used to quote only the long form, which is not the string in use
+-- a file whose purpose is to record the exact notices we print should quote the printed one first.
 
 ## If hosting the books on a website, add a footer:
 > Maps © this project. Course geometry © OpenStreetMap contributors (ODbL,

@@ -17,8 +17,8 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 > work); par, yardage & handicap (HCP = the men’s stroke index) are facts from the published
 > scorecard. Every map is independently created: no proprietary data, image, symbol set, page
 > layout or trade dress of any commercial green-reading product was used, copied, referenced or
-> reverse-engineered, and this book references no third-party brand and is not a substitute for
-> any product. Built entirely from remote public data, without entering any club or course. Not
+> reverse-engineered, and this book names no such brand and is not a substitute for any
+> product. Built entirely from remote public data, without entering any club or course. Not
 > affiliated with, endorsed or sponsored by any course, club, association or product; course
 > names & trademarks belong to their owners and are used only to identify the course — if a
 > course would prefer not to be included, contact the maker for removal. This book is designed
@@ -41,18 +41,18 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 > scorecard. USDA NAIP aerial imagery (a U.S. Government work, public domain) was used as a
 > mapping reference for this course. Every map is independently created: no proprietary data,
 > image, symbol set, page layout or trade dress of any commercial green-reading product was
-> used, copied, referenced or reverse-engineered, and this book references no third-party brand
-> and is not a substitute for any product. Built entirely from remote public data, without
-> entering any club or course. Not affiliated with, endorsed or sponsored by any course, club,
-> association or product; course names & trademarks belong to their owners and are used only to
-> identify the course — if a course would prefer not to be included, contact the maker for
-> removal. This book is designed to fall within the size & scale limits for green-reading
-> materials under Rule 4.3, but conformance is not guaranteed for every hole — confirm with
-> your Committee before competition; the maker is not responsible for any ruling, penalty or
-> disqualification. Provided free and as-is, with no warranty of any kind (accuracy, fitness or
-> rules conformance): maps show general tilt & tiers, not exact break, and may contain errors —
-> use at your own risk and trust your own read. To the fullest extent permitted by law the
-> maker is not liable for any loss, penalty or damage from use of this book. Learn more at
+> used, copied, referenced or reverse-engineered, and this book names no such brand and is not
+> a substitute for any product. Built entirely from remote public data, without entering any
+> club or course. Not affiliated with, endorsed or sponsored by any course, club, association
+> or product; course names & trademarks belong to their owners and are used only to identify
+> the course — if a course would prefer not to be included, contact the maker for removal. This
+> book is designed to fall within the size & scale limits for green-reading materials under
+> Rule 4.3, but conformance is not guaranteed for every hole — confirm with your Committee
+> before competition; the maker is not responsible for any ruling, penalty or disqualification.
+> Provided free and as-is, with no warranty of any kind (accuracy, fitness or rules
+> conformance): maps show general tilt & tiers, not exact break, and may contain errors — use
+> at your own risk and trust your own read. To the fullest extent permitted by law the maker is
+> not liable for any loss, penalty or damage from use of this book. Learn more at
 > lucasgreenbook.org; contact / removal requests: info@lucasgreenbook.org. © 2026 Lucas Wu ·
 > Lucas Green Book™. This book: free to share, not for sale — CC BY-NC-ND 4.0.
 
@@ -97,7 +97,11 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 ## Why this text covers the risks
 - **Independent / open-data provenance** -> copyright + trade-dress defense.
 - **"no proprietary data/image/symbol/layout/trade dress used, copied, referenced or
-  reverse-engineered" + "references no third-party brand"** -> forecloses copying/passing-off.
+  reverse-engineered" + "names no such brand"** -> forecloses
+  copying/passing-off. The narrow wording is the honest one: the pocket books print an Instagram QR
+  (Meta's own branded artwork, pointing at the maker's own account), so an unqualified claim to
+  reference "no third-party brand" was literally false on 12 books -- exactly the provable inaccuracy
+  an adversary uses to argue the rest of the panel is boilerplate.
 - **"not affiliated/endorsed/sponsored" + nominative course-name use + removal-on-request** ->
   trademark (nominative fair use) + defuses any course objection.
 - **"built from remote public data, without entering any club"** -> no trespass / terms-of-entry.

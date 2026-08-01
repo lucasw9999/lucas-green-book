@@ -673,7 +673,7 @@ def guide_panel():
       maker from <b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work); par, yardage &amp;
       handicap (<b>HCP</b> = the <b>men&rsquo;s</b> stroke index) are <b>facts</b> from the published scorecard.''' + _naip_line() + ''' Every map is <b>independently created</b>:
       <b>no proprietary data, image, symbol set, page layout or trade dress of any commercial green-reading
-      product was used, copied, referenced or reverse-engineered</b>, and this book references no third-party
+      product was used, copied, referenced or reverse-engineered</b>, and this book names no such
       brand and is not a substitute for any product. Built <b>entirely from remote public data, without
       entering any club or course</b>. Not affiliated with, endorsed or sponsored by any course, club,
       association or product; course names &amp; trademarks belong to their owners and are used only to

@@ -48,6 +48,7 @@ Everything is built from open data anyone can use:
 | Hole &amp; green geometry | [OpenStreetMap](https://www.openstreetmap.org) contributors | ODbL 1.0 |
 | Slope / contours / arrows | **USGS 3DEP** LiDAR — 0.4 m ground returns (1 m seamless DEM fallback) | U.S. public domain |
 | Par / yardage / handicap | Facts from the published scorecard | facts (not copyrightable) |
+| Aerial tracing (2 greens OSM had not mapped) | **USDA NAIP** imagery | U.S. public domain |
 
 > **No commercial green‑reading product's data, imagery, artwork, layout, or trade dress is used,
 > copied, or referenced. No Google / Apple / Esri / Maxar imagery is embedded.** The project is

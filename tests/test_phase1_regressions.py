@@ -1650,14 +1650,28 @@ def test_every_third_party_import_is_declared():
     # commented-out `#numpy removed` line still counted as declaring numpy -- a mutation that should
     # have failed, passed.
     declared = set()
+    # A package may be declared OPTIONAL -- named in requirements.txt via an "# OPTIONAL: pkg" line so
+    # pip skips it, while a reader is still told it exists. That preserves this test's actual purpose
+    # (the install instructions name every package the code needs) and is NOT the guarded-import
+    # exemption warned about below: the package must still be named here. It carries an EXTRA duty
+    # instead -- an optional-only package's import must be guarded, asserted at the end of this test,
+    # so the code degrades with a stated reason rather than crashing.
+    #
+    # PyMuPDF is the case: licensed AGPL-3.0-or-commercial, which does not compose with this project's
+    # PolyForm Noncommercial code, so it must not be installed by a blanket `pip install -r`.
+    optional = set()
     with open(req, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.split("#", 1)[0].strip()
+        for raw in fh:
+            m = re.match(r"\s*#\s*OPTIONAL:\s*([A-Za-z0-9._-]+)", raw)
+            if m:
+                optional.add(m.group(1).strip().lower())
+            line = raw.split("#", 1)[0].strip()
             if line:
                 declared.add(re.split(r"[<>=!~\[]", line)[0].strip().lower())
     # install name != import name
     ALIAS = {"fitz": "pymupdf", "PIL": "pillow", "yaml": "pyyaml", "cv2": "opencv"}
     # the stdlib, plus this repo's own modules, plus test-only helpers
+    optional_used = []
     local = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "*.py"))}
     local |= {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "tools", "*.py"))}
     missing = []
@@ -1681,11 +1695,38 @@ def test_every_third_party_import_is_declared():
             for m in mods:
                 if m in sys.stdlib_module_names or m in local or m.startswith("_"):
                     continue
-                if ALIAS.get(m, m).lower() not in declared:
+                pkg = ALIAS.get(m, m).lower()
+                if pkg in optional:
+                    optional_used.append((os.path.relpath(p, ROOT), m, src))
+                    continue
+                if pkg not in declared:
                     missing.append(f"{os.path.relpath(p, ROOT)} imports {m!r}, which "
                                    f"requirements.txt does not declare")
     assert not missing, ("the code needs packages the install instructions do not name, so it runs "
                          "only where it was written:\n  " + "\n  ".join(sorted(set(missing))))
+
+    # The extra duty on an OPTIONAL package: every import of it must be guarded, so a machine without
+    # it gets a stated reason instead of a traceback. Without this, "OPTIONAL:" would be exactly the
+    # exemption the comment above refuses.
+    unguarded = []
+    for rel, mod, src in optional_used:
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.Try):
+                continue
+            handled = any(
+                (isinstance(h.type, ast.Name) and h.type.id in ("ImportError", "Exception"))
+                or (isinstance(h.type, ast.Tuple)
+                    and any(isinstance(e, ast.Name) and e.id in ("ImportError", "Exception")
+                            for e in h.type.elts))
+                for h in node.handlers)
+            if handled and any(mod in [a.name.split(".")[0] for a in n.names]
+                               for n in ast.walk(node) if isinstance(n, ast.Import)):
+                break
+        else:
+            unguarded.append(f"{rel} imports optional {mod!r} without a try/except ImportError")
+    assert not unguarded, (
+        "an OPTIONAL package is imported unguarded, so the code crashes on a machine that followed the "
+        "install instructions:\n  " + "\n  ".join(sorted(set(unguarded))))
 
 
 def test_every_runnable_tool_is_documented():
@@ -2910,6 +2951,62 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
             f"{k} junk readings 700 days from the bulk: expected them all trimmed and counted, got "
             f"published={ok} dropped={dropped}. n_dropped is what drives the warning, so a silent 0 "
             f"means the card carries a date nobody was told to check.")
+
+
+def test_every_distributed_book_disclaims_affiliation_with_the_club_it_names():
+    """The sentence doing ALL of the trademark work was unguarded: delete it, regenerate, and the whole
+    suite passed.
+
+    Every book names a real club on its cover -- five of the distributed books name PRIVATE clubs, and
+    the cover carries the club's street address. What makes that nominative fair use rather than a
+    false-association problem is one printed sentence: not affiliated, not endorsed, not sponsored,
+    marks belong to their owners, used only to identify the course, removed on request. It is the
+    cheapest and most important line in the book.
+
+    Nothing required it. The only guard on the About panel ran `gen_disclaimers.py --check`, which
+    proves the legal RECORD matches the books -- so deleting the clause from generate.py and
+    regenerating moved both sides together and stayed green. That is the producer-rule-copied
+    mechanism, on the one sentence that most needs to survive a careless edit.
+
+    Meanwhile the Esri/imagery sentence on a PERSONAL-use side artifact is hard-asserted verbatim
+    (test_a_personal_aerial_reference_is_honest_about_what_it_is). The asymmetry was backwards.
+
+    Asserts the required ELEMENTS, not one exact string, so the wording can still be improved --
+    but none of the elements can quietly go missing.
+    """
+    ELEMENTS = [
+        (r"[Nn]ot affiliated", "no statement of non-affiliation"),
+        (r"endorsed", "does not disclaim endorsement"),
+        (r"sponsored", "does not disclaim sponsorship"),
+        (r"trademarks belong to their owners|names &amp; trademarks belong",
+         "does not acknowledge the marks belong to their owners"),
+        (r"identify the course", "does not limit the club name to identifying the course"),
+        (r"removal|remove", "offers no removal channel -- the cheapest de-escalation there is"),
+    ]
+    seen, problems = collections.Counter(), []
+    for slug in CORPUS:
+        for name in ("greenbook.html", "greenbook_coach.html"):
+            fp = os.path.join(ROOT, "courses", slug, name)
+            if not os.path.isfile(fp):
+                continue
+            with open(fp, encoding="utf-8") as fh:
+                flat = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", fh.read()))
+            seen[slug] += 1
+            for rx, why in ELEMENTS:
+                if not re.search(rx, flat):
+                    problems.append(f"{slug}/{name}: {why}")
+            # the club's own name must appear, or the disclaimer is guarding nothing
+            with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as jf:
+                club = json.load(jf).get("name", "")
+            if club and club.split("—")[0].strip()[:12] not in flat:
+                problems.append(f"{slug}/{name}: does not name the club, so the corpus check is hollow")
+    if not seen:
+        pytest.skip("no books built")
+    assert not problems, (
+        "a book names a real club but omits part of the nominative-use disclaimer:\n  "
+        + "\n  ".join(problems[:10]))
+    assert_no_course_skipped(
+        seen, "test_every_distributed_book_disclaims_affiliation_with_the_club_it_names")
 
 
 def test_the_steepness_colour_still_reads_in_black_and_white():

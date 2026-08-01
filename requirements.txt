@@ -18,8 +18,29 @@ tifffile>=2023.1.1        # the 3DEP seamless 1 m DEM arrives as GeoTIFF (fetch_
 playwright>=1.40          # headless Chromium prints the book to PDF; also measures rendered layout.
                           # Chromium itself is NOT pip-installable: run
                           #   python3 -m playwright install chromium
-PyMuPDF>=1.23             # measures the printed artifact (tools/check_scale.py Rule 4.3 gate)
 rasterio>=1.3             # reads the 3DEP GeoTIFF for tools/verify_elevation.py -- the ONLY
                           # independent cross-check on the printed tee-to-green heights, and what
                           # separated a real -3.7 ft from the 558 ft a units fault printed.
 pytest>=7.4               # tests/
+
+# --- OPTIONAL, and deliberately NOT installed by default --------------------
+# PyMuPDF measures text spans and vector lines inside the exported PDF, which is how
+# tools/check_scale.py verifies the printed Rule 4.3 scale bar rather than only the rendered layout.
+# It is separated out because it is licensed "GNU AFFERO GPL 3.0 or Artifex Commercial License",
+# and AGPL-3.0 forbids adding restrictions to a combined work while this project's own code is
+# PolyForm Noncommercial, which restricts commercial use. Those two do not compose, so installing
+# PyMuPDF is a choice each user makes for themselves rather than something this file requires.
+#
+# Nothing AGPL-licensed is redistributed by this repository, and no book is built with it -- the
+# import is guarded (tools/check_scale.py returns a reason when it is absent) and it is used only
+# by verification tooling and tests. The layout half of the Rule 4.3 gate runs without it.
+#
+# Declared machine-readably below so the dependency guard still SEES it -- a package the code needs
+# must always be named here, or the project runs only where it was written. The "OPTIONAL:" prefix is
+# what keeps pip from installing it while keeping it declared.
+#
+# OPTIONAL: PyMuPDF>=1.23
+#
+#   python3 -m pip install "PyMuPDF>=1.23"      # adds the printed-artifact measurement
+#
+# See legal/10_SOFTWARE_DEPENDENCIES.md for every dependency's licence.

@@ -34,7 +34,11 @@ OUT = os.path.join(ROOT, "legal", "05_DISCLAIMER_TEXT.md")
 WHY = """## Why this text covers the risks
 - **Independent / open-data provenance** -> copyright + trade-dress defense.
 - **"no proprietary data/image/symbol/layout/trade dress used, copied, referenced or
-  reverse-engineered" + "references no third-party brand"** -> forecloses copying/passing-off.
+  reverse-engineered" + "names no such brand"** -> forecloses
+  copying/passing-off. The narrow wording is the honest one: the pocket books print an Instagram QR
+  (Meta's own branded artwork, pointing at the maker's own account), so an unqualified claim to
+  reference "no third-party brand" was literally false on 12 books -- exactly the provable inaccuracy
+  an adversary uses to argue the rest of the panel is boilerplate.
 - **"not affiliated/endorsed/sponsored" + nominative course-name use + removal-on-request** ->
   trademark (nominative fair use) + defuses any course objection.
 - **"built from remote public data, without entering any club"** -> no trespass / terms-of-entry.

@@ -201,11 +201,24 @@ def _row(slug):
     flown_note = "" if basis.startswith("points within") else \
         " *(range measured over whole tiles, not only the points over the greens)*"
 
-    geom = "OSM (ODbL)"
-    osm_date = _osm_extract_date(slug)
-    geom += f", extract **{osm_date}**" if osm_date else ", extract date **not recorded**"
-    if dig:
-        geom += f"; {len(dig)} green(s) hand-added, tagged `_digitized` (ids {', '.join(str(d) for d in dig)})"
+    # Read the geometry claim off the ARTIFACTS, like every other field in this table. This line was
+    # `geom = "OSM (ODbL)"`, hardcoded for every course -- so legal/03 asserted OSM provenance for
+    # poppy-ridge, which has no osm_geom.json, no osm_course.json, and draws zero polygons. A false
+    # source claim, in the one document whose purpose is to be handed to someone asking where the data
+    # came from, and in a file whose own header promises it "cannot drift from what was actually built".
+    #
+    # Either reading of that row was bad: if the course HAD used OSM it would be missing its ODbL 4.3
+    # notice, and since it did not, the record claimed a source that was never touched.
+    osm_files = [f for f in ("osm_geom.json", "osm_course.json")
+                 if os.path.exists(os.path.join(ROOT, "courses", slug, f))]
+    if not osm_files:
+        geom = "**none** — no OpenStreetMap data was fetched for this course"
+    else:
+        geom = "OSM (ODbL)"
+        osm_date = _osm_extract_date(slug)
+        geom += f", extract **{osm_date}**" if osm_date else ", extract date **not recorded**"
+        if dig:
+            geom += f"; {len(dig)} green(s) hand-added, tagged `_digitized` (ids {', '.join(str(d) for d in dig)})"
 
     if yardage_mode:
         slope = "**none** — yardage mode: blank greens to mark your own read"
@@ -350,7 +363,9 @@ def build():
      course.json), never from prose, so this table cannot drift from what was actually built.
      Verify with: python3 tools/gen_provenance.py --check -->
 
-Exactly what data built each book. "Distributed" = safe to hand out; "Personal" = do not distribute.
+Exactly what data built each book. "Distributed" = built from open, public-domain and factual inputs
+only, and handed out on that basis; "Personal" = do not distribute. This records what the build DID; it
+is not legal advice and states no legal conclusion.
 
 **Every book on this list is built only from:** OpenStreetMap geometry (ODbL 1.0), slope/contours
 computed by us from public-domain USGS 3DEP LiDAR, par/yardage/handicap **facts** from published

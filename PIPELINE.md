@@ -78,13 +78,23 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
 ## Data sources & licences (keep us clean)
 - **USGS 3DEP / LiDAR** — public domain (US Government). No restriction.
 - **OpenStreetMap** — ODbL: attribute "© OpenStreetMap contributors" (done on the
-  book) and keep any derived database open.
+  book). Share-alike attaches only if we PUBLICLY RELEASE a modified OSM database; the
+  cached extracts are build inputs and stay local, so it is not triggered. (This line
+  used to say "keep any derived database open", which is stricter than ODbL §4.4
+  actually is -- see `legal/01` for the precise reading.)
+- **USDA NAIP** — public domain (US Government). Used to trace 2 greens OSM had not
+  mapped; coordinates only, no pixels in any book.
 - **Scorecard numbers** — facts (par/yardage/handicap); facts aren't copyrightable.
 - We compute slope/contours ourselves from elevation. We do **not** copy any
   commercial product's data, images, or layout, and we don't use their name/logo.
 
-## Competition legality (Rule 4.3)
-The **standard** book is designed as a single **conforming** build: the green image scale is
+## Designed for Rule 4.3
+`legal/06` records the standing wording rule: we say **"designed to conform"**, never "conforms",
+"legal", or "USGA-approved" -- neither the USGA nor the R&A approves green books at all, so there is
+nothing to be approved by. This heading used to read "Competition legality" and the sentence below
+called the build "conforming", which are the two words that rule exists to avoid.
+
+The **standard** book is **designed to fall within** the limits as a single build: the green image scale is
 capped safely under **3/8 in = 5 yd (1:480)** and the cards (3.5 × 5.0 in) sit well under the
 **4.25 × 7 in** book limit, while still showing full contours/arrows/slope % (Rule 4.3 limits
 the *scale and book size*, not the presence of detail). Conformance is still a Committee-level,
