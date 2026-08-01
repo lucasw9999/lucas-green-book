@@ -205,6 +205,35 @@ def geometry_courses():
     return out
 
 
+def _code_only(src):
+    """`src` with comments and string literals removed, so a source assertion cannot be satisfied by prose.
+
+    This codebase deliberately writes long explanatory comments that quote the very names its guards
+    check for, and that has defeated four separate assertions in this suite: two of them are satisfied
+    today by a comment in production source, proven by mutation --
+
+      * fetch_dem.py:155 reads "# assert_one_green_per_hole compared nothing.", which satisfies the
+        check that fetch_dem CALLS it, so deleting the live call at :161 left the test green;
+      * fetch_dem.py:130 names keeps_existing_surface in a comment, so replacing the live
+        `if keeps_existing_surface(...)` with `if False:` left its test green.
+
+    Tokenising is the only reliable fix: a grep cannot tell code from a comment about code, and asking
+    people to stop explaining themselves is the wrong trade in a codebase whose comments are its best
+    feature.
+    """
+    import io
+    import tokenize
+    out = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type in (tokenize.COMMENT, tokenize.STRING):
+                continue
+            out.append(tok.string)
+    except (tokenize.TokenError, IndentationError):
+        return src          # unparseable: fall back rather than silently pass everything
+    return " ".join(out)
+
+
 def assert_no_course_skipped(seen, what):
     """Every course with geometry must have CONTRIBUTED something -- not merely been visited.
 
@@ -6186,7 +6215,7 @@ def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
 
     # the loop must actually consult it, or the guard is decoration
     src = open(os.path.join(ROOT, "fetch_dem.py"), encoding="utf-8").read()
-    assert "keeps_existing_surface(" in src.split("def keeps_existing_surface", 1)[1], \
+    assert "keeps_existing_surface" in _code_only(src.split("def keeps_existing_surface", 1)[1]), \
         "fetch_dem.py defines the guard but never calls it"
 
 
@@ -6347,7 +6376,10 @@ def test_no_green_is_bound_to_two_holes():
     # and the builders must actually call it, or the invariant is unenforced
     for mod in ("fetch_dem_hd.py", "fetch_dem.py"):
         src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
-        assert "assert_one_green_per_hole" in src, f"{mod} never checks for a shared green"
+        assert "assert_one_green_per_hole" in _code_only(src), (
+            f"{mod} never CALLS assert_one_green_per_hole. Checked against the tokenised source: "
+            f"fetch_dem.py explains that function in a comment, which satisfied a plain grep, so "
+            f"deleting the live call left this test green (proven by mutation).")
 
     # fetch_dem.py used to name a local list `geo`, shadowing the module; it worked only because
     # `import geo` sat inside the loop. Moving that import to the top -- the obvious tidy-up -- would
@@ -9372,7 +9404,7 @@ def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path
     with open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8") as f:
         src = f.read()
     body = src.split("def main(", 1)[1]
-    assert "keeps_existing_surface(" in body, (
+    assert "keeps_existing_surface" in _code_only(body), (
         "fetch_dem_hd.main() no longer calls keeps_existing_surface, so a refused 0.4 m attempt can "
         "overwrite a working surface again and blank the card")
 
