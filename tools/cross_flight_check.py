@@ -112,7 +112,22 @@ def _summary(meta, grid, lon, lat, z, zscale, putt=None):
     import render_green as rg
     W, H, px_x, px_y, mask = grid
     xmin, ymin, xmax, ymax = meta['bbox']
-    gx, gy = np.meshgrid(np.linspace(xmin, xmax, W), np.linspace(ymin, ymax, H))
+    # THE SHIPPED GRID'S OWN CONVENTION, copied from fetch_dem_hd.py: cell CENTRES, and row 0 is the
+    # NORTH edge. linspace(ymin, ymax, H) got both wrong -- it put row 0 at the SOUTH and sampled bbox
+    # EDGES -- so this tool compared a vertically MIRRORED surface, half a cell off, against a mask and
+    # a plane-fit convention that are north-up (fetch_dem_hd.py:151 "row0=top=ymax";
+    # render_green.py:297 "Yn = -rr*px_y"). Measured over 90 corpus greens through the real
+    # green_summary both ways: median 0.42 pp of tilt and 76 degrees of aim, four clear/faint flips,
+    # and 62 of 90 exceeding TOL_TILT_PP with 84 of 90 exceeding TOL_AIM_DEG -- tolerances calibrated
+    # on these very numbers. The two passes were mirrored identically, so "the surveys agree" survived,
+    # but the numbers being compared were not the ones any card prints, which is the whole claim.
+    #
+    # This is the half-cell registration fault of db5e91e in a second place, and the guard for it
+    # shared the bug the same way: the test tilts a SQUARE polygon along COLUMNS only, which is
+    # invariant under a vertical flip.
+    us = (np.arange(W) + 0.5) / W
+    vs = (np.arange(H) + 0.5) / H
+    gx, gy = np.meshgrid(xmin + us*(xmax - xmin), ymax - vs*(ymax - ymin))
     zi = griddata(np.c_[lon, lat], z*zscale, np.c_[gx.ravel(), gy.ravel()],
                   method='linear').reshape(H, W)
     if not mask.any() or np.isnan(zi[mask]).all():

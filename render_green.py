@@ -16,7 +16,7 @@ The whole drawing is rotated so the hole's APPROACH is at the bottom of the pane
 Honest limit, and it is NOT vertical noise. USGS quotes ~10 cm absolute vertical accuracy, but that
 is a datum offset: it moves a whole green up or down together and changes no read, because break
 depends on RELATIVE height inside the one green. Measured against a second independent survey of the
-same greens, the smoothed surface these contours are drawn from repeats to RMS 0.85 cm (p95 1.54),
+same greens, the smoothed surface these contours are drawn from repeats to RMS 0.56 cm (p95 1.13),
 so the 15 cm interval is ~18x the noise -- see legal/09_GREEN_SURFACE_REPEATABILITY.md.
 What genuinely cannot be resolved is SPATIAL and non-geometric: a 0.4 m grid under ~1.5 m of
 smoothing erases anything smaller than about a metre and a half, and no elevation model knows grain,

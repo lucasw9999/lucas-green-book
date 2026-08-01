@@ -7924,6 +7924,20 @@ def test_the_cross_flight_check_shares_the_renderers_plane_fit():
     try:
         grid = cfc._grid(meta)
         assert grid[4].sum() > 50, "the synthetic outline did not rasterise; fix the fixture"
+        # ORIENTATION IS NOT CHECKED HERE, AND THAT IS A KNOWN GAP. The fixture below tilts a SQUARE
+        # green EAST, which is invariant under a vertical flip -- so this test observed the delegation
+        # while cross_flight_check gridded every surface upside down and half a cell out, for as long as
+        # it existed (linspace(ymin, ymax, H) puts row 0 at the SOUTH edge on bbox EDGES; the shipped
+        # surface is north-up on cell centres). Fixed in the tool, and the corrected corpus run is the
+        # evidence: the rendered-surface noise floor fell from RMS 0.85 cm to 0.56 cm and the contour
+        # interval went from 18x it to 27x.
+        #
+        # Two attempts to guard it here were themselves unfalsifiable and are recorded so the third is
+        # not: a source grep for "linspace(ymin, ymax" is satisfied by the COMMENT in the tool that
+        # explains the fix, and recomputing the expected cell centres in the test compares them only
+        # against themselves. The sound check is to grid one real green from its LAZ through the tool
+        # and difference it against the shipped .npy -- a mirrored grid shows up as a vertical flip. It
+        # needs point data, so it belongs with the other LAZ-reading tests, not in this fixture.
         lon = (-100.0) + (xx.ravel()/W)*0.001
         lat = 40.0 + (yy.ravel()/H)*0.001
         z = (xx.ravel()/W)*2.0                      # 2 m of fall across the green

@@ -42,12 +42,22 @@ instead of the ground.
 
 ## Result
 
+> Every figure in this document was re‑measured on 2026‑08‑01 after a defect was found in the tool
+> that produces it. `cross_flight_check.py` gridded each pass with `linspace(ymin, ymax, H)`, which
+> puts row 0 at the SOUTH edge and samples bbox edges rather than cell centres — while the shipped
+> surface, the green mask and the plane fit are all north‑up on cell centres. So the tool had been
+> comparing a vertically mirrored surface, half a cell out, against the card's own conventions: over
+> 90 greens that was a median 0.42 pp of tilt and 76° of aim away from what any card prints. Both
+> passes were mirrored identically, so the *conclusion* survived unharmed — but the numbers supporting
+> it were not the card's. Corrected, the agreement is TIGHTER on every measure below.
+
+
 **33 greens, each independently surveyed twice. Every pair agrees.**
 
 | | worst observed |
 |---|---|
-| dominant tilt | **0.06 percentage points** |
-| feed direction | **3.9°** |
+| dominant tilt | **0.05 percentage points** |
+| feed direction | **3.7°** |
 | the `(faint)` mark (internally `clear` / `faint`) | never differed |
 
 The strongest single case is Philadelphia Country Club, whose two passes are **100 days apart**
@@ -56,16 +66,16 @@ which a green *should* be caught changing. On the five greens both passes covere
 
 | hole | 2024‑12‑17 | 2025‑03‑27 | Δ tilt | Δ aim |
 |---|---|---|---|---|
-| 1 | 0.83% faint | 0.84% faint | 0.01 pp | 2.1° |
-| 2 | 0.91% faint | 0.92% faint | 0.01 pp | 0.4° |
-| 6 | 1.58% clear | 1.57% clear | 0.01 pp | 0.1° |
-| 7 | 1.43% clear | 1.44% clear | 0.00 pp | 0.3° |
-| 8 | 0.27% faint | 0.28% faint | 0.01 pp | 1.5° |
+| 1 | 0.58% faint | 0.58% faint | 0.00 pp | 1.7° |
+| 2 | 0.95% faint | 0.96% faint | 0.01 pp | 0.2° |
+| 6 | 1.49% clear | 1.48% clear | 0.01 pp | 0.5° |
+| 7 | 1.37% clear | 1.38% clear | 0.01 pp | 0.3° |
+| 8 | 0.32% faint | 0.33% faint | 0.01 pp | 0.6° |
 
 At the raw point level those two passes agree to a **median 0.03 ft (0.4 in), 95th percentile
 0.13 ft**, over ~11,000 ground returns per green.
 
-Three of the 33 pairs agreed physically but landed either side of a printed digit — 2.05% against
+Four of the 33 pairs agreed physically but landed either side of a printed digit — 2.05% against
 2.06% prints as "2.0" and "2.1". That is rounding at the boundary, not disagreement, and the tool
 reports it as such rather than as a failure.
 
@@ -86,12 +96,12 @@ the card is — over all 33 greens and 87,589 cells inside the green cores:
 
 | | |
 |---|---|
-| RMS difference | **0.85 cm** |
-| 95th percentile | 1.54 cm |
-| worst single cell | 7.93 cm |
+| RMS difference | **0.56 cm** |
+| 95th percentile | 1.13 cm |
+| worst single cell | 3.03 cm |
 
-The 15 cm contour interval is therefore about **18× the noise floor** of the surface it is drawn from.
-The claim holds with a wide margin. Averaging roughly 10–28 ground returns per square metre and then smoothing
+The 15 cm contour interval is therefore about **27× the noise floor** of the surface it is drawn from.
+The claim holds with a wide margin. Averaging 9.6–27.9 ground returns per square metre over these 33 greens (4.7–27.9 corpus‑wide) and then smoothing
 over ~1.5 m beats single-pulse accuracy by a large factor, which is why the relative figure is an
 order of magnitude better than the absolute spec.
 
@@ -112,14 +122,14 @@ bay-view's overlap points and its non-overlap points **separately**, over all 18
 | worst single cell | 3.60 cm |
 | printed tilt | agrees within **0.07 pp** on every hole (below the 0.1 pp the card resolves) |
 
-That is the same answer the date split gave (RMS 0.85 cm) from a completely different decomposition of
+That is the same order of answer the date split gave (RMS 0.56 cm) from a completely different decomposition of
 the data — two independent flight lines of the same green, and two independent surveys months apart,
 agree to about a centimetre either way. So the overlap points stay: dropping them would halve bay-view's
 ground density in exchange for nothing measurable.
 
 `withheld` and `synthetic` are a different matter and are now filtered out in `fetch_dem_hd.py`. Those
 bits mark points the producer disowns — measurements it says not to use, and points computed rather than
-observed — and neither belongs under a printed slope read. Scanning every one of the **71 LAZ tiles in the corpus, 582,510,577 class‑2 ground returns**, finds **zero** of
+observed — and neither belongs under a printed slope read. Scanning every one of the **71 of the 72 LAZ tiles in the corpus, 582,510,577 class‑2 ground returns** (callippe's `w6159n2046`, added later and overlapping no green, is not among them), finds **zero** of
 both, so the filter changes no shipped surface: rebuilding bay-view with it produced all 36 files
 byte-identical. It is there for the next course's tiles.
 
