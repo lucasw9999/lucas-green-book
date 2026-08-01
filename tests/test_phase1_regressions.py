@@ -6008,6 +6008,80 @@ def test_no_green_is_bound_to_two_holes():
 
 
 @needs_corpus
+def test_green_binding_wins_by_a_wide_margin_not_a_hair():
+    """Two tests already cover green binding. Neither says the decision was CLOSE, which is the thing
+    that goes wrong first.
+
+    test_a_hole_never_binds_to_a_distant_green pins the 40 m cap; test_no_built_green_surface_is_shared
+    checks no green serves two holes. Both would pass with a hole whose own green sits 19 m away and a
+    neighbour's at 20 -- a correct answer decided by a metre, one OSM edit from flipping. And a flipped
+    binding is the worst single failure available here: the entire slope map, every arrow, the feed
+    direction and the depth ladder all belong to a different hole, while the card looks perfect.
+
+    Measured instead of assumed: the bound green is the nearest on all 198, by a median 107 m, and the
+    tightest case is philadelphia 11 at 8.3 m against a runner-up at 41.3 m -- a five-fold ratio, not a
+    coin toss. The floor here is 15 m, under half the tightest observed, so it flags a genuine near-tie
+    without firing on the corpus.
+
+    A near-tie is not necessarily a bug: two greens really can sit close, on a double green or a shared
+    complex. But it is the point at which a human should look, rather than the point at which the code
+    quietly picks one.
+
+    One thing this measurement settled. Inverting match_green to bind the FARTHEST green within the cap
+    changes nothing on 197 of 198 holes, because only ONE green is inside the 40 m cap on those -- merion
+    18 is the sole exception, with its own green at 0.3 m and another at 38.1. So the cap does the work
+    and the nearest-rule is a tiebreak that almost never has a tie to break. Useful to know before
+    trusting a mutation of that rule: an ineffective mutation there means the cap is carrying the
+    decision, not that the test is weak.
+    """
+    import math
+    FLOOR_M = 15.0
+    tight, checked, seen = [], 0, set()
+    for ref in CORPUS:
+        p = os.path.join(ROOT, "courses", ref, "osm_geom.json")
+        if not os.path.exists(p):
+            continue
+        cfg, _rh = _engine(ref)
+        import geo
+        with open(p, encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        greens = [e for e in els
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        seen.add(ref)
+        for hn, w in sorted(lines.items()):
+            try:
+                bound, gend, _tend = geo.match_green(w["geometry"], greens)
+            except Exception:
+                continue
+            mlon = 111320.0 * math.cos(math.radians(gend["lat"]))
+            ds = []
+            for g in greens:
+                n = len(g["geometry"])
+                la = sum(q["lat"] for q in g["geometry"]) / n
+                lo = sum(q["lon"] for q in g["geometry"]) / n
+                ds.append((math.hypot((gend["lat"] - la) * 111320.0,
+                                      (gend["lon"] - lo) * mlon), g.get("id")))
+            ds.sort()
+            checked += 1
+            assert bound.get("id") == ds[0][1], (
+                f"{ref} hole {hn}: bound to green {bound.get('id')} at "
+                f"{next(d for d, i in ds if i == bound.get('id')):.1f} m while green {ds[0][1]} is "
+                f"nearer at {ds[0][0]:.1f} m")
+            if len(ds) > 1 and (ds[1][0] - ds[0][0]) < FLOOR_M:
+                tight.append(f"{ref} hole {hn}: its green is {ds[0][0]:.1f} m from the line end and "
+                             f"another is {ds[1][0]:.1f} m -- a {ds[1][0] - ds[0][0]:.1f} m margin. One "
+                             f"OSM edit could swap the whole slope map onto the wrong hole.")
+    assert checked >= 150, f"only {checked} greens checked"
+    assert_no_course_skipped(seen, "test_green_binding_wins_by_a_wide_margin_not_a_hair")
+    assert not tight, ("a green binding rests on too little margin:\n  " + "\n  ".join(tight[:6]))
+
+
+@needs_corpus
 def test_no_built_green_surface_is_shared_by_two_holes():
     """The corpus half of the rule above: no green actually built is bound to two holes.
 
