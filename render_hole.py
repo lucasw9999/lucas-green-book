@@ -80,6 +80,34 @@ def dist_to_poly_m(pt, poly, em):
 DIGIT_EM = 0.556                  # Helvetica/Arial Bold digit advance, in em
 PAR3_STRAIGHT_MAX = 1.02          # arc / chord
 
+# A watercourse only belongs on the card if a golfer can SEE it. Two separate exclusions:
+#
+#  * PIPED. A waterway carrying tunnel=culvert / covered=yes / location=underground runs under the
+#    ground. It is not a hazard, it is not visible, and it cannot be played from. Nine holes counted one,
+#    and merion 13 printed "1W" whose only blue mark on the page was a 14.7 m culverted section -- a card
+#    telling a junior there is water on a hole where none is visible. 27 such features exist in the
+#    corpus, on 7 of the 12 courses.
+#  * NOT WATER. waterway=dam / weir / lock_gate / sluice_gate are structures beside water, not water.
+#    Drawn and counted as water they both overstate the hazard and misplace it: the structure sits where
+#    the water is held back, which is exactly where the water is not.
+#
+# At module scope so it can be tested by truth table rather than through a whole rendered card.
+PIPED = ('culvert', 'yes', 'building_passage')
+NOT_WATER = ('dam', 'weir', 'lock_gate', 'sluice_gate', 'fish_pass')
+HIDDEN_LOCATION = ('underground', 'underwater')
+
+
+def is_visible_watercourse(feature):
+    """True when this OSM feature is a watercourse a golfer standing on the hole could see."""
+    t = feature.get('tags') or {}
+    w = t.get('waterway')
+    if not w or w in NOT_WATER:
+        return False
+    if t.get('tunnel') in PIPED or t.get('covered') in PIPED:
+        return False
+    return t.get('location') not in HIDDEN_LOCATION
+
+
 def par3_exact_from_tee(par, arc_m, chord_m):
     """True when a tick's distance FROM THE TEE can be derived exactly as (card - to_green).
 
@@ -217,7 +245,20 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and in_corridor(g,40)]
     waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water') and g.get('geometry') and frac_in(g,45)>=0.35]
-    creeks =[g for g in course if g.get('tags',{}).get('waterway') and g.get('geometry') and in_corridor(g,45)]
+    def any_within(g, buf):
+        """True when ANY part of the feature comes within buf of this hole's centerline.
+
+        The right test for a LINE, and the wrong one for an area -- which is why it is used only for
+        watercourses. in_corridor tests the CENTROID, and a creek is typically long and mostly
+        elsewhere: a stream that crosses this fairway has its centroid two holes away, so it was
+        excluded. That hid 48 open watercourses on 31 holes, one of them passing 0.7 m from the
+        centreline. Meanwhile the same centroid test INCLUDED features whose midpoint happens to sit
+        near the line while no part of them is visible from it.
+        """
+        pts = g.get('geometry') or []
+        return any(dist_to_line(*em(p['lat'], p['lon'])) < buf for p in pts)
+
+    creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g,45)]
     tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g,38)]
     fairways=[g for g in course if g.get('tags',{}).get('golf')=='fairway' and g.get('geometry') and frac_in(g,34)>=0.40]
     roughs  =[g for g in course if g.get('tags',{}).get('golf')=='rough' and g.get('geometry') and frac_in(g,48)>=0.40]

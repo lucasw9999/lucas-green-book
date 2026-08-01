@@ -3658,7 +3658,7 @@ def test_both_editions_share_one_playline_definition():
     import inspect
     for m in ("config", "render_hole", "render_green", "generate"):
         sys.modules.pop(m, None)
-    os.environ["COURSE"] = CORPUS[0] if CORPUS else "merion-golf-club"
+    os.environ["COURSE"] = CORPUS[0]
     import generate
     assert hasattr(generate, "playline_html"), "the shared playline helper is gone"
     for fn_name in ("hole_panel", "coach_map_card"):
@@ -8547,6 +8547,65 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
         f"only {bare_total} treeless holes across the corpus; monarch-bay 1, 17 and 18 are the known "
         f"case, so if that is gone the tree fetch changed and this test now proves nothing")
     assert not problems, "a hole the survey missed prints as open ground:\n  " + "\n  ".join(problems)
+
+
+@needs_corpus                    # render_hole imports config, which needs a bound course to import
+def test_a_card_counts_water_the_golfer_can_actually_see():
+    """"1W" must mean one watercourse a player standing on the hole can see.
+
+    The selection took any feature with a `waterway` tag whose CENTROID was within 45 m of the
+    centreline. Two independent faults, pulling opposite ways:
+
+      * PIPED water counted. A waterway tagged tunnel=culvert, covered=yes or location=underground runs
+        under the ground: not visible, not a hazard, not playable. merion 13 printed "1W" whose only blue
+        mark on the page was a 14.7 m culverted section, and nine holes counted one. 27 such features
+        exist across 7 of the 12 courses.
+      * OPEN water missed. A creek is long and mostly somewhere else, so a stream that crosses THIS
+        fairway usually has its centroid two holes away. The centroid test hid 48 open watercourses on 31
+        holes, one of them passing 0.7 m from the centreline. For a LINE the right question is whether any
+        part of it comes near, which is what any_within asks.
+
+    Together those made the card show the wrong water: a hole with none printed 1, and holes with a
+    stream across them printed 0. Corpus water count went 134 -> 169 when both were fixed.
+
+    Truth table on the predicate, plus the corpus fact that makes it matter.
+    """
+    os.environ["COURSE"] = CORPUS[0] if CORPUS else "merion-golf-club"
+    for m in ("config", "geo", "render_hole"):
+        sys.modules.pop(m, None)
+    import render_hole as rh
+    cases = [
+        ({"waterway": "stream"}, True, "an open stream is visible water"),
+        ({"waterway": "ditch"}, True, "an open ditch is visible"),
+        ({"waterway": "river", "tunnel": "no"}, True, "explicitly not tunnelled"),
+        ({"waterway": "stream", "tunnel": "culvert"}, False, "piped under the ground"),
+        ({"waterway": "stream", "tunnel": "yes"}, False, "tunnelled"),
+        ({"waterway": "drain", "covered": "yes"}, False, "covered"),
+        ({"waterway": "stream", "location": "underground"}, False, "underground"),
+        ({"waterway": "dam"}, False, "a dam is a structure beside water, not water"),
+        ({"waterway": "weir"}, False, "a weir is a structure"),
+        ({"natural": "water"}, False, "not a waterway -- counted on the other list"),
+        ({}, False, "no tags at all"),
+    ]
+    for tags, want, why in cases:
+        got = rh.is_visible_watercourse({"tags": tags})
+        assert got is want, (f"is_visible_watercourse({tags}) returned {got}, expected {want}: {why}")
+
+    # The corpus fact. Without this the truth table above would pass on a corpus where no piped feature
+    # exists, and the test would be describing a risk rather than covering one.
+    piped = 0
+    for slug in CORPUS:
+        p = os.path.join(ROOT, "courses", slug, "osm_course.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            els = json.load(fh).get("elements") or []
+        piped += sum(1 for e in els
+                     if (e.get("tags") or {}).get("waterway") and not rh.is_visible_watercourse(e))
+    assert piped >= 10, (
+            f"only {piped} piped or structural waterway(s) found in the corpus. This test exists because "
+        f"27 of them were being drawn and counted as visible water; if the number has collapsed, "
+        f"either the data was re-fetched differently or the predicate stopped excluding anything.")
 
 
 @needs_corpus
