@@ -16,6 +16,8 @@ that course's cached data (osm_*.json, laz/, dem_hd/) and outputs (greenbook.*).
 """
 import glob, json, os, sys
 
+import distribution   # for build_mode: one normalised spelling of that read; it must not import config
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SLUG = os.environ.get("COURSE", "the-reserve-at-spanos-park")
 COURSE_DIR = os.path.join(ROOT, "courses", SLUG)
@@ -86,7 +88,10 @@ NHOLES = len(HOLE_NUMS)
 NAME = COURSE["name"]
 ADDRESS = COURSE["address"]
 PAR = COURSE.get("par", 72)
-BUILD_MODE = COURSE.get("build_mode", "full")   # "full" = slope maps; "yardage" = blank greens (no elevation data yet)
+# NORMALISED through distribution.build_mode -- see the long note there. Bound raw, a hand-edited
+# "Yardage" made generate.py build a full slope book while distribution.py and legal/03 called it
+# yardage mode with blank greens: a legal record describing a book that was never made.
+BUILD_MODE = distribution.build_mode(COURSE) or "full"   # "full" = slope maps; "yardage" = blank greens
 
 # tee columns (labels) start at index 2 of each hole tuple
 TEES = COURSE["hole_cols"][2:]

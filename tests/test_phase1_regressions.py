@@ -8696,3 +8696,70 @@ def test_re_running_the_surface_builder_cannot_blank_a_working_fallback():
     assert "is_seamless" in src, (
         "fetch_dem_hd.py no longer asks whether the surface it is about to replace came from the 1 m "
         "DEM, so it can blank a working fallback again")
+
+
+def test_one_normalised_spelling_of_build_mode_across_the_engine(tmp_path):
+    """A capitalised build_mode split the engine: a full slope book, described as blank greens.
+
+    course.json is hand-edited -- it carries the scorecard transcription -- so a stray capital or a
+    trailing space is a realistic typo. distribution.py already normalised for that on its own side and
+    its docstring argues the exact case. config.py did not: it bound COURSE.get("build_mode", "full")
+    raw, and generate.py / fetch_hole_elev.py compared it with == "yardage" exactly.
+
+    So "Yardage" made the two halves disagree in the worst available way. distribution_status() answered
+    Personal and tools/gen_provenance.py wrote "yardage mode: blank greens" into legal/03, while
+    generate.py built a FULL book with slope maps, contours and arrows off the LiDAR that yardage mode
+    exists to suppress. Not a wrong number -- a legal record describing a book that was never made.
+    Four of five plausible spellings diverged; only the exact one agreed.
+
+    Asserted as agreement between the two consumers, on the values a typo actually produces, rather than
+    as a string in either file.
+    """
+    import subprocess
+
+    import distribution
+    for raw in ("yardage", "Yardage", "YARDAGE", " yardage", "yardage\n", "\tYardage "):
+        course = {"build_mode": raw}
+        assert distribution.build_mode(course) == "yardage", f"{raw!r} did not normalise"
+        assert distribution.is_yardage(course) is True, f"{raw!r} is not read as yardage mode"
+        assert distribution.distribution_status(course)[1] == "Personal", (
+            f"{raw!r} must be personal-use: yardage mode means no trustworthy post-construction "
+            f"elevation, so the book prints blank greens")
+
+    # And config must expose the SAME answer, since generate.py branches on config.BUILD_MODE. Built
+    # through a throwaway course dir, following the gate_course/_synth_* convention: config resolves
+    # courses/ from the repo root, not the cwd, so a tmp_path cannot stand in for it. The leading
+    # underscore keeps the slug out of CORPUS, gen_provenance and the distribution scan.
+    import shutil
+    slug = "_synth_bmode"
+    cdir = os.path.join(ROOT, "courses", slug)
+    prev = os.environ.get("COURSE")
+    try:
+        os.makedirs(cdir, exist_ok=True)
+        for raw, want in (("Yardage", "yardage"), (" yardage", "yardage"), ("YARDAGE", "yardage"),
+                          ("full", "full"), ("", "full"), ("Full", "full")):
+            with open(os.path.join(cdir, "course.json"), "w", encoding="utf-8") as f:
+                json.dump(dict(slug=slug, name="BMode", address="", par=72,
+                               location={"lat": 40.0, "lon": -75.0},
+                               tees=[dict(name="Card", yards=100, rating=70.0, slope=113)],
+                               featured_tee="Card", hole_cols=["par", "mens_hcp", "Card"],
+                               holes={"1": [72, 1, 100]}, build_mode=raw,
+                               osm_bbox=[39.99, -75.01, 40.01, -74.99], sources={}), f)
+            r = subprocess.run(
+                [sys.executable, "-c",
+                 "import config, distribution as d, json;"
+                 "print(json.dumps([config.BUILD_MODE, d.build_mode(config.COURSE)]))"],
+                cwd=ROOT, env=dict(os.environ, COURSE=slug, QUIET_TEE_CHECK="1"),
+                capture_output=True, text=True)
+            assert r.returncode == 0, f"config failed to bind build_mode={raw!r}:\n{r.stderr[-600:]}"
+            got, norm = json.loads(r.stdout.strip().splitlines()[-1])
+            assert got == want, (
+                f"build_mode={raw!r}: config.BUILD_MODE is {got!r}, expected {want!r}. generate.py "
+                f"compares this with == 'yardage', so a mismatch builds a full slope book for a course "
+                f"distribution.py and legal/03 describe as having blank greens.")
+            assert (got == "yardage") == (norm == "yardage"), (
+                f"build_mode={raw!r}: config says {got!r}, distribution says {norm!r} -- the two halves "
+                f"of the engine disagree about whether this course has slope maps")
+    finally:
+        shutil.rmtree(cdir, ignore_errors=True)
+        _restore_course(prev)

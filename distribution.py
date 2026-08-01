@@ -27,6 +27,28 @@ than slope that could be wrong -- and for Poppy Ridge the aerial also predates t
 YARDAGE = "yardage"
 
 
+def build_mode(course):
+    """The course's build mode, NORMALISED. The one spelling of this read for the whole engine.
+
+    course.json is hand-edited -- it holds the scorecard transcription -- so a stray capital or a
+    trailing space is a realistic typo, and this module already normalised for that on its own side.
+    config.py did not: it bound `COURSE.get("build_mode", "full")` raw and generate.py compared it with
+    `== "yardage"` exactly. So `"Yardage"` split the engine in two. distribution_status() answered
+    Personal and tools/gen_provenance.py wrote *"yardage mode: blank greens"* into legal/03, while
+    generate.py built a FULL book with slope maps, contours and arrows off the LiDAR that yardage mode
+    exists to suppress.
+
+    That is the worst shape a disagreement can take here: not a wrong number, but a legal record
+    describing a book that was not made. Four of five plausible spellings of the value diverged
+    ("Yardage", " yardage", "YARDAGE", "yardage\n"); only the exact one agreed.
+
+    Lives here rather than in config.py because this module is the one thing that must answer for a
+    course record it did not load -- tools/gen_provenance.py hands it parsed JSON directly -- so it
+    cannot depend on config, and config can depend on it.
+    """
+    return ((course or {}).get("build_mode") or "").strip().lower()
+
+
 def distribution_status(course):
     """(distributable: bool, label: str, reason: str) for a parsed course.json.
 
@@ -45,7 +67,7 @@ def distribution_status(course):
     if course is None:
         return (False, "Personal",
                 "no course record could be read, so distributability is unknown; refusing by default")
-    mode = (course.get("build_mode") or "").strip().lower()
+    mode = build_mode(course)
     if mode == YARDAGE:
         return (False, "Personal",
                 "built in yardage mode: no trustworthy post-construction elevation exists, so the "
@@ -65,4 +87,4 @@ def is_yardage(course):
     second reason exists, anything that says "yardage mode: blank greens" would say it about a course
     that is not in yardage mode -- an unsupported claim in the legal record. Same normalisation as
     distribution_status, so a mis-cased build_mode reads the same way in both."""
-    return ((course or {}).get("build_mode") or "").strip().lower() == YARDAGE
+    return build_mode(course) == YARDAGE
