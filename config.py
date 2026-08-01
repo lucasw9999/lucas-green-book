@@ -92,11 +92,16 @@ TEE_TABLE = COURSE.get("tees", [])
 # WHICH TEE THIS BOOK IS BUILT ON -- one answer, here, because it was being decided in two places.
 # generate.py picked the longer of FEATURED/SECONDARY for the card headline; render_hole.py and
 # fetch_hole_elev.py independently used TEES[0] (the first scorecard column) for the tee marker, the
-# from-tee gutter numbers, the carries and the elevation. Those coincide on 11 of 12 courses, so it
-# looked fine -- but the-reserve-at-spanos-park sets featured_tee = Gold while Black is column 0, and
+# from-tee gutter numbers, the carries and the elevation. Those coincided on 11 of 12 courses, so it
+# looked fine -- but the-reserve-at-spanos-park SET featured_tee = Gold while Black was column 0, and
 # its cards headlined "376 Gold" beside a tee marker reading BLA and a brown gutter measured from the
 # 422-yd BLACK tee. 10 of its 18 holes were affected, by up to 46 yd on the number a player reads as
 # "how far I have hit". A card must be built on ONE tee.
+#
+# Past tense throughout, because that course was rebuilt on Black on 2026-07-31 and BACK_NAME now
+# equals TEES[0] on 12 of 12. The counterexample is gone, so this reads as history -- do not check
+# course.json expecting to find Gold. Kept because the two-places problem is why BACK_I exists at all,
+# and a corpus that currently agrees is exactly the state in which someone reintroduces the split.
 _LONGEST_OF_PAIR_IS_SECONDARY = (sum(HOLES[h][SI] for h in HOLES) >= sum(HOLES[h][FI] for h in HOLES))
 BACK_I, BACK_NAME = ((SI, SECONDARY) if _LONGEST_OF_PAIR_IS_SECONDARY else (FI, FEATURED))
 FRONT_I, FRONT_NAME = ((FI, FEATURED) if _LONGEST_OF_PAIR_IS_SECONDARY else (SI, SECONDARY))

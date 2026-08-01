@@ -72,7 +72,9 @@ def tee_anchor(hnum, line, greens):
         as plausible rather than as obviously broken, which is the worst kind of wrong. geo.match_green
         decides which end is which.
 
-      * The line may STOP SHORT of the back tee -- 22 of the 198 holes do, by up to 138 yd. Sampling
+      * The line may STOP SHORT of the back tee -- 19 of the 198 holes do, by up to 103 yd. (Was 22
+        holes and 138 yd; valley-hi 17's 220 yd stub was replaced by its real 360 yd centreline when
+        that course's osm_bbox was widened, which removed both the count and the worst case.) Sampling
         there measures the ground somewhere up the fairway and labels it the tee, and on a climbing
         hole those are not the same height. So:
           - line spans the card yardage      -> its tee end IS the tee; sample there.

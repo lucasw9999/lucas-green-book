@@ -352,8 +352,10 @@ def render_hole(hnum, HOLES, font_scale=1.0):
            for i in range(len(pts_em)-1)]
     arc_m = sum(seg) or 1.0
     arc_yd = arc_m / 0.9144
-    # Does the drawn line actually span the hole? On 22 of 198 holes it does not: 20 stop short of
-    # the back tee and 2 OVERSHOOT it (OSM traced past the tee). Either way no from-tee distance
+    # Does the drawn line actually span the hole? On 21 of 198 holes it does not: 19 stop short of
+    # the back tee and 2 OVERSHOOT it (OSM traced past the tee). Was 22/20/2 until valley-hi 17's
+    # too-tight osm_bbox was widened on 2026-07-31 and the re-fetch replaced a hand-drawn 220 yd stub
+    # with the real 360 yd centreline, moving that hole into the spanning set. Either way no from-tee distance
     # can be derived, so that label is omitted rather than guessed -- the to-green number, which
     # is what you club off, is unaffected. Note the overshoot case still needs the yd < total_yd
     # bound below; suppressing the label alone does not bound the radius.
