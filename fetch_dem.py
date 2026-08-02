@@ -21,7 +21,8 @@ against 4,973,620).
 
 Run:  COURSE=<slug> python3 fetch_dem_hd.py     # first: 0.4 m where LiDAR allows
       COURSE=<slug> python3 fetch_dem.py        # then: 1 m for the greens it refused
-      ONLY=14,16 ...                            # restrict to specific holes
+      ONLY=14,16 ...                            # restrict to specific holes (a comma-separated
+                                                #   list of numbers; ranges are refused, not guessed)
       OVERWRITE=1 ...                           # replace a good 0.4 m surface on purpose
 """
 import urllib.request, json, math, io, time, os
@@ -31,7 +32,12 @@ import geo
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
-OVERWRITE = bool(os.environ.get("OVERWRITE"))   # replace a good 0.4 m surface on purpose
+# replace a good 0.4 m surface on purpose. Parsed the way fetch_trees.py parses its two escape
+# hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
+# OVERWRITE=no all mean YES, so the word "false" armed the path that trades every 0.4 m LiDAR green
+# for the coarse 1 m DEM -- the exact loss keeps_existing_surface below exists to prevent. An
+# explicit off must be off.
+OVERWRITE = os.environ.get("OVERWRITE", "").lower() not in ("", "0", "false", "no")
 R_LAT = 111320.0
 def is_seamless(meta):
     """True when this surface came from the 1 m seamless DEM rather than 0.4 m LiDAR ground returns.
@@ -140,12 +146,40 @@ def _green_interior_stats(arr, bbox, W, H, polygon):
     return (1.0 if n_in == 0 else n_nan / n_in), n_in, relief
 
 
+def only_holes(raw):
+    """The set of hole numbers ONLY= names, or REFUSE if it names something this parser cannot read.
+
+    It used to keep the digit tokens and drop the rest, so `ONLY=1-9` silently meant EVERY hole -- and
+    the "ONLY holes:" acknowledgement sits inside `if only:`, so it printed nothing either. On the stage
+    that replaces 0.4 m LiDAR surfaces with the coarse 1 m DEM, and next to OVERWRITE=1 in the same
+    usage block, a typo that DOUBLES the scope of the run is the one way a scope filter must not fail.
+
+    Ranges stay unsupported on purpose: the documented syntax is a comma-separated list (`ONLY=14,16`
+    here, in README.md and in PIPELINE.md), and a second spelling understood only by this script is a
+    parser the docs and the other stages do not share. `1-9` is a typo for `1,9`, so say so.
+
+    Extracted so the TEST can call it -- main() cannot be exercised without the network. Same reason
+    is_flat_fill and both keeps_existing_surface predicates are predicates.
+    """
+    txt = (raw or "").replace(" ", "")
+    toks = [t for t in txt.split(",") if t]
+    bad = [t for t in toks if not t.isdigit()]
+    if bad or (txt and not toks):
+        why = ("not a hole number: " + ", ".join(repr(t) for t in bad)) if bad else "it names no hole"
+        raise SystemExit(
+            f"cannot read ONLY={raw!r}: {why}.\n"
+            f"  ONLY takes a comma-separated list of hole numbers, e.g. ONLY=14,16 -- ranges are not\n"
+            f"  supported. Dropping what it cannot read would mean EVERY hole, which with OVERWRITE=1\n"
+            f"  is the difference between rebuilding the holes you named and rebuilding all of them.")
+    return {int(t) for t in toks}
+
+
 def main():
     # ONLY=14,10 restricts the run to specific holes. Protecting the neighbours' sharp 0.4 m
     # surfaces is no longer its job -- keeps_existing_surface() does that unconditionally now, which
     # also means ONLY= on a hole that already holds a good LiDAR surface writes nothing without
     # OVERWRITE=1.
-    only = {int(v) for v in os.environ.get("ONLY", "").replace(" ", "").split(",") if v.isdigit()}
+    only = only_holes(os.environ.get("ONLY", ""))
     if only:
         print("ONLY holes:", sorted(only))
     d = json.load(open(f"{DIR}/osm_geom.json"))

@@ -45,8 +45,8 @@ def covering_tiles(bbox, pad_ft=300):
     n0 = int((min(ns) - pad_ft) // 3000 * 3); n1 = int((max(ns) + pad_ft) // 3000 * 3)
     return [f"w{e}n{n}" for e in range(e0, e1 + 1, 3) for n in range(n0, n1 + 1, 3)]
 
-ABSENT = -1        # the server says this tile is not in this sub-project (HTTP 404/403)
-UNKNOWN = -2       # we could not find out -- network error, timeout, 5xx
+ABSENT = -1        # the server says this tile is not in this sub-project (HTTP 404/410)
+UNKNOWN = -2       # we could not find out -- network error, timeout, 5xx, or a 403 denial
 
 
 def head_size(url, tries=3):
@@ -58,11 +58,23 @@ def head_size(url, tries=3):
     reported "edge of coverage, skip" and main() exited 0 having downloaded half a course. A green
     with no ground returns under it is what the honesty gate now has to catch; better to fail the
     fetch than to build on a gap that a network wobble invented.
+
+    403 is UNKNOWN, not ABSENT. It was counted as authoritative alongside 404/410 and never retried,
+    which reopened this exact false claim through a different status code: rockyweb does not answer 403
+    for a tile it does not hold, so a 403 comes from an intermediary -- a proxy, a WAF, a rate limiter
+    -- and says nothing about the survey's footprint. Reproduced with every HEAD answered 403: four
+    tiles printed as "not in any sub-project (404) -- edge of coverage, skip", then "authoritative
+    404 ... That is the edge of the survey", about requests that were DENIED.
     """
     last = None
     for attempt in range(tries):
         try:
-            r = urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=30)
+            # identify the client, like every other request this project makes (fetch_lidar.tnm_items,
+            # fetch_dem, fetch_osm). An anonymous HEAD is one of the reasons an intermediary answers
+            # 403, and a 403 here used to be published as the edge of the LiDAR survey.
+            req = urllib.request.Request(url, method="HEAD",
+                                         headers={"User-Agent": "greenbook/1.0"})
+            r = urllib.request.urlopen(req, timeout=30)
             n = int(r.headers.get("Content-Length", 0))
             if n > 0:
                 return n
@@ -72,7 +84,7 @@ def head_size(url, tries=3):
             # so and let the run abort rather than invent a gap.
             last = "HTTP 200 with no Content-Length"
         except urllib.error.HTTPError as e:
-            if e.code in (403, 404, 410):
+            if e.code in (404, 410):
                 return ABSENT          # an authoritative "no such tile"
             last = f"HTTP {e.code}"
         except Exception as e:

@@ -6301,6 +6301,101 @@ def test_the_surface_builder_refuses_to_guess_a_zone_or_a_vertical_unit():
     assert src.count("raise SystemExit") >= 2, "the guards must actually stop the run"
 
 
+def test_a_mixed_crs_tile_directory_is_refused_not_projected_through_one_guess(tmp_path):
+    """laz_to_utm() read the CRS from the FIRST tile that had one and applied that single transform,
+    vertical scale included, to every other tile in laz/ -- with no cross-tile comparison anywhere.
+
+    Both CRS families are live in this corpus: California zone 3 ftUS on 5 courses, UTM 10N/18N in
+    metres on 6. Nothing ever removes a previously-fetched project's tiles from laz/, so a directory
+    holding both is reachable by ordinary use, and the failure is SILENT: reproduced here, the ftUS
+    transform applied to a metre tile throws its points about 1.9e6 m away, where main()'s bbox
+    prefilter drops them and prints "fed 0 greens". The green then falls to the 1 m DEM, or to nothing,
+    for a reason that is not real -- and had the offset been small instead, the surface would have been
+    built from points scaled by 3.28.
+
+    This function already hard-stops for two other CRS faults (no course location, no CRS anywhere), so
+    refusing is the established answer here rather than a new policy. Asserted in both tile orders,
+    because "the first tile wins" is exactly the kind of rule that reads as correct in one order."""
+    pytest.importorskip("laspy")
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem_hd"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_dem_hd as fdh
+    except Exception as e:
+        pytest.skip(f"fetch_dem_hd not importable: {type(e).__name__}")
+    import laspy
+    import numpy as np
+    from pyproj import CRS, Transformer
+
+    FT = CRS.from_epsg(2227)                      # NAD83 / California zone 3 (ftUS) -- 5 courses
+    MT = CRS.from_user_input(fdh.UTM)             # the course's own UTM zone, metres -- 6 courses
+
+    def tile(path, crs, x, y):
+        h = laspy.LasHeader(version="1.4", point_format=6)
+        h.add_crs(crs)
+        las = laspy.LasData(h)
+        las.x = np.array([x, x + 1.0]); las.y = np.array([y, y + 1.0]); las.z = np.zeros(2)
+        las.classification = np.full(2, 2)
+        las.write(str(path))
+
+    dir0 = fdh.DIR
+    try:
+        # the consequence, measured rather than asserted in prose: the same numbers read through the
+        # wrong one of these two CRSs land in another county
+        mx, my = fdh.TR.transform(fdh.config.COURSE["location"]["lon"],
+                                  fdh.config.COURSE["location"]["lat"])
+        right = Transformer.from_crs(MT, fdh.UTM, always_xy=True).transform(mx, my)
+        wrong = Transformer.from_crs(FT, fdh.UTM, always_xy=True).transform(mx, my)
+        off = math.hypot(right[0] - wrong[0], right[1] - wrong[1])
+        assert off > 1e5, f"the two CRSs must be far apart for this to be a silent-drop test, got {off:.0f} m"
+
+        # one CRS per directory still resolves, and the vertical scale still comes from the CRS
+        for crs, want_z in ((FT, 0.3048006096012192), (MT, 1.0)):
+            one = tmp_path / f"one_{crs.to_epsg() or 'utm'}"
+            (one / "laz").mkdir(parents=True)
+            tile(one / "laz" / "a.laz", crs, 6163000.0 if crs is FT else mx,
+                 2050000.0 if crs is FT else my)
+            fdh.DIR = str(one)
+            _pt, z = fdh.laz_to_utm()
+            assert z == pytest.approx(want_z), f"{crs.name}: vertical scale {z}, expected {want_z}"
+
+        # ...and a directory holding BOTH must refuse, whichever tile the glob reaches first
+        for first, second in (("a_ft.laz", "b_metre.laz"), ("a_metre.laz", "b_ft.laz")):
+            mixed = tmp_path / f"mixed_{first[0]}_{first.split('_')[1]}"
+            (mixed / "laz").mkdir(parents=True)
+            for name in (first, second):
+                if "ft" in name:
+                    tile(mixed / "laz" / name, FT, 6163000.0, 2050000.0)
+                else:
+                    tile(mixed / "laz" / name, MT, mx, my)
+            fdh.DIR = str(mixed)
+            with pytest.raises(SystemExit) as e:
+                fdh.laz_to_utm()
+            msg = str(e.value)
+            assert first in msg and second in msg, \
+                f"the refusal must name the tiles that disagree, got:\n{msg}"
+            assert FT.name in msg and MT.name in msg, \
+                f"the refusal must name both CRSs, got:\n{msg}"
+
+        # and every real course must still resolve ONE CRS -- a guard that stops the corpus building is
+        # not a fix. (The transformer's TARGET zone is the imported course's either way; what is being
+        # checked is that the tiles on disk agree with each other.)
+        checked = 0
+        for slug in CORPUS:
+            if not glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz")):
+                continue
+            fdh.DIR = os.path.join(ROOT, "courses", slug)
+            fdh.laz_to_utm()                      # must not raise
+            checked += 1
+        if CORPUS:
+            assert checked >= 1, "no built course has LAZ tiles, so the corpus check proved nothing"
+    finally:
+        fdh.DIR = dir0
+        for m in ("config", "fetch_dem_hd"):
+            sys.modules.pop(m, None)
+
+
 def test_gps_week_time_is_refused_not_turned_into_september_2011():
     """global_encoding bit 0 == 0 means GPS WEEK TIME: seconds since the start of the current GPS
     week, with the week number recorded NOWHERE in the file, so the absolute date is not recoverable.
@@ -6516,6 +6611,117 @@ def test_the_density_and_coverage_gate_measures_the_green_itself():
     assert "cKDTree(" in src.split("import cKDTree", 1)[1], \
         "coverage needs a nearest-return query, not just the import"
     assert 0 < fdh.COVER_R_M <= 2.0 and 0 < fdh.UNCOVERED_MAX <= 0.10
+
+
+def test_the_density_gate_sees_the_measurement_not_the_published_rounding(tmp_path):
+    """The density floor was compared against a figure already rounded to 0.1 pts/m^2, so a green
+    measured at 3.96 returns per m^2 was gated as 4.0 and PASSED a floor of 4.0 written to refuse it.
+
+    Exactly the mechanism of the 3 ft elevation floor fixed in e59cdc4, one module over: `dens` was
+    round()ed for publication and then handed to is_insufficient, while nan_frac and uncovered were
+    passed unrounded and only rounded on their way into the meta. Density was the one gate input
+    rounded before its comparison. Direct: is_insufficient(0, 3.96, 0) is True but
+    is_insufficient(0, round(3.96, 1), 0) is False.
+
+    Latent on this corpus -- the worst published density is the-reserve hole 9 at 4.7 -- so no shipped
+    green moves. It is the NEXT thin green that the gate would wave through, and a green surface that
+    was not really measured is the one thing this book must not print a read off.
+
+    Measured on that hole, recomputed from its four LAZ tiles with this module's own helpers: 2443
+    in-ring class-2 returns over a 520.53 m^2 ring = 4.6933 pts/m^2. Simulating a 15% loss of in-green
+    ground returns gives 3.9893 -- refused on the exact value, ACCEPTED as coded, because it rounds to
+    4.0. Under the rounded gate the floor was not crossed until a 15.84% loss.
+
+    Checked end to end on a synthetic one-hole course rather than on the expression, because the
+    predicate itself was always right: the fault was in what main() fed it. The green here holds a
+    60x60 lattice of ground returns over a 30.15 m square, i.e. 3.960 pts/m^2 exactly, which publishes
+    as 4.0.
+    """
+    pytest.importorskip("laspy")
+    pytest.importorskip("scipy")
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem_hd"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_dem_hd as fdh
+    except Exception as e:
+        pytest.skip(f"fetch_dem_hd not importable: {type(e).__name__}")
+    import laspy
+    import numpy as np
+    from pyproj import CRS
+
+    dir0, out0 = fdh.DIR, fdh.OUT
+    # 60 lattice points per axis over a square this wide is 3600/909.1 = 3.960 pts/m^2 -- under the
+    # 4.0 floor, but 4.0 once rounded. Built in UTM and inverted to lat/lon so the ring's projected
+    # area is the square's true area and the arithmetic above is not at the mercy of a 2% scale error.
+    side_m = math.sqrt(3600.0 / 3.96)
+
+    def build(k, where):
+        """Run the real main() over a one-hole course whose green holds k*k ground returns.
+
+        Returns (meta written for hole 1, the EXACT in-ring density the builder must gate on)."""
+        (where / "laz").mkdir(parents=True)
+        (where / "dem_hd").mkdir(parents=True)
+        loc = fdh.config.COURSE["location"]
+        cx, cy = fdh.TR.transform(loc["lon"], loc["lat"])
+
+        def ll(x, y):
+            lo, la = fdh.TR.transform(x, y, direction="INVERSE")
+            return {"lon": lo, "lat": la}
+
+        ring = [ll(cx, cy), ll(cx + side_m, cy),
+                ll(cx + side_m, cy + side_m), ll(cx, cy + side_m)]
+        (where / "osm_geom.json").write_text(json.dumps({"elements": [
+            {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring},
+            {"type": "way", "id": 2, "tags": {"golf": "hole", "ref": "1"},
+             "geometry": [ll(cx + side_m / 2, cy - 150.0), ll(cx + side_m / 2, cy + side_m / 2)]},
+        ]}), encoding="utf-8")
+
+        # a lattice at spacing side_m/k: exactly k*k points strictly inside the ring, extended ~14 m
+        # past it so no in-green node sits outside the point cloud's hull (nan_frac stays 0)
+        step = side_m / k
+        pad = int(math.ceil(14.0 / step))
+        idx = np.arange(-pad, k + pad) + 0.5
+        gx, gy = np.meshgrid(cx + idx * step, cy + idx * step)
+        gx = gx.ravel(); gy = gy.ravel()
+        h = laspy.LasHeader(version="1.4", point_format=6)
+        h.add_crs(CRS.from_user_input(fdh.UTM))          # metres, so the vertical scale is 1.0
+        las = laspy.LasData(h)
+        las.x = gx; las.y = gy
+        las.z = 0.02 * (gx - cx)                         # a gentle real tilt, not a flat fill
+        las.classification = np.full(gx.size, 2)
+        las.write(str(where / "laz" / "tile.laz"))
+
+        fdh.DIR = str(where); fdh.OUT = str(where / "dem_hd")
+        fdh.main()
+        meta = json.loads((where / "dem_hd" / "hole01.json").read_text(encoding="utf-8"))
+        return meta, (k * k) / fdh._ring_area_m2(ring)
+
+    try:
+        thin, exact = build(60, tmp_path / "at_the_floor")
+        # the premise: measured UNDER the floor, published AT it
+        assert 3.95 <= exact < fdh.DENSITY_MIN, \
+            f"the fixture must sit just under the floor to exercise the gate; it measures {exact:.4f}"
+        assert thin["density"] == round(exact, 1) == fdh.DENSITY_MIN, \
+            f"published density {thin['density']} is not the rounding of {exact:.4f}"
+        # ...and nothing ELSE may be doing the refusing, or the test proves nothing about density
+        assert thin["nan_frac"] <= fdh.NAN_FRAC_MAX and thin["uncovered"] <= fdh.UNCOVERED_MAX, \
+            f"the other two gates fired too: {thin}"
+        assert thin["insufficient"] is True, (
+            f"a green measured at {exact:.4f} pts/m^2 against a {fdh.DENSITY_MIN} floor was written "
+            f"insufficient={thin['insufficient']} -- the gate is reading the published rounding "
+            f"({thin['density']}), not the measurement, so the book prints a read off a surface its "
+            f"own floor says was not measured")
+
+        thick, exact2 = build(62, tmp_path / "above_the_floor")
+        assert exact2 > fdh.DENSITY_MIN, exact2
+        assert thick["insufficient"] is False, (
+            f"a green measured at {exact2:.4f} pts/m^2 must still be read -- a gate that refuses what "
+            f"it accepts is not a fix: {thick}")
+    finally:
+        fdh.DIR, fdh.OUT = dir0, out0
+        for m in ("config", "fetch_dem_hd"):
+            sys.modules.pop(m, None)    # leave no tmp-pointed module for the next test
 
 
 @needs_corpus
@@ -7051,6 +7257,100 @@ def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
     src = open(os.path.join(ROOT, "fetch_dem.py"), encoding="utf-8").read()
     assert "keeps_existing_surface" in _code_only(src.split("def keeps_existing_surface", 1)[1]), \
         "fetch_dem.py defines the guard but never calls it"
+
+
+def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage():
+    """OVERWRITE was read for TRUTHINESS -- bool(os.environ.get("OVERWRITE")) -- so OVERWRITE=0,
+    OVERWRITE=false and OVERWRITE=no all armed it, in both stages that write dem_hd/.
+
+    An explicit "off" turning a guard OFF is the worst direction for this pair of flags to fail in.
+    With OVERWRITE=false, fetch_dem_hd.py replaces a working 1 m fallback with a blank green, and
+    fetch_dem.py replaces a good 0.4 m LiDAR surface with the coarse 1 m one -- the two faults the
+    keeps_existing_surface guards exist to prevent, re-armed by the word "false".
+
+    fetch_trees.py already parses its two escape hatches correctly (`.lower() not in ("", "0",
+    "false", "no")`); these two modules were the ones left on bool(). The existing truth-table tests
+    pass `overwrite` as a Python bool and never exercise the env read at all -- and one of them
+    records that its previous grep-based version was satisfied merely by this module-scope line
+    existing. So pin the PARSE, not the string."""
+    import importlib
+    os.environ["COURSE"] = a_course()
+    saved = os.environ.get("OVERWRITE")
+    try:
+        for raw, want in (("", False), ("0", False), ("false", False), ("FALSE", False),
+                          ("no", False), ("No", False), ("1", True), ("true", True),
+                          ("yes", True)):
+            os.environ["OVERWRITE"] = raw
+            for name in ("fetch_dem", "fetch_dem_hd"):
+                for m in ("config", name):
+                    sys.modules.pop(m, None)
+                try:
+                    mod = importlib.import_module(name)
+                except Exception as e:
+                    pytest.skip(f"{name} not importable: {type(e).__name__}")
+                assert mod.OVERWRITE is want, (
+                    f"{name}: OVERWRITE={raw!r} parsed to {mod.OVERWRITE}, expected {want} -- an "
+                    f"explicit 'off' must not arm a stage that overwrites a working green surface")
+    finally:
+        if saved is None:
+            os.environ.pop("OVERWRITE", None)
+        else:
+            os.environ["OVERWRITE"] = saved
+        for m in ("config", "fetch_dem", "fetch_dem_hd"):
+            sys.modules.pop(m, None)
+
+
+def test_a_malformed_only_is_refused_rather_than_silently_meaning_every_hole():
+    """ONLY= was parsed by keeping the tokens that are digits and DROPPING the rest, so ONLY=1-9 meant
+    all 18 holes -- and the "ONLY holes:" acknowledgement sits inside `if only:`, so nothing was
+    printed either. Reproduced: ONLY=1-9 processed 18 greens with no diagnostic; ONLY=1,9 processed 2.
+
+    Combined with OVERWRITE=1 -- the flag it is documented next to -- that is the difference between
+    rebuilding 9 greens and rebuilding all 18, on the stage that replaces 0.4 m LiDAR surfaces with the
+    coarse 1 m DEM. A typo silently DOUBLING the scope of a destructive run is the one direction a
+    scope filter must not fail in.
+
+    Ranges stay unsupported deliberately: the documented syntax is a comma-separated list (`ONLY=14,16`
+    in this module's own usage block, README.md and PIPELINE.md), and inventing a second spelling here
+    would put a parser in one script that the docs and the other stages do not share. So `1-9` is a
+    typo for `1,9`, and it is refused by name.
+
+    Parsing extracted to only_holes() so the test can call it -- the same reason is_flat_fill and both
+    keeps_existing_surface predicates were extracted: main() cannot be exercised without the network."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_dem as fd
+    except Exception as e:
+        pytest.skip(f"fetch_dem not importable: {type(e).__name__}")
+
+    assert fd.only_holes("") == set(), "an unset ONLY means the whole course"
+    assert fd.only_holes("14,16") == {14, 16}
+    assert fd.only_holes(" 1 , 9 ") == {1, 9}, "spaces were always tolerated; keep it that way"
+    assert fd.only_holes("7") == {7}
+    # An EMPTY token names nothing and therefore cannot widen the set -- `ONLY=14,16,` still means
+    # exactly 14 and 16 -- so a trailing or doubled comma is read, not refused. What must never be
+    # tolerated is a token that means something to the reader and nothing to the parser.
+    assert fd.only_holes("14,16,") == {14, 16}
+    assert fd.only_holes("1,,9") == {1, 9}
+    for bad in ("1-9", "9-", "1..9", "x", "1;9", ",", "1, x"):
+        with pytest.raises(SystemExit) as e:
+            fd.only_holes(bad)
+        msg = str(e.value)
+        assert "ONLY" in msg, f"ONLY={bad!r} was refused without naming the variable: {msg}"
+        assert bad.strip().strip(",") in msg or bad in msg, \
+            f"ONLY={bad!r} was refused without quoting what it could not read: {msg}"
+
+    # and main() must use it -- a correct parser nobody calls widens nothing back
+    with open(os.path.join(ROOT, "fetch_dem.py"), encoding="utf-8") as f:
+        src = f.read()
+    body = "def main(" + src.split("def main(", 1)[1]
+    assert "only_holes" in _code_only(body), \
+        "fetch_dem.main() no longer parses ONLY through only_holes(), so a malformed value can " \
+        "silently mean every hole again"
+    for m in ("config", "fetch_dem"):
+        sys.modules.pop(m, None)
 
 
 def test_a_missing_green_surface_explains_itself(tmp_path):
@@ -8004,8 +8304,9 @@ def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
     ground returns under it is precisely what the honesty gate now has to catch. A gap invented by a
     network wobble is indistinguishable, after the fact, from the edge of a survey.
 
-    Now: an authoritative 403/404/410 means ABSENT, anything else means UNKNOWN, and UNKNOWN stops
-    the run instead of silently shrinking the coverage."""
+    Now: an authoritative 404/410 means ABSENT, anything else -- a timeout, a 5xx, or a 403 denial from
+    an intermediary -- means UNKNOWN, and UNKNOWN stops the run instead of silently shrinking the
+    coverage."""
     import urllib.error
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar_alameda"):
@@ -8053,6 +8354,82 @@ def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
     i = src.index("could not determine whether")
     assert "raise SystemExit" in src[max(0, i - 300):i + 200], \
         "an undetermined tile must stop the fetch, not be treated as the edge of the survey"
+
+
+def test_a_denied_head_is_never_published_as_the_edge_of_the_survey():
+    """head_size() counted HTTP 403 as an authoritative "no such tile", alongside 404 and 410, with no
+    retry -- so a request that was DENIED produced the printed claim "not in any sub-project (404) --
+    edge of coverage, skip" and then "not on the server (authoritative 404) ... That is the edge of the
+    survey", and main() returned normally so the pipeline exited 0.
+
+    rockyweb does not answer 403 for a tile it does not hold; 403 comes from an intermediary -- a proxy,
+    a WAF, a rate limiter -- and says nothing about the survey's footprint. It is the same false-gap
+    claim this function's docstring already forbids for a timeout, reached through a different status
+    code, and the book's whole honesty argument for an unread green is that the survey really does not
+    cover it.
+
+    Reproduced against bay-view's tile list with every HEAD answered 403: 4 tiles reported as the edge
+    of coverage, "authoritative 404" printed in the closing NOTE. The HEADs also carried no User-Agent,
+    unlike every other request this project makes (fetch_lidar.tnm_items, fetch_dem, fetch_osm all send
+    greenbook/1.0), which is itself a reason an intermediary would refuse one.
+
+    403 is now UNKNOWN: retried, and if it persists the run aborts before downloading anything rather
+    than describing a denial as a gap in the LiDAR."""
+    import contextlib
+    import io
+    import types
+    import urllib.error
+
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_lidar_alameda as fla
+    except Exception as e:
+        pytest.skip(f"not importable: {type(e).__name__}")
+
+    real_open, real_time = fla.urllib.request.urlopen, fla.time
+    calls = {"n": 0}
+    heads = []
+
+    def denied(req, *a, **k):
+        calls["n"] += 1
+        heads.append({k2.lower(): v for k2, v in dict(getattr(req, "headers", {})).items()})
+        raise urllib.error.HTTPError(getattr(req, "full_url", "u"), 403, "Forbidden", {}, None)
+
+    try:
+        # the retry BACKOFF is not what is under test, and the retry COUNT is asserted below, so skip
+        # the sleeps rather than spend 12 s of suite time proving arithmetic
+        fla.time = types.SimpleNamespace(sleep=lambda *_a, **_k: None)
+        fla.urllib.request.urlopen = denied
+        assert fla.head_size("https://x/t.laz", tries=3) == fla.UNKNOWN, (
+            "HTTP 403 was read as an authoritative 'this tile is not in this sub-project'. It is a "
+            "denial, not a survey boundary, and the run would go on to print it as the edge of "
+            "coverage")
+        assert calls["n"] == 3, \
+            f"a 403 is not authoritative, so it must be retried like any other refusal; tried {calls['n']}"
+        assert heads and all("user-agent" in h for h in heads), \
+            f"the HEAD requests identify nothing, which is one reason an intermediary answers 403: {heads[:1]}"
+
+        buf = io.StringIO()
+        exited = None
+        with contextlib.redirect_stdout(buf):
+            try:
+                fla.main()
+            except SystemExit as e:
+                exited = str(e)
+        out = buf.getvalue()
+        for claim in ("edge of coverage, skip", "authoritative 404", "edge of the survey"):
+            assert claim not in out, \
+                f"a denied HEAD was published as {claim!r}:\n{out[-600:]}"
+        assert exited and "could not determine" in exited, (
+            f"a run that could not learn whether the tiles exist must abort before downloading, got "
+            f"{exited!r}")
+    finally:
+        fla.urllib.request.urlopen = real_open
+        fla.time = real_time
+        for m in ("config", "fetch_lidar_alameda"):
+            sys.modules.pop(m, None)
 
 
 def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):

@@ -23,7 +23,11 @@ import geo
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 RES = 0.4                                   # target metres/pixel
-OVERWRITE = bool(os.environ.get("OVERWRITE"))   # replace a working 1 m fallback with a blank green
+# replace a working 1 m fallback with a blank green. Parsed the way fetch_trees.py parses its two
+# escape hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
+# OVERWRITE=no all mean YES, so the word "false" armed the one path in this stage that can turn a card
+# that prints a real read into a blank one. An explicit off must be off.
+OVERWRITE = os.environ.get("OVERWRITE", "").lower() not in ("", "0", "false", "no")
 # Point flags the PRODUCER disowns: "do not use this measurement", and "computed, not observed".
 # Named at module scope so a test can assert the SET rather than grep main() for the words -- the
 # first version of that test searched main()'s text, where both words also appear in the comment
@@ -73,17 +77,51 @@ TR = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM m
 def laz_to_utm():
     """Transformer from the tiles' native CRS -> the course's UTM zone (metres), plus the
     vertical scale to metres. Auto-read from the LAZ header so State Plane (ftUS) and UTM
-    both work; everything downstream then stays in metres."""
-    src = config.COURSE.get("lidar_crs")
-    if not src:
-        for t in sorted(glob.glob(f"{DIR}/laz/*.laz")):
-            try:
-                with laspy.open(t) as f:
-                    src = f.header.parse_crs()
-                    if src:
-                        break
-            except Exception:
-                pass
+    both work; everything downstream then stays in metres.
+
+    ONE transform is applied to EVERY tile in laz/ (main() reprojects each tile with the pair returned
+    here), so every tile that carries a CRS has to agree. This used to break out of the scan at the
+    first tile it could read a CRS from, with no cross-tile comparison anywhere -- and nothing ever
+    removes a previously-fetched project's tiles from laz/, so a directory holding both families in
+    this corpus (California zone 3 ftUS on 5 courses, UTM 10N/18N metres on 6) is reachable by ordinary
+    use. Measured on a mixed directory: the ftUS scale 0.3048006096 was applied to a metre tile, whose
+    points then landed about 1.9e6 m away and were dropped in silence by main()'s bbox prefilter,
+    printing only "fed 0 greens". Had the two been closer, the surface would have been built from
+    points scaled by 3.28 instead.
+
+    NOT fixed for the whole pipeline: fetch_trees.laz_to_utm() is a hand copy of the pre-fix version of
+    this function and still takes the first CRS it can read, which would put that course's tree markers
+    through it. The green surfaces every printed slope comes from are built here, so the stop is here.
+    """
+    tiles = sorted(glob.glob(f"{DIR}/laz/*.laz"))
+    read = []                               # (tile name, CRS) for every tile that carries one
+    for t in tiles:
+        try:
+            with laspy.open(t) as f:
+                c = f.header.parse_crs()
+        except Exception:
+            continue                        # unreadable header: it contributes no CRS, that is all
+        if c:
+            read.append((os.path.basename(t), c))
+    for name, c in read[1:]:
+        if c != read[0][1]:
+            n0, c0 = read[0]
+            def _z(crs):
+                # the vertical scale is the concrete thing that goes wrong, but a CRS whose unit
+                # geo.vertical_scale refuses to read must not replace THIS message with that one
+                try:
+                    return "Z x %s -> m" % geo.vertical_scale(crs)
+                except SystemExit:
+                    return "vertical unit unreadable"
+            raise SystemExit(
+                "the tiles in %s/laz are not all in one CRS, and one transform is applied to all of\n"
+                "  them:\n    %s: %s (%s)\n    %s: %s (%s)\n"
+                "  Refusing to project one through the other: on this pair the points land far enough\n"
+                "  apart that the misplaced tile is silently dropped by the bbox prefilter, and a\n"
+                "  closer pair would build the surface from Z values scaled by the wrong unit. Remove\n"
+                "  the tiles that do not belong to this course's LiDAR project and re-run."
+                % (DIR, n0, c0.name, _z(c0), name, c.name, _z(c)))
+    src = config.COURSE.get("lidar_crs") or (read[0][1] if read else None)
     if src is None:
         # Assuming a CRS-less cloud is already in the course UTM zone with metres for Z is the guess
         # geo.vertical_scale exists to prevent: geo.vertical_scale(UTM) returns 1.0, so a US-survey-
@@ -188,10 +226,13 @@ def keeps_existing_surface(meta_path, overwrite=False):
     The inline guard this replaced tested `fetch_dem.is_seamless(prev)`, so it protected only the 6
     seamless records in a 198-green corpus -- 3%. The other 192 are LiDAR-sourced, and re-running this
     stage on one whose density had slipped under DENSITY_MIN would overwrite a working read with
-    insufficient=True and blank the card. The tightest live case is the-reserve hole 9 at 4.7 pts/m2
-    against a floor of 4.0: a 15% loss of in-green ground returns flips it, and the old guard would not
-    have fired. The comment above the guard said "Only one direction was guarded"; it was true one level
-    further down than it looked.
+    insufficient=True and blank the card. The tightest live case is the-reserve hole 9: 2443 in-ring
+    ground returns over a 520.53 m^2 ring, i.e. 4.6933 pts/m^2 (published as 4.7) against a floor of
+    4.0, so a 14.8% loss of in-green ground returns flips it, and the old guard would not have fired.
+    (Measured with this module's own helpers off that course's four LAZ tiles. The figure was written
+    here as "a 15% loss" while the gate was still comparing the ROUNDED density, where nothing flipped
+    until 15.84% -- the example and the code were wrong in opposite directions.) The comment above the
+    guard said "Only one direction was guarded"; it was true one level further down than it looked.
 
     A predicate rather than an inline branch so it can be tested by truth table. The test that was meant
     to pin the old guard asserted only that the strings 'os.environ.get("OVERWRITE")' and "is_seamless"
@@ -299,9 +340,22 @@ def main():
         # its own divisor. gen_provenance publishes this number as density "over N greens".
         g_area=_ring_area_m2(t['green']['geometry'])
         n_pts_in=int(_in_polygon(px,py,t['green']['geometry']).sum())
-        dens=round(n_pts_in/g_area,1) if g_area>0 else 0.0
+        # GATE ON THE MEASUREMENT, PUBLISH THE ROUNDING. `dens` is a display figure (the meta, the run
+        # log, and gen_provenance's "N pts/m^2 over N greens" all show one decimal); dens_exact is what
+        # the gate sees. Rounding first let a green measured at 3.96 pts/m^2 through a floor of 4.0
+        # written to refuse it -- round(3.96, 1) == 4.0, and 4.0 is not < 4.0. That is the same fault as
+        # the 3 ft elevation floor compared against a value already rounded to 0.1 ft (e59cdc4), and
+        # density was the ONE gate input rounded before its comparison: nan_frac and uncovered are
+        # passed exact here and rounded only on their way into the meta below.
+        #
+        # Latent when found -- the corpus minimum is the-reserve hole 9 at 4.7, whose 2443 in-ring
+        # returns over a 520.53 m^2 ring measure 4.6933 -- so no shipped green moves. What it changes is
+        # the next thin green: at a 15% loss of that hole's in-green returns the exact density is 3.9893
+        # and the gate now refuses, where the rounded one accepted until the loss reached 15.84%.
+        dens_exact = n_pts_in/g_area if g_area>0 else 0.0
+        dens = round(dens_exact,1)
         # A green is only trustworthy if the surface was actually measured under it.
-        insufficient = is_insufficient(nan_frac, dens, uncovered)
+        insufficient = is_insufficient(nan_frac, dens_exact, uncovered)
         # Do not trade a WORKING 1 m fallback for a refused 0.4 m attempt. This stage shares dem_hd/
         # with fetch_dem.py, which fills the greens this one gives up on, and re-running this stage
         # alone -- an ordinary thing to do after changing the point filter -- overwrote that fill with
