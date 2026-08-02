@@ -16,7 +16,7 @@ The whole drawing is rotated so the hole's APPROACH is at the bottom of the pane
 Honest limit, and it is NOT vertical noise. USGS quotes ~10 cm absolute vertical accuracy, but that
 is a datum offset: it moves a whole green up or down together and changes no read, because break
 depends on RELATIVE height inside the one green. Measured against a second independent survey of the
-same greens, the smoothed surface these contours are drawn from repeats to RMS 0.56 cm (p95 1.13),
+same greens, the smoothed surface these contours are drawn from repeats to RMS 0.85 cm (p95 1.86),
 so the 15 cm interval is ~18x the noise -- see legal/09_GREEN_SURFACE_REPEATABILITY.md.
 What genuinely cannot be resolved is SPATIAL and non-geometric: a 0.4 m grid under ~1.5 m of
 smoothing erases anything smaller than about a metre and a half, and no elevation model knows grain,
@@ -150,6 +150,23 @@ def play_line_span(rp):
     return hi, lo, midx                   # approach edge is at the bottom, so front = max
 
 
+def approach_frame(meta):
+    """(theta, cx, cy) that turn a green's PIXEL polygon so the approach is at the bottom of the panel.
+
+    One home for the rotation, because a card that states the same green in two frames is the defect
+    this replaces. `_blank_green` drew `poly_to_px(...)` raw -- north-up, no rot() anywhere in it --
+    while the depth and width printed beside the drawing came from depth_width_yd, which rotates. The
+    outline was byte-identical at every approach bearing while the numbers moved with it (19x34 at 0
+    deg against 36x20 at 243 deg on merion 1), and the card still stamped "approach" at the bottom of
+    the panel. Over 198 green metas the drawn vertical extent missed the printed depth by a median
+    3.25 yd; the-reserve 13 drew 37.7 x 19.8 against a printed 17 x 33, a transpose.
+    """
+    B = meta['approach_bearing']
+    # approach direction as a pixel vector: east=+col, north=-row -> (sinB, -cosB)
+    a_ang = math.degrees(math.atan2(-math.cos(math.radians(B)), math.sin(math.radians(B))))
+    return -90.0 - a_ang, meta['W'] / 2.0, meta['H'] / 2.0
+
+
 def depth_width_yd(meta):
     """(depth, width) in yards, measured in the APPROACH frame -- front-to-back is depth.
 
@@ -168,10 +185,7 @@ def depth_width_yd(meta):
     px_x = (xmax - xmin) * mlon(clat) / W
     px_y = (ymax - ymin) * R_LAT / H
     px_m = (px_x + px_y) / 2.0
-    B = meta['approach_bearing']
-    a_ang = math.degrees(math.atan2(-math.cos(math.radians(B)), math.sin(math.radians(B))))
-    theta = -90.0 - a_ang
-    cx, cy = W / 2.0, H / 2.0
+    theta, cx, cy = approach_frame(meta)
     rp = [rot(x, y, cx, cy, theta) for x, y in poly]
     rxs = [p[0] for p in rp]
     fy, by, _midx = play_line_span(rp)
@@ -207,6 +221,11 @@ def _blank_green(meta, tournament, rebuilt=False):
       policy, in the same module.
     """
     poly = poly_to_px(meta['polygon'], meta['bbox'], meta['W'], meta['H'])
+    # ROTATED, like every other statement this card makes. The depth and width printed below come from
+    # depth_width_yd, which measures in the approach frame, and the panel stamps "approach" at its
+    # bottom edge -- so an unrotated outline made the drawing disagree with both. See approach_frame.
+    _theta, _cx, _cy = approach_frame(meta)
+    poly = [rot(x, y, _cx, _cy, _theta) for x, y in poly]
     xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
     pad = 8
     VBx, VBy = min(xs)-pad, min(ys)-pad

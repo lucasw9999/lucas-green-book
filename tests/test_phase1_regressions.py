@@ -11099,3 +11099,150 @@ def test_the_absolute_offset_marker_fires_at_the_size_its_own_sentence_names():
         f"courses (worst per-course median 0.10 m) -- was marked as a processing fault and returned "
         f"{quiet[0]!r}. A gate that fires on the real corpus makes the tool useless rather than "
         f"strict:\n{quiet_out}")
+
+
+def test_the_blank_card_draws_the_green_in_the_frame_its_own_numbers_use(gate_course):
+    """The "we could not measure this green" card drew the outline NORTH-UP while everything else on
+    it -- the printed depth/width and the "&#9650; approach" mark at the bottom of the panel -- is in
+    the APPROACH frame. Three claims, up to three different frames, on one card.
+
+    `_blank_green` called `poly_to_px` and drew the result: no `rot()` anywhere in the function, while
+    `render()` rotates (`rp0 = [rot(x, y, cx, cy, theta) ...]`) and `depth_width_yd` rotates
+    internally. Swept over merion 1 at approach bearings 0 / 90 / 180 / 243.19 deg the emitted outline
+    was BYTE-IDENTICAL every time -- first three points always (103.7,35.1),(99.5,31.3),(93.7,29.9) --
+    while the printed depth x width moved 19x34, 31x27, 19x34, 36x20. Over all 198 green metas pushed
+    through the blank path the drawn vertical extent missed the printed depth by a median 3.25 yd, with
+    callippe-preserve 6 drawn 42.2 x 29.1 against a printed 22 deep x 43 wide and the-reserve 13 drawn
+    37.7 x 19.8 against a printed 17 x 33 -- a transpose. The module docstring promises "the whole
+    drawing is rotated so the hole's APPROACH is at the bottom of the panel"; a blank card is where the
+    reader is being asked to pencil in their OWN read on that drawing, off a printed depth and an arrow
+    that point somewhere else.
+
+    Latent, not shipped: 0 of 198 green metas carry `insufficient` today, so no blank card is in any
+    book -- it goes reader-facing the moment a green is refused, which is the entire purpose of the
+    path. Neither existing test could see it. `test_each_green_is_turned_the_way_the_card_promises`
+    keys on a compass-rose regex that `_blank_green` never emits, so blank cards are skipped, and
+    `test_blank_card_depth_is_measured_in_the_approach_frame` asserts the depth_yd/width_yd numbers
+    only and never looks at the path.
+
+    So this measures the EMITTED PATH, three ways, on an asymmetric outline (a square green is
+    invariant under the 90 deg error and would not notice):
+      1. it must MOVE when the approach bearing moves -- the byte-identical symptom;
+      2. re-measured down the line of play, it must show the depth and width the card prints;
+      3. the vertex nearest the player -- picked geographically, in metres along the direction of
+         play, so it owes nothing to the renderer's pixel arithmetic -- must be the BOTTOM-most point
+         of the drawing, where the approach mark is stamped. That catches the 180 deg case, which
+         leaves every extent unchanged.
+    """
+    import json as _json
+    import math as _math
+    lat0, lon0, d = 40.0, -75.0, 0.0004
+    # deliberately irregular: no two vertices tie for "nearest the player" at any bearing below
+    wedge = [(-0.85, -0.10), (-0.25, 0.65), (0.55, 0.40), (0.70, -0.20), (-0.15, -0.60)]
+    _synth_green(gate_course, 11, lambda r, c: 100.0 + 0.03 * r, insufficient=True)
+    mp = os.path.join(gate_course, "dem_hd", "hole11.json")
+    base = _json.load(open(mp))
+    base["polygon"] = [[lat0 + a * d, lon0 + b * d] for a, b in wedge]
+
+    mlon = R_LAT * _math.cos(_math.radians(lat0))
+    metres = [((lon0 + b * d - lon0) * mlon, (lat0 + a * d - lat0) * R_LAT) for a, b in wedge]
+    xmin, ymin, xmax, ymax = base["bbox"]
+    W, H = base["W"], base["H"]
+    px_m = ((xmax - xmin) * mlon / W + (ymax - ymin) * R_LAT / H) / 2.0
+
+    drawn, problems = {}, []
+    for appr in (0.0, 90.0, 180.0, 243.19):
+        _json.dump(dict(base, approach_bearing=appr), open(mp, "w"))
+        sys.modules.pop("render_green", None)
+        import render_green as rg
+        svg, s = rg.render(11)
+        assert s.get("insufficient") is True, "fixture must exercise the blank path"
+        pm = re.search(r'<path d="M ([^"]+?) Z"', svg)
+        assert pm, f"the blank card emitted no green outline at all:\n{svg[:300]}"
+        pts = [(float(a), float(b)) for a, b in (p.split(",") for p in pm.group(1).split(" L "))]
+        drawn[appr] = pm.group(1)
+
+        # 2: the drawing, re-measured the way the card measures it, against what the card printed
+        front_y, back_y, _midx = rg.play_line_span(pts)
+        dep = (front_y - back_y) * px_m / 0.9144
+        wid = (max(p[0] for p in pts) - min(p[0] for p in pts)) * px_m / 0.9144
+        if abs(dep - s["depth_yd"]) > 1.0 or abs(wid - s["width_yd"]) > 1.0:
+            problems.append(
+                f"approach {appr} deg: the blank card DRAWS a green {dep:.1f} yd deep x {wid:.1f} yd "
+                f"wide and PRINTS {s['depth_yd']} x {s['width_yd']} -- the outline and the numbers "
+                f"beside it are in different frames")
+
+        # 3: approach at the bottom, where the card stamps the approach mark
+        sB, cB = _math.sin(_math.radians(appr)), _math.cos(_math.radians(appr))
+        along = sorted(((dE * sB + dN * cB), i) for i, (dE, dN) in enumerate(metres))
+        assert along[1][0] - along[0][0] > 3.0, "fixture is ambiguous about which vertex faces the player"
+        nearest = along[0][1]
+        bottom = max(range(len(pts)), key=lambda i: pts[i][1])
+        if bottom != nearest:
+            problems.append(
+                f"approach {appr} deg: the outline's bottom-most vertex is #{bottom}, but the vertex "
+                f"nearest the player down the line of play is #{nearest}. The card stamps "
+                f"'approach' at the bottom of a drawing that does not put the approach there")
+
+    assert len(set(drawn.values())) > 1, (
+        "the blank card drew a BYTE-IDENTICAL outline at approach bearings "
+        f"{sorted(drawn)} -- it is drawing north-up and ignoring the approach entirely, while its own "
+        f"depth/width and approach mark are stated in the approach frame:\n  {drawn[0.0][:70]}")
+    assert not problems, "the blank card contradicts itself:\n  " + "\n  ".join(problems)
+
+
+def test_the_published_surface_noise_floor_is_the_one_the_tool_measures():
+    """render_green's module docstring published a noise floor that its own source no longer produced,
+    and the sentence did not even agree with itself.
+
+    It read "repeats to RMS 0.56 cm (p95 1.13), so the 15 cm interval is ~18x the noise". Both halves
+    were wrong. 0.56 / 1.13 came out of tools/cross_flight_check.py while that tool was scaling two
+    metric courses' surfaces 3.28x too small (fixed in c4b34c5); the corrected run over the same
+    corpus reports RMS 0.85 cm, p95 1.86 cm, max 6.27 cm over 87,589 cells, and prints the ratio
+    itself. And 15 cm against 0.56 cm is 27x, not 18x, so the ONE ARITHMETIC STEP the sentence shows
+    its reader was already wrong before the tool was fixed -- the stale figure was being quoted beside
+    the corrected ratio.
+
+    This is the headline honesty claim of the whole engine: it is the sentence that says the 15 cm
+    contour interval is not inside the survey noise, it cites legal/09_GREEN_SURFACE_REPEATABILITY.md,
+    and the same argument is reproduced in the books' own source notes. A false measurement there is
+    the one failure this project's governing rule does not tolerate, whatever the number's direction.
+
+    Checked against the document the sentence itself cites, and for internal arithmetic against
+    CINT_M, so neither half can go stale alone. Not re-run here: the measurement needs the LiDAR
+    corpus and several minutes (verified by hand with `python3 tools/cross_flight_check.py --all`,
+    which printed "RMS 0.85 cm, p95 1.86 cm, max 6.27 cm" and "the card's 15 cm contour interval is
+    18x that RMS").
+    """
+    import render_green as rg
+    doc = rg.__doc__
+    m = re.search(r"repeats to RMS ([\d.]+) cm \(p95 ([\d.]+)\),?\s*"
+                  r"so the 15 cm interval is ~(\d+)x the noise", " ".join(doc.split()))
+    assert m, f"the repeatability sentence is gone or reworded; re-read it before editing:\n{doc}"
+    rms, p95, ratio = float(m.group(1)), float(m.group(2)), int(m.group(3))
+
+    # (a) the arithmetic the sentence shows, against the interval the same module defines
+    true_ratio = rg.CINT_M * 100.0 / rms
+    assert abs(true_ratio - ratio) < 1.0, (
+        f"the docstring says the {rg.CINT_M*100:g} cm interval is ~{ratio}x an RMS of {rms} cm; it is "
+        f"{true_ratio:.0f}x. One of the two numbers is stale, and a reader checking the claim with a "
+        f"calculator finds the module contradicting itself.")
+
+    # (b) the figures, against the record the sentence cites
+    rec = os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md")
+    assert os.path.exists(rec), "legal/09_GREEN_SURFACE_REPEATABILITY.md is gone; the docstring cites it"
+    with open(rec, encoding="utf-8") as fh:
+        pub = fh.read()
+    # the DATE-SPLIT table, i.e. the second-survey comparison the docstring describes. legal/09 also
+    # publishes a flight-line overlap table (RMS 1.16 cm) as independent corroboration, and that is a
+    # different experiment -- matching it would be a green test against the wrong number.
+    sec = pub.split("## The contour interval", 1)
+    assert len(sec) == 2, "legal/09 no longer has a contour-interval section"
+    sec = sec[1].split("\n## ", 1)[0]
+    tbl = dict(re.findall(r"\|\s*(RMS difference|95th percentile)\s*\|\s*\**([\d.]+) cm\**\s*\|", sec))
+    assert set(tbl) == {"RMS difference", "95th percentile"}, (
+        f"legal/09 no longer states the repeatability table this docstring quotes: {tbl}")
+    assert (rms, p95) == (float(tbl["RMS difference"]), float(tbl["95th percentile"])), (
+        f"render_green publishes RMS {rms} cm / p95 {p95} cm; the measurement it cites records "
+        f"{tbl['RMS difference']} / {tbl['95th percentile']}. The engine is printing a repeatability "
+        f"figure the survey comparison does not support.")
