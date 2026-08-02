@@ -13,13 +13,33 @@ used to name. Each section now says what does.
 | the raw‑point‑level sentence under the Philadelphia table | a one‑off script, not a shipped tool; the method is stated in full beside the figures |
 | "A second, independent line of evidence: flight‑line overlap" | a one‑off script, not a shipped tool; it reuses `cross_flight_check`'s own gridding and differs only in how the points are partitioned |
 | the `withheld` / `synthetic` counts | a one‑off scan of every LAZ tile for those two classification‑flag bits on class‑2 points |
+| the plane‑R² figures beside the `(faint)` threshold, above | a one‑off script, not a shipped tool: it re‑fits `render_green.green_summary()`'s own plane over each green's putting‑surface cells and reports 1 − SS_res/SS_tot. Pinned by `test_the_faint_mark_is_not_published_as_a_survey_noise_floor`, which re‑measures it |
 | item 1 of "What this does and does not establish" (elevation) | `python3 tools/verify_elevation.py --all` — needs the network and `rasterio`. **The figures it publishes there predate a georeference fix in that tool and are upper bounds pending a re‑run — see the note inside that bullet** |
 | the before/after figures inside item 1 | one‑off measurements taken when those faults were fixed. They describe states of the code that no longer exist and **cannot** be reproduced from the corpus as it stands |
 
-Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where that tilt is
-close to the survey's own noise floor and the card still names a side, and
+Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where a single
+plane is a poor description of that green and the card still names a side, and
 15 cm contours, and all but one name a feed direction — micke‑grove 2 is flat enough that the plane
-and the arrows disagree, so that card names none (see note 2). The governing rule of this project is that it must never print a
+and the arrows disagree, so that card names none (see note 2).
+
+**That `(faint)` sentence used to give the survey's own noise as the reason for the mark, and this
+document's own tables contradict it.** The threshold behind the mark is 1.2% of tilt; the
+worst tilt disagreement between two independent surveys of the same green, in the table below, is
+**0.05 percentage points**, so the threshold sits **24×** above the largest disagreement ever
+observed here, and the corpus's faintest printed green — 0.3% — is still 6× above it. The feed
+direction is reproducible to **3.7°**, an eighth of the 45° sector a compass word names, and the
+`clear`/`faint` mark itself never differed between passes. No green in this corpus has a plane fit
+inside the survey noise, so "near this survey's limit" was not a caveat, it was a false one — and the
+pocket book's guide card had turned it into advice, telling a junior to "trust the side less" on
+exactly the greens where the side is best corroborated.
+
+What the 1.2% threshold does track, and the reason it is well chosen and unchanged, is whether **one
+plane is an adequate model** of the green. Fitting `render_green.green_summary()`'s own plane over
+each green's putting surface and taking R² = 1 − SS_res/SS_tot: `clear` greens come out at p05 0.61
+and a median of 0.90, `faint` greens at p05 0.02 and a median of 0.44. A faint green is not badly
+measured — it is a green a single tilt describes badly, with tiers and hollows one word cannot carry.
+The guide card now says so, and sends the reader to the arrows rather than away from the compass
+word. The governing rule of this project is that it must never print a
 number the data does not support — but until this measurement, **nothing recorded what the data
 supports.** The accuracy disclaimers were honest in intent and unevidenced in fact. This is the
 evidence.

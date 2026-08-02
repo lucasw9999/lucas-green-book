@@ -621,11 +621,17 @@ def _faint_note():
     if not any(sm.get("conf") == "faint" and sm.get("feeds") != render_green.NO_CLEAR_FALL
                for _svg, sm in GREENS.values()):
         return ''
-    # Kept to ONE line on purpose. The first draft ran four and pushed the guide card past its own
-    # bounds, clipping the licence and contact lines on three books -- the exact fault the coach
-    # edition was just fixed for. A caveat that costs the licence text is not a caveat worth printing.
-    return ('  <div class="legrow"><span><b>(faint)</b> after a feed = shallow fall, near this '
-            'survey\'s limit &mdash; trust the side less.</span></div>\n')
+    # Kept to ONE line on purpose, and to one LINE OF TYPE at that. The first draft ran four lines and
+    # pushed the guide card past its own bounds, clipping the licence and contact lines on three books
+    # -- the exact fault the coach edition was just fixed for. A caveat that costs the licence text is
+    # not a caveat worth printing. The rewrite below is 79 characters against the 83 of the sentence it
+    # replaced, and that margin is NOT slack: the wording is set by rendered WIDTH, not by character
+    # count, and an 86-character version of the same sentence -- four characters longer than the one it
+    # replaced -- wrapped to a third line and overflowed monarch-bay's enlarged guide card by 10.9 px,
+    # clipping "info@lucasgreenbook.org" off the printed page. Measured in the browser: this row leaves
+    # 1.22 px of headroom there. Re-measure before rewording it.
+    return ('  <div class="legrow"><span><b>(faint)</b> after a feed = shallow fall, and no single '
+            'slope fits &mdash; read the arrows.</span></div>\n')
 
 
 def _no_fall_note():

@@ -2592,7 +2592,7 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
 
     A player uses them together: the footer to size the green at a glance, the ladder to place the
     pin within it. They are computed apart -- depth_yd from the polygon extent in the approach frame,
-    the rungs by stepping 4.572/px_m from the front edge -- so nothing forced them to agree, and a
+    the rungs by stepping 4.572/my from the front edge -- so nothing forced them to agree, and a
     disagreement is invisible on the page because each looks reasonable alone.
 
     The deepest rung must be a multiple of 5 lying within one rung of the stated depth: for a green
@@ -2659,9 +2659,13 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
     The printed 5-yd bar is the instrument tools/check_scale.py measures to prove Rule 4.3
     conformance -- the whole legal claim rests on that one rule being the length it says. The depth
     ladder is the other statement: rungs every 5 yd front-to-back, which is what a player actually
-    steps off to judge how deep the pin is. They come from one expression today (4.572/px_m), so in
-    VIEW units they agree by construction -- but that is the weak claim. What matters is the paper,
-    where one is horizontal and the other vertical, and only a uniform scale keeps them equal.
+    steps off to judge how deep the pin is. They come from RELATED but not identical expressions --
+    the ladder steps 4.572/my, the metres per view unit down the line of play, while the bar and the
+    Rule 4.3 ceiling keep the scalar mean 4.572/px_m that tools/check_scale.py measures conformance
+    with. Those differ by at most 0.41% (the raster's own px_x/px_y anisotropy), so in VIEW units they
+    agree to within a rounding of the SVG's one decimal -- but that is the weak claim. What matters is
+    the paper, where one is horizontal and the other vertical, and only a uniform scale keeps them
+    equal.
 
     That is not guaranteed by anything upstream: the green raster is anisotropic by up to 0.85% (px_x
     vs px_y), the SVG is meet-fit into a box, and the card CSS can size it. If the bar and the ladder
@@ -5554,13 +5558,20 @@ def test_the_feed_word_never_contradicts_the_green_s_own_arrows():
     Bounded at 90 degrees, deliberately, because the two answer different questions and are SUPPOSED
     to differ a little: a plane fit describes the whole surface's tilt while the arrows follow every
     tier and hollow, so on an undulating green they diverge. Measured across the corpus the gap runs
-    to a median 11.3 deg and a 90th percentile of 26.3 deg, and only 2 of 198 exceed one 45 deg
-    octant -- monarch-bay 12 and the-reserve 8, whose plane tilt is 0.5% and 0.4%, flat enough that
-    the tilt direction is barely more than noise. Both cards mark those "(faint)" and print the
-    measured percentage beside the word, so the book already tells the reader not to lean on them.
+    to a median 10.7 deg and a 90th percentile of 26.6, and only 1 of 197 exceeds one 45 deg octant --
+    monarch-bay 12, whose plane tilt is 0.5%, flat enough that the tilt direction is barely more than
+    noise. That card marks it "(faint)" and prints the measured percentage beside the word, so the book
+    already tells the reader not to lean on it. (There were two until the eight compass vectors were
+    made equal in length: the-reserve 8 was printing the FARTHER of two candidate words and resolved
+    57.1 deg from its own arrows; on the nearer word it resolves 12.1. See
+    test_the_eight_compass_words_split_the_circle_into_equal_sectors.)
+
+    Note that these figures are LARGER than the plane-versus-arrow spread quoted in render() -- median
+    3.5 deg, p90 13.7 -- and must not be confused with it. The word is snapped to one of eight 45 deg
+    octants, so up to 22.5 deg of what is measured here is quantisation, not disagreement.
 
     90 deg is therefore not a quality bar, it is a CONTRADICTION bar: past it the words and the
-    picture are telling a golfer to play opposite breaks. Nothing in the corpus is above 68.8 deg.
+    picture are telling a golfer to play opposite breaks. Nothing in the corpus is above 70.0 deg.
 
     Arrows are weighted by their own length, which is how the legend defines them ("longer =
     steeper"), and rotated by the group transform the card applies, so both quantities are compared
@@ -9659,9 +9670,9 @@ def test_a_green_whose_plane_and_arrows_conflict_names_no_direction():
 
     Each green states which way the ball rolls twice: the footer word, from a plane over the putting
     surface, and the arrows, from every local gradient. They answer slightly different questions and
-    are expected to differ a little -- median 11 deg across the corpus, 90th percentile 27. Past 90
+    are expected to differ a little -- median 3.5 deg across the corpus, 90th percentile 13.7. Past 90
     deg they are giving opposite breaks, and no honest word exists. micke-grove 2 is the one: 0.5% of
-    tilt, plane and arrows 177 deg apart, where naming either is a coin toss dressed as a read.
+    tilt, plane and arrows 179.5 deg apart, where naming either is a coin toss dressed as a read.
 
     So the refusal must actually reach print. Asserted on the built books rather than on the source,
     because a sentinel the renderer sets and the layout drops would leave the contradiction on the
@@ -12161,7 +12172,10 @@ def test_the_blank_card_draws_the_green_in_the_frame_its_own_numbers_use(gate_co
     metres = [((lon0 + b * d - lon0) * mlon, (lat0 + a * d - lat0) * R_LAT) for a, b in wedge]
     xmin, ymin, xmax, ymax = base["bbox"]
     W, H = base["W"], base["H"]
-    px_m = ((xmax - xmin) * mlon / W + (ymax - ymin) * R_LAT / H) / 2.0
+    # per AXIS. _synth_green's bbox is square in DEGREES, so its pixels are 1.14 m east against
+    # 1.48 m north -- and a scalar mean of two axes that far apart mis-scales the depth by 13%, which
+    # is what this bridge used to do. See render_green.screen_m_per_unit.
+    px_x, px_y = (xmax - xmin) * mlon / W, (ymax - ymin) * R_LAT / H
 
     drawn, problems = {}, []
     for appr in (0.0, 90.0, 180.0, 243.19):
@@ -12177,8 +12191,10 @@ def test_the_blank_card_draws_the_green_in_the_frame_its_own_numbers_use(gate_co
 
         # 2: the drawing, re-measured the way the card measures it, against what the card printed
         front_y, back_y, _midx = rg.play_line_span(pts)
-        dep = (front_y - back_y) * px_m / 0.9144
-        wid = (max(p[0] for p in pts) - min(p[0] for p in pts)) * px_m / 0.9144
+        mx, my = rg.screen_m_per_unit(rg.approach_frame(dict(base, approach_bearing=appr))[0],
+                                      px_x, px_y)
+        dep = (front_y - back_y) * my / 0.9144
+        wid = (max(p[0] for p in pts) - min(p[0] for p in pts)) * mx / 0.9144
         if abs(dep - s["depth_yd"]) > 1.0 or abs(wid - s["width_yd"]) > 1.0:
             problems.append(
                 f"approach {appr} deg: the blank card DRAWS a green {dep:.1f} yd deep x {wid:.1f} yd "
@@ -13015,3 +13031,681 @@ def test_a_seamless_green_records_the_extent_its_array_actually_covers(tmp_path,
         "a reply carrying no GeoTIFF transform was written out anyway, with an extent taken from the "
         "request -- which is a guess. An unplaceable surface must be refused; tools/verify_elevation."
         "_fetch_patch already refuses on transform.is_identity for the same reason.")
+
+
+# ---------------------------------------------------------------------------
+# The green card's own arithmetic: the compass sectors, the confidence gate, the
+# view-unit-to-yard conversion, and the figures the module quotes about its own kernels
+# ---------------------------------------------------------------------------
+# The sphere the whole engine measures on -- 111320 m per degree of latitude, i.e. R = 6378138 m.
+# Every ground length below is computed on THIS sphere deliberately. A geodesic taken on some other
+# figure of the Earth differs from the pipeline's by up to ~0.3%, which is LARGER than the pixel
+# anisotropy these tests exist to measure, so it would report an earth-model difference as a
+# conversion defect. Two earlier attempts at this measurement did exactly that, produced "corrected"
+# depths that moved greens whose grid is already square in metres, and agreed with each other.
+R_SPHERE = R_LAT * 180.0 / math.pi
+
+
+def _prose(src):
+    """`src` as a reader reads it: line wrapping, comment markers and Python string-concatenation
+    seams removed, so a phrase can be searched for as a sentence rather than as it happens to be
+    typed. Written because the first draft of the noise-floor test below searched for a phrase that
+    the source wraps across two lines, found nothing, and passed while the false sentence was still
+    there -- a source test that cannot see the text it is policing."""
+    s = re.sub(r"'\s*\n\s*'", "", src)
+    s = re.sub(r'"\s*\n\s*"', "", s)
+    s = s.replace("\\'", "'")
+    s = re.sub(r"\n\s*#\s?", "\n", s)
+    return " ".join(s.split())
+
+
+def _ground_m(lat1, lon1, lat2, lon2):
+    """Great-circle metres between two points on the engine's own sphere. No projection, no bbox, no
+    raster -- so it owes nothing to the metres-per-pixel arithmetic under test."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2.0 * R_SPHERE * math.asin(min(1.0, math.sqrt(h)))
+
+
+def _green_surfaces():
+    """(slug, hole, meta, H, W) for every built green surface the renderer will read.
+
+    H and W come from the ARRAY, which is what render() uses; the meta supplies the georeference."""
+    import numpy as np
+    out = []
+    for slug in sorted(geometry_courses()):
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            m = re.match(r"hole(\d+)\.json$", os.path.basename(p))
+            npy = p[:-5] + ".npy"
+            if not (m and os.path.exists(npy)):
+                continue
+            with open(p, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            if meta.get("insufficient"):
+                continue
+            H, W = np.load(npy, mmap_mode="r").shape
+            out.append((slug, int(m.group(1)), meta, H, W))
+    return out
+
+
+def test_the_eight_compass_words_split_the_circle_into_equal_sectors():
+    """Two shipped cards named the wrong side of the green, because the diagonals were 0.41% too long.
+
+    `DIRS` gives each of the eight words a vector and the feed word is `max(DIRS, key=dot)` against a
+    unit downhill vector -- so the winner is the LONGEST PROJECTION, and the eight vectors have to be
+    the same length or the comparison is rigged. They were not: the diagonals were written 0.71 rather
+    than 1/sqrt(2) = 0.7071067811865476, and hypot(0.71, 0.71) = 1.00409. Every diagonal out-projected
+    every cardinal by 0.41%, which moved the cardinal/diagonal sector boundary from 22.500 to 22.218
+    degrees and left the eight "octants" alternately 44.44 and 45.56 degrees wide.
+
+    Two of the corpus's 198 greens fall inside that 0.282-degree band and printed the FARTHER of the
+    two candidate words -- a reader is told the ball feeds off a corner when the measured fall is
+    square to the front edge:
+
+        castlewood-valley 13   printed front-right (dot 0.926871) over front (0.924661)
+        the-reserve 8          printed back-right  (dot 0.926260) over right (0.925261)
+
+    the-reserve 8 is the sharper case: it is one of the two greens whose plane and arrows already
+    diverge most (34.6 deg), and moving the word onto the nearer sector takes its word-vs-arrow gap
+    from 57.1 deg to 12.1 deg.
+
+    The sweep below does not read DIRS' numbers -- that would test the defect against itself. It
+    builds the eight canonical directions from the words' own geometry (back is straight up the card,
+    then 45 degrees at a time clockwise, because +x is right and +y is DOWN in SVG) and asserts that
+    the code's choice is the nearest of them by ANGLE at every bearing except an exact tie.
+    """
+    import render_green as rg
+
+    # (a) equal length, or the dot-product comparison is not a comparison of angles at all
+    bad = [(w, math.hypot(x, y)) for x, y, w in rg.DIRS if abs(math.hypot(x, y) - 1.0) > 1e-12]
+    assert not bad, (
+        "these compass vectors are not unit length, so `max(DIRS, key=dot)` prefers them over the "
+        f"others at equal angle: {[(w, round(n, 6)) for w, n in bad]}. hypot(0.71, 0.71) = 1.00409 "
+        f"-- write 1/sqrt(2), not a two-digit decimal.")
+
+    # (b) the words must be the eight octants in order, which is what makes (c) meaningful
+    WORDS = ["back", "back-right", "right", "front-right",
+             "front", "front-left", "left", "back-left"]
+    assert [w for _x, _y, w in rg.DIRS] == WORDS, (
+        f"DIRS is no longer the eight octants clockwise from straight-up-the-card: "
+        f"{[w for _x, _y, w in rg.DIRS]}. The sweep below assumes that order to build its own "
+        f"canonical directions; re-read it before changing this.")
+
+    # (c) sweep the circle: the chosen word must be the nearest one BY ANGLE
+    worst = None
+    mismatches = 0
+    for i in range(36000):
+        a = 0.005 + i * 0.01                      # never lands exactly on a 22.5 deg boundary
+        r = math.radians(a)
+        sdx, sdy = math.sin(r), -math.cos(r)      # bearing a, clockwise from up, in SVG axes
+        chosen = max(rg.DIRS, key=lambda d: d[0] * sdx + d[1] * sdy)[2]
+        nearest = WORDS[int(round(a / 45.0)) % 8]
+        if chosen != nearest:
+            mismatches += 1
+            off = abs(a - 45.0 * round(a / 45.0))          # how far into the sector we are
+            if worst is None or abs(off - 22.5) > abs(worst[0] - 22.5):
+                worst = (off, a, chosen, nearest)
+    assert not mismatches, (
+        f"the code picks the FARTHER word over {mismatches * 0.01:.3f} degrees of the circle. Worst "
+        f"case: a downhill bearing {worst[1]:.3f} deg lies {worst[0]:.3f} deg from the nearest "
+        f"cardinal, so the sector boundary sits at {worst[0]:.3f} deg instead of 22.500 -- the card "
+        f"prints {worst[2]!r} where {worst[3]!r} is nearer. Every one of these bands is a green whose "
+        f"printed feed word names the wrong side.")
+
+    # (d) the two shipped cards, rendered now
+    if not CORPUS:
+        return
+    want = {("castlewood-valley-course", 13): "front", ("the-reserve-at-spanos-park", 8): "right"}
+    checked = 0
+    for (slug, hole), word in sorted(want.items()):
+        if slug not in CORPUS:
+            continue
+        _engine(slug)
+        import render_green as rg2
+        _svg, s = rg2.render(hole)
+        checked += 1
+        assert s["feeds"] == word, (
+            f"{slug} hole {hole} prints 'feeds {s['feeds']}' where the measured fall is nearer "
+            f"{word!r}. This green sits inside the 0.282 deg band the unequal DIRS lengths opened up.")
+    assert checked or not (set(w[0] for w in want) & set(CORPUS)), "neither named course was measured"
+
+
+def test_the_confidence_gate_tests_a_fall_the_green_actually_has():
+    """`clear` claims 0.8 ft of fall across the green. It was measuring a length nothing falls along.
+
+    `tilt_pct` is the fitted plane's slope in its OWN downhill direction, so the fall available on the
+    putting surface is that slope times the width of the surface ALONG that direction. The gate
+    multiplied it by `hypot(Xe.ptp(), Yn.ptp())` instead -- the bounding-box DIAGONAL of the fitted
+    cells, a distance in a direction the green does not fall along. Measured over the corpus it
+    overstated the real fall on 198 of 198 greens: median 1.34x, p90 1.75x, worst 2.37x, with the
+    support along the downhill line at p50 24.4 m against a bbox diagonal of p50 34.1 m.
+
+    Reader-facing consequence: two greens printed `clear` while failing this code's own 0.8 ft bar --
+    the-reserve 10 (1.3% tilt, gate saw 1.267 ft where the real fall is 0.730) and valley-hi 14 (1.2%,
+    1.103 against 0.795). The old form was also DEAD: all 6 greens that failed `rise_ft >= 0.8` failed
+    `tilt_pct >= 1.2` too, so it changed no label anywhere, and a gate that cannot change an answer is
+    a gate nobody notices is wrong.
+
+    Asserted on a surface that is EXACTLY a tilted plane, so the fall is not a matter of opinion: the
+    plane fitted to it is the surface, and the fall across the fitted cells is exactly the relief of
+    those cells. A gate that reports more fall than the green's own measured relief is reporting a fall
+    that is not there. The second mask is the control -- the same plane on a green that runs DOWN the
+    fall line instead of across it must still read `clear`, or the fix has simply made everything
+    faint.
+    """
+    import numpy as np
+    import render_green as rg
+    px = 0.4                                    # the 0.4 m LiDAR grid, square in metres
+    H = W = 170                                 # 68 m of grid; masks stay >= 12 px off every edge so
+    tilt = 0.013                                # gauss's zero-padded convolve cannot reach them
+    z = 100.0 + tilt * (np.arange(H)[:, None] * px) * np.ones((1, W))   # 1.3%, falling due south
+
+    # a green 12.0 m ALONG the fall line and 56.0 m across it: a wide, shallow shelf
+    across = np.zeros((H, W), bool); across[70:100, 15:155] = True
+    # ...and the same plane on a green turned 90 degrees: 56.0 m of fall line
+    along = np.zeros((H, W), bool); along[15:155, 70:100] = True
+
+    _surf, _core, S = rg.green_summary(z, across, px, px)
+    relief_ft = S["relief_m"] * 3.28084
+    assert abs(S["tilt_pct"] - 1.3) < 0.01, f"fixture is not a 1.3% plane: {S['tilt_pct']:.4f}%"
+    assert S["rise_ft"] <= relief_ft + 1e-6, (
+        f"the gate says this green falls {S['rise_ft']:.3f} ft, and the whole green measures "
+        f"{relief_ft:.3f} ft from its highest cell to its lowest -- {S['rise_ft'] / relief_ft:.2f}x "
+        f"its own relief. The fall was taken along the bounding-box diagonal, which on a green wider "
+        f"than it is steep is a direction nothing falls along.")
+    assert abs(S["rise_ft"] - relief_ft) < 1e-6, (
+        f"on an exact plane the fall across the fitted cells IS their relief: {S['rise_ft']:.6f} ft "
+        f"against {relief_ft:.6f} ft")
+    assert S["conf"] == "faint", (
+        f"this green's real fall is {relief_ft:.3f} ft, under the 0.8 ft this gate itself requires, "
+        f"and it is marked {S['conf']!r}. A card that says `clear` is telling a junior the side is "
+        f"worth playing.")
+
+    _s2, _c2, S2 = rg.green_summary(z, along, px, px)
+    assert S2["conf"] == "clear", (
+        f"the control failed: the same 1.3% plane over 56 m of fall line drops "
+        f"{S2['rise_ft']:.2f} ft and must still read clear, not {S2['conf']!r}")
+
+    # --- the corpus: the fall tested must be the fall the published plane actually has -------------
+    if not CORPUS:
+        return
+    seen, problems, checked = collections.Counter(), [], 0
+    flips = {}
+    for slug, hole, meta, H, W in _green_surfaces():
+        _engine(slug)
+        import render_green as rg2
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        px_x = (xmax - xmin) * rg2.mlon(clat) / W
+        px_y = (ymax - ymin) * R_LAT / H
+        arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy")).astype(
+            "float64")
+        arr[~np.isfinite(arr)] = np.nan
+        arr[np.abs(arr) > 1e30] = np.nan
+        poly = rg2.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+        mask = np.zeros((H, W), bool)
+        for r in range(H):
+            for c in range(W):
+                if rg2.point_in_poly(c + 0.5, r + 0.5, poly):
+                    mask[r, c] = True
+        inside = mask & ~np.isnan(arr)
+        if not inside.any():
+            continue
+        arr = np.where(np.isnan(arr), float(np.nanmedian(arr[inside])), arr)
+        surf, _core, S = rg2.green_summary(arr, mask, px_x, px_y)
+        # the plane the renderer PUBLISHED: pdc = -dz/dEast, pdr = +dz/dNorth (see green_summary)
+        a, b = -S["pdc"], S["pdr"]
+        g = math.hypot(a, b)
+        rr, cc = np.where(S["putt"])
+        if not len(rr) or not g:
+            continue
+        alongm = (cc * px_x * a + (-rr * px_y) * b) / g       # metres along its own downhill line
+        real_ft = S["tilt_pct"] / 100.0 * max(float(alongm.max() - alongm.min()), 1.0) * 3.28084
+        checked += 1
+        seen[slug] += 1
+        if abs(S["rise_ft"] - real_ft) > 0.005:
+            problems.append(f"{slug} h{hole}: the gate tests {S['rise_ft']:.3f} ft of fall where the "
+                            f"plane it published drops {real_ft:.3f} ft across the putting surface "
+                            f"({S['rise_ft'] / real_ft:.2f}x)")
+        if S["conf"] == "clear" and real_ft < 0.8:
+            flips[f"{slug} h{hole}"] = (S["tilt_pct"], S["rise_ft"], real_ft)
+    assert checked >= 180, f"only {checked} green surfaces measured; the corpus has 198"
+    assert_no_course_skipped(seen, "test_the_confidence_gate_tests_a_fall_the_green_actually_has")
+    assert not problems, ("the confidence gate is not measuring the fall of its own plane:\n  "
+                          + "\n  ".join(problems[:6]))
+    assert not flips, ("these greens print `clear` while their own plane falls less than the 0.8 ft "
+                       "this gate requires:\n  " + "\n  ".join(
+                           f"{k}: tilt {v[0]:.2f}%, gate saw {v[1]:.3f} ft, real fall {v[2]:.3f} ft"
+                           for k, v in sorted(flips.items())))
+
+
+def test_the_faint_mark_is_not_published_as_a_survey_noise_floor():
+    """Three places told a reader that a `faint` green is one whose fall is lost in the survey noise.
+    The project's own measurements say no green in the corpus is anywhere near that, by ~24x.
+
+    The engine, `legal/09_GREEN_SURFACE_REPEATABILITY.md` and -- worst -- the legend a junior reads
+    all asserted that the 1.2% threshold exists "because below it the plane fit is inside the LiDAR
+    noise". The pocket book's guide card put it as "(faint) after a feed = shallow fall, near this
+    survey's limit - trust the side less", i.e. it told a child to distrust a direction that legal/09
+    measures as reproducible to 3.7 degrees between two independent surveys of the same green -- an
+    eighth of the 45-degree sector the word names. The same document's worst cross-flight tilt
+    disagreement over 33 twice-surveyed greens is 0.05 pp, so 1.2% stands 24x above the largest
+    disagreement two surveys of one green have ever produced here, and the corpus's faintest printed
+    green (0.3%) is still 6x above it. The arithmetic is checked below rather than quoted, so the
+    claim cannot come back as prose.
+
+    THE NUMBER IS RIGHT AND MUST NOT MOVE. 1.2% is well chosen for a reason the code never stated: it
+    tracks whether one plane is an adequate MODEL of the green. R^2 of that fit over the putting
+    surface is p05 0.61 / median 0.90 on `clear` greens against p05 0.02 / median 0.44 on `faint`
+    ones. So a faint green is not badly measured -- it is a green a single tilt describes badly, which
+    is a reason to read the arrows, not a reason to distrust the compass word. The corpus half of this
+    test holds the published R^2 split to what the corpus actually shows, the same way
+    test_the_published_surface_noise_floor_is_the_one_the_tool_measures holds the contour claim.
+
+    Guarded against the tempting "fix" in both directions: loosening the threshold instead of
+    correcting the sentence, and letting the legend row grow. That row is length-constrained -- an
+    earlier four-line draft pushed the guide card past its own bounds and clipped the licence text on
+    three books -- so the replacement must not be longer than the sentence it replaces.
+    """
+    import render_green as rg
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as fh:
+        rg_src = fh.read()
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        gen_src = fh.read()
+    rec = os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md")
+    with open(rec, encoding="utf-8") as fh:
+        pub = fh.read()
+
+    # (a) the threshold itself is not the defect and must not be touched
+    assert re.search(r"tilt_pct\s*>=\s*1\.2\b", rg_src), (
+        "the 1.2% confidence threshold is gone. The defect here is the JUSTIFICATION printed beside "
+        "it, not the number: it is well chosen as a plane-adequacy proxy. Do not loosen the gate to "
+        "make the sentence true.")
+    assert re.search(r"rise_ft\s*>=\s*0\.8\b", rg_src), "the 0.8 ft fall half of the gate is gone"
+
+    # (b) the false story, in all three voices. Searched in the PROSE, not the source lines: the
+    # engine wraps its version across two comment lines and the legend across two string literals.
+    FALSE = [
+        (rg_src, "render_green.py", "the plane fit is inside the LiDAR noise"),
+        (rg_src, "render_green.py", "clears the LiDAR noise floor"),
+        (gen_src, "generate.py", "near this survey's limit"),
+        (gen_src, "generate.py", "trust the side less"),
+        (pub, "legal/09", "close to the survey's own noise floor"),
+    ]
+    still = [f"{where}: {phrase!r}" for src, where, phrase in FALSE if phrase in _prose(src)]
+    assert not still, (
+        "these still say a faint green's fall is inside the survey noise, which the project's own "
+        f"cross-flight measurement contradicts by 24x:\n  " + "\n  ".join(still))
+
+    # (c) the arithmetic that makes the story impossible, out of legal/09's own table
+    tilt_pp = re.search(r"\|\s*dominant tilt\s*\|\s*\**([\d.]+) percentage points\**\s*\|", pub)
+    aim_deg = re.search(r"\|\s*feed direction\s*\|\s*\**([\d.]+)\s*(?:°|deg)\**\s*\|", pub)
+    assert tilt_pp and aim_deg, (
+        "legal/09 no longer publishes the worst observed cross-flight tilt and aim disagreement; "
+        "those two figures are the evidence that 1.2% is not a noise floor")
+    worst_pp, worst_aim = float(tilt_pp.group(1)), float(aim_deg.group(1))
+    assert 1.2 / worst_pp >= 10.0, (
+        f"the threshold is {1.2 / worst_pp:.1f}x the worst tilt disagreement between two independent "
+        f"surveys of one green ({worst_pp} pp). Under 10x, calling it a noise floor would be arguable "
+        f"and this test's premise would need re-reading -- do not just relax the bound.")
+    assert worst_aim <= 45.0 / 4.0, (
+        f"two surveys of one green disagree on the feed direction by {worst_aim} deg, which is no "
+        f"longer comfortably inside the 45 deg sector a compass word names")
+
+    # (d) the legend a child reads: it must say what faint means, and stay one short line
+    row = re.search(r"return \('  <div class=\"legrow\"><span><b>\(faint\)</b>(.*?)'\)\n",
+                    gen_src, re.S)
+    assert row, "the (faint) legend row is gone or restructured; re-read _faint_note before editing"
+    text = re.sub(r"</?[a-z][^>]*>", "", "(faint)" + row.group(1))
+    text = re.sub(r"'\s*\n\s*'", "", text).replace("\\'", "'")
+    text = text.replace("&mdash;", "-").replace("&ldquo;", '"').replace("&rdquo;", '"')
+    assert len(text) <= 84, (
+        f"the (faint) legend row is {len(text)} characters against the 83 of the sentence it replaced:"
+        f"\n  {text}\nThat row shares a card with the licence and contact lines and has ~1 px of "
+        f"clearance on the tightest book in the corpus.")
+    assert "arrow" in text, (
+        f"the legend still does not tell the reader what to do about a faint green. The direction is "
+        f"reproducible to {worst_aim} deg; what a single tilt does not capture is the tiers and "
+        f"hollows the arrows show. Legend now reads:\n  {text}")
+
+    # (e) the replacement claim, against the corpus it describes
+    if not CORPUS:
+        return
+    import numpy as np
+    pub_r2 = re.search(r"`clear` greens p05\s+(\d+\.\d+),?\s+median\s+(\d+\.\d+)[^.]*?`faint` greens "
+                       r"p05\s+(\d+\.\d+),?\s+median\s+(\d+\.\d+)", _prose(rg_src))
+    assert pub_r2, ("render_green no longer publishes the R^2 split that justifies the 1.2% "
+                    "threshold; that figure is what replaced the noise-floor story")
+    want = [float(pub_r2.group(i)) for i in (1, 2, 3, 4)]
+    got = {"clear": [], "faint": []}
+    seen = collections.Counter()
+    for slug, hole, meta, H, W in _green_surfaces():
+        _engine(slug)
+        import render_green as rg2
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        px_x = (xmax - xmin) * rg2.mlon(meta["green_center"][0]) / W
+        px_y = (ymax - ymin) * R_LAT / H
+        arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy")).astype(
+            "float64")
+        arr[~np.isfinite(arr)] = np.nan
+        arr[np.abs(arr) > 1e30] = np.nan
+        poly = rg2.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+        mask = np.zeros((H, W), bool)
+        for r in range(H):
+            for c in range(W):
+                if rg2.point_in_poly(c + 0.5, r + 0.5, poly):
+                    mask[r, c] = True
+        inside = mask & ~np.isnan(arr)
+        if not inside.any():
+            continue
+        arr = np.where(np.isnan(arr), float(np.nanmedian(arr[inside])), arr)
+        surf, _core, S = rg2.green_summary(arr, mask, px_x, px_y)
+        rr, cc = np.where(S["putt"])
+        A = np.c_[cc * px_x, -rr * px_y, np.ones(len(rr))]
+        zf = surf[S["putt"]]
+        coef, *_ = np.linalg.lstsq(A, zf, rcond=None)
+        resid = zf - A.dot(coef)
+        tot = float(((zf - zf.mean()) ** 2).sum())
+        if tot <= 0:
+            continue
+        got[S["conf"]].append(1.0 - float((resid ** 2).sum()) / tot)
+        seen[slug] += 1
+    assert_no_course_skipped(seen, "test_the_faint_mark_is_not_published_as_a_survey_noise_floor")
+    assert len(got["faint"]) >= 10 and len(got["clear"]) >= 100, (
+        f"too few greens in one class to compare: {len(got['clear'])} clear, {len(got['faint'])} faint")
+    for lbl, (p05_i, p50_i) in (("clear", (0, 1)), ("faint", (2, 3))):
+        v = sorted(got[lbl])
+        p05 = v[int(0.05 * len(v))]
+        p50 = v[len(v) // 2]
+        assert abs(p05 - want[p05_i]) <= 0.05 and abs(p50 - want[p50_i]) <= 0.05, (
+            f"render_green publishes {lbl} plane R^2 p05 {want[p05_i]} / median {want[p50_i]}; the "
+            f"corpus measures p05 {p05:.3f} / median {p50:.3f} over {len(v)} greens. The threshold's "
+            f"stated justification has to keep matching the greens it sorts.")
+
+
+def test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measured():
+    """Depth and width were converted from view units to yards by a SCALAR mean of two unequal axes.
+
+    `px_m = (px_x + px_y) / 2` was multiplied into a chord that runs in an arbitrary direction across
+    a grid whose pixels are not square: the corpus's px_x/px_y runs 0.99157 to 1.00813, because
+    fetch_dem_hd truncates W and H to whole pixels independently. The honest conversion decomposes the
+    chord, `hypot(dx * px_x, dy * px_y)`, and the difference is not a rounding curiosity -- against the
+    ground length of the very line the card measured, the scalar mean is out by a median 0.019 yd, p95
+    0.082, worst 0.109 (0.413% relative), and three of the corpus's printed depths land on the wrong
+    side of a half-yard:
+
+        copper-valley 16   printed 36 yd deep, the line it drew is 36.595 -> 37
+        merion 14          printed 38,                              38.531 -> 39
+        micke-grove 13     printed 19,                              19.506 -> 20
+
+    Seven more of the widths move by a yard; none of those is printed anywhere today (`width_yd` is
+    computed and never reaches a card), and they are asserted here because the arithmetic is the same
+    one and the number is one card away from being printed.
+
+    THE SIX SEAMLESS GREENS ARE NOT AMONG THE MOVERS AND MUST NOT BE. Their recorded bbox is
+    metre-consistent -- 0.5 m in both axes to within 0.08% -- so their conversion was already right,
+    and two earlier attempts at this fix "corrected" them by measuring ground truth on a different
+    figure of the Earth (see the note on R_SPHERE above). Ground truth here is a great-circle length
+    on the engine's own sphere between the two endpoints of the chord the card measured, taken from
+    the polygon's own lat/lon: it isolates the anisotropy and nothing else.
+
+    Depth is load-bearing beyond the footer: it is the 5-yd ladder's zero, the pin ring's position and
+    the input to `scale_max_in = 0.075 * depth_yd`, the Rule 4.3 headroom.
+    """
+    import render_green as rg
+
+    # --- a green whose grid is deliberately anisotropic, so this runs on a bare clone -------------
+    lat0, lon0 = 40.0, -75.0
+    mlon = R_LAT * math.cos(math.radians(lat0))
+    PX_Y, PX_X = 0.400, 0.4019                 # ratio 1.00475: inside the corpus's own 1.00813
+    n = 100
+    DEPTH_M, WIDTH_M = 30.607, 20.0            # 33.474 yd deep: the scalar mean prints 34
+    meta = dict(hole=1, approach_bearing=0.0, W=n, H=n,
+                bbox=[lon0 - n * PX_X / 2 / mlon, lat0 - n * PX_Y / 2 / R_LAT,
+                      lon0 + n * PX_X / 2 / mlon, lat0 + n * PX_Y / 2 / R_LAT],
+                green_id=1, green_center=[lat0, lon0], source="test surface",
+                polygon=[[lat0 - DEPTH_M / 2 / R_LAT, lon0 - WIDTH_M / 2 / mlon],
+                         [lat0 - DEPTH_M / 2 / R_LAT, lon0 + WIDTH_M / 2 / mlon],
+                         [lat0 + DEPTH_M / 2 / R_LAT, lon0 + WIDTH_M / 2 / mlon],
+                         [lat0 + DEPTH_M / 2 / R_LAT, lon0 - WIDTH_M / 2 / mlon],
+                         [lat0 - DEPTH_M / 2 / R_LAT, lon0 - WIDTH_M / 2 / mlon]])
+    d_yd, w_yd = rg.depth_width_yd(meta)
+    assert abs(d_yd - DEPTH_M / 0.9144) < 0.01, (
+        f"a green whose corners are {DEPTH_M} m apart down the line of play measures {d_yd:.4f} yd "
+        f"({d_yd * 0.9144:.4f} m). The grid is {PX_X:.4f} m east against {PX_Y:.4f} m north and the "
+        f"chord runs north-south, so a mean of the two axes mis-scales it by "
+        f"{((PX_X + PX_Y) / 2 / PX_Y - 1) * 100:.3f}%.")
+    assert abs(w_yd - WIDTH_M / 0.9144) < 0.01, (
+        f"width measures {w_yd:.4f} yd where the green is {WIDTH_M / 0.9144:.4f} yd across")
+    assert int(round(d_yd)) == 33, f"this card would print {int(round(d_yd))}yd deep, not 33"
+
+    # --- the corpus: every printed depth against the ground length of its own chord ---------------
+    if not CORPUS:
+        return
+    seen, problems, checked = collections.Counter(), [], 0
+    for slug, hole, meta, H, W in _green_surfaces():
+        _engine(slug)
+        import render_green as rg2
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        theta, cx, cy = rg2.approach_frame(dict(meta, W=W, H=H))
+        poly = rg2.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+        rp = [rg2.rot(x, y, cx, cy, theta) for x, y in poly]
+        fy, by, midx = rg2.play_line_span(rp)
+        rxs = [p[0] for p in rp]
+        ymid = (fy + by) / 2.0
+
+        def ll(px, py, _x=xmin, _y=ymax):        # pixel -> lat/lon, the inverse of poly_to_px
+            return (ymax - py / H * (ymax - ymin), xmin + px / W * (xmax - xmin))
+
+        def ground_yd(p, q):
+            a = rg2.rot(p[0], p[1], cx, cy, -theta)
+            b = rg2.rot(q[0], q[1], cx, cy, -theta)
+            return _ground_m(*ll(*a), *ll(*b)) / 0.9144
+
+        _svg, s = rg2.render(hole)
+        if s.get("insufficient"):
+            continue
+        truth_d = ground_yd((midx, fy), (midx, by))
+        truth_w = ground_yd((min(rxs), ymid), (max(rxs), ymid))
+        checked += 1
+        seen[slug] += 1
+        if s["depth_yd"] != int(round(truth_d)):
+            problems.append(f"{slug} h{hole}: the card prints {s['depth_yd']}yd deep; the line it "
+                            f"measured is {truth_d:.4f} yd on the ground -> {int(round(truth_d))}")
+        if s["width_yd"] != int(round(truth_w)):
+            problems.append(f"{slug} h{hole}: width {s['width_yd']} against a ground length of "
+                            f"{truth_w:.4f} yd -> {int(round(truth_w))}")
+    assert checked >= 180, f"only {checked} greens measured; the corpus has 198"
+    assert_no_course_skipped(
+        seen, "test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measured")
+    assert not problems, ("printed green sizes are not the ground lengths of the lines they were "
+                          "measured on:\n  " + "\n  ".join(problems[:8]))
+
+
+def test_the_module_says_how_much_ground_detail_its_kernels_actually_remove():
+    """The paragraph that exists to bound what the book CANNOT see understated the loss 4.3x.
+
+    "a 0.4 m grid under ~1.5 m of smoothing erases anything smaller than about a metre and a half" is
+    two claims and both were wrong. The sigma is 3 PIXELS -- 1.20 m on a 0.4 m grid, ~1.5 m only on
+    the six 0.5 m seamless greens -- and a Gaussian does not stop at its sigma anyway: the measured
+    amplitude response of this exact kernel keeps 0.0002 at 1.5 m, 0.17 at 4 m, 0.32 at 5 m and 0.50
+    at 6.4 m. A 5 m hollow is drawn at a third of its true depth. That is the difference between "this
+    book cannot show you a 1.5 m dip" and "this book cannot show you a 5 m one", in the sentence a
+    reader would use to decide how much to trust a flat-looking area.
+
+    The same paragraph's collar figure was stale in the same direction: `erode(mask, 3)` is quoted as
+    ~1.5 m beside the surface smoothing and as ~1.2 m twenty lines later, in the same function. 1.2 m
+    is the right one, and both mentions now agree.
+
+    Measured, not reasoned: the response is computed by convolving the module's OWN kernel -- taken
+    from `gauss`, at the sigma `green_summary` calls it with -- against sinusoids of known wavelength,
+    and the collar band by brute-force nearest-off-green distance on two synthetic masks, one
+    axis-aligned and one at 45 degrees (where a 4-neighbour erosion reaches least far).
+    """
+    import numpy as np
+    import render_green as rg
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    doc = " ".join(rg.__doc__.split())
+
+    # measure FIRST, so every assertion below can say what the truth is
+    MPP = 0.4
+    called = re.search(r"gauss\(arr,\s*([\d.]+)\)", src)
+    assert called, "green_summary no longer calls gauss(arr, ...); re-read it before editing"
+    sig_px = float(called.group(1))
+    kern = np.zeros(1 + 2 * int(sig_px * 3) + 40)
+    kern[len(kern) // 2] = 1.0
+    # tiled DOWN the array so the axis-0 pass is the identity on the interior rows -- an impulse in a
+    # single row comes back scaled by the kernel's own centre weight, which is not a normalised
+    # kernel and reports an amplitude response near zero at every wavelength
+    kern = rg.gauss(np.tile(kern, (1 + 6 * int(sig_px * 3), 1)), sig_px)[3 * int(sig_px * 3)]
+    idx = np.arange(len(kern)) - len(kern) // 2
+    assert abs(kern.sum() - 1.0) < 1e-9, f"the extracted kernel does not sum to 1: {kern.sum():.6f}"
+
+    def amp(lam_m):
+        return float((kern * np.cos(2 * math.pi * MPP / lam_m * idx)).sum())
+
+    lo, hi = 1.0, 60.0
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        lo, hi = (mid, hi) if amp(mid) < 0.5 else (lo, mid)
+    half = (lo + hi) / 2.0
+
+    assert "erases anything smaller than about a metre and a half" not in doc, (
+        f"the docstring still says the smoothing erases anything smaller than about a metre and a "
+        f"half. Measured on its own kernel at {MPP} m sampling, half the amplitude survives at "
+        f"{half:.2f} m and {amp(5.0):.2f} of a 5 m hollow survives -- the claim understates what the "
+        f"book cannot see by {half / 1.5:.1f}x, in the paragraph whose only job is to bound that.")
+    assert "~1.5 m of smoothing" not in doc, (
+        f"the docstring calls this {sig_px:g}-PIXEL sigma '~1.5 m of smoothing'. It is "
+        f"{sig_px * MPP:.2f} m on the 0.4 m LiDAR grids that carry 192 of the 198 greens; 1.5 m is "
+        f"only right on the six 0.5 m seamless ones.")
+
+    sig = re.search(r"Gaussian of sigma\s+([\d.]+) PIXELS", doc)
+    assert sig, f"the spatial-limit paragraph is gone or reworded; re-read it before editing:\n{doc}"
+    assert abs(float(sig.group(1)) - sig_px) < 1e-9, (
+        f"the docstring says sigma {sig.group(1)} px; green_summary calls gauss with {sig_px:g}")
+
+    claim = re.search(r"it keeps (.*?), so the half-amplitude wavelength is ([\d.]+) m", doc)
+    assert claim, f"the amplitude-response sentence is gone; re-read it before editing:\n{doc}"
+    pairs = re.findall(r"([\d.]+) at ([\d.]+) m", claim.group(1))
+    assert len(pairs) >= 4, f"the response is quoted at only {len(pairs)} wavelengths: {pairs}"
+    for a_str, lam_str in pairs:
+        got = amp(float(lam_str))
+        assert abs(got - float(a_str)) <= 0.011, (
+            f"the docstring says this kernel keeps {a_str} of a {lam_str} m ripple; it keeps "
+            f"{got:.4f}. That paragraph is the book's statement of what it cannot resolve.")
+    assert abs(half - float(claim.group(2))) <= 0.1, (
+        f"the docstring puts the half-amplitude wavelength at {claim.group(2)} m; measured it is "
+        f"{half:.2f} m, so features up to {half:.1f} m across are cut in half or worse")
+
+    # the collar band, both times the source quotes it
+    band = np.zeros((60, 60), bool); band[10:50, 10:50] = True
+    kept = rg.erode(band, 3)
+    rows = np.where(kept.any(axis=1))[0]
+    trimmed_m = (rows[0] - 10) * MPP
+    diamond = np.zeros((81, 81), bool)
+    for r in range(81):
+        for c in range(81):
+            if abs(r - 40) + abs(c - 40) <= 30:
+                diamond[r, c] = True
+    dk = rg.erode(diamond, 3)
+    off = np.argwhere(~diamond)
+    clear_m = min(float(np.hypot(*(off - p).T).min()) for p in np.argwhere(dk)) * MPP
+    quoted = [float(x) for x in re.findall(r"erode\(mask, 3\)[^\n]*?([\d.]+) m", src)]
+    assert len(quoted) >= 2, f"the source no longer quotes the collar trim in metres: {quoted}"
+    for q in quoted:
+        assert abs(q - trimmed_m) <= 0.05, (
+            f"the source says erode(mask, 3) trims {q} m of collar; it removes a band {trimmed_m:.2f} "
+            f"m wide (and leaves core cells at least {clear_m:.2f} m from off-green ground). Two "
+            f"figures for one erosion, twenty lines apart, is how this went stale.")
+    assert abs(clear_m - 1.13) <= 0.05, (
+        f"a 4-neighbour erosion by 3 leaves core cells {clear_m:.3f} m from off-green ground at a "
+        f"45 degree boundary, not the 1.13 m this test was written against")
+
+
+@needs_corpus
+def test_the_plane_and_arrow_spread_the_card_quotes_is_the_one_the_corpus_shows():
+    """The comment guarding the no-clear-fall refusal quoted a spread that belongs to another measure.
+
+    "a plane over the whole putting surface against every local gradient ... across the corpus they
+    run to a median 11 deg and a 90th percentile of 27" -- those two numbers are the gap between the
+    arrows and the PRINTED WORD, which is snapped to one of eight 45-degree octants and so carries up
+    to 22.5 degrees of quantisation that the plane vector does not. Measured with the code's own
+    length-weighted accumulator against its own plane, the plane-versus-arrow spread is a median 3.5
+    deg and a 90th percentile of 13.7, with exactly two greens past 45 -- monarch-bay 12 at 50.4 and
+    micke-grove 2 at 179.5, the one this branch refuses.
+
+    It matters because the number is the stated justification for a 90-degree bar. Quoted as "median
+    11, p90 27", 90 degrees looks like a little over three times the typical spread and the bar looks
+    tight; at a median of 3.5 it is 26x, and the bar is doing exactly what its next paragraph claims
+    -- firing only where the two derivations genuinely conflict, not where they merely differ.
+
+    Re-measured here rather than trusted, on the same putting cells and the same cull the card uses,
+    so it cannot drift from the comment again.
+    """
+    import numpy as np
+    import render_green as rg0
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as fh:
+        src = _prose(fh.read())
+    claim = re.search(r"they run to a median ([\d.]+) deg and a 90th percentile of ([\d.]+)", src)
+    assert claim, "the plane-vs-arrow spread sentence is gone; re-read it before editing render()"
+    want_med, want_p90 = float(claim.group(1)), float(claim.group(2))
+
+    gaps, seen = [], collections.Counter()
+    for slug, hole, meta, H, W in _green_surfaces():
+        _engine(slug)
+        import render_green as rg
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        px_x = (xmax - xmin) * rg.mlon(meta["green_center"][0]) / W
+        px_y = (ymax - ymin) * R_LAT / H
+        arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy")).astype(
+            "float64")
+        arr[~np.isfinite(arr)] = np.nan
+        arr[np.abs(arr) > 1e30] = np.nan
+        poly = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+        mask = np.zeros((H, W), bool)
+        for r in range(H):
+            for c in range(W):
+                if rg.point_in_poly(c + 0.5, r + 0.5, poly):
+                    mask[r, c] = True
+        inside = mask & ~np.isnan(arr)
+        if not inside.any():
+            continue
+        arr = np.where(np.isnan(arr), float(np.nanmedian(arr[inside])), arr)
+        _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
+        slope, dcol, drow, putt = S["slope"], S["dcol"], S["drow"], S["putt"]
+        smax = max(np.percentile(slope[putt], 92), 1.0) if putt.any() else 5.0
+        ax = ay = 0.0
+        for r in range(3, H - 3, 6):                      # render()'s own a_step
+            for c in range(3, W - 3, 6):
+                if not putt[r, c] or slope[r, c] < 0.4:
+                    continue
+                L = 2.2 + 3.4 * min(slope[r, c] / smax, 1.0)
+                vx, vy = dcol[r, c], drow[r, c]
+                nn = math.hypot(vx, vy) or 1.0
+                vx, vy = vx / nn * L, vy / nn * L
+                ex, ey = c + 0.5 + vx, r + 0.5 + vy
+                if not (rg.point_in_poly(ex, ey, poly)
+                        and rg.point_in_poly(ex + vx * 0.28, ey + vy * 0.28, poly)):
+                    continue
+                ax += vx
+                ay += vy
+        pdc, pdr = S["pdc"], S["pdr"]
+        if not ((ax or ay) and (pdc or pdr)):
+            continue
+        cosang = (pdc * ax + pdr * ay) / (math.hypot(pdc, pdr) * math.hypot(ax, ay))
+        gaps.append((math.degrees(math.acos(max(-1.0, min(1.0, cosang)))), slug, hole))
+        seen[slug] += 1
+    assert len(gaps) >= 180, f"only {len(gaps)} greens measured; the corpus has 198"
+    assert_no_course_skipped(
+        seen, "test_the_plane_and_arrow_spread_the_card_quotes_is_the_one_the_corpus_shows")
+    v = sorted(g[0] for g in gaps)
+    med, p90 = v[len(v) // 2], v[int(0.9 * len(v))]
+    assert abs(med - want_med) <= 1.0 and abs(p90 - want_p90) <= 2.0, (
+        f"render() says the plane and the arrows run to a median {want_med} deg and a p90 of "
+        f"{want_p90}; measured with its own accumulator they run to {med:.2f} and {p90:.2f} over "
+        f"{len(v)} greens (worst {v[-1]:.1f} at "
+        f"{max(gaps)[1]} h{max(gaps)[2]}). That figure is the stated justification for the "
+        f"90 degree refusal bar.")
