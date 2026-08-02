@@ -13059,6 +13059,56 @@ def _prose(src):
     return " ".join(s.split())
 
 
+def _func_prose(path, name):
+    """The prose of ONE function -- its docstring, its comments and the strings it returns.
+
+    Located on the AST, not by splitting on "def <name>", so a nested def or a later mention of the
+    name cannot move the boundary. Used to police a CLAIM inside the code that acts on it, which is
+    the opposite of what `_code_only` is for: that helper strips prose so an assertion cannot be
+    satisfied by a comment, and here the prose IS the thing under test. A whole-module grep is too
+    coarse for the same reason -- `render_green`'s module docstring publishes a genuine CONTOUR noise
+    floor, so a rule about noise claims has to be scoped to the function that makes them.
+    """
+    import ast
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    lines = src.splitlines(True)
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            start = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            return _prose("".join(lines[start - 1:node.end_lineno]))
+    raise AssertionError(f"{os.path.relpath(path, ROOT)} has no function {name!r}; the claim this "
+                         f"test polices has moved, so re-read the test before editing it")
+
+
+# A claim that the faint mark tracks the survey's own precision, in any wording. Split into the SUBJECT
+# (a precision/noise floor) and the REFUTATIONS that are allowed to name it, because this codebase
+# refutes the claim at length in the same comments that used to make it.
+_NOISE_FLOOR = re.compile(
+    r"noise|survey'?s?\s+(?:own\s+)?limit|precision|measurement error|repeatab|resolv", re.I)
+_REFUTED = re.compile(r"\bnot\b|\bno\b|nowhere|never|n't|cannot|refut|contradict|far from|"
+                      r"instead of|rather than", re.I)
+
+
+def _noise_floor_claims(where_and_prose):
+    """[(where, clause)] for every clause that names a precision floor without refuting it.
+
+    CLAUSE level, not sentence level, and that is the load-bearing choice: the false sentence in
+    `_faint_note` reads "it is a statement about how far the measured fall stands above the survey
+    noise, NOT about how the green is playing that morning" -- a sentence-level negation test passes
+    it, because the "not" attaches to a different phrase. Split at commas as well as stops and the
+    noise clause stands alone with nothing negating it, while the two legitimate refutations in
+    `render_green` ("1.2% IS NOT A NOISE FLOOR", "the plane fit is nowhere near the survey's noise at
+    1.2%") each carry their negation inside the clause that names it.
+    """
+    out = []
+    for where, prose in where_and_prose:
+        for clause in re.split(r"(?<=[.;:])\s+|\s+--\s+|,\s+", prose):
+            if _NOISE_FLOOR.search(clause) and not _REFUTED.search(clause):
+                out.append((where, clause.strip()))
+    return out
+
+
 def _ground_m(lat1, lon1, lat2, lon2):
     """Great-circle metres between two points on the engine's own sphere. No projection, no bbox, no
     raster -- so it owes nothing to the metres-per-pixel arithmetic under test."""
@@ -13337,6 +13387,43 @@ def test_the_faint_mark_is_not_published_as_a_survey_noise_floor():
     assert not still, (
         "these still say a faint green's fall is inside the survey noise, which the project's own "
         f"cross-flight measurement contradicts by 24x:\n  " + "\n  ".join(still))
+
+    # (b2) the same claim as a CONCEPT, because (b) only greps the five sentences that were actually
+    # written and the claim came back twice in a sixth and seventh wording. It survived the commit
+    # that rewrote the legend, in the two places that matter most: `_faint_note`'s docstring, ten
+    # lines above the sentence it contradicts, and `green_honesty`, INSIDE the code that decides
+    # whether to print the mark. Neither contains any literal above.
+    #
+    # Rule: in the three functions that decide, print and define the mark, no clause may name the
+    # survey's own precision without refuting it. Scoped to those functions on purpose -- the module
+    # docstring publishes a real CONTOUR noise floor, and legal/09 measures one, so a whole-file rule
+    # would police true sentences. See _noise_floor_claims for why the unit is a clause.
+    claims = _noise_floor_claims([
+        ("render_green.green_summary -- the gate itself",
+         _func_prose(os.path.join(ROOT, "render_green.py"), "green_summary")),
+        ("generate.green_honesty -- decides whether the mark prints",
+         _func_prose(os.path.join(ROOT, "generate.py"), "green_honesty")),
+        ("generate._faint_note -- the legend a junior reads",
+         _func_prose(os.path.join(ROOT, "generate.py"), "_faint_note")),
+    ])
+    assert not claims, (
+        "the faint mark is still explained as a statement about the survey's own precision. It is "
+        "not one: 1.2% stands 24x above the worst tilt disagreement between two independent surveys "
+        "of the same green, and what the threshold tracks is whether ONE PLANE describes the green "
+        "(R^2 p05 0.61/median 0.90 clear against 0.02/0.44 faint). Say that instead:\n  "
+        + "\n  ".join(f"{where}:\n      {clause}" for where, clause in claims))
+
+    # ...and it must not be fixed by deleting the sentence: the code that prints the mark has to say
+    # what the mark means, or the next reader reinvents the noise story from the word "faint".
+    for where, fn, path in (("green_honesty", "green_honesty", "generate.py"),
+                            ("_faint_note", "_faint_note", "generate.py")):
+        p = _func_prose(os.path.join(ROOT, path), fn)
+        assert re.search(r"single slope|one plane|one slope|a single tilt|plane[^.]{0,40}"
+                         r"(?:describ|fit|adequa)", p, re.I), (
+            f"{path}:{where} no longer says WHY a green is marked faint. The noise story was removed "
+            f"from it without putting the measured reason -- one plane is a poor description of this "
+            f"green -- in its place, so the only account of the mark left in the printing path is "
+            f"the word itself.")
 
     # (c) the arithmetic that makes the story impossible, out of legal/09's own table
     tilt_pp = re.search(r"\|\s*dominant tilt\s*\|\s*\**([\d.]+) percentage points\**\s*\|", pub)
@@ -13709,3 +13796,322 @@ def test_the_plane_and_arrow_spread_the_card_quotes_is_the_one_the_corpus_shows(
         f"{len(v)} greens (worst {v[-1]:.1f} at "
         f"{max(gaps)[1]} h{max(gaps)[2]}). That figure is the stated justification for the "
         f"90 degree refusal bar.")
+
+
+# ---------------------------------------------------------------------------
+# The engine's comments ARE its evidence, so a botched paste in them is a defect
+# ---------------------------------------------------------------------------
+
+def _production_modules():
+    """Every shipped Python module: the top-level engine plus tools/.
+
+    Deliberately NOT tests/: this suite repeats one explanatory note verbatim in five places on
+    purpose (the `hole ycard` selector warning), and the checks below are about production prose,
+    where a duplicated paragraph is a paste artifact rather than a deliberate reminder."""
+    out = sorted(glob.glob(os.path.join(ROOT, "*.py")))
+    out += sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))
+    return out
+
+
+def test_no_module_carries_a_pasted_duplicate_of_its_own_comment_or_assignment():
+    """A comment edit left a 7-line tail of the OLD paragraph and a second copy of the live
+    assignment behind it, and nothing could see either.
+
+    `render_green.py` rewrote the paragraph above the `conf` gate. The replacement was spliced in
+    ABOVE the assignment, and the old paragraph's tail was left below it, followed by a byte-identical
+    second `conf = "clear" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "faint"`. The result was inert
+    -- the second assignment just repeated the first -- so no test and no output could notice, in the
+    one file where the comments carry this project's measured evidence and are quoted back by other
+    tests as the published claim. Duplicated prose is how two figures for one number start, which is
+    the fault M-5 was raised for.
+
+    Two independent checks, because the paste left two independent traces:
+
+      1. no run of consecutive comment lines appears twice in a module. A PAIR is the unit -- single
+         lines legitimately repeat (`# +0.5: the sample is a cell CENTRE` marks both sampling sites in
+         render_green, and `# noqa: E402` twice in verify_elevation), and a duplicated paragraph
+         always duplicates at least one adjacent pair.
+
+      2. no statement list contains two adjacent identical assignments. That is a dead store by
+         construction: with nothing between them the first can never be read. Checked on the AST, so
+         a comment about an assignment cannot satisfy or defeat it -- the same reason `_code_only`
+         exists.
+    """
+    import ast
+    import io
+    import tokenize
+
+    dup_prose, dead = [], []
+    for path in _production_modules():
+        rel = os.path.relpath(path, ROOT)
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+
+        # 1: duplicated adjacent comment pairs
+        blocks, cur, prev_line = [], [], None
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type != tokenize.COMMENT:
+                continue
+            if prev_line is not None and tok.start[0] == prev_line + 1:
+                cur.append(tok)
+            else:
+                if cur:
+                    blocks.append(cur)
+                cur = [tok]
+            prev_line = tok.start[0]
+        if cur:
+            blocks.append(cur)
+        pairs = collections.defaultdict(list)
+        for blk in blocks:
+            for i in range(len(blk) - 1):
+                key = " ".join((blk[i].string.lstrip("#") + " "
+                                + blk[i + 1].string.lstrip("#")).split())
+                if len(key) < 60:          # directives and rules, not prose
+                    continue
+                pairs[key].append(blk[i].start[0])
+        for key, lines in sorted(pairs.items()):
+            if len(lines) > 1:
+                dup_prose.append(f"{rel}: the same two comment lines appear at "
+                                 f"{lines} -- {key[:96]}...")
+
+        # 2: adjacent identical assignments
+        for node in ast.walk(ast.parse(src)):
+            body = getattr(node, "body", None)
+            if not isinstance(body, list):
+                continue
+            for a, b in zip(body, body[1:]):
+                if (isinstance(a, ast.Assign) and isinstance(b, ast.Assign)
+                        and ast.dump(a) == ast.dump(b)):
+                    dead.append(f"{rel}:{b.lineno}: `{ast.unparse(b)}` repeats the identical "
+                                f"assignment at :{a.lineno}, so the first can never be read")
+
+    assert not dup_prose, (
+        "duplicated comment prose in shipped source -- a paste artifact, and the start of two "
+        "figures for one number:\n  " + "\n  ".join(dup_prose))
+    assert not dead, (
+        "dead stores from a duplicated statement:\n  " + "\n  ".join(dead))
+
+
+def test_the_engine_names_every_printed_tilt_that_appears_both_marked_and_unmarked():
+    """The comment bounding the gate's visible ambiguity was left one commit out of date.
+
+    `green_summary` tests `tilt_pct >= 1.2` UNROUNDED while the card prints the tilt to one decimal,
+    so some printed percentage necessarily appears both with `(faint)` and without it, and a reader
+    cannot see why. The comment states the bound: it said the ambiguity "is confined to whether a 1.2%
+    green carries (faint)". That was true when it was written and the SAME COMMIT falsified it -- the
+    honest `rise_ft` support extended the gate, and the-reserve 10 now prints `feeds right (faint) -
+    1.3%` while micke-grove 1 and monarch-bay 2 print 1.3% unmarked.
+
+    So the bound is measured off the SHIPPED BOOKS rather than trusted: every `feeds ... - N.N%`
+    footer in every pocket edition, split by whether it carries the mark. A printed percentage in both
+    groups is ambiguous to a reader; the comment must name exactly that set. Measuring the artifact
+    also catches the suppression the engine cannot see on its own -- `green_honesty` drops the mark on
+    a NO_CLEAR_FALL green, so a faint green can print no mark at all.
+    """
+    if not BOOKS:
+        pytest.skip("no built book to read printed tilt marks from")
+    marked, unmarked = collections.defaultdict(set), collections.defaultdict(set)
+    seen = collections.Counter()
+    FOOT = re.compile(r"feeds <b>[^<]+</b>( \(faint\))? &middot; (\d+\.\d+)%")
+    for slug in BOOKS:
+        p = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        for m in FOOT.finditer(src):
+            (marked if m.group(1) else unmarked)[m.group(2)].add(slug)
+            seen[slug] += 1
+    assert sum(seen.values()) >= 180, (
+        f"only {sum(seen.values())} green footers were read; the corpus prints 198")
+    both = sorted(set(marked) & set(unmarked), key=float)
+
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as fh:
+        rg_src = fh.read()
+    doc = _prose(rg_src)
+    claim = re.search(r"the ambiguity is confined to whether a ([\d.%, A-Za-z]*?\d\.\d%) green "
+                      r"carries", doc)
+    assert claim, ("render_green no longer bounds the gate's visible ambiguity ('the ambiguity is "
+                   "confined to whether a ...% green carries \"(faint)\"'). That sentence is what "
+                   "tells the next reader how much of the corpus a one-decimal display can make "
+                   "look inconsistent; measured now, it is "
+                   f"{both}.")
+    said = sorted(re.findall(r"(\d\.\d)%", claim.group(1)), key=float)
+    assert said == both, (
+        f"render_green says the printed-tilt ambiguity is confined to {said}%; the shipped books "
+        f"print {both}% both with and without '(faint)':\n  " + "\n  ".join(
+            f"{t}% marked in {sorted(marked[t])}, unmarked in {sorted(unmarked[t])}" for t in both))
+
+
+def test_the_legal_record_and_the_engine_quote_the_same_smoothing_kernel():
+    """One kernel, two figures, in the two documents that have to agree about it.
+
+    `render_green` was corrected to say the smoothing is a sigma of 3 PIXELS -- 1.20 m on the 0.4 m
+    LiDAR grid -- because "~1.5 m" understated by 4.3x what the book cannot see. The legal record's
+    repeatability argument still called the same kernel "~1.5 m" while stating in the paragraph above
+    that these greens are "gridded at 0.4 m and smoothed the same way the card is". Conservative where
+    it stands (it argues the averaging beats single-pulse accuracy, and a wider kernel would only make
+    that stronger), but it is the same stale number in the same direction, and two figures for one
+    kernel is exactly how the engine's copy went stale.
+
+    Derived from the source, not asserted as a constant: the sigma is read off `green_summary`'s own
+    `gauss(arr, ...)` call and the sampling off the legal record's own sentence, so the day either
+    moves, the document that quotes it fails here rather than drifting quietly.
+    """
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as fh:
+        rg_src = fh.read()
+    rec = os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md")
+    with open(rec, encoding="utf-8") as fh:
+        pub = fh.read()
+
+    called = re.search(r"gauss\(arr,\s*([\d.]+)\)", rg_src)
+    assert called, "green_summary no longer calls gauss(arr, ...); re-read it before editing"
+    sig_px = float(called.group(1))
+    grid = re.search(r"gridded at ([\d.]+) m", pub)
+    assert grid, ("legal/09 no longer states the grid spacing of the surfaces it differences, so the "
+                  "smoothing figure below has nothing to be measured against")
+    want_m = sig_px * float(grid.group(1))
+
+    said = re.search(r"smoothing\s*\n?\s*over ~?([\d.]+) m", pub)
+    assert said, ("legal/09 no longer names the smoothing width in its repeatability argument; that "
+                  f"figure is {want_m:.2f} m -- sigma {sig_px:g} px at {grid.group(1)} m sampling")
+    assert abs(float(said.group(1)) - want_m) <= 0.05, (
+        f"legal/09 says the surfaces are smoothed over ~{said.group(1)} m; the kernel "
+        f"green_summary actually applies is a sigma of {sig_px:g} pixels, which is {want_m:.2f} m at "
+        f"the {grid.group(1)} m sampling the same document states. render_green.py was corrected to "
+        f"{want_m:.2f} m; this is the other copy of the same number.")
+
+
+def _wgs84_local_scales(lat):
+    """(metres per degree of latitude, metres per degree of longitude) at `lat` on WGS84.
+
+    Closed form off pyproj's own ellipsoid parameters -- the meridian radius of curvature M and the
+    parallel arc N*cos(lat) -- which is the LOCAL scale of a plate-carree cell grid. A 1-degree
+    geodesic baseline is not the same thing: it reads 88070.04 against 88070.46 for longitude at
+    37.8N, because a geodesic across a whole degree cuts inside the parallel.
+    """
+    from pyproj import CRS
+    ell = CRS.from_epsg(4326).ellipsoid
+    a = ell.semi_major_metre
+    f = 1.0 / ell.inverse_flattening
+    e2 = f * (2.0 - f)
+    p = math.radians(lat)
+    s2 = math.sin(p) ** 2
+    M = a * (1.0 - e2) / (1.0 - e2 * s2) ** 1.5
+    N = a / math.sqrt(1.0 - e2 * s2)
+    return M * math.pi / 180.0, N * math.cos(p) * math.pi / 180.0
+
+
+def test_the_depth_conversion_says_what_its_exactness_is_measured_against():
+    """"exact to 1e-5 yd" was exactness against the engine's own constant, not against the ground.
+
+    `screen_m_per_unit` decomposes a chord along the two pixel axes instead of scaling it by their
+    scalar mean, and the docstring closes "Done per axis the agreement is exact to 1e-5 yd". The
+    reference is a great circle on R_LAT = 111320 m/deg -- the engine's own sphere -- so the sentence
+    reads as agreement with the ground and is agreement with the assumption. That claim is one the
+    governing rule does not support, because 111320 is not either radius:
+
+        at 37.8N the true local scales are 110992.70 m/deg of latitude and 88070.46 of longitude, so
+        the model is +0.295% LONG in latitude and -0.125% SHORT in longitude -- a 0.42 pp internal
+        spread, half again the 0.84% pixel anisotropy the fix was about.
+
+    That is not an abstract objection. `fetch_dem_hd` samples cell centres linear in lon/lat
+    (`lon_g = xmin + us*(xmax-xmin)`), so a green's array IS a plate-carree grid and those per-axis
+    figures are its true ground scales -- recomputed with them, the printed depth is out by a median
+    0.041 yd and FOUR of 198 land on the wrong side of a half yard, two of which the anisotropy fix
+    had just moved the other way.
+
+    Not fixed by moving the number: `R_LAT = 111320.0` is a literal in eight shipped modules,
+    `tools/check_scale.py` re-derives it to gate the Rule 4.3 scale, and this suite's own ground truth
+    for depth is a great circle on the same sphere (see the R_SPHERE note above). Correcting it for
+    depth alone would print one green's depth on the ellipsoid and its tilt, its 5-yd bar, its Rule
+    4.3 sizing and its hole-map ticks on the sphere. So the claim is corrected and the arithmetic is
+    published where the constant lives, and this test re-measures it rather than quoting it -- both
+    directions: if the model is ever migrated, the published count stops matching and this fails.
+    """
+    with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as fh:
+        rg_src = fh.read()
+    with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
+        geo_src = fh.read()
+
+    # (a) the exactness claim must name its reference
+    doc = _func_prose(os.path.join(ROOT, "render_green.py"), "screen_m_per_unit")
+    claims = [c for c in re.split(r"(?<=[.;:])\s+", doc) if re.search(r"\bexact\b", c, re.I)]
+    assert claims, ("screen_m_per_unit no longer states how closely the per-axis conversion agrees "
+                    "with anything. That figure is the whole justification for decomposing the chord; "
+                    "re-read this test before removing it.")
+    unqualified = [c for c in claims
+                   if not re.search(r"111320|own sphere|own flat-earth|engine'?s own|R_LAT", c)]
+    assert not unqualified, (
+        "this claims an exactness without naming what it is exact AGAINST, and the only thing it is "
+        "exact against is the engine's own 111320 m/deg sphere -- which is itself +0.295% long in "
+        "latitude and -0.125% short in longitude, an error larger than the anisotropy being fixed. A "
+        "reader takes it for agreement with the ground:\n  " + "\n  ".join(unqualified))
+
+    # (b) the model's real per-axis error, published where the constant lives, re-measured here
+    gp = _prose(geo_src)
+    pub = re.search(r"at ([\d.]+)N[^.]*?true local scales are ([\d.]+) m/deg of latitude and "
+                    r"([\d.]+) m/deg of longitude, so this model runs ([+-][\d.]+)% LONG in latitude "
+                    r"and ([+-][\d.]+)% SHORT in longitude", gp)
+    assert pub, (
+        "geo.py does not publish how far its own flat-earth constants stand from the ellipsoid. It "
+        "quantifies the tick-radius cost of the approximation and stops there, so the standing "
+        "decision to keep 111320 is recorded against only one of its consequences. Measured at "
+        "37.8N: true scales %.2f lat / %.2f lon, i.e. %+.3f%% and %+.3f%%."
+        % (_wgs84_local_scales(37.8)[0], _wgs84_local_scales(37.8)[1],
+           100.0 * (R_LAT / _wgs84_local_scales(37.8)[0] - 1.0),
+           100.0 * (_mlon(37.8) / _wgs84_local_scales(37.8)[1] - 1.0)))
+    lat = float(pub.group(1))
+    m_lat, m_lon = _wgs84_local_scales(lat)
+    for what, said, got in (("m/deg of latitude", float(pub.group(2)), m_lat),
+                            ("m/deg of longitude", float(pub.group(3)), m_lon)):
+        assert abs(said - got) <= 0.01, (
+            f"geo.py puts the true local scale at {lat}N at {said} {what}; measured on pyproj's own "
+            f"WGS84 ellipsoid it is {got:.4f}")
+    for what, said, got in (
+            ("latitude", float(pub.group(4)), 100.0 * (R_LAT / m_lat - 1.0)),
+            ("longitude", float(pub.group(5)), 100.0 * (_mlon(lat) / m_lon - 1.0))):
+        assert abs(said - got) <= 0.005, (
+            f"geo.py says the model runs {said:+}% in {what} at {lat}N; measured it is {got:+.4f}%")
+
+    # (c) what that costs the one printed LENGTH derived from it, off the corpus
+    if not CORPUS:
+        return
+    said_n = re.search(r"(\w+) printed depths land on the wrong side of a half yard", gp)
+    assert said_n, ("geo.py no longer says how many printed green depths the earth model puts on the "
+                    "wrong side of a half yard. That count is the reader-facing cost of the "
+                    "approximation, and it is what changes if the model is ever migrated.")
+    WORDS = {"no": 0, "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+             "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+    key = said_n.group(1).lower()
+    said_count = WORDS.get(key, None) if not key.isdigit() else int(key)
+    assert said_count is not None, f"cannot read {said_n.group(1)!r} as a count"
+
+    wrong, seen, checked = [], collections.Counter(), 0
+    for slug, hole, meta, H, W in _green_surfaces():
+        _engine(slug)
+        import render_green as rg2
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        theta, cx, cy = rg2.approach_frame(dict(meta, W=W, H=H))
+        rp = [rg2.rot(x, y, cx, cy, theta)
+              for x, y in rg2.poly_to_px(meta["polygon"], meta["bbox"], W, H)]
+        fy, by, _midx = rg2.play_line_span(rp)
+        ml, mo = _wgs84_local_scales(clat)
+        _mx, my = rg2.screen_m_per_unit(theta, (xmax - xmin) * mo / W, (ymax - ymin) * ml / H)
+        ground = (fy - by) * my / 0.9144
+        _svg, s = rg2.render(hole)
+        if s.get("insufficient"):
+            continue
+        checked += 1
+        seen[slug] += 1
+        if s["depth_yd"] != int(round(ground)):
+            wrong.append(f"{slug} h{hole}: prints {s['depth_yd']}yd deep, ground length "
+                         f"{ground:.4f} yd -> {int(round(ground))}")
+    assert checked >= 180, f"only {checked} greens measured; the corpus has 198"
+    assert_no_course_skipped(
+        seen, "test_the_depth_conversion_says_what_its_exactness_is_measured_against")
+    assert len(wrong) == said_count, (
+        f"geo.py publishes {said_count} printed depths on the wrong side of a half yard against the "
+        f"ellipsoid; measured now there are {len(wrong)}. If the earth model was migrated this should "
+        f"be 0 and the note needs rewriting; if a green was re-traced the count moved on its own. "
+        f"Either way the published figure and the corpus have to be made to agree:\n  "
+        + "\n  ".join(wrong))

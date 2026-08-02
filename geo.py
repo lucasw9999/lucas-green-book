@@ -22,6 +22,40 @@ R_LAT = 111320.0                    # metres per degree of latitude (mean)
 # no gain a golfer could act on -- so this is a deliberate, quantified approximation, not an
 # oversight. Re-measure before assuming it is still fine if tick radii ever exceed 300 yd (the error
 # grows with distance: 1.55 yd at 534 yd).
+#
+# THE TWO CONSTANTS ARE NOT SELF-CONSISTENT WITH EACH OTHER, and the spread between them is larger
+# than the pixel anisotropy the green card was corrected for. 111320 is neither of the ellipsoid's
+# radii: at 37.8N (mid-corpus) the true local scales are 110992.70 m/deg of latitude and 88070.46
+# m/deg of longitude, so this model runs +0.295% LONG in latitude and -0.125% SHORT in longitude -- a
+# 0.42 pp internal spread against the 0.84% raster anisotropy render_green.screen_m_per_unit exists to
+# decompose. (Local scales, not a one-degree geodesic: the meridian radius of curvature M and the
+# parallel arc N*cos(lat), which is what a grid uniform in degrees is actually spaced by.)
+#
+# What that costs the printed green depth, which is the one LENGTH the book derives from these
+# constants and prints as an integer. fetch_dem_hd samples a green's cell centres linear in lon/lat
+# (`lon_g = xmin + us*(xmax-xmin)`), so the array IS a plate-carree grid and the figures above are its
+# true ground scales. Recomputing all 198 printed depths with them -- no bbox arithmetic, no raster --
+# the engine's figure is out by a median 0.041 yd, worst 0.111 (-0.138% to +0.297% relative), and FOUR
+# printed depths land on the wrong side of a half yard:
+#     copper-valley 16 prints 37 where the ground length is 36.489
+#     micke-grove 13   prints 20                            19.450
+#     monarch-bay 1    prints 35                            34.451   (a seamless green)
+#     the-reserve 7    prints 33                            32.438
+# Two of those -- copper-valley 16 and micke-grove 13 -- are depths the anisotropy fix moved the other
+# way. The per-axis local scales reproduce the true geodesic length of the very line each card measures
+# to 1.5e-5 yd over all 198 greens, so this is the model's error and not a measurement artifact.
+#
+# NOT CORRECTED, deliberately, and it is not a one-line change. `R_LAT = 111320.0` is re-declared as a
+# literal in eight shipped modules rather than imported from here (fetch_dem.py, fetch_dem_hd.py,
+# fetch_hole_elev.py, fetch_trees.py, render_green.py, render_hole.py, tools/check_scale.py,
+# tools/verify_elevation.py); check_scale.py re-derives it to gate the Rule 4.3 print scale, so a
+# renderer that moved while the gate did not would stop being measured on the metric that sized it;
+# and the suite's own ground truth for green depth is a great circle on THIS sphere. Correcting it for
+# depth alone would print one green's depth on the ellipsoid while the same card's tilt %, its 5-yd
+# scale bar, its Rule 4.3 sizing, its hole-map tick radii and its carries stayed on the sphere.
+# Measured, the coherent version of that migration moves 4 printed depths, 11 printed tilt
+# percentages, 6 median slopes, 7 greens' slope labels and 26 Rule 4.3-limited <svg> sizes: it wants
+# its own commit, its own rebuild and its own re-reading of check_scale.py.
 
 
 def mlon(lat):

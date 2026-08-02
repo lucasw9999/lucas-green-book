@@ -158,8 +158,8 @@ the card is — over all 33 greens and 87,589 cells inside the green cores:
 
 The 15 cm contour interval is therefore about **18× the noise floor** of the surface it is drawn from.
 The claim holds with a wide margin. Averaging 9.6–27.9 ground returns per square metre over these 33 greens (4.7–27.9 corpus‑wide) and then smoothing
-over ~1.5 m beats single-pulse accuracy by a large factor, which is why the relative figure is an
-order of magnitude better than the absolute spec.
+over ~1.20 m (a Gaussian of sigma 3 pixels at the 0.4 m sampling above) beats single-pulse accuracy by
+a large factor, which is why the relative figure is an order of magnitude better than the absolute spec.
 
 ## A second, independent line of evidence: flight-line overlap
 

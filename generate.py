@@ -202,9 +202,13 @@ def green_honesty(hole, s):
     # 220 "(firm)" against 32 "(subtle)" -- so the common case spent a word to say nothing, and the
     # informative case was buried among them. Marking only the exception says strictly more, and it
     # bought back 35 two-line footers (43 -> 8 of 252 measured in-browser), which is card space on the
-    # edition that was clipping its own licence line. It is also the only honest reading: a green whose
-    # fall is faint is a green whose printed direction is inside the survey noise, and that is worth a
-    # mark; a green whose fall is clear needs no adjective.
+    # edition that was clipping its own licence line. It is also the only honest reading: a green
+    # marked faint is one that a single slope describes badly -- render_green's gate is a plane-fit
+    # ADEQUACY test, measured R^2 p05 0.61/median 0.90 on the greens it calls clear against 0.02/0.44
+    # on the ones it calls faint -- so the mark says "one word will not carry this green, read the
+    # arrows", and that is worth a mark; a green a single tilt does describe needs no adjective.
+    # It does NOT say the direction is unreliable: see render_green.green_summary, where 1.2% stands
+    # 24x above the worst tilt disagreement two surveys of one green have ever produced here.
     faint = ' (faint)' if s["conf"] == "faint" else ''
     if s["feeds"] == render_green.NO_CLEAR_FALL:
         # "no clear fall (faint)" would say the same thing twice, and the sentinel is the stronger of
@@ -605,9 +609,10 @@ def _faint_note():
 
     The word this replaced -- "(firm)" -- was defined NOWHERE, in either edition, while printing on
     every one of 252 green footers. The only hook a reader had for it was the turf sense, which is
-    the wrong one: it is a statement about how far the measured fall stands above the survey noise,
-    not about how the green is playing that morning. A qualifier a reader can only misread is worse
-    than no qualifier, which is why the common case no longer prints one at all.
+    the wrong one: it is a statement about how well a single slope describes the green -- shallow
+    fall, and one plane fitting it badly -- not about how the green is playing that morning. A
+    qualifier a reader can only misread is worse than no qualifier, which is why the common case no
+    longer prints one at all.
 
     Keyed off what was actually rendered, so a book whose every green has a clear fall does not carry
     a line explaining a mark it never uses.

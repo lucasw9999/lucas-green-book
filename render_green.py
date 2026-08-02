@@ -122,12 +122,21 @@ def screen_m_per_unit(theta, px_x, px_y):
     out by a median 0.019 yd, p95 0.082 and worst 0.109 (0.413% relative), and three printed depths
     landed on the wrong side of a half yard: copper-valley 16 printed 36 against 36.595, merion 14
     printed 38 against 38.531, micke-grove 13 printed 19 against 19.506. Seven widths move too;
-    width_yd reaches no card today. Done per axis the agreement is exact to 1e-5 yd.
+    width_yd reaches no card today. Done per axis the agreement is exact to 1e-5 yd -- AGAINST THE
+    ENGINE'S OWN SPHERE, R_LAT = 111320 m/deg, which is the reference this fix is about and is not the
+    ground. 111320 is neither of the ellipsoid's radii: it runs +0.295% long in latitude and -0.125%
+    short in longitude, which leaves the printed depth out by a median 0.041 yd and puts four of 198
+    on the wrong side of a half yard. That is a LARGER error than the anisotropy corrected here, it is
+    the same in every module of this pipeline, and it is measured and quantified in geo.py. Do not fix
+    it here alone: the depth would then be stated on the ellipsoid while this same card's tilt, its
+    printed 5-yd bar and its Rule 4.3 sizing stayed on the sphere.
 
     The six seamless greens are NOT among the movers and must not be: their recorded bbox is
     metre-consistent to within 0.08%, so their conversion was already right. Two earlier attempts at
     this fix measured "ground truth" on a different figure of the Earth -- a 0.3% error, larger than
-    the anisotropy -- and "corrected" those six.
+    the anisotropy -- and "corrected" those six. That 0.3% is real (it is the paragraph above), and it
+    is a DIFFERENT error from this one; keeping them apart is the point of measuring ground truth on
+    the engine's own sphere here.
 
     Takes the two SCREEN axes rather than a single direction because that is what the card measures
     along: depth and the 5-yd ladder run down screen y (the line of play), width across screen x.
@@ -399,8 +408,14 @@ def green_summary(arr, mask, px_x, px_y, putt=None):
     # Tested against the UNROUNDED tilt, while the card prints it to one decimal. When the card marked
     # every green, that showed: six of 198 printed "1.2%", three of them "(firm)" and three "(subtle)",
     # and a reader could not see why -- a true tilt of 1.24 against 1.16, plus the rise test, neither of
-    # which the card shows. Only the exception is marked now, so the ambiguity is confined to whether a
-    # 1.2% green carries "(faint)"; the reasoning below is unchanged.
+    # which the card shows. Only the exception is marked now, and adding the FALL half of the gate
+    # widened the band by one step: measured off the shipped books, the ambiguity is confined to
+    # whether a 1.2% or 1.3% green carries "(faint)". 1.2% prints three marked (castlewood-valley 14,
+    # copper-valley 17, valley-hi 14) against three unmarked (castlewood-valley 8, the-reserve 5,
+    # valley-hi 11), and 1.3% one marked (the-reserve 10) against two unmarked (micke-grove 1,
+    # monarch-bay 2) -- the-reserve 10 being a green that clears 1.2% of tilt and fails the 0.8 ft
+    # fall. Two of the 54 distinct percentages the books print, 9 of 198 greens; the reasoning below
+    # is unchanged.
     #
     # Do NOT "fix" that by comparing round(tilt_pct, 1) >= 1.2. It looks like consistency and is a
     # loosening: the effective floor becomes 1.15%. The gate being more precise than the display is the
@@ -425,19 +440,11 @@ def green_summary(arr, mask, px_x, px_y, putt=None):
     # the EVIDENCE. Printed as "(firm)", a golfer reads a statement about the TURF, which is the one
     # thing this module's own docstring says it cannot know: "no elevation model knows grain, FIRMNESS,
     # moisture, mowing direction or a fresh hole location". The book disclaimed firmness in prose and
-    # then printed "firm" 220 times beside a
-    # slope percentage, on every one of 252 green footers, with no definition in either legend -- and on
-    # two of the fourteen books all 18 greens said it, so it carried no information at all while looking
-    # like a turf claim. "clear"/"faint" describe what was actually tested, and they join a vocabulary
-    # the guide card already explains, ending at NO_CLEAR_FALL: clear fall -> faint -> no clear fall.
-    conf = "clear" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "faint"
-    # golfer reads a statement about the TURF, which is the one thing this module's own docstring says
-    # it cannot know: "no elevation model knows grain, FIRMNESS, moisture, mowing direction or a fresh
-    # hole location". The book disclaimed firmness in prose and then printed "firm" 220 times beside a
-    # slope percentage, on every one of 252 green footers, with no definition in either legend -- and on
-    # two of the fourteen books all 18 greens said it, so it carried no information at all while looking
-    # like a turf claim. "clear"/"faint" describe what was actually tested, and they join a vocabulary
-    # the guide card already explains, ending at NO_CLEAR_FALL: clear fall -> faint -> no clear fall.
+    # then printed "firm" 220 times beside a slope percentage, on every one of 252 green footers, with
+    # no definition in either legend -- and on two of the fourteen books all 18 greens said it, so it
+    # carried no information at all while looking like a turf claim. "clear"/"faint" describe what was
+    # actually tested, and they join a vocabulary the guide card already explains, ending at
+    # NO_CLEAR_FALL: clear fall -> faint -> no clear fall.
     conf = "clear" if (tilt_pct >= 1.2 and rise_ft >= 0.8) else "faint"
     return surf, core, dict(slope=slope, dcol=dcol, drow=drow, relief_m=relief_m,
                             med_slope=med_slope, tilt_pct=tilt_pct, undul_ft=undul_ft,
