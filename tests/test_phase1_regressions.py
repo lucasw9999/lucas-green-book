@@ -6641,6 +6641,225 @@ def test_multipolygon_relations_become_drawable_features(tmp_path):
         "four attempts against valley-hi returned 504, 504, 429, 504. Query was:\n" + query)
 
 
+def _osm_fetch_harness(tmp_path, monkeypatch, replies):
+    """fetch_osm bound to an EMPTY scratch COURSE_DIR, with Overpass replayed from `replies`.
+
+    Never touches courses/: config.COURSE_DIR is repointed at tmp_path, so the real caches (which
+    are gitignored and have no backup anywhere) cannot be read or written by these tests.
+
+    `replies` maps a marker found in the decoded query to the reply dict to hand back, so one stub
+    can serve main()'s three different fetches. Returns (fetch_osm, queries) -- the list records
+    every query actually issued, so a test can prove the pass it cares about was really reached."""
+    import urllib.parse
+    import urllib.request
+
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_osm"):
+        sys.modules.pop(m, None)
+    import config
+    import fetch_osm
+    monkeypatch.setattr(config, "COURSE_DIR", str(tmp_path))
+
+    queries = []
+
+    class _Resp:
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+    def _urlopen(req, timeout=None):
+        q = urllib.parse.unquote(getattr(req, "full_url", None) or str(req))
+        queries.append(q)
+        for marker, reply in replies.items():
+            if marker in q:
+                return _Resp(json.dumps(reply).encode())
+        raise AssertionError(f"no canned reply for query:\n{q}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    return fetch_osm, queries
+
+
+def test_a_failed_relation_pass_cannot_strip_osm_course_of_its_flattened_rings(tmp_path,
+                                                                              monkeypatch):
+    """main() wrote osm_course.json TWICE: once inside fetch(), which commits with os.replace, and
+    again after the multipolygon-relation pass had appended the flattened outer rings. The relation
+    fetch sits BETWEEN those two writes and is allowed to abort -- an Overpass "remark" reply is a
+    hard stop by design -- so the file left on disk was the first write: the raw way-only reply, with
+    every flattened ring gone.
+
+    Reproduced on cache copies with urlopen stubbed so only the relations reply carries a remark:
+    valley-hi-country-club went from 18 flattened rings to 0 and its census lost the 'fairway' key
+    entirely (fairway 18 -> absent); monarch-bay fairway 37 -> 1, rings 36 -> 0. Those are the
+    courses whose fairways are mapped as relations, i.e. the whole reason the relation pass exists --
+    so one timed-out Overpass call silently returned those books to drawing no fairway at all, under
+    a legend that promises "fairway (green)".
+
+    Nothing downstream disagrees, which is why it needed a test: _check_response's baseline filter
+    deliberately ignores _from_relation elements (otherwise the shrink guard refuses 9 of 11 courses
+    on an ordinary re-fetch), so a LATER re-fetch cannot see that the rings are missing either --
+    the loss is invisible to the one guard that exists to catch it. And osm_relations.json survives
+    the abort untouched, so fetch_trees.py's existence gate still passes while the two files on disk
+    now contradict each other.
+
+    The invariant: a failure in the relation pass leaves osm_course.json exactly as it was."""
+    ring = [{"lat": 38.20, "lon": -121.30}, {"lat": 38.20, "lon": -121.299},
+            {"lat": 38.201, "lon": -121.299}, {"lat": 38.20, "lon": -121.30}]
+
+    def way(i, tags):
+        return {"type": "way", "id": i, "tags": dict(tags), "geometry": list(ring)}
+
+    # what a raw way-only Overpass reply for the course query can contain. Enough golf features that
+    # the AGGREGATE collapse check (which counts the cache's rings in its baseline) is not what
+    # fires -- this test is about the relation pass, so every other gate must be out of the way.
+    fetched = ([way(100 + i, {"golf": "tee"}) for i in range(14)]
+               + [way(200 + i, {"golf": "bunker"}) for i in range(12)]
+               + [way(300 + i, {"building": "yes"}) for i in range(6)])
+    # ...and what only the relation pass can add: valley-hi's 18 fairway rings
+    rings = [{"type": "way", "id": -(555 * 100 + i) - 1, "tags": {"golf": "fairway"},
+              "geometry": list(ring), "_from_relation": 555} for i in range(18)]
+    cache = tmp_path / "osm_course.json"
+    cache.write_text(json.dumps({"version": 0.6, "elements": fetched + rings}, indent=2))
+    before = cache.read_bytes()
+
+    geom_reply = {"version": 0.6,
+                  "elements": [way(400 + i, {"golf": "green"}) for i in range(18)]}
+    course_reply = {"version": 0.6, "elements": fetched}     # census-identical to the cache
+    timed_out = {"version": 0.6, "remark": "runtime error: Query timed out",
+                 "elements": []}
+
+    fetch_osm, queries = _osm_fetch_harness(tmp_path, monkeypatch, {
+        'way["golf"="green"]': geom_reply,
+        'relation["golf"]': timed_out,
+        'way["golf"]': course_reply,        # checked last: the geom query also contains way["golf"
+    })
+
+    with pytest.raises(SystemExit) as ei:
+        fetch_osm.main()
+    assert "remark" in str(ei.value), f"the relation pass must be what aborted: {ei.value}"
+    assert any('relation["golf"]' in q for q in queries), \
+        "the relation pass was never reached, so this test proved nothing"
+
+    on_disk = json.loads(cache.read_text())
+    kept = [e for e in on_disk["elements"] if e.get("_from_relation") is not None]
+    census = fetch_osm.census(on_disk["elements"])
+    assert len(kept) == 18, (
+        f"an aborted relation pass left {len(kept)} of 18 flattened rings on disk -- the file every "
+        f"consumer reads is now permanently stripped of them, and no later re-fetch can tell")
+    assert census["fairway"] == 18, f"fairway 18 -> {census['fairway']} on disk: {dict(census)}"
+    assert cache.read_bytes() == before, "an aborted run must not rewrite osm_course.json at all"
+
+    # ...and the write must still HAPPEN when the relation pass succeeds, or "never degraded" would
+    # be satisfied by never writing the rings at all -- which is the defect this pass exists to fix.
+    rel_ok = {"version": 0.6, "elements":
+              [{"type": "relation", "id": 777, "tags": {"golf": "fairway"},
+                "members": [{"type": "way", "ref": 900 + i, "role": "outer"} for i in range(18)]}]
+              + [{"type": "way", "id": 900 + i, "geometry": list(ring)} for i in range(18)]}
+    fetch_osm, queries = _osm_fetch_harness(tmp_path, monkeypatch, {
+        'way["golf"="green"]': geom_reply,
+        'relation["golf"]': rel_ok,
+        'way["golf"]': course_reply,
+    })
+    fetch_osm.main()
+    on_disk = json.loads(cache.read_text())
+    kept = [e for e in on_disk["elements"] if e.get("_from_relation") == 777]
+    assert len(kept) == 18, f"a successful relation pass must write its 18 rings, wrote {len(kept)}"
+    assert all(e.get("geometry") for e in kept), "a written ring must carry geometry"
+    ids = {e["id"] for e in on_disk["elements"]}
+    assert {e["id"] for e in fetched} <= ids, "the fetched features must survive the rewrite too"
+
+
+def test_waiving_churn_on_a_volatile_kind_does_not_waive_the_green_check(tmp_path):
+    """The per-kind shrink guard applied ZERO tolerance to every kind census() emits, and one
+    ALLOW_SHRINK waived all of them.
+
+    Two consequences, both reproduced against the-reserve-at-spanos-park's real counts.
+
+    1. A SPURIOUS HARD STOP. Removing one single natural=tree node from a 2,462-tree reply aborted
+       the entire fetch: "tree 2462 -> 2461". Trees, buildings, wood and water churn in OSM
+       constantly -- a mapper deletes a stump, a landcover polygon is split at a new path, a creek is
+       re-segmented at a road crossing -- and none of that changes a number any card prints. The
+       justification written beside the check ("stable mapped polygons... the documented failure cost
+       ONE green") is true of greens, holes and fairways and false of these.
+    2. The cure was worse. Because the abort message prescribes ALLOW_SHRINK and that same flag also
+       gated the green/hole/fairway comparison, waiving a churned tree waived the structural check
+       too: with ALLOW_SHRINK=1 set, _check_response ACCEPTED a reply from which all 21 greens had
+       been removed. (_check_bindings is a separate later gate and does still refuse that particular
+       reply, so this was not yet 18 cards rebinding -- it was the guard designed to catch it being
+       switched off by a flag nobody set for that purpose. A guard you must disable to do ordinary
+       work trains you to disable it.)
+
+    So: volatile kinds get a tolerance, greens/holes/fairways keep zero, and the two waivers are
+    different environment variables."""
+    slug = a_course()
+    os.environ["COURSE"] = slug
+    for m in ("config", "fetch_osm"):
+        sys.modules.pop(m, None)
+    import fetch_osm
+
+    # the-reserve-at-spanos-park, measured: 21 greens, 18 holes, 20 fairways, 2462 trees,
+    # 1530 buildings, 60 water
+    def el(i, tags):
+        return {"type": "way", "id": i, "tags": dict(tags),
+                "geometry": [{"lat": 38.0, "lon": -121.0}]}
+
+    def corpus(greens=21, holes=18, fairways=20, trees=2462, buildings=1530, water=60):
+        els = []
+        n = iter(range(1, 100000))
+        for tags, count in (({"golf": "green"}, greens), ({"golf": "hole"}, holes),
+                            ({"golf": "fairway"}, fairways), ({"natural": "tree"}, trees),
+                            ({"building": "yes"}, buildings), ({"natural": "water"}, water)):
+            els += [el(next(n), tags) for _ in range(count)]
+        return {"version": 0.6, "elements": els}
+
+    full = corpus()
+    cache = tmp_path / "osm_course.json"
+    cache.write_text(json.dumps(full))
+    check = lambda reply: fetch_osm._check_response(reply, str(cache), "osm_course.json")
+
+    for var in ("ALLOW_SHRINK", "ALLOW_STRUCTURAL_SHRINK"):
+        os.environ.pop(var, None)
+    try:
+        check(full)                                  # unchanged -> accepted
+        # 1. ordinary churn must not stop a build
+        check(corpus(trees=2461))                    # the reproduced abort
+        check(corpus(buildings=1500, water=59, trees=2420))
+        # ...but a collapse is still a collapse, on a volatile kind too
+        with pytest.raises(SystemExit) as ei:
+            check(corpus(trees=1900))
+        assert "tree 2462 -> 1900" in str(ei.value), ei.value
+        assert "ALLOW_SHRINK" in str(ei.value), f"the churn abort must name its own waiver: {ei.value}"
+        with pytest.raises(SystemExit):
+            check(corpus(trees=0, buildings=0))
+
+        # 2. a structural kind has NO tolerance, at any size
+        structural = (("one green", corpus(greens=20)), ("one hole", corpus(holes=17)),
+                      ("one fairway", corpus(fairways=19)), ("every green", corpus(greens=0)))
+        for name, reply in structural:
+            with pytest.raises(SystemExit, match="FEWER features"):
+                check(reply)
+
+        # 3. and the waivers must be SEPARATE: churn permission cannot spend the green check
+        os.environ["ALLOW_SHRINK"] = "1"
+        check(corpus(trees=10))                      # a real OSM deletion of trees, waived
+        for name, reply in structural:
+            with pytest.raises(SystemExit) as ei:
+                check(reply)
+            assert "ALLOW_SHRINK" not in str(ei.value), \
+                f"{name}: the structural abort must not prescribe the churn flag: {ei.value}"
+            assert "ALLOW_STRUCTURAL_SHRINK" in str(ei.value), \
+                f"{name}: the structural abort must name the waiver it needs: {ei.value}"
+
+        # the structural waiver still exists, for a green OSM genuinely deleted -- it just has to be
+        # asked for by name
+        os.environ["ALLOW_STRUCTURAL_SHRINK"] = "1"
+        check(corpus(greens=0, holes=0, fairways=0))
+    finally:
+        for var in ("ALLOW_SHRINK", "ALLOW_STRUCTURAL_SHRINK"):
+            os.environ.pop(var, None)
+
+
 def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000.0,
                    near_offset_m=0.0):
     """A tiny LAZ whose points carry known gps_times: some at a green, some far away."""
