@@ -347,6 +347,38 @@ def _expected_cards():
 needs_corpus = pytest.mark.skipif(not CORPUS, reason="per-course data is gitignored; nothing to measure")
 
 
+def _courses_snapshot(root):
+    """path -> mtime for every course.json, book and PDF of a REAL course under root/courses.
+
+    Scratch directories are excluded, because seven tests here create one under courses/ and remove it
+    again, and a snapshot that carried them reported that cleanup as destroyed corpus data (see
+    test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_real_ones). The rule comes
+    from distribution.is_corpus_slug rather than another startswith("_") -- that rule already existed in
+    four places and the fourth had drifted.
+
+    Module-level and root-parameterised so the guard's own logic is testable without a real courses/
+    tree -- the alternative is a closure nothing can reach, which is how the hole above survived."""
+    import distribution
+    out = {}
+    for p in glob.glob(os.path.join(root, "courses", "*", "*")):
+        if not distribution.is_corpus_slug(os.path.basename(os.path.dirname(p))):
+            continue
+        base = os.path.basename(p)
+        if base.endswith(".json") or base.startswith("greenbook") or base.endswith(".pdf"):
+            try:
+                out[os.path.relpath(p, root)] = os.path.getmtime(p)
+            except OSError:
+                pass
+    return out
+
+
+def _courses_diff(before, after):
+    """(vanished, touched) between two snapshots."""
+    vanished = sorted(set(before) - set(after))
+    touched = sorted(k for k in set(before) & set(after) if before[k] != after[k])
+    return vanished, touched
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _courses_are_read_only():
     """The suite must not write inside courses/. That data cannot be got back.
@@ -357,29 +389,23 @@ def _courses_are_read_only():
     manual cross-check to produce. Rebuilding a green surface is hours; re-verifying a scorecard against
     club sources is worse.
 
-    Nothing in the suite writes there today. This is here so that stays true by accident-detection rather
-    than by everyone remembering: a fixture that builds a course under courses/ instead of tmp_path would
-    be a natural thing to write, and would look fine until the day it picked a real slug.
+    Seven tests DO write there today, and that is fine: _synth_ticks, _synth_gate, _synth_trees,
+    _synth_water, _synth_bmode, _testmsg and _cold_<ref> each build a scratch directory under courses/
+    -- necessary, because config.py resolves courses/ from the repo root and a tmp_path cannot stand in
+    -- and remove it again. All seven are excluded BY NAME, via distribution.is_corpus_slug, so this
+    guard watches real courses only. It used to watch the scratch slugs too and reported their cleanup
+    as data loss; see the regression test named in _courses_snapshot.
+
+    What it is for is the accident nobody would remember to prevent: a fixture that builds a course
+    under courses/ instead of tmp_path is a natural thing to write, and would look fine until the day it
+    picked a real slug -- or the day a test rewrote a real course.json in place.
 
     Session-scoped, comparing the set of paths and the mtime of every course.json and book, so it costs
     one directory walk per run rather than one per test.
     """
-    def snap():
-        out = {}
-        for p in glob.glob(os.path.join(ROOT, "courses", "*", "*")):
-            base = os.path.basename(p)
-            if base.endswith(".json") or base.startswith("greenbook") or base.endswith(".pdf"):
-                try:
-                    out[os.path.relpath(p, ROOT)] = os.path.getmtime(p)
-                except OSError:
-                    pass
-        return out
-
-    before = snap()
+    before = _courses_snapshot(ROOT)
     yield
-    after = snap()
-    vanished = sorted(set(before) - set(after))
-    touched = sorted(k for k in set(before) & set(after) if before[k] != after[k])
+    vanished, touched = _courses_diff(before, _courses_snapshot(ROOT))
     assert not vanished, (
         f"the test run DELETED files under courses/, which is gitignored and has no copy anywhere: "
         f"{vanished[:5]}")
@@ -493,6 +519,94 @@ def a_course():
 # ---------------------------------------------------------------------------
 # Pure-function / source tests -- always run
 # ---------------------------------------------------------------------------
+def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_real_ones(tmp_path):
+    """The courses/ guard snapshotted SCRATCH directories too, and reported phantom deletions.
+
+    Seven tests in this file build a real directory under courses/ and remove it again: _synth_ticks,
+    _synth_gate, _synth_trees, _synth_water, _synth_bmode, _testmsg and _cold_<ref>. A single clean run
+    never notices, because the session snapshot is taken BEFORE any of them exists and a path created
+    and removed inside one run never enters `before`. It bites when such a directory is already there at
+    session start, which happens two ways: a leftover from a hard-killed run -- distribution.py's
+    is_corpus_slug records that exact leak having happened -- or two suites running at once against the
+    same data, since ROOT comes from __file__ and a second checkout that symlinks the same courses/
+    creates and rmtree's the same courses/_synth_ticks.
+
+    What it produced was
+
+        AssertionError: the test run DELETED files under courses/, which is gitignored and has no copy
+        anywhere: ['courses/_synth_ticks/course.json', 'courses/_synth_ticks/osm_course.json', ...]
+
+    raised in session teardown and therefore attributed to whichever test happened to run last. So it
+    read as an unrelated flake, and four separate readers chased it in turn. Nothing anyone wanted had
+    been deleted.
+
+    Fixed by snapshotting REAL courses only, asked of distribution.is_corpus_slug -- this repo's single
+    spelling of "is that a course or somebody's scratch?" -- and asserted here in both directions,
+    because the cheap way to silence a false alarm is to stop looking. Scratch churn must be silent AND
+    a real course losing course.json, or having its book rewritten, must still trip.
+    """
+    import inspect
+    import shutil
+
+    root = tmp_path / "fake-repo"
+    real = root / "courses" / "sample-golf-club"
+    real.mkdir(parents=True)
+    for name in ("course.json", "greenbook.html", "greenbook.pdf"):
+        (real / name).write_text("x", encoding="utf-8")
+    scratch = root / "courses" / "_synth_ticks"
+    scratch.mkdir()
+    for name in ("course.json", "osm_course.json", "osm_geom.json"):
+        (scratch / name).write_text("x", encoding="utf-8")
+    root = str(root)
+
+    # (1) a scratch dir that EXISTED at session start and is cleaned up mid-run -- exactly what
+    # synth_engine's teardown does to courses/_synth_ticks.
+    before = _courses_snapshot(root)
+    shutil.rmtree(scratch)
+    vanished, touched = _courses_diff(before, _courses_snapshot(root))
+    assert not vanished, (
+        f"the guard reads a scratch fixture cleaning up after itself as destroyed corpus data: "
+        f"{vanished}. That is the phantom teardown failure; no real course was touched.")
+    assert not touched, f"scratch churn reported as a corpus modification: {touched}"
+
+    # (2) rewriting a scratch course.json in place, which _synth_bmode does six times in one test
+    scratch.mkdir()
+    p_scratch = scratch / "course.json"
+    p_scratch.write_text("y", encoding="utf-8")
+    os.utime(p_scratch, (1.0, 1.0))
+    before = _courses_snapshot(root)
+    os.utime(p_scratch, (2.0, 2.0))
+    assert _courses_diff(before, _courses_snapshot(root)) == ([], []), \
+        "rewriting a scratch course.json is reported as corpus damage"
+
+    # (3) the protection this fixture exists for is UNCHANGED: a real course losing its hand-verified
+    # scorecard still trips, and so does a real book being rewritten.
+    before = _courses_snapshot(root)
+    (real / "course.json").unlink()
+    vanished, _ = _courses_diff(before, _courses_snapshot(root))
+    assert vanished == ["courses/sample-golf-club/course.json"], (
+        f"the guard no longer notices a REAL course's course.json being deleted: {vanished}")
+
+    os.utime(real / "greenbook.html", (1.0, 1.0))
+    before = _courses_snapshot(root)
+    os.utime(real / "greenbook.html", (2.0, 2.0))
+    _, touched = _courses_diff(before, _courses_snapshot(root))
+    assert touched == ["courses/sample-golf-club/greenbook.html"], (
+        f"the guard no longer notices a REAL book being rewritten: {touched}")
+
+    # (4) and the logic just measured is the logic the session fixture runs, with the scratch rule
+    # borrowed rather than respelled. Both are what made this defect survive: a closure nothing could
+    # call, and a rule this file kept its own copy of.
+    src = inspect.getsource(sys.modules[__name__])
+    guard = src.split("def _courses_are_read_only(", 1)[1].split("\n@pytest.fixture", 1)[0]
+    assert "_courses_snapshot(ROOT)" in guard, (
+        "the session guard has grown its own snapshot again -- it must call _courses_snapshot, or this "
+        "test measures a copy of the logic instead of the logic that runs")
+    assert "is_corpus_slug" in inspect.getsource(_courses_snapshot), (
+        "the scratch-slug rule must come from distribution.is_corpus_slug; a local startswith('_') "
+        "here is the fourth copy of a rule that already drifted once")
+
+
 def test_the_course_template_documents_every_key_the_engine_reads():
     """examples/course.json is the ONLY course data this repo ships, and a stranger's whole map of
 
