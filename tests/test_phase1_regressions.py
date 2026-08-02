@@ -10791,3 +10791,311 @@ def test_an_unrecognised_build_mode_is_not_publishable():
         assert why and bad.strip().lower() in why.lower(), (
             f"build_mode={bad!r} was refused with reason {why!r} -- a refusal has to name the value that "
             f"caused it, or nobody can find the typo")
+
+
+@needs_corpus
+def test_the_dem_patch_is_read_on_the_extent_the_service_returned():
+    """The 3DEP cross-check masked its patch with the bbox it ASKED for, not the one it got back.
+
+    `_fetch_patch` returned only `ds.read(1)` and threw the GeoTIFF's own georeference away.
+    `dem_median_over_ring` then rebuilt pixel-centre lons/lats from the REQUESTED bbox (w, s, e, n).
+    But the ArcGIS ImageServer honours `size={px},{px}` by EXPANDING the requested bbox to that square
+    aspect, so the array it returns covers a wider extent than the caller assumed -- and every pixel
+    centre the caller computed was at the wrong place on the ground. The mask then reached well past the
+    green and read the collar the pipeline deliberately stopped reading.
+
+    Found by logging the requested bbox against `ds.bounds` on a real fetch: monarch-bay hole 3 asked for
+    a 0.00022070 deg lon span and got 0.00032707 back (ratio 1.4819), which put 2889 cells inside the
+    mask where the returned georeference puts 1945. The short axis is expanded by more than 1.05 on 185
+    of the corpus's 198 greens, worst 2.712 (castlewood-valley 14).
+
+    What it cost is the one figure whose job is to bound our OWN processing: merion's absolute
+    green-elevation offset against the DEM reads a median 0.1019 m as coded and 0.0522 m with the
+    returned georeference -- so roughly half of the "worst per-course median of 0.10 m" published in
+    legal/09 is this tool's own region error, in the same document that says the sample is taken over
+    "the same green polygon the pipeline measures, so the comparison is not dominated by a region
+    mismatch".
+
+    Synthetic, with the network stubbed at `urlopen` so the georeference travels through the real
+    GeoTIFF the real code reads. A crowned green (a dome falling 8 m across the patch) makes the region
+    error visible in the median, and the expected value is computed from the returned bounds with a plain
+    rectangle test rather than from the tool's own masking. The second pass -- a service that returns
+    EXACTLY the bbox it was asked for -- must give the same answer either way, which is what proves the
+    test is measuring the expansion and not the arithmetic around it.
+    """
+    import urllib.request
+
+    import numpy as np
+    pytest.importorskip("rasterio")
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_bounds
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    prev = os.environ.get("COURSE")
+
+    LAT, LON = 37.720, -122.150
+    GH_M, GW_M = 30.0, 15.0                  # a 30 m by 15 m green: taller than it is wide, so the
+    CREST_M, FALL_M = 20.0, 8.0              # service expands the LON axis, as it did on monarch-bay 3
+    mlon = _mlon(LAT)
+    lat0, lat1 = LAT - GH_M / 2 / R_LAT, LAT + GH_M / 2 / R_LAT
+    lon0, lon1 = LON - GW_M / 2 / mlon, LON + GW_M / 2 / mlon
+    ring = (np.array([lat0, lat0, lat1, lat1]), np.array([lon0, lon1, lon1, lon0]))
+    served = {}
+
+    def tiff_bytes(w, s, e, n, px, expand):
+        """A px-by-px float32 GeoTIFF of a crowned green, georeferenced to what is RETURNED."""
+        if expand:                           # what the ImageServer does with a non-square bbox
+            span = max(e - w, n - s)
+            cx, cy = (w + e) / 2, (s + n) / 2
+            w2, e2, s2, n2 = cx - span / 2, cx + span / 2, cy - span / 2, cy + span / 2
+        else:
+            w2, s2, e2, n2 = w, s, e, n
+        lons = w2 + (np.arange(px) + 0.5) / px * (e2 - w2)
+        lats = n2 - (np.arange(px) + 0.5) / px * (n2 - s2)
+        LO, LA = np.meshgrid(lons, lats)
+        a = CREST_M - FALL_M * ((LO - (w2 + e2) / 2.0) / ((e2 - w2) / 2.0)) ** 2
+        served.update(req=(w, s, e, n), got=(w2, s2, e2, n2), arr=a, LO=LO, LA=LA)
+        with MemoryFile() as mf:
+            with mf.open(driver="GTiff", height=px, width=px, count=1, dtype="float32",
+                         crs="EPSG:4326", transform=from_bounds(w2, s2, e2, n2, px, px)) as ds:
+                ds.write(a.astype("float32"), 1)
+            return mf.read()
+
+    def measure(expand):
+        served.clear()
+
+        class _Resp:
+            def __init__(self, raw):
+                self._raw = raw
+
+            def read(self):
+                return self._raw
+
+        def fake_urlopen(req, timeout=None):
+            b = re.search(r"bbox=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)", req.full_url)
+            px = int(re.search(r"size=(\d+),\d+", req.full_url).group(1))
+            assert b, f"the tool did not put a bbox in its request: {req.full_url}"
+            return _Resp(tiff_bytes(*(float(g) for g in b.groups()), px=px, expand=expand))
+
+        real = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            got = ve.dem_median_over_ring(ring)
+        finally:
+            urllib.request.urlopen = real
+        assert served, "the stub was never called -- nothing was measured"
+        # the honest answer: the median over the cells whose TRUE centre is inside the green
+        inside = ((served["LA"] >= lat0) & (served["LA"] <= lat1) &
+                  (served["LO"] >= lon0) & (served["LO"] <= lon1))
+        return got, float(np.median(served["arr"][inside])), int(inside.sum()), served["arr"].size
+
+    try:
+        for m in ("config", "geo", "render_hole", "fetch_hole_elev"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = CORPUS[0]
+        import verify_elevation as ve
+        expanded, ex_want, ex_cells, ex_all = measure(True)
+        w, _s, e, _n = served["req"]
+        w2, _s2, e2, _n2 = served["got"]
+        ratio = (e2 - w2) / (e - w)
+        exact, ok_want, _ok_cells, _ = measure(False)
+    finally:
+        _restore_course(prev)
+
+    assert ratio > 1.05, (
+        f"the stub returned a lon span only {ratio:.4f} times the requested one, so it is not "
+        f"reproducing the expansion this test exists to measure")
+    assert exact is not None and abs(exact - ok_want) < 1e-6, (
+        f"with the service returning EXACTLY the requested bbox the tool reads {exact} where the green's "
+        f"own cells median {ok_want:.4f} -- the fault this test is about is the expansion, so this case "
+        f"must already agree")
+    assert expanded is not None, "the ring sampler returned None on a patch it was handed"
+    assert abs(expanded - ex_want) < 1e-6, (
+        f"dem_median_over_ring read {expanded:.4f} m over a patch whose green cells median "
+        f"{ex_want:.4f} m -- out by {abs(expanded - ex_want):.4f} m. The service returned a lon span "
+        f"{ratio:.4f}x the requested one ({e-w:.8f} -> {e2-w2:.8f}), and the tool rebuilt its pixel "
+        f"centres from the bbox it ASKED for, so its mask took {ex_all - ex_cells} cell(s) of collar "
+        f"beyond the {ex_cells} that are actually inside the green. _fetch_patch discards ds.bounds; "
+        f"carry the returned georeference out and mask on that. This is the sample legal/09 publishes as "
+        f"'the same green polygon the pipeline measures'.")
+
+
+def _verify_with_absolute_offset(slug, inject_m):
+    """Run `verify_elevation.check_course(slug)` with the DEM stubbed, and return (result, printed).
+
+    The stub makes the tee-to-green CHANGE agree exactly on every hole while putting the green's
+    ABSOLUTE elevation `inject_m` above our own gridded surface. That is the shape every fault the
+    absolute line exists to catch has: a geoid/ellipsoid mixup, a CRS or grid misalignment, a vertical
+    unit read wrong all move both ends of the hole together, so they cancel out of the difference and are
+    visible ONLY in the absolute figure. Injecting into the DEM medians is the same arithmetic as
+    injecting into the corpus's dem_hd .npy files, without writing to gitignored course data.
+
+    The green is always sampled before the tee for a given hole, so the green call identifies the hole
+    (by its polygon's centroid) and the tee call reuses it.
+    """
+    import contextlib
+    import io as _io
+
+    import numpy as np
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_elevation as ve
+
+    cdir = os.path.join(ROOT, "courses", slug)
+    with open(os.path.join(cdir, "hole_elev.json"), encoding="utf-8") as fh:
+        rec = json.load(fh)["holes"]
+    ours_m, rough, green_key = {}, {}, {}
+    for p in sorted(glob.glob(os.path.join(cdir, "dem_hd", "hole*.json"))):
+        with open(p, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        hn = int(meta["hole"])
+        if str(hn) not in rec or not meta.get("polygon"):
+            continue
+        a = np.load(p[:-5] + ".npy").astype(float)
+        a[~np.isfinite(a)] = np.nan
+        a[np.abs(a) > 1e30] = np.nan
+        rough[hn] = float(np.nanmedian(a))          # near enough the masked green median to aim with
+        ours_m[hn] = rec[str(hn)]["change_ft"] / 3.28084
+        gp = np.asarray(meta["polygon"], float)
+        green_key[(round(float(np.mean(gp[:, 0])), 6), round(float(np.mean(gp[:, 1])), 6))] = hn
+    assert rough, f"{slug} has no hole with both a recorded height and a dem_hd patch"
+
+    state = {"hits": 0}
+
+    def fake_ring(ring, px=64):
+        rla, rlo = ring
+        hn = green_key.get((round(float(np.mean(rla)), 6), round(float(np.mean(rlo)), 6)))
+        if hn is not None:                                  # the green
+            state["hn"] = hn
+            state["hits"] += 1
+            return rough[hn] + inject_m
+        return fake_box(None, None)                         # the mapped tee pad of the same hole
+
+    def fake_box(lat, lon, half_m=None, px=None):
+        assert "hn" in state, "a tee was sampled before any green, so the stub cannot pair them"
+        hn = state["hn"]
+        return rough[hn] + inject_m - ours_m[hn]
+
+    real_ring, real_box = ve.dem_median_over_ring, ve.dem_median_m
+    ve.dem_median_over_ring, ve.dem_median_m = fake_ring, fake_box
+    buf = _io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            res = ve.check_course(slug)
+    finally:
+        ve.dem_median_over_ring, ve.dem_median_m = real_ring, real_box
+    assert state["hits"] == res[1], (
+        f"the stub answered {state['hits']} green(s) but the tool counted {res[1]} hole(s) -- the "
+        f"green/tee pairing this helper relies on did not hold, so the injected offset is not what was "
+        f"measured")
+    return res, buf.getvalue()
+
+
+ABS_OFFSET_LINE = re.compile(r"absolute green elevation vs the DEM: median ([-+][\d.]+) m, "
+                             r"worst ([-+][\d.]+) m")
+
+
+@needs_corpus
+def test_an_absolute_elevation_fault_cannot_be_reported_as_agreement():
+    """verify_elevation printed "this is a processing fault", then exited 0 and called it agreement.
+
+    `check_course` builds `bad` out of `diffs` only. `absolute` -- the green's own elevation against the
+    3DEP DEM -- is consumed by a `print` and by nothing else, so `return "ok"` is unconditional with
+    respect to it and `main()` returns 0. The module docstring documents exit 0 as "all figures agree
+    within tolerance" and reserves exit 1 for "suspect units, datum, or the wrong tee": exactly the fault
+    the run had just printed a warning about.
+
+    That absolute line is not a nice-to-have. It is the ONLY check in this project that can see a
+    constant offset introduced by our own handling -- a vertical unit read wrong, a CRS or grid
+    misalignment, a geoid/ellipsoid mixup. Every other gate compares our processing with itself, and a
+    constant offset cancels out of every height CHANGE, so it is invisible to all of them. legal/09
+    item 1 cites this tool as the bound on that whole class of fault. A bound that cannot fail is not a
+    bound, and a caller (or a CI step) reading only the exit status would have been told the corpus was
+    clean.
+
+    Found by injecting +30 m -- the size of a geoid/ellipsoid confusion in California -- into the DEM
+    side of every green on bay-view: the run printed "median -29.98 m, worst -30.02 m" AND its own
+    "a metre or more of ABSOLUTE offset is a processing fault" warning, then returned ('ok', 11, ...).
+
+    Both directions are pinned: an injection-free run must still come out 'ok', or this test would pass
+    on a tool that refuses everything.
+    """
+    prev = os.environ.get("COURSE")
+    slug = "bay-view-golf-club" if "bay-view-golf-club" in CORPUS else CORPUS[0]
+    try:
+        clean, clean_out = _verify_with_absolute_offset(slug, 0.0)
+        faulted, faulted_out = _verify_with_absolute_offset(slug, 30.0)
+    finally:
+        _restore_course(prev)
+
+    m = ABS_OFFSET_LINE.search(faulted_out)
+    assert m, f"the run printed no absolute-offset line at all, so nothing was measured:\n{faulted_out}"
+    med, worst = float(m.group(1)), float(m.group(2))
+    assert abs(med) > 25.0 and abs(worst) > 25.0, (
+        f"the +30 m injection came out as median {med:+.2f} m, worst {worst:+.2f} m -- it did not reach "
+        f"the absolute figure, so this test is not measuring what it claims:\n{faulted_out}")
+    assert clean[0] == "ok", (
+        f"{slug} with NO injection came out {clean[0]!r}; this test needs a course the tool agrees with "
+        f"to show that the fault, and not the test, is what changes the answer:\n{clean_out}")
+    assert faulted[0] != "ok", (
+        f"the DEM reads every green on {slug} {worst:+.2f} m from our own surface -- tens of metres is a "
+        f"geoid or unit fault, not terrain -- and check_course returned {faulted[0]!r}, so main() exits 0 "
+        f"and the run reads as agreement. `bad` is built from `diffs` alone; `absolute` is printed and "
+        f"then dropped. The tool printed the warning itself:\n{faulted_out}")
+
+
+@needs_corpus
+def test_the_absolute_offset_marker_fires_at_the_size_its_own_sentence_names():
+    """The absolute-offset marker fired above 2 m while the sentence it prints says "a metre or more".
+
+    Two numbers, one of them wrong, in the line whose entire job is to bound a fault class nothing else
+    in this project can see. The code emitted the marker only when `abs(aw) > 2.0`; the sentence beside
+    it reads "a metre or more of ABSOLUTE offset is a processing fault (unit, CRS, datum), not terrain".
+    So everything between 1 and 2 m printed as a bare figure with no mark -- reproduced with a 1.5 m
+    injection on monarch-bay, which printed "median -1.50 m, worst -1.53 m" and no marker at all -- and
+    once the marker started deciding the exit status (see the test above) that gap became the difference
+    between exit 1 and exit 0.
+
+    The SENTENCE is treated as the truth here, not the threshold, for two reasons. It is the promise the
+    tool makes to whoever reads its output, and a gate looser than its own stated promise is a false
+    statement in a document this project cites as evidence. And 1 m is where the evidence puts it: the
+    absolute offsets legal/09 publishes are a worst per-course median of 0.10 m and a worst single green
+    under 0.5 m, so 1 m clears healthy data by a factor of two while every fault this line names -- a
+    US-survey-foot cloud read as metres, a geoid/ellipsoid confusion in California -- lands tens of
+    metres out.
+
+    The marker text is required to QUOTE the constant so the two cannot drift apart again, and a
+    sub-threshold offset is required to stay silent and stay 'ok' so this cannot be satisfied by a tool
+    that refuses everything.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_elevation as ve
+    prev = os.environ.get("COURSE")
+    slug = "bay-view-golf-club" if "bay-view-golf-club" in CORPUS else CORPUS[0]
+    try:
+        quiet, quiet_out = _verify_with_absolute_offset(slug, 0.5)
+        loud, loud_out = _verify_with_absolute_offset(slug, 1.5)
+    finally:
+        _restore_course(prev)
+
+    marker = "ABSOLUTE offset is a processing fault"
+    q, ld = ABS_OFFSET_LINE.search(quiet_out), ABS_OFFSET_LINE.search(loud_out)
+    assert q and ld, f"no absolute-offset line was printed, so nothing was measured:\n{loud_out}"
+    q_worst, l_worst = float(q.group(2)), float(ld.group(2))
+
+    assert f"{ve.ABS_FAULT_M:g} m or more" in loud_out, (
+        f"the marker fires above ABS_FAULT_M = {ve.ABS_FAULT_M:g} m but the sentence it prints does not "
+        f"name that number, so the two can disagree without anything failing -- which is how "
+        f"'a metre or more' came to be printed by a 2 m gate. Build the wording from the constant:\n"
+        f"{loud_out}")
+    assert ve.ABS_FAULT_M <= 1.0, (
+        f"ABS_FAULT_M is {ve.ABS_FAULT_M:g} m, looser than the metre its own warning promises. The "
+        f"published absolute offsets are a worst per-course median of 0.10 m, so a metre is not a tight "
+        f"gate -- it is two orders of magnitude below the faults it names.")
+    assert marker in loud_out and loud[0] != "ok", (
+        f"an absolute offset of {l_worst:+.2f} m printed with no marker (or still returned "
+        f"{loud[0]!r}), while the tool's own sentence calls a metre or more a processing fault. Anything "
+        f"between the sentence and the threshold reads as agreement:\n{loud_out}")
+    assert marker not in quiet_out and quiet[0] == "ok", (
+        f"an absolute offset of {q_worst:+.2f} m -- inside what the corpus already shows on healthy "
+        f"courses (worst per-course median 0.10 m) -- was marked as a processing fault and returned "
+        f"{quiet[0]!r}. A gate that fires on the real corpus makes the tool useless rather than "
+        f"strict:\n{quiet_out}")

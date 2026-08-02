@@ -38,10 +38,23 @@ cross-flight repeatability check explicitly cannot: that check compares our proc
 unit read wrong, a CRS or grid misalignment, a geoid/ellipsoid mixup -- cancels out of every height
 CHANGE and stays invisible. Comparing a green's absolute elevation against a raster this project does
 not build catches exactly that class. Measured over 171 greens across all 11 courses: worst per-course median 0.10 m,
-worst 0.47 m. A US-survey-foot cloud read as metres would show tens of metres here, a geoid confusion
+worst 0.47 m -- but see PENDING RE-MEASUREMENT below before quoting either. A US-survey-foot cloud read as metres would show tens of metres here, a geoid confusion
 about 30 m in California, and the foot/metre fault above showed a median 298 ft. What this still does
 NOT bound is the source program's own datum or a turfgrass ground-classification bias, since the
 seamless DEM comes from the same LiDAR -- recorded as still open in legal/09.
+
+PENDING RE-MEASUREMENT. Every figure in this file that came out of a RUN of this tool -- the absolute
+offsets above, the signed bias, the worst |diff| at TOL_FT, and the ones legal/09 item 1 publishes from
+them -- predates 2026-08-02, when `_fetch_patch` was found to be discarding the GeoTIFF's own
+georeference: the ring sampler built its pixel centres from the bbox it REQUESTED while the ImageServer
+had EXPANDED that bbox to the square `size` it was asked for, so every sample sat at the wrong place on
+the ground and reached past the polygon it was meant to be confined to (short axis expanded more than
+1.05x on 185 of 198 greens, worst 2.712). The direction is known: the sample pulled in collar the
+polygon excludes, which INFLATES the disagreement, so those figures are upper bounds. The size, on the
+one course re-measured against the returned georeference, is about a factor of two -- merion's absolute
+offset median 0.1019 -> 0.0522 m, worst green 0.515 -> 0.436 m. The service is unreachable from where the
+fix was made (HTTP 502), so no corrected corpus figure is invented here in their place. Run `--all` when
+it answers again and replace every one of them, here and in legal/09.
 
 That spread is also what justifies the card's 3 ft floor: below it, two honest sources disagree by
 enough that a printed "green 2 ft above" would be inside the gap between them (see elev_phrase in
@@ -51,7 +64,9 @@ It is a TOOL, not a unit test, because it needs the network. Run it when a cours
 elevation code changes.
 
 Exit codes:  0 all figures agree within tolerance
-             1 at least one figure disagrees -- suspect units, datum, or the wrong tee
+             1 at least one figure disagrees -- suspect units, datum, or the wrong tee. EITHER a
+               tee-to-green change outside TOL_FT, OR an absolute green elevation outside ABS_FAULT_M;
+               the second used to be printed as a "processing fault" and then exit 0 regardless
              2 could not check (no data, or the elevation service was unreachable)
 
 Run:  COURSE=<slug> python3 tools/verify_elevation.py
@@ -84,9 +99,21 @@ SAMPLE_HALF_M = 15.0        # fallback box, for a tee with no mapped ring. NOT "
 # tool's disagreement a measure of the region difference rather than of the data.
 # A 1 m raster smooths a raised tee platform down, so it reads slightly BELOW the point cloud there:
 # measured -1.6 ft at monarch-bay's tees. The change carries that through, so residuals cluster a foot
-# or two positive. 10 ft is comfortably above the worst observed (3.14 ft, bay-view 16) and far below the hundreds of
+# or two positive. 10 ft is comfortably above the worst observed (3.14 ft, bay-view 16 -- pre-georeference-fix,
+# see PENDING RE-MEASUREMENT in the module docstring) and far below the hundreds of
 # feet a unit fault produces -- this bound is meant to separate those two, not to audit the last foot.
 TOL_FT = 10.0
+ABS_FAULT_M = 1.0           # absolute green elevation vs the DEM. This is a SEPARATE verdict from
+# TOL_FT: it is the only figure in the project that can see a constant offset in our own handling (unit,
+# CRS, datum), because a constant cancels out of every height CHANGE and out of every check that compares
+# our processing with itself. It used to be printed and then dropped -- `bad` was built from `diffs`
+# alone -- so a run could print "this is a processing fault" and still return "ok" and exit 0.
+# The gate was 2.0 while the sentence it printed said "a metre or more", so 1 to 2 m printed unmarked.
+# The SENTENCE won: it is the promise this tool makes to its reader, and the evidence puts the line
+# there. Healthy corpus offsets are a worst per-course median of 0.10 m and a worst single green under
+# 0.5 m, so 1 m clears real data by 2x, while the faults it names -- ftUS read as metres, a
+# geoid/ellipsoid confusion in California -- land tens of metres out. The wording below is BUILT from
+# this constant so the two cannot drift apart again.
 RETRIES = 5
 
 
@@ -102,6 +129,14 @@ def dem_median_over_ring(ring, px=64):
     mismatch dominated: a green is usually a raised pad, so a box that reaches 12 m past it reads low, and
     the residual that produced was previously written off in this file's own comment as a property of the
     1 m raster smoothing a tee platform down.
+
+    The mask is built on the extent the SERVICE RETURNED, not the one requested. Asking for a square
+    `size={px},{px}` over a bbox that is not square makes the ImageServer EXPAND the short axis to match,
+    so the array covers more ground than the bbox above describes: measured 1.4819x in lon on monarch-bay
+    hole 3, over 1.05x on 185 of the corpus's 198 greens, worst 2.712. Rebuilding pixel centres from the
+    requested bbox therefore put every one of them at the wrong place on the ground and pulled the collar
+    back into the sample -- 2889 cells where 1945 are inside that green -- which is the region error this
+    function exists to remove.
     """
     import fetch_hole_elev as fhe          # course-bound, so imported here rather than at module scope
     rla, rlo = ring
@@ -109,9 +144,10 @@ def dem_median_over_ring(ring, px=64):
     pad = 1.0 / R_LAT                                  # a metre of margin so edge pixels exist
     s, n = float(rla.min()) - pad, float(rla.max()) + pad
     w, e = float(rlo.min()) - pad/math.cos(math.radians(la0)), float(rlo.max()) + pad/math.cos(math.radians(la0))
-    a = _fetch_patch(w, s, e, n, px)
-    if a is None:
+    got = _fetch_patch(w, s, e, n, px)
+    if got is None:
         return None
+    a, (w, s, e, n) = got               # the extent the service served, which is not the one asked for
     H, W = a.shape
     # pixel centres -> lat/lon -> inside test, in a local metric frame
     lons = w + (np.arange(W) + 0.5) / W * (e - w)
@@ -126,7 +162,11 @@ def dem_median_over_ring(ring, px=64):
 
 
 def _fetch_patch(w, s, e, n, px):
-    """3DEP seamless elevation over a lat/lon bbox as a float array, or None.
+    """3DEP seamless elevation as `(array, (w, s, e, n))`, or None. The bbox is the one RETURNED.
+
+    The georeference has to travel with the pixels. The ImageServer expands a non-square bbox to match
+    the square `size` it was asked for, so the array does NOT cover the bbox this was called with, and a
+    caller that assumes it does places every pixel centre wrong (see dem_median_over_ring).
 
     Returns None rather than raising: an unreachable service must read as "could not check" (exit 2),
     never as agreement. Out of coverage 3DEP hands back a CONSTANT raster instead of an error, so a
@@ -151,8 +191,11 @@ def _fetch_patch(w, s, e, n, px):
     try:
         with rasterio.open(io.BytesIO(raw)) as ds:
             a = ds.read(1).astype(float)
+            b, ident = ds.bounds, ds.transform.is_identity
     except Exception:
         return None
+    if ident:
+        return None                     # no georeference at all: refuse rather than guess an extent
     a[~np.isfinite(a)] = np.nan
     a[np.abs(a) > 1e30] = np.nan
     fin = a[np.isfinite(a)]
@@ -160,7 +203,7 @@ def _fetch_patch(w, s, e, n, px):
         return None
     if float(fin.max() - fin.min()) == 0.0:
         return None                     # constant raster: off the edge of 3DEP, not a reading
-    return a
+    return a, (float(b.left), float(b.bottom), float(b.right), float(b.top))
 
 
 def dem_median_m(lat, lon, half_m=SAMPLE_HALF_M, px=48):
@@ -169,10 +212,11 @@ def dem_median_m(lat, lon, half_m=SAMPLE_HALF_M, px=48):
     use, so both sides of the comparison measure the same region."""
     dlat = half_m / R_LAT
     dlon = half_m / _mlon(lat)
-    a = _fetch_patch(lon-dlon, lat-dlat, lon+dlon, lat+dlat, px)
-    if a is None:
+    got = _fetch_patch(lon-dlon, lat-dlat, lon+dlon, lat+dlat, px)
+    if got is None:
         return None
-    return float(np.median(a[np.isfinite(a)]))
+    a, _bbox = got          # every cell is wanted here, so the returned extent changes no answer --
+    return float(np.median(a[np.isfinite(a)]))       # it only makes the box a little wider than asked
 
 
 def check_course(slug):
@@ -232,7 +276,8 @@ def check_course(slug):
         # that gap. This is not hypothetical: a foot/metre fault once put 74 of 175 holes' elevations
         # out by a median 298 ft. A US-survey-foot cloud read as metres shows tens of metres here; a
         # geoid confusion about 30 m in California. Measured over all 177 holes with both sides masked
-        # to the green polygon: median 0.00 m, worst 0.80 m. See
+        # to the green polygon: median 0.00 m, worst 0.80 m -- both pre-georeference-fix, so upper
+        # bounds; see PENDING RE-MEASUREMENT in the module docstring. See
         # legal/09_GREEN_SURFACE_REPEATABILITY.md.
         #
         # MASKED, like green_elevation. This took the median of the WHOLE .npy -- the green plus its 12 m
@@ -264,6 +309,7 @@ def check_course(slug):
     worst, worst_hn = diffs[0][0], diffs[0][1]
     med = float(np.median([d[0] for d in diffs]))
     bad = [d for d in diffs if d[0] > TOL_FT]
+    abs_fault, aw = False, 0.0
     print(f"  => {len(diffs)} holes checked, median |diff| {med:.2f} ft, worst {worst:.2f} ft "
           f"(hole {worst_hn}){', ' + str(unreachable) + ' unreachable' if unreachable else ''}")
     # Report the SIGNED bias too. "Small" and "unbiased" are different claims, and reporting only
@@ -276,9 +322,10 @@ def check_course(slug):
     if absolute:
         am = float(np.median(absolute))
         aw = max(absolute, key=abs)
-        tag = ("" if abs(aw) <= 2.0 else
-               "  <== a metre or more of ABSOLUTE offset is a processing fault (unit, CRS, datum), "
-               "not terrain; see the module docstring")
+        abs_fault = abs(aw) > ABS_FAULT_M
+        tag = ("" if not abs_fault else
+               f"  <== {ABS_FAULT_M:g} m or more of ABSOLUTE offset is a processing fault (unit, CRS, "
+               f"datum), not terrain; see the module docstring")
         print(f"     absolute green elevation vs the DEM: median {am:+.2f} m, worst {aw:+.2f} m "
               f"over {len(absolute)} green(s){tag}")
     if signed:
@@ -299,6 +346,15 @@ def check_course(slug):
               f"     not terrain: check the vertical unit (only the raw LAZ tee height takes the CRS\n"
               f"     axis scale -- the green surface is already metres), the vertical datum, and that\n"
               f"     the tee anchor is the tee you think it is.")
+    if abs_fault:
+        # The verdict this used to leave out. An absolute offset does NOT show up in the diffs above --
+        # it moves both ends of every hole together and cancels out of the change -- so a run that
+        # reported only |diff| exited 0 on exactly the fault class this line was added to catch.
+        print(f"  !! the green's ABSOLUTE elevation is out by up to {aw:+.2f} m against the DEM, over\n"
+              f"     {ABS_FAULT_M:g} m. That is not terrain and it does not show up in the tee-to-green\n"
+              f"     changes above, because a constant offset cancels out of a difference: check the\n"
+              f"     vertical unit, the CRS, and the vertical datum/geoid.")
+    if bad or abs_fault:
         return "bad", len(diffs), worst, worst_hn
     return "ok", len(diffs), worst, worst_hn
 

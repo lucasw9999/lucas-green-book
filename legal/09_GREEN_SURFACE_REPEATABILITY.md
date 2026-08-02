@@ -13,7 +13,7 @@ used to name. Each section now says what does.
 | the raw‑point‑level sentence under the Philadelphia table | a one‑off script, not a shipped tool; the method is stated in full beside the figures |
 | "A second, independent line of evidence: flight‑line overlap" | a one‑off script, not a shipped tool; it reuses `cross_flight_check`'s own gridding and differs only in how the points are partitioned |
 | the `withheld` / `synthetic` counts | a one‑off scan of every LAZ tile for those two classification‑flag bits on class‑2 points |
-| item 1 of "What this does and does not establish" (elevation) | `python3 tools/verify_elevation.py --all` — needs the network and `rasterio` |
+| item 1 of "What this does and does not establish" (elevation) | `python3 tools/verify_elevation.py --all` — needs the network and `rasterio`. **The figures it publishes there predate a georeference fix in that tool and are upper bounds pending a re‑run — see the note inside that bullet** |
 | the before/after figures inside item 1 | one‑off measurements taken when those faults were fixed. They describe states of the code that no longer exist and **cannot** be reproduced from the corpus as it stands |
 
 Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where that tilt is
@@ -186,7 +186,8 @@ had to hold, and it holds with two orders of magnitude of margin.
    shifted every height in the book by +0.46 ft. Corrected together they moved 102 of the then-177 printed
    integers, made 6 heights appear and 2 disappear at the 3 ft floor, flipped no above/below word on
    any card that prints one, and took this tool's agreement with the independent DEM from a median
-   0.80 ft to 0.09 ft. Both passes come
+   0.80 ft to 0.09 ft (both of those are `verify_elevation.py` figures and both predate its georeference
+   fix — see the note in the first bullet below). Both passes come
    from the same USGS program, sensor class and processing chain, so a *systematic* bias would be
    present in both and invisible to the comparisons above. Two kinds of systematic bias are worth
    separating, because only one of them stays open:
@@ -202,6 +203,33 @@ had to hold, and it holds with two orders of magnitude of margin.
      read as metres would show tens of metres; a geoid/ellipsoid confusion about 30 m in California.
      Neither is present. (This project has shipped a foot/metre fault before — it put 74 of 175 holes'
      elevations out by a median 298 ft — so the check is not hypothetical.)
+
+     > **Every number in this bullet is an upper bound awaiting re‑measurement, and the "same green
+     > polygon" sentence above overstates what the tool did.** They were all produced by
+     > `tools/verify_elevation.py` before 2026‑08‑02, when its patch fetcher was found to discard the
+     > returned GeoTIFF's own georeference: it rebuilt its pixel centres from the bbox it *requested*,
+     > while the ImageServer had **expanded** that bbox to match the square image size it was asked for.
+     > So every sample sat at the wrong place on the ground and reached past the polygon it was meant to
+     > be confined to — the short axis was expanded by more than 1.05× on 185 of the corpus's 198 greens,
+     > worst 2.712× (castlewood‑valley 14), and on monarch‑bay 3 the mask took 2889 cells where the
+     > returned georeference puts 1945 inside the green.
+     >
+     > The **direction** is known: the sample pulled in collar the polygon excludes, which *inflates* the
+     > measured disagreement, so the figures above are bounds rather than measurements. The **size**, on
+     > the one course re‑measured against the returned georeference, is about a factor of two — merion's
+     > absolute‑offset median **0.1019 → 0.0522 m**, worst green **0.515 → 0.436 m**. Roughly half of the
+     > published 0.10 m was this tool's own region error. Note that merion's pre‑fix worst green, 0.515 m,
+     > is already larger than the **0.35 m** this bullet publishes as the corpus's worst single green (and
+     > the tool's own docstring says 0.47 m): those two were never reconciled either, which is a further
+     > reason to treat every figure here as pending. The tee‑to‑green *change* figures carry the same
+     > fault at **both** ends, where it partly cancels and the direction is therefore not known.
+     >
+     > The elevation service was unreachable from the machine where the fix was made (HTTP 502), so **no
+     > corrected corpus figure is substituted here** — inventing one would be exactly the fault this
+     > document exists to guard against. Re‑run `python3 tools/verify_elevation.py --all` when the service
+     > answers and replace every figure in this bullet, and the matching ones in that tool's docstring.
+     > The *conclusion* — that no tens‑of‑metres unit fault and no ~30 m geoid confusion is present —
+     > survives either way: the correction moves centimetres, and those faults move tens of metres.
    - **The source program itself** — its absolute vertical datum, or a consistent
      ground‑classification bias in turfgrass. That remains open: the seamless DEM is derived from the
      same LiDAR, so it cannot independently confirm the program's own datum, and both products take
