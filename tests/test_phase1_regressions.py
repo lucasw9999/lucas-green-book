@@ -12844,3 +12844,174 @@ def test_the_enlarged_edition_never_drops_a_whole_yardage_row_the_pocket_book_pr
     assert not collide, (
         f"{len(collide)} adjacent row pair(s) at coach scale sit closer than the guard's own "
         f"FSN*1.35 -- the rows were bought by letting them overlap: {collide[:6]}")
+
+
+def _seamless_dem_run(tmp_path, monkeypatch, expand, georeferenced=True):
+    """Run fetch_dem.main() over ONE synthetic green with a stand-in for 3DEP. Returns (url, served,
+    requested, meta or None).
+
+    Offline by construction: urlopen is replaced, so the suite's socket guard never has to fire. What
+    the stand-in reproduces is the ONE behaviour that mattered -- `expand=True` is ArcGIS adjusting the
+    bbox to the requested size's aspect ratio in the image SR, exactly as measured against the live
+    service on all six shipped monarch-bay URLs.
+
+    main() is what has to be exercised, not a helper: the fault was never in reading the reply, it was
+    in which of two extents got written down next to the pixels.
+    """
+    import io
+    import urllib.request
+
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_dem as fd
+    except Exception as e:
+        pytest.skip(f"fetch_dem not importable: {type(e).__name__}")
+
+    # A 24 m x 20 m green at monarch-bay's own latitude, so the expansion factor under test is the
+    # 1.2637 that course really saw.
+    lat0, lon0 = 37.6916, -122.1580
+    mlon = 111320.0 * math.cos(math.radians(lat0))
+    dla, dlo = 10.0 / 111320.0, 12.0 / mlon
+    ring = [{"lat": lat0 - dla, "lon": lon0 - dlo}, {"lat": lat0 - dla, "lon": lon0 + dlo},
+            {"lat": lat0 + dla, "lon": lon0 + dlo}, {"lat": lat0 + dla, "lon": lon0 - dlo},
+            {"lat": lat0 - dla, "lon": lon0 - dlo}]
+    cdir = tmp_path / f"course_{int(expand)}_{int(georeferenced)}"
+    out = cdir / "dem_hd"
+    out.mkdir(parents=True)
+    (cdir / "osm_geom.json").write_text(json.dumps({"elements": [
+        {"type": "way", "id": 11, "tags": {"golf": "hole", "ref": "7"},
+         "geometry": [{"lat": lat0 - 0.0018, "lon": lon0}, {"lat": lat0 - 0.00012, "lon": lon0}]},
+        {"type": "way", "id": 22, "tags": {"golf": "green"}, "geometry": ring}]}))
+
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url
+        seen["url"] = url
+        xmin, ymin, xmax, ymax = [float(v) for v in
+                                  re.search(r"bbox=([^&]+)", url).group(1).split(",")]
+        w, h = (int(v) for v in re.search(r"size=(\d+),(\d+)", url).groups())
+        seen["requested"] = [xmin, ymin, xmax, ymax]
+        if expand:
+            # square pixels in DEGREES: the latitude span is stretched to w/h of the longitude span
+            span = (xmax - xmin) * h / w
+            cy = (ymin + ymax) / 2.0
+            ymin, ymax = cy - span / 2.0, cy + span / 2.0
+        seen["served"] = [xmin, ymin, xmax, ymax]
+        # a 1.5% plane: a real green, so the honesty gate reads it instead of refusing a flat fill
+        arr = np.fromfunction(lambda r, c: 20.0 + 0.0075 * r, (h, w), dtype=float)
+        tif = tmp_path / "reply.tif"
+        kw = dict(driver="GTiff", height=h, width=w, count=1, dtype="float32")
+        if georeferenced:
+            kw.update(crs="EPSG:4326", transform=from_bounds(*seen["served"], w, h))
+        with rasterio.open(str(tif), "w", **kw) as ds:
+            ds.write(arr.astype("float32"), 1)
+        return io.BytesIO(tif.read_bytes())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(fd, "DIR", str(cdir))
+    monkeypatch.setattr(fd, "OUT", str(out))
+    monkeypatch.setattr(fd.time, "sleep", lambda *_a: None)
+    try:
+        fd.main()
+    finally:
+        for m in ("config", "fetch_dem"):
+            sys.modules.pop(m, None)
+    meta_p = out / "hole07.json"
+    meta = json.loads(meta_p.read_text()) if meta_p.exists() else None
+    if meta is not None:
+        meta["_shape"] = list(np.load(str(out / "hole07.npy")).shape)
+    return seen["url"], seen["served"], seen["requested"], meta
+
+
+def test_a_seamless_green_records_the_extent_its_array_actually_covers(tmp_path, monkeypatch):
+    """fetch_dem.py wrote the bbox it ASKED FOR beside an array covering the extent 3DEP RETURNED.
+
+    `size={W},{H}` is derived from the bbox's METRIC aspect -- W = wm/0.5, H = hm/0.5 -- while
+    `imageSR=4326` makes ArcGIS exportImage adjust the bbox to that size's aspect ratio IN THE IMAGE
+    SR, i.e. in degrees. So the service silently expanded the latitude span by 1/cos(lat) and handed
+    back a raster the recorded bbox does not describe. `tifffile.imread()` parses no GeoTIFF transform,
+    so the georeference was dropped before anything could compare the two.
+
+    Measured by re-issuing all six shipped monarch-bay URLs and reading `ds.bounds`: latitude expanded
+    1.2542x to 1.2675x against 1/cos(37.6916 deg) = 1.2637 (the residual is int() truncation of W and
+    H), each north and south edge out by 5.5 to 7.7 m, every returned array byte-identical to the .npy
+    on disk. render_green takes H,W from the array but px_y and the polygon mask from the meta, so the
+    mask stretched ~26% past the green's north and south edges, pulled in collar 1.3x to 2.5x steeper
+    than the putting surface, and inflated the printed tilt on all six cards by 16.6% to 52.5% --
+    0.3 to 0.7 pp, up to 2.8x the project's own two-survey tolerance
+    (tools/cross_flight_check.TOL_TILT_PP = 0.25). hole 16's feed word moved front-left -> left and
+    hole 17's confidence clear -> faint.
+
+    Nothing caught it because tools/check_scale.py and tools/cross_flight_check.py re-derive
+    metres-per-pixel from the SAME meta and so inherit the error exactly, and verify_elevation's
+    absolute gate is structurally blind to it -- a stretched vertical mapping preserves the median
+    height. The identical bug WAS found in tools/verify_elevation._fetch_patch on 2026-08-02, and the
+    fix went into the verifier instead of the producer; its docstring still describes this failure.
+
+    Two properties are asserted, because recording the served extent alone leaves the array sampled at
+    0.63 m north-south against 0.5 m east-west, and render_green's `gauss(arr, 3.0)` is one sigma in
+    PIXELS -- a 1.5 m x 1.9 m anisotropic blur that no bbox correction undoes:
+
+      * the request carries adjustAspectRatio=false, which makes the service honour the exact bbox at
+        the exact size (measured live on monarch-bay hole 1: 0.5038 m x 0.5042 m pixels, against
+        0.5038 x 0.6366 without it), so the grid is square in METRES like fetch_dem_hd's 0.4 m one; and
+      * the recorded bbox is the one the GeoTIFF carries whatever the service does -- so if a future
+        version ignores the flag, the meta still describes its own array and the surface degrades to
+        merely anisotropic rather than mis-georeferenced.
+
+    A reply with no georeference is REFUSED, not guessed at, the same way
+    tools/verify_elevation._fetch_patch refuses on `transform.is_identity`.
+
+    This cannot be asserted against the metas on disk, and that is worth stating: a correct meta and
+    the old broken one are IDENTICAL -- the requested bbox IS the metre-consistent one, and only the
+    pixels underneath it moved. Which is also why the printed depth, the 5-yard depth ladder and the
+    pin ring were always right (they come from the polygon through this bbox, never from the raster)
+    and must not move here. The first case below pins exactly that.
+    """
+    # --- the service honours the request: the extent must not move at all -------------------------
+    import numpy as np
+    url, served, requested, meta = _seamless_dem_run(tmp_path, monkeypatch, expand=False)
+    assert "adjustAspectRatio=false" in url, (
+        "the request does not say adjustAspectRatio=false, so exportImage keeps `size` and stretches "
+        "the bbox to match its aspect ratio in degrees: the array comes back sampled ~0.5 m east-west "
+        "and ~0.63 m north-south, and render_green's gauss(arr, 3.0) then blurs 1.5 m one way and "
+        "1.9 m the other")
+    assert meta is not None, "a good reply must produce a surface"
+    assert np.allclose(meta["bbox"], requested, rtol=0.0, atol=1e-12), (
+        f"the recorded extent moved even though the service served exactly what was asked for: "
+        f"{meta['bbox']} vs {requested}. The printed green depth, the 5-yard ladder and the pin ring "
+        f"are measured from the polygon through THIS bbox, and they are already correct.")
+    H, W = meta["_shape"]
+    px_x = (meta["bbox"][2] - meta["bbox"][0]) * 111320.0 * math.cos(
+        math.radians(meta["green_center"][0])) / W
+    px_y = (meta["bbox"][3] - meta["bbox"][1]) * 111320.0 / H
+    assert abs(px_x - 0.5) < 0.01 and abs(px_y - 0.5) < 0.01, (
+        f"the grid is not the 0.5 m the source string claims: {px_x:.4f} m x {px_y:.4f} m")
+
+    # --- the service adjusts the aspect ratio anyway: record what it SERVED ------------------------
+    url, served, requested, meta = _seamless_dem_run(tmp_path, monkeypatch, expand=True)
+    assert meta is not None, "an expanded reply is still a usable surface, once it is placed right"
+    assert served[3] - served[1] > (requested[3] - requested[1]) * 1.2, \
+        "the stand-in did not actually expand anything, so this case proves nothing"
+    assert np.allclose(meta["bbox"], served, rtol=0.0, atol=1e-12), (
+        f"the meta records the bbox that was REQUESTED, {meta['bbox']}, while the array beside it "
+        f"covers {served} -- {(served[3]-served[1])/(requested[3]-requested[1]):.4f}x taller. Every "
+        f"consumer that maps lat/lon through this bbox then puts the green in the wrong place: "
+        f"render_green's mask, its px_y, fetch_hole_elev's green_elevation, and _green_interior_stats "
+        f"-- the honesty gate itself.")
+    assert meta["W"] == meta["_shape"][1] and meta["H"] == meta["_shape"][0], \
+        f"W,H {meta['W']}x{meta['H']} disagree with the array {meta['_shape']}"
+
+    # --- no georeference at all: refuse rather than guess an extent --------------------------------
+    _url, _s, _q, meta = _seamless_dem_run(tmp_path, monkeypatch, expand=False, georeferenced=False)
+    assert meta is None, (
+        "a reply carrying no GeoTIFF transform was written out anyway, with an extent taken from the "
+        "request -- which is a guess. An unplaceable surface must be refused; tools/verify_elevation."
+        "_fetch_patch already refuses on transform.is_identity for the same reason.")

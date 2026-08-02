@@ -12,6 +12,13 @@ bearing), downloads a small DEM patch per green via the 3DEP exportImage service
 sampled at 0.5 m/px, and writes COURSE_DIR/dem_hd/holeNN.{npy,json} -- the same
 format render_green.py consumes.
 
+The recorded bbox is the one the REPLY carries, never the one this asked for. ArcGIS exportImage
+adjusts the bbox to the requested `size`'s aspect ratio in the IMAGE SR -- degrees here -- while
+`size` is computed from the bbox's METRIC aspect, so the service used to expand the latitude span by
+1/cos(lat) and hand back a raster the recorded bbox did not describe. See _served_patch: the request
+now says adjustAspectRatio=false so the grid is square in METRES, and the georeference is read off the
+GeoTIFF either way so the meta always describes its own array.
+
 Run it AFTER fetch_dem_hd.py, not instead of it. This stage FILLS GAPS: it shares dem_hd/ with
 fetch_dem_hd.py and skips any green that already holds a good 0.4 m LiDAR surface, so the two
 compose per GREEN rather than per course -- which is what a bayside course needs, where most
@@ -26,7 +33,7 @@ Run:  COURSE=<slug> python3 fetch_dem_hd.py     # first: 0.4 m where LiDAR allow
       OVERWRITE=1 ...                           # replace a good 0.4 m surface on purpose
 """
 import urllib.request, json, math, io, time, os
-import numpy as np, tifffile
+import numpy as np, rasterio
 import config
 import geo
 
@@ -146,6 +153,42 @@ def _green_interior_stats(arr, bbox, W, H, polygon):
     return (1.0 if n_in == 0 else n_nan / n_in), n_in, relief
 
 
+class NoGeoreference(Exception):
+    """The reply carries no GeoTIFF transform, so the extent it covers is unknown."""
+
+
+def _served_patch(raw):
+    """(array, [xmin, ymin, xmax, ymax]) from an exportImage reply -- the extent it actually SERVED.
+
+    The georeference has to travel with the pixels. `size={W},{H}` is derived from the bbox's METRIC
+    aspect (0.5 m per pixel each way), while `imageSR=4326` makes ArcGIS adjust the bbox to that
+    size's aspect ratio IN DEGREES -- so without adjustAspectRatio=false the service expands the
+    latitude span by 1/cos(lat) and the array does not cover the bbox it was asked for. Measured by
+    re-issuing all six shipped monarch-bay URLs: 1.2542x to 1.2675x against 1/cos(37.6916 deg) =
+    1.2637, each north and south edge out by 5.5 to 7.7 m. Recording the requested bbox anyway put an
+    inflated tilt on all six of that course's seamless cards, because render_green takes the array's
+    SHAPE from the array and its metres-per-pixel and polygon mask from the meta.
+
+    This used to read the pixels with tifffile.imread(), which parses no GeoTIFF transform, so the
+    georeference was discarded before anything could compare it. rasterio is what
+    tools/verify_elevation._fetch_patch reads the same reply with -- one reader, so the producer and
+    the only independent verifier of these heights agree by construction rather than by luck. That
+    function was fixed for this exact fault and this one was not; that is the whole reason the error
+    survived.
+
+    Refuses rather than guessing when there is no transform at all, the same way _fetch_patch does:
+    a surface whose position on the ground is unknown cannot be measured, and this project prefers a
+    refusal to an unsupported number.
+    """
+    with rasterio.open(io.BytesIO(raw)) as ds:
+        arr = ds.read(1).astype('float64')
+        b, identity = ds.bounds, ds.transform.is_identity
+    if identity:
+        raise NoGeoreference("the elevation service returned a raster with no georeference, so the "
+                            "ground it covers is unknown")
+    return arr, [b.left, b.bottom, b.right, b.top]
+
+
 def only_holes(raw):
     """The set of hole numbers ONLY= names, or REFUSE if it names something this parser cannot read.
 
@@ -239,24 +282,46 @@ def main():
         gpoly = green['geometry']; lats = [p['lat'] for p in gpoly]; lons = [p['lon'] for p in gpoly]
         clat, clon = centroid(green)
         mrg = 12.0; dlat = mrg/R_LAT; dlon = mrg/mlon(clat)
-        xmin, xmax = min(lons)-dlon, max(lons)+dlon
-        ymin, ymax = min(lats)-dlat, max(lats)+dlat
-        wm = (xmax-xmin)*mlon(clat); hm = (ymax-ymin)*R_LAT
+        # The extent to ASK FOR, and a size that makes the grid square in METRES over it. What gets
+        # RECORDED is whatever extent the reply carries; the two agree only because of
+        # adjustAspectRatio=false below. See _served_patch.
+        q_xmin, q_xmax = min(lons)-dlon, max(lons)+dlon
+        q_ymin, q_ymax = min(lats)-dlat, max(lats)+dlat
+        wm = (q_xmax-q_xmin)*mlon(clat); hm = (q_ymax-q_ymin)*R_LAT
         W = max(48, int(wm/0.5)); H = max(48, int(hm/0.5))
+        # adjustAspectRatio=false is what makes bbox AND size both honoured. By default exportImage
+        # keeps `size` and stretches the bbox to match its aspect ratio in the image SR, which in
+        # 4326 means square pixels in DEGREES -- 0.5038 m east-west against 0.6366 m north-south on
+        # monarch-bay hole 1, measured. render_green smooths with `gauss(arr, 3.0)`, one sigma in
+        # PIXELS, so that grid blurs 1.5 m one way and 1.9 m the other however the bbox is recorded.
+        # With the flag: 0.5038 m by 0.5042 m, square in metres the way fetch_dem_hd's 0.4 m grid is.
         url = ("https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage"
-               f"?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=4326&imageSR=4326&size={W},{H}"
+               f"?bbox={q_xmin},{q_ymin},{q_xmax},{q_ymax}&bboxSR=4326&imageSR=4326&size={W},{H}"
+               "&adjustAspectRatio=false"
                "&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation"
                "&noData=-9999&noDataInterpretation=esriNoDataMatchAny&f=image")
-        arr = None
+        arr = bbox = None
+        refused = None
         for attempt in range(4):
             try:
                 raw = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'greenbook/1.0'}), timeout=120).read()
-                arr = tifffile.imread(io.BytesIO(raw)).astype('float64')
+                arr, bbox = _served_patch(raw)
+                break
+            except NoGeoreference as e:
+                refused = str(e)        # not transient: retrying cannot conjure up a transform
                 break
             except Exception as e:
                 print(f"hole {hn}: attempt {attempt+1} failed ({e}); retry"); time.sleep(1.5)
+        if refused:
+            print(f"hole {hn}: REFUSED -- {refused}; no surface written")
+            continue
         if arr is None:
             print(f"hole {hn}: DEM fetch FAILED"); continue
+        # The ARRAY is the authority for its own shape, and its GeoTIFF for its own extent. Both used
+        # to be taken from the request instead, and the meta then described a patch of ground the
+        # pixels beside it do not cover.
+        H, W = arr.shape
+        xmin, ymin, xmax, ymax = bbox
         # Honesty gate -- the SAME contract fetch_dem_hd.py writes. This producer used to write no
         # gate keys at all, so render_green's meta.get("insufficient") was None (falsy) and nothing
         # could stop an unusable surface from being printed. This is the path a BRAND-NEW course
