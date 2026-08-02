@@ -32,6 +32,17 @@ sys.path.insert(0, ROOT)
 import distribution  # noqa: E402
 OUT = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
 
+# The card suppresses any measured tee-to-green change under this as level -- generate.py's
+# elev_phrase(): `if ft is None or abs(ft) < 3: return ""`. It is spelled a SECOND time here, which is
+# normally the fault this repo keeps fixing, because generate.py binds config.COURSE at import and
+# would lock this whole-corpus generator to one course. The duplication is pinned instead:
+# tests/test_phase1_regressions.py::test_provenance_counts_the_heights_the_cards_actually_print reads
+# the literal out of generate.py and fails if the two ever disagree.
+#
+# It matters because this table published MEASURED holes as though they were PRINTED cards. Valley Hi
+# measures 17 of 18 and prints 1.
+PRINT_FLOOR_FT = 3.0
+
 
 def _tile_project(slug, dem_source=""):
     """(project_label, n_tiles, from_filenames?) -- the real LiDAR project.
@@ -100,28 +111,53 @@ def _greens(slug):
 
 
 def _elevation(slug):
-    """(n_measured, n_holes_on_card, n_extrapolated) from hole_elev.json, or (0, 0, 0).
+    """(n_printed, n_measured, n_holes, n_extrapolated) from hole_elev.json, or zeros.
 
-    The card prints a tee-to-green height on ~130 cards across the corpus, and this table -- whose
-    whole purpose is that every printed number is traceable to an artifact -- said nothing about it.
+    PRINTED and MEASURED are different numbers, and this returned only the second while the table
+    published it as the first. generate.py suppresses any measured change under PRINT_FLOOR_FT as level,
+    so a row in hole_elev.json is NOT a figure on a card: across the corpus 171 measured holes print on
+    114 of 198 cards, and the two counts differ on 9 of 11 courses. Valley Hi measured 17 of 18 and its
+    row said "the other 1 print no height" while the book prints ONE height and withholds seventeen,
+    sixteen of them measured fine. Micke Grove and The Reserve measured all 18, so their rows carried no
+    caveat at all while 14 and 12 cards print nothing.
+
+    This table's whole purpose is that every printed number is traceable to an artifact, so the count it
+    leads with has to be the count of printed numbers.
+
     It also has to distinguish the two BASES, because they are not equally direct: most holes are
     sampled at the tee end of the mapped centreline, but on a short par 3 the tee is extrapolated
-    along the hole axis to the card yardage. A reader auditing a figure needs to know which.
+    along the hole axis to the card yardage. A reader auditing a figure needs to know which -- so
+    n_extrapolated counts the PRINTED ones, which are the only figures there is anything to audit.
     """
     p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
     if not os.path.isfile(p):
-        return 0, 0, 0
+        return 0, 0, 0, 0
     try:
         rows = json.load(open(p)).get("holes") or {}
     except Exception:
-        return 0, 0, 0
-    extrap = sum(1 for r in rows.values() if "extrapolated" in str(r.get("tee_basis", "")))
+        return 0, 0, 0, 0
     try:
-        holes = len(json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
-                    .get("holes", {})) or 18
+        card = json.load(open(os.path.join(ROOT, "courses", slug, "course.json"))).get("holes") or {}
     except Exception:
-        holes = 18
-    return len(rows), holes, extrap
+        card = {}
+    holes = len(card) or 18
+    printed = []
+    for k, r in rows.items():
+        # generate.py's own reading of this file, spelled the same way: a row with no change_ft at all
+        # is dropped, the UNROUNDED figure is preferred where present (comparing the floor against a
+        # value already rounded to 0.1 ft let 2.956 ft print as "green 3 ft"), and change_ft is the
+        # fallback for records written before change_ft_exact existed.
+        if card and k not in card:
+            continue                     # not a hole on the card: there is nothing to print it on
+        if r.get("change_ft") is None:
+            continue
+        ft = r.get("change_ft_exact")
+        ft = r.get("change_ft") if ft is None else ft
+        if ft is None or abs(ft) < PRINT_FLOOR_FT:
+            continue
+        printed.append(r)
+    extrap = sum(1 for r in printed if "extrapolated" in str(r.get("tee_basis", "")))
+    return len(printed), len(rows), holes, extrap
 
 
 
@@ -244,16 +280,35 @@ def _row(slug):
             bits.append(f"{seam} green(s) fall back to the 1 m seamless DEM")
         slope = ", ".join(bits)
 
-    nelev, nholes, nextrap = _elevation(slug)
+    nprint, nelev, nholes, nextrap = _elevation(slug)
     if nelev:
-        bits = [f"tee-to-green **height change measured on {nelev} of {nholes} holes** from the same "
-                f"public LiDAR (ground returns at the tee vs the green's own surface)"]
+        # PRINTED first, then MEASURED. This note used to report only the measured count and call it
+        # holes that carry a height, which was wrong on 9 of 11 courses -- see _elevation.
+        bits = [f"tee-to-green **height change printed on {nprint} of {nholes} cards**, measured on "
+                f"{nelev} of {nholes} holes from the same public LiDAR (ground returns at the tee vs "
+                f"the green's own surface)"]
         if nextrap:
-            bits.append(f"{nextrap} of them with the tee extrapolated along the hole axis to the card "
-                        f"yardage, because the mapped line stops short of the back tee")
+            bits.append(f"{nextrap} of the printed figures "
+                        f"{'use' if nextrap > 1 else 'uses'} a tee extrapolated along the hole axis "
+                        f"to the card yardage, because the mapped line stops short of the back tee")
+        nfloor = nelev - nprint
+        if nfloor:
+            # The reason these print nothing IS recorded: the measurement is on disk and the floor is
+            # generate.py's. This is the only omission this table can account for hole by hole.
+            bits.append(f"{nfloor} measured hole{'s' if nfloor > 1 else ''} "
+                        f"{'fall' if nfloor > 1 else 'falls'} under the {PRINT_FLOOR_FT:g} ft floor "
+                        f"and print{'' if nfloor > 1 else 's'} no height")
         if nelev < nholes:
-            bits.append(f"the other {nholes - nelev} print no height: the tee could not be located or "
-                        f"had no ground returns")
+            # And this one it CANNOT. It used to say "the tee could not be located or had no ground
+            # returns", derived from the row count alone -- a cause no artifact records, and false:
+            # fetch_hole_elev also refuses a hole whose mapped tee pad is too uneven for its median to
+            # stand for a tee height (merion h1 and h11 both resolved an anchor and were refused that
+            # way), and for three other reasons besides. hole_elev.json holds only the holes that GOT a
+            # figure, so the refusal survives in that stage's run log and nowhere else. Say that.
+            k = nholes - nelev
+            bits.append(f"{k} hole{'s' if k > 1 else ''} {'were' if k > 1 else 'was'} never measured; "
+                        f"which check refused {'them' if k > 1 else 'it'} is not recorded in "
+                        f"hole_elev.json (see *Holes that print no height*)")
         elev_note = "; ".join(bits)
     else:
         elev_note = ""
@@ -342,6 +397,15 @@ def build():
     # with gen_disclaimers and cross_flight_check -- see distribution.is_corpus_slug.
     slugs = distribution.course_slugs(ROOT)
     rows = [_row(s) for s in slugs]
+    # Corpus totals for the "Holes that print no height" note, summed from the same artifacts the rows
+    # were built from rather than written down beside them -- a hand-kept total in a generated document
+    # is the drift this file exists to prevent.
+    _elev = [_elevation(s) for s in slugs]
+    tot_print = sum(e[0] for e in _elev)
+    tot_meas = sum(e[1] for e in _elev)
+    tot_cards = sum(e[2] for e in _elev if e[1])
+    floor_totals = ("\n  Across this corpus **{} measured holes print on {} of {} cards**.".format(
+        tot_meas, tot_print, tot_cards) if tot_cards else "")
     full = []
     for slug in slugs:
         j = json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
@@ -390,6 +454,21 @@ hole and green SHAPES, and a re-bunkered hole looks exactly as authoritative as 
 - **1 m seamless fallback.** A few greens have no usable LiDAR ground returns — bayside holes over
   water, or greens under heavy canopy. Those use the USGS **3DEP seamless 1 m DEM** instead of the
   0.4 m point cloud: still public domain, just less sharp, and the card says `1 m data`.
+- **Holes that print no height.** Every row above counts three things separately, and they are not the
+  same thing: cards that PRINT a tee-to-green height, holes that were MEASURED, and holes that were
+  never measured at all. A measured change under **{PRINT_FLOOR_FT:g} ft** is suppressed as level
+  (`generate.py`, `elev_phrase`), because the two independent sources that figure was checked against
+  disagree by more than that on some holes — so a measurement is not a printed number.{floor_totals}
+  `fetch_hole_elev.py` declines to measure a hole at all when any of these holds: the hole has no mapped
+  centreline; its mapped line neither spans the card yardage nor belongs to a straight par 3, so the back
+  tee cannot be placed; there is **no usable green surface**; the tee sample holds too few ground
+  returns; the mapped tee pad spans more height than `MAX_TEE_RELIEF_FT`, so a median over it does not
+  stand for a tee height; or the change exceeds `MAX_PLAUSIBLE_FT` and can only be a units or datum
+  fault. **Which of those applied to a given hole is printed in that stage's run log and is not written
+  into `hole_elev.json`**, which records only the holes that got a figure — so the rows above do not
+  attribute an individual omission and this record will not guess one. Earlier wording did guess: it told
+  the reader that every hole without a height had a tee that could not be found or had no ground returns,
+  on four courses where that was not the reason.
 - **Hand-added greens.** Where OSM mapped no green at all, the putting surface was traced from
   **public-domain USDA NAIP** imagery and tagged `_digitized`. Only coordinates are derived; no
   imagery is embedded in any book. `fetch_osm.py` refuses to overwrite a cache it cannot read, so a
@@ -411,11 +490,20 @@ reproduced here uncut, so a claim can always be traced to what was actually writ
 
 
 def main():
-    if not glob.glob(os.path.join(ROOT, "courses", "*", "course.json")):
+    # The SAME enumerator build() uses, deliberately. This was a raw glob over courses/*/course.json
+    # while build() calls distribution.course_slugs(), which drops `_`-prefixed scratch directories --
+    # so a tree holding nothing but one leftover fixture (a fresh clone plus one crashed test; this
+    # repo's own suite creates such directories) passed the guard, built a table of ZERO courses, and
+    # --check declared the committed record STALE with a printed remedy that DESTROYS it: obeying
+    # "Re-run: python3 tools/gen_provenance.py" took 139 lines and 12 documented books down to 51 and
+    # none. A guard that answers a different question from the body is not a guard.
+    # tools/gen_disclaimers.py routes its own guard through the same filtered helper for this reason.
+    if not distribution.course_slugs(ROOT):
         # "no courses" is not the same as "stale". On a fresh clone courses/ is gitignored and empty,
         # so regenerating produced an EMPTY table and --check reported the committed 12-row table as
         # stale -- turning the repo's front door red for someone who had done nothing wrong.
-        print("no course data present (courses/ is gitignored) -- nothing to check against.")
+        print("no course data present (courses/ is gitignored, and `_`-prefixed scratch directories "
+              "are not courses) -- nothing to check against.")
         return 2
     text = build()
     if "--check" in sys.argv:

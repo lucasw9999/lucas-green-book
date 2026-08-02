@@ -24,9 +24,31 @@ Method, per hole:
 Both are medians, not means: a mean is dragged by a single mis-classified return, and a tee box is
 flat enough that the median is the tee's height.
 
-Finding the back tee is the whole difficulty -- see tee_anchor. A hole whose tee cannot be located,
-or whose tee has too few ground returns, gets NO figure rather than a guessed one, and the card
-simply omits the line. The count and the basis are recorded so every omission is auditable.
+Finding the back tee is the whole difficulty -- see tee_anchor. A hole gets NO figure rather than a
+guessed one, and the card simply omits the line, when ANY of these holds:
+  * the hole has no mapped centreline in osm_geom.json, so there is nothing to place a tee on;
+  * its mapped line neither spans the card yardage nor belongs to a straight par 3, so the back tee
+    cannot be located (tee_anchor refuses rather than sample somewhere up the fairway);
+  * the green has no usable surface -- no dem_hd patch, flagged insufficient, or a ring that
+    rasterises to nothing (green_elevation);
+  * the tee sample holds too few ground returns (MIN_RING_PTS on a mapped pad, MIN_TEE_PTS in the
+    fallback box);
+  * the mapped tee pad spans more height than MAX_TEE_RELIEF_FT, so a median over it does not stand
+    for a tee height -- 6 of 177 holes, and a cause of its own rather than a variant of the two above
+    it: merion h1 holds 3839 ground returns on a pad it fails by relief, over a usable green surface;
+  * the change exceeds MAX_PLAUSIBLE_FT and can only be a units or datum fault.
+
+Every refusal is PRINTED as it happens, with its reason. It is not RECORDED: hole_elev.json holds only
+the holes that got a figure, so which of the six refused a given hole survives in this stage's run log
+and nowhere else. This docstring used to claim "the count and the basis are recorded so every omission
+is auditable" and tools/gen_provenance.py believed it -- legal/03 told readers that every hole without a
+height had a tee that "could not be located or had no ground returns", on four courses where that was
+not the reason (merion h1 and h11 each resolved an anchor and were refused for pad relief). The COUNT is
+recoverable from the artifact -- holes on the card minus rows written -- and the count is all legal/03
+now claims.
+
+A row written here is also not the same thing as a height printed. generate.py suppresses any measured
+change under 3 ft as level (elev_phrase), so the corpus's 171 measured holes print on 114 cards.
 
 Run:  COURSE=<slug> python3 fetch_hole_elev.py [--write]
       --write records hole_elev.json in COURSE_DIR.

@@ -8816,9 +8816,9 @@ def test_provenance_records_the_elevation_basis():
     """Every printed number must be traceable in legal/03, and the height change was not.
 
     The table accounted for OSM geometry, LiDAR project, flight dates, density and the scorecard, but
-    said nothing about a figure printed on ~130 cards -- nor which of the two bases produced it. The
-    par-3 extrapolated tee is a weaker claim than a tee sampled where the line starts, and a reader
-    auditing a card cannot tell them apart without this."""
+    said nothing about a figure printed on 114 of the corpus's 198 cards -- nor which of the two bases
+    produced it. The par-3 extrapolated tee is a weaker claim than a tee sampled where the line starts,
+    and a reader auditing a card cannot tell them apart without this."""
     doc = open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")).read()
     checked = 0
     for slug in CORPUS:
@@ -8833,12 +8833,315 @@ def test_provenance_records_the_elevation_basis():
         assert line, f"{name} has no provenance row"
         assert f"measured on {len(rows)} of" in line, (
             f"{name}: provenance does not record the {len(rows)} measured height changes")
+        # ...and the PRINTED count BESIDE it. This assertion used to be the measured count alone, and
+        # that is exactly what let the row lead with "measured on 17 of 18 holes" as though seventeen
+        # cards carried a height while the book printed ONE. The printed number is read off the built
+        # book, so it cannot agree with the generator by repeating the generator's arithmetic.
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        if os.path.isfile(book):
+            n_pr = len(re.findall(r"green <b>\d+ ft (?:above|below)</b>",
+                                  open(book, encoding="utf-8").read()))
+            assert f"printed on {n_pr} of" in line, (
+                f"{name}: the built book prints {n_pr} tee-to-green heights and the provenance row "
+                f"does not say so -- it reports {len(rows)} measured\n{line}")
         n_ex = sum(1 for r in rows.values() if "extrapolated" in str(r.get("tee_basis", "")))
         if n_ex:
             assert "extrapolated" in line, (
                 f"{name}: {n_ex} hole(s) use an extrapolated tee and the doc does not say so")
         checked += 1
     assert checked >= 10, f"only {checked} courses checked; expected the corpus"
+
+
+def _gen_provenance():
+    """tools/gen_provenance.py, imported fresh. Popped first because these tests reassign its ROOT."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    sys.modules.pop("gen_provenance", None)
+    import gen_provenance
+    return gen_provenance
+
+
+def _synth_elev_course(root, slug, n_card_holes, rows):
+    """Write a minimal course under `root` that is enough for gen_provenance._row(slug).
+
+    Only course.json and hole_elev.json: no laz, no dem_hd, no OSM. _row falls through to "not built"
+    for the slope cell, which is exactly what we want -- the elevation note is the only thing under
+    test, and a synthetic green surface would be a second thing to get wrong."""
+    d = os.path.join(root, "courses", slug)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "course.json"), "w", encoding="utf-8") as f:
+        json.dump({"slug": slug, "name": "Synth Elev GC",
+                   "holes": {str(h): [4, h, 400] for h in range(1, n_card_holes + 1)},
+                   "tees": [], "sources": {}}, f)
+    with open(os.path.join(d, "hole_elev.json"), "w", encoding="utf-8") as f:
+        json.dump({"holes": rows}, f)
+    return d
+
+
+def _elev_row(root, slug):
+    """The generated legal/03 row for a synthetic course under `root`."""
+    gp = _gen_provenance()
+    real = gp.ROOT
+    gp.ROOT = root
+    try:
+        return gp._row(slug)
+    finally:
+        gp.ROOT = real
+
+
+def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
+    """legal/03 told readers WHY six of Merion's holes print no height, and it was not true.
+
+    The note was derived from a row count alone -- "the other 6 print no height: the tee could not be
+    located or had no ground returns" -- so it asserted a closed pair of causes for every hole that has
+    no figure. fetch_hole_elev.py refuses a hole for more reasons than those two, and the extra ones are
+    live: merion h1 (3839 class-2 returns, pad relief 2.95 ft) and h11 (3917 returns, 3.12 ft) both
+    RESOLVED an anchor and were refused because the mapped tee pad is not level enough for its median to
+    stand for a tee height. The same false sentence was published for bay-view, castlewood-hill and
+    philadelphia. fetch_hole_elev.py's own comment names those holes, three files away from the document
+    that contradicts it.
+
+    The reason is not recoverable: hole_elev.json holds only the holes that GOT a figure, so the refusal
+    survives only in that stage's run log. So the document must say the cause is unrecorded rather than
+    pick one -- and its own account of the possible causes has to cover every gate the code has, or the
+    next reader is misled the same way by a shorter list."""
+    import shutil
+    import tempfile
+    fhe_src = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
+    assert "MAX_TEE_RELIEF_FT" in fhe_src, "the pad-relief gate this test is about is gone"
+
+    # 1. The artifact genuinely cannot attribute an omission: no recorded hole carries a refusal.
+    #    (If a future change DOES record one, this test should be revisited, not the document.)
+    for p in glob.glob(os.path.join(ROOT, "courses", "*", "hole_elev.json")):
+        rec = json.load(open(p, encoding="utf-8"))
+        keys = {k for r in (rec.get("holes") or {}).values() for k in r}
+        assert not (keys & {"refused", "refusal", "why_no_figure", "omitted_because"}), (
+            f"{p} now records a refusal reason; gen_provenance may attribute omissions again")
+
+    # 2. The generated row must not name a cause for an unmeasured hole. One card hole (4) has no row
+    #    at all -- exactly the case the false sentence spoke for.
+    tmp = tempfile.mkdtemp(prefix="greenbook-elevreason-")
+    try:
+        _synth_elev_course(tmp, "_synth_elevreason", 4, {
+            "1": {"change_ft": 20.0, "change_ft_exact": 20.0, "tee_basis": "tee end of the mapped hole line"},
+            "2": {"change_ft": 1.2, "change_ft_exact": 1.2, "tee_basis": "tee end of the mapped hole line"},
+            "3": {"change_ft": -2.9, "change_ft_exact": -2.9, "tee_basis": "tee end of the mapped hole line"},
+        })
+        row = _elev_row(tmp, "_synth_elevreason")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    assert "the tee could not be located or had no ground returns" not in row, (
+        "the row still asserts a closed pair of causes for a hole whose cause is not recorded "
+        "anywhere; merion h1 and h11 were refused for pad relief, which is neither of them:\n" + row)
+    assert "never measured" in row and "not" in row, (
+        f"the row must say the unmeasured hole was not measured, without naming a cause:\n{row}")
+
+    # 3. And the document must account for every gate the code can refuse on, in one place, so the
+    #    account cannot be narrower than the code again. The pad-relief gate is the one that was missing.
+    doc = open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md"), encoding="utf-8").read()
+    assert "the tee could not be located or had no ground returns" not in doc, (
+        "the published record still states a cause for omissions that no artifact records")
+    for gate in ("MAX_TEE_RELIEF_FT", "MAX_PLAUSIBLE_FT", "no usable green surface"):
+        assert gate in doc, (
+            f"legal/03 does not mention {gate}, so its account of why a hole prints no height is "
+            f"narrower than fetch_hole_elev.py's refusals -- the shape of the original defect")
+
+    # 4. fetch_hole_elev.py promised what it does not do. Its docstring said "The count and the basis
+    #    are recorded so every omission is auditable"; gen_provenance believed it.
+    doc0 = fhe_src.split('"""')[1]
+    assert "the basis are recorded so every omission is auditable" not in doc0, (
+        "the module docstring still promises that the basis of every omission is recorded; it is "
+        "printed to the run log and never written to hole_elev.json")
+    assert "MAX_TEE_RELIEF_FT" in doc0, (
+        "the module docstring still lists only some of the reasons a hole gets no figure; the "
+        "pad-relief refusal is the one legal/03 was misled by")
+
+
+@needs_corpus
+def test_provenance_counts_the_heights_the_cards_actually_print():
+    """legal/03 reported holes MEASURED as though it were cards PRINTED. Wrong on 9 of 11 courses.
+
+    generate.py suppresses any measured height under 3 ft as level (elev_phrase: `if ft is None or
+    abs(ft) < 3`), so a written row is not a printed figure. Valley Hi's row said "measured on 17 of 18
+    holes ... the other 1 print no height" while the book prints ONE height and withholds seventeen --
+    sixteen of them measured fine. Micke Grove and The Reserve reached nelev == nholes, so their rows
+    carried no caveat at all while 14 of 18 and 12 of 18 cards print nothing.
+
+    Measured against the RENDERED BOOK, not against a re-implementation of the floor: counting the
+    phrase generate.py actually emits is the only check that cannot agree with the generator by
+    repeating its mistake. The corpus totals are 171 measured against 114 printed."""
+    import re as _re
+    doc = open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md"), encoding="utf-8").read()
+    rows = [l for l in doc.splitlines()
+            if l.startswith("| ") and not l.startswith("| Course |") and not l.startswith("|--")]
+    built = len([d for d in glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))
+                 if not os.path.basename(os.path.dirname(d)).startswith("_")])
+    if len(rows) > built:
+        pytest.skip(f"legal/03 documents {len(rows)} courses but {built} are built here")
+
+    # The 3 ft floor lives in generate.py; gen_provenance has to spell it a second time because
+    # generate.py binds one course at import. Pin the two spellings together.
+    gen_src = open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read()
+    m = _re.search(r"if ft is None or abs\(ft\) < (\d+(?:\.\d+)?)", gen_src)
+    assert m, "generate.py's elevation floor no longer looks like `abs(ft) < N`"
+    gp = _gen_provenance()
+    assert float(gp.PRINT_FLOOR_FT) == float(m.group(1)), (
+        f"gen_provenance.PRINT_FLOOR_FT is {gp.PRINT_FLOOR_FT} but generate.py suppresses under "
+        f"{m.group(1)} ft; the provenance record would count a card that prints nothing")
+
+    checked, seen = 0, collections.Counter()
+    for slug in CORPUS:
+        book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        p_elev = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not (os.path.isfile(book) and os.path.isfile(p_elev)):
+            continue
+        printed = len(_re.findall(r"green <b>\d+ ft (?:above|below)</b>",
+                                 open(book, encoding="utf-8").read()))
+        j = json.load(open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8"))
+        n_holes = len(j.get("holes") or {}) or 18
+        n_rows = len(json.load(open(p_elev, encoding="utf-8"))["holes"])
+        name = j.get("name", slug)
+        line = next((l for l in doc.splitlines() if l.startswith("| " + name + " |")), None)
+        assert line, f"{name} has no provenance row"
+        seen[slug] += 1
+        checked += 1
+        assert f"printed on {printed} of {n_holes} cards" in line, (
+            f"{name}: the built book prints {printed} tee-to-green heights on {n_holes} cards and "
+            f"legal/03 does not say so. It reports {n_rows} measured; {n_rows - printed} of those "
+            f"fall under the {gp.PRINT_FLOOR_FT:g} ft floor and print nothing.\n{line}")
+        assert f"measured on {n_rows} of {n_holes} holes" in line, (
+            f"{name}: the printed count must not replace the measured one -- both are provenance")
+        if n_rows > printed:
+            assert f"{n_rows - printed} " in line and "floor" in line, (
+                f"{name}: {n_rows - printed} measured hole(s) are suppressed by the floor and the "
+                f"row does not account for them")
+    assert checked >= 10, f"only {checked} courses checked; expected the corpus"
+    assert_no_course_skipped(seen, "test_provenance_counts_the_heights_the_cards_actually_print")
+
+
+def test_the_elevation_note_agrees_in_number_and_quotes_no_phantom_total():
+    """"the other 1 print no height" -- a legal record with a plural verb on a single hole, twice.
+
+    Two small unsupported things in the same note. The grammar: gen_provenance's tree note pluralises
+    correctly one screen below, so this was inconsistency inside one function, and it appeared on the two
+    rows (Callippe, Valley Hi) where exactly one hole is involved. And the figure: the function's own
+    docstring justified itself with "~130 cards", which matches nothing measured -- the pocket books
+    print 114, the coach editions 34, 148 together, and 171 rows were measured.
+
+    Driven through the generator with counts of exactly one, because the corpus cannot produce every
+    singular case at once."""
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="greenbook-elevplural-")
+    try:
+        # 3 card holes: h1 prints, h2 measured under the floor, h3 never measured. Both tails are 1.
+        _synth_elev_course(tmp, "_synth_elevplural", 3, {
+            "1": {"change_ft": 20.0, "change_ft_exact": 20.0, "tee_basis": "tee end of the mapped hole line"},
+            "2": {"change_ft": 1.0, "change_ft_exact": 1.0, "tee_basis": "tee end of the mapped hole line"},
+        })
+        one = _elev_row(tmp, "_synth_elevplural")
+        # ...and the same shape with two of each, so the plural branch is exercised too
+        _synth_elev_course(tmp, "_synth_elevplural2", 6, {
+            "1": {"change_ft": 20.0, "change_ft_exact": 20.0, "tee_basis": "tee end of the mapped hole line"},
+            "2": {"change_ft": 20.0, "change_ft_exact": 20.0, "tee_basis": "tee end of the mapped hole line"},
+            "3": {"change_ft": 1.0, "change_ft_exact": 1.0, "tee_basis": "tee end of the mapped hole line"},
+            "4": {"change_ft": 1.0, "change_ft_exact": 1.0, "tee_basis": "tee end of the mapped hole line"},
+        })
+        two = _elev_row(tmp, "_synth_elevplural2")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    for bad in ("1 print no height", "1 holes", "1 hole were", "1 hole(s)", "hole(s)"):
+        assert bad not in one, f"singular case reads {bad!r}, which is not English:\n{one}"
+    assert "1 hole " in one or "1 hole," in one or "1 hole;" in one, (
+        f"the singular case must say '1 hole', not '1 holes':\n{one}")
+    assert "2 holes" in two, f"the plural case must say '2 holes':\n{two}"
+
+    # No phantom corpus figure. Every "N cards" claim in the generator must be a total the corpus
+    # actually produces; "~130" was none of them.
+    import re as _re
+    src = open(os.path.join(ROOT, "tools", "gen_provenance.py"), encoding="utf-8").read()
+    src += open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
+    claims = [int(n) for n in _re.findall(r"~?(\d{2,4}) (?:pocket )?cards?\b", src)]
+    if not claims:
+        return                          # nothing quoted is also fine
+    if len(CORPUS) < 11:
+        pytest.skip(f"only {len(CORPUS)} courses built; a corpus total cannot be checked")
+    count = lambda pattern: sum(
+        len(_re.findall(r"green <b>\d+ ft (?:above|below)</b>", open(b, encoding="utf-8").read()))
+        for b in glob.glob(os.path.join(ROOT, "courses", "*", pattern))
+        if not os.path.basename(os.path.dirname(b)).startswith("_"))
+    pocket = count("greenbook.html")
+    both = count("greenbook*.html")
+    holes = measured = elev_holes = per_course = 0
+    for slug in CORPUS:
+        n = len(json.load(open(os.path.join(ROOT, "courses", slug, "course.json"),
+                               encoding="utf-8")).get("holes") or {})
+        holes += n
+        per_course = max(per_course, n)
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if os.path.isfile(p):
+            measured += len(json.load(open(p, encoding="utf-8"))["holes"])
+            elev_holes += n
+    ok = {pocket, both, holes, elev_holes, measured}
+    # A count no larger than one course's card count is a PER-COURSE figure ("14 and 12 cards print
+    # nothing", "philadelphia's 18 cards"), not a corpus total, and this test is about corpus totals --
+    # "~130" was neither, which is the whole point: it was larger than any single book and equal to no
+    # total. Anything above that ceiling is claiming to speak for the corpus and must match it.
+    bad = [n for n in claims if n not in ok and n > per_course]
+    assert not bad, (
+        f"a card count of {bad} is quoted where nothing measured matches it. The corpus prints "
+        f"{pocket} heights on pocket cards and {both} across both editions, measured {measured} "
+        f"holes, over {elev_holes} cards on courses with any measurement ({holes} in all). A figure "
+        f"in a provenance document that matches nothing is the defect this file exists to prevent")
+
+
+def test_a_leftover_scratch_directory_cannot_blank_the_provenance_record():
+    """`--check` printed a remedy that DESTROYS legal/03, because its guard counted scratch dirs.
+
+    The guard was a raw glob over `courses/*/course.json` while build() enumerates
+    distribution.course_slugs(), which drops `_`-prefixed scratch directories. So on a tree whose
+    courses/ holds only a leftover fixture -- a fresh clone plus one crashed test, and this suite
+    creates such directories -- the guard said "course data present", build() enumerated ZERO courses,
+    and --check reported the committed record STALE and told you to re-run the generator. Obeying it
+    replaced 12 documented books with an empty table: 139 lines and 12 rows down to 51 and 0.
+
+    tools/gen_disclaimers.py already routes its own guard through the same filtered helper its body
+    uses. This is that, for the file whose whole purpose is to be the provenance record."""
+    import shutil
+    import tempfile
+    gp = _gen_provenance()
+    tmp = tempfile.mkdtemp(prefix="greenbook-scratchguard-")
+    try:
+        os.makedirs(os.path.join(tmp, "courses", "_synth_leftover"))
+        os.makedirs(os.path.join(tmp, "legal"))
+        with open(os.path.join(tmp, "courses", "_synth_leftover", "course.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"slug": "_synth_leftover", "name": "Leftover", "holes": {}}, f)
+        out = os.path.join(tmp, "legal", "03_PROVENANCE_BY_COURSE.md")
+        shutil.copyfile(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md"), out)
+        before = open(out, encoding="utf-8").read()
+        real_root, real_out, real_argv = gp.ROOT, gp.OUT, sys.argv
+        gp.ROOT, gp.OUT = tmp, out
+        try:
+            sys.argv = ["gen_provenance.py", "--check"]
+            rc_check = gp.main()
+            sys.argv = ["gen_provenance.py"]
+            rc_write = gp.main()
+        finally:
+            gp.ROOT, gp.OUT, sys.argv = real_root, real_out, real_argv
+        after = open(out, encoding="utf-8").read()
+        n_rows = len([l for l in after.splitlines()
+                      if l.startswith("| ") and not l.startswith("| Course |")
+                      and not l.startswith("|--")])
+        assert rc_check == 2, (
+            f"--check returned {rc_check} with only a scratch directory present. 1 is STALE, and its "
+            f"printed remedy blanks the record; 'nothing to check against' is the truth here")
+        assert rc_write == 2, (
+            f"a plain run returned {rc_write}: it regenerated the record from zero courses")
+        assert after == before, (
+            f"legal/03 was rewritten from a scratch directory: {len(before.splitlines())} lines and "
+            f"12 rows became {len(after.splitlines())} lines and {n_rows} rows")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 @needs_corpus
