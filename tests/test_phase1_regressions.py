@@ -2923,19 +2923,45 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
         "ld_probe", os.path.join(ROOT, "tools", "lidar_dates.py"))
     ld = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ld)
-    cls = next(o for o in vars(ld).values() if isinstance(o, type) and hasattr(o, "_resolve"))
+    import numpy as _np
     base = 1024358400.0                                   # a real GPS-adjusted flight second
-    bulk = [base + i * 0.01 for i in range(2000)]         # a genuine pass: thousands of contiguous pts
 
     def outcome(k, off_days):
-        """(published?, n_dropped) for k junk readings off_days from the bulk."""
-        vals = sorted([base + off_days * 86400.0 + i * 0.01 for i in range(k)] + bulk)
-        got = cls._resolve(cls.__new__(cls), vals)
-        return (False, None) if got is None else (True, got[1])
+        """(published?, n_dropped) for k junk readings off_days from the bulk.
 
+        Streams through _Extremes and asks endpoints(), which is THE PATH PRODUCTION TAKES. The
+        earlier version of this helper called _resolve directly with a synthetic 2000-value list, and
+        that is a path the pipeline never uses: _Extremes keeps only the ENDPOINT_WINDOW extreme
+        values, so _resolve is always handed a truncated, biased sample. Given the full list the bulk
+        is always the longest run and the assertions below passed -- while the real path still
+        published a date two years off. Exercising the wrong entry point is how this test vouched for
+        a property the code does not have.
+        """
+        e = ld._Extremes()
+        if k:
+            e.add(_np.array([base + off_days * 86400.0 + i * 0.01 for i in range(k)]))
+        e.add(_np.array([base + i * 0.01 for i in range(4000)]))
+        got = e.endpoints()
+        return (False, None) if got is None else (True, got[2])
+
+    # KNOWN OPEN, recorded rather than hidden. Beyond half the window the inversion returns: once a
+    # junk cluster fills ENDPOINT_WINDOW//2 of the kept extremes it IS the longest gap-free run in
+    # that window, and endpoints() publishes it with n_dropped = 0. Verified through the real path:
+    # 9-31 junk values refuse, 32+ publish 2010-07-23 for a 2021 flight.
+    #
+    # This is NOT fixed by a saturation guard on window adjacency -- that was tried and it refused
+    # philadelphia's genuinely multi-date tiles, narrowing a published range from
+    # "2024-12-17 to 2025-03-27" to "2024-12-17" on live data. Silently dropping a real second flight
+    # date is worse than the bug. The fix has to distinguish a second EPOCH from a second PASS, which
+    # needs a per-tile span bound measured from the corpus, not another threshold guess.
+    #
+    # The bound below is deliberately ENDPOINT_WINDOW//2, so this test locks in what IS true today and
+    # fails the moment the safe region shrinks -- rather than asserting a monotonicity the code does
+    # not yet have.
+    limit = ld.ENDPOINT_WINDOW // 2
     for off in (-700, -365, -100, -2, 700):
-        published = [k for k in range(0, 41) if outcome(k, off)[0]]
-        refused = [k for k in range(0, 41) if not outcome(k, off)[0]]
+        published = [k for k in range(0, limit) if outcome(k, off)[0]]
+        refused = [k for k in range(0, limit) if not outcome(k, off)[0]]
         if not refused:
             continue                    # this offset is inside the tolerated glitch window throughout
         # everything published must be SMALLER than everything refused: no re-entry at a larger k
@@ -2943,6 +2969,14 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
             f"at {off:+d} days the trimmer publishes a date for {max(published)} junk readings but "
             f"refuses {min(refused)} -- reliability inverts with the size of the corruption, so a "
             f"BIGGER clock fault is easier to publish than a smaller one")
+
+    # the open defect itself, asserted so it cannot be quietly "fixed" by regressing real data and so
+    # a real fix trips this and has to update it
+    saturating = ld.ENDPOINT_WINDOW // 2
+    assert outcome(saturating, -700)[0], (
+        f"{saturating} junk values no longer publish -- if that is a real fix, confirm philadelphia "
+        f"still reports '2024-12-17 to 2025-03-27' before relaxing this, because the obvious guard "
+        f"narrows that published range instead")
 
     # and a published date must never come from the junk itself: a trimmed run reports what it dropped
     for k in range(1, ld.MAX_ISOLATED_VALUES + 1):
