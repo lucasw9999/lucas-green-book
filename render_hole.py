@@ -238,6 +238,36 @@ def dist_pt_seg(px,py,ax,ay,bx,by):
     t=max(0,min(1,((px-ax)*dx+(py-ay)*dy)/L2))
     return math.hypot(px-(ax+t*dx), py-(ay+t*dy))
 
+
+def segs_cross(ax, ay, bx, by, cx, cy, dx, dy):
+    """True when segments AB and CD properly cross -- each strictly straddles the other's line."""
+    def side(ox, oy, px, py, qx, qy):
+        return (px-ox)*(qy-oy) - (py-oy)*(qx-ox)
+    d1 = side(cx, cy, dx, dy, ax, ay)
+    d2 = side(cx, cy, dx, dy, bx, by)
+    d3 = side(ax, ay, bx, by, cx, cy)
+    d4 = side(ax, ay, bx, by, dx, dy)
+    return (d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0)
+
+
+def dist_seg_seg(ax, ay, bx, by, cx, cy, dx, dy):
+    """Metres between segment AB and segment CD -- 0 when they cross.
+
+    Where they do not cross the minimum is always attained at an endpoint of one of them, so the
+    four point-to-segment distances cover every such case. The CROSSING case is the one they do
+    not cover and the one that matters here: a stream can cut a centerline a long way from every
+    endpoint, so all four of those distances are large while the true distance is zero.
+
+    At module scope so it can be checked against hand-computed geometry rather than through a whole
+    rendered card.
+    """
+    if segs_cross(ax, ay, bx, by, cx, cy, dx, dy):
+        return 0.0
+    return min(dist_pt_seg(ax, ay, cx, cy, dx, dy),
+               dist_pt_seg(bx, by, cx, cy, dx, dy),
+               dist_pt_seg(cx, cy, ax, ay, bx, by),
+               dist_pt_seg(dx, dy, ax, ay, bx, by))
+
 def render_hole(hnum, HOLES, font_scale=1.0):
     course, geom = load()
     greens=[e for e in geom if e.get('tags',{}).get('golf')=='green' and e.get('geometry')]
@@ -276,20 +306,28 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and in_corridor(g,40)]
     waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water') and g.get('geometry') and frac_in(g,45)>=0.35]
-    def _near_played_line(pe, pn, buf):
-        """(within buf, and the nearest point is on the PLAYED line rather than off either end).
+    def _seg_near_played_line(pe, pn, qe, qn, buf):
+        """True when some point of the SEGMENT p->q comes within buf of the PLAYED line.
 
-        dist_to_line is a capsule: it clamps each segment's projection to [0, 1], so the corridor
-        includes a buf-radius half-disc BEHIND the tee and PAST the green. Water sitting in those caps
-        is not on the hole at all. Nine counted watercourses were reachable only through them, and two
-        cards went 0W -> 1W on a river whose nearest approach is 40.5 m away and 39.6 m behind the tee
-        (castlewood-valley 7) and 43.6 m away at the green (castlewood-valley 2).
+        The whole segment, not its endpoints. Testing endpoints only made the answer depend on how
+        finely a mapper happened to node the way rather than on where the water is: monarch-bay way
+        1135575847 is a 4-node stream whose longest segment is 1396.9 m, and it CROSSES the playing
+        lines of holes 12 and 18 (nearest point 0.01 m and 0.10 m) while its nearest vertex is
+        273.1 m and 93.5 m away. Both cards printed no water. Re-noding the identical shape to 72
+        points made both report it. So distance is measured point-to-SEGMENT.
 
-        So also require the nearest point to project INSIDE the polyline -- t strictly within (0, 1) on
-        some segment, or anywhere on an interior segment. A feature that only rounds the tee or the green
-        is then excluded, which is what the reader means by water on this hole.
+        PLAYED, not the whole capsule. dist_to_line clamps each segment's projection to [0, 1], so
+        the corridor includes a buf-radius half-disc BEHIND the tee and PAST the green. Water sitting
+        in those caps is not on the hole at all. Nine counted watercourses were reachable only through
+        them, and two cards went 0W -> 1W on a river whose nearest approach is 40.5 m away and 39.6 m
+        behind the tee (castlewood-valley 7) and 43.6 m away at the green (castlewood-valley 2).
+
+        That exclusion survives the change to a segment test because the stretch of p->q projecting
+        before the first vertex, or past the last, is CLIPPED OFF this segment before any distance is
+        measured -- rather than the segment being judged as a whole by where its nearest point lands.
+        Where p projects onto a centerline segment is affine in the position along p->q, so the
+        admissible stretch is a sub-interval of it and the clip is exact.
         """
-        best, interior = buf, False
         n = len(line_em) - 1
         for i in range(n):
             ax, ay = line_em[i]; bx, by = line_em[i+1]
@@ -297,18 +335,32 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             L2 = dx*dx + dy*dy
             if L2 < 1e-9:
                 continue
-            t = ((pe-ax)*dx + (pn-ay)*dy) / L2
-            tc = max(0.0, min(1.0, t))
-            d = math.hypot(pe-(ax+tc*dx), pn-(ay+tc*dy))
-            if d >= buf:
-                continue
-            # off the tee end only if this is the first segment and the projection fell before it;
-            # off the green end only if this is the last and it fell past it
-            off_end = (i == 0 and t <= 0.0) or (i == n-1 and t >= 1.0)
-            if not off_end:
-                interior = True
-            best = min(best, d)
-        return best < buf, interior
+            t0 = ((pe-ax)*dx + (pn-ay)*dy) / L2       # t at p
+            te = ((qe-pe)*dx + (qn-pn)*dy) / L2       # dt per unit of u along p->q
+            u0, u1 = 0.0, 1.0
+            if i == 0:                                # drop what projects BEHIND the tee (t < 0)
+                if abs(te) < 1e-12:
+                    if t0 < 0.0:
+                        continue
+                elif te > 0:
+                    u0 = max(u0, -t0/te)
+                else:
+                    u1 = min(u1, -t0/te)
+            if i == n-1:                              # drop what projects PAST the green (t > 1)
+                if abs(te) < 1e-12:
+                    if t0 > 1.0:
+                        continue
+                elif te > 0:
+                    u1 = min(u1, (1.0-t0)/te)
+                else:
+                    u0 = max(u0, (1.0-t0)/te)
+            if u0 > u1:
+                continue                              # only an end cap of the line sees this segment
+            if dist_seg_seg(pe+(qe-pe)*u0, pn+(qn-pn)*u0,
+                            pe+(qe-pe)*u1, pn+(qn-pn)*u1,
+                            ax, ay, bx, by) < buf:
+                return True
+        return False
 
     def any_within(g, buf):
         """True when part of the feature comes within buf of the PLAYED length of this centerline.
@@ -319,11 +371,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         excluded. That hid 49 open watercourses on 31 holes, one of them passing 0.7 m from the
         centreline. Meanwhile the same centroid test INCLUDED features whose midpoint happens to sit
         near the line while no part of them is visible from it.
+
+        "Part of the feature" means any point of it, so the walk is over its SEGMENTS -- see
+        _seg_near_played_line for the node-density defect that iterating its vertices caused.
         """
-        pts = g.get('geometry') or []
-        for p in pts:
-            near, interior = _near_played_line(*em(p['lat'], p['lon']), buf)
-            if near and interior:
+        pts = [em(p['lat'], p['lon']) for p in (g.get('geometry') or [])]
+        if len(pts) == 1:                             # a lone node: the degenerate segment p->p
+            return _seg_near_played_line(pts[0][0], pts[0][1], pts[0][0], pts[0][1], buf)
+        for (ae, an), (be, bn) in zip(pts, pts[1:]):
+            if _seg_near_played_line(ae, an, be, bn, buf):
                 return True
         return False
 
@@ -370,7 +426,27 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # Physically CONSISTENT label sizes on every hole: each hole's viewBox is scaled by
     # `fit` (inches per view-unit) to fill the map column, so we size fonts inversely to
     # `fit` -> the printed text is the same size on every hole regardless of its scale.
-    LAY_W_IN=(config.CARD_W_IN-2*0.07)*(1.6/4.0)      # map column width (see .lay flex)
+    #
+    # `fit` therefore has to be the meet-fit of the panel THIS render is printed into, and the two
+    # editions do not share one. The pocket card gives the map a 1.6/4.0 column beside the green
+    # (generate.py `.lay`); the ENLARGED card gives it the WHOLE card width (`.cmap`), at about the
+    # same height (4.16 in against 4.18). Computed from the pocket column at BOTH scales, `fit`
+    # understated the enlarged card's real scale, which inflated FSN in view units: the enlarged type
+    # printed ~2.37x the pocket book's rather than the 2x it promises, and the row-collision guard
+    # below -- correctly refusing to overprint that oversized type on an unchanged ladder -- then
+    # dropped 12 yardage rows the pocket book prints. Nine 150-yard rows, with three 250-yard rows
+    # knocked out behind them, across 9 holes of 4 courses: philadelphia 17 went [100,150,200,250,300]
+    # to [100,200,250,300]. That is the same wrong trade already fixed on the HORIZONTAL axis below --
+    # the enlarged edition losing data the small one prints -- and it wants the same answer: give the
+    # type the room the paper actually has instead of dropping what will not fit in room it does not.
+    #
+    # Scaled by font_scale rather than switched on an edition flag, and capped at the full card. At
+    # font_scale 1 it is bit-identical to before, so the pocket book is untouched; at font_scale 2 it
+    # claims 2x a column the enlarged card in fact widens by 2.49x, so the claim is conservative and
+    # errs toward a STRICTER row guard, never a looser one. The HEIGHT takes no factor because the
+    # enlarged card's map is no taller than the pocket card's -- it is wider, and only wider.
+    LAY_COL=min(1.0, (1.6/4.0)*font_scale)            # share of the card width the map is printed at
+    LAY_W_IN=(config.CARD_W_IN-2*0.07)*LAY_COL        # map column width (see .lay / .cmap)
     LAY_H_IN=config.CARD_H_IN-2*0.07-0.50-0.18        # minus header + foot
     fit=min(LAY_W_IN/CONTENT_W, LAY_H_IN/VBH)         # in per view-unit after meet-fit
     FS=round(0.100/fit*font_scale,1)        # GRN / BLA  (~7.2 pt printed, consistent; scaled up for enlarged editions)

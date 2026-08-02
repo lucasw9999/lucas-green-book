@@ -11465,3 +11465,120 @@ def test_the_published_surface_noise_floor_is_the_one_the_tool_measures():
         f"render_green publishes RMS {rms} cm / p95 {p95} cm; the measurement it cites records "
         f"{tbl['RMS difference']} / {tbl['95th percentile']}. The engine is printing a repeatability "
         f"figure the survey comparison does not support.")
+
+
+@needs_corpus
+def test_water_on_the_card_depends_on_where_the_water_is_not_how_it_was_noded():
+    """A stream that CROSSES the played line must be counted, however few nodes OSM gave it.
+
+    any_within tested only the feature's own VERTICES against the corridor (`for p in pts`), so a
+    long straight reach with a node at each end and none in between was judged by where its
+    ENDPOINTS happen to sit -- not by where the water is. OSM nodes a way wherever a mapper felt
+    like it, so the card's answer depended on an editing accident.
+
+    Found on monarch-bay way 1135575847 (`waterway=stream`, 4 nodes, longest segment 1396.9 m).
+    Holes 12 and 18 printed no water at all: the nearest way VERTEX is 273.1 m (h12) and 93.5 m
+    (h18) away, both outside the 45 m corridor, while the nearest point ON the way is 0.01 m and
+    0.10 m -- the stream runs across both playing lines. Re-noding that identical shape from 4
+    points to 72 made both holes report 1 water / 1 watercourse and draw a blue line. Same water,
+    same geometry, different answer: shipped cards under-reported water a junior can reach.
+
+    So the corridor test measures point-to-SEGMENT distance. The end-cap exclusion it has to keep
+    (water behind the tee or past the green is not on the hole) is checked here too, because the
+    fix must not buy density-independence by widening the corridor past the tee.
+    """
+    slug = "monarch-bay-golf-club"
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} is not built on this machine")
+    cfg, rh = _engine(slug)
+
+    course, _geom = rh.load()
+    way = [e for e in course if e.get("id") == 1135575847]
+    assert way, ("monarch-bay way 1135575847 is gone from osm_course.json -- the data was re-fetched, "
+                 "so re-derive this pin before editing it")
+    way = way[0]
+    assert (way.get("tags") or {}).get("waterway") == "stream", way.get("tags")
+    assert len(way["geometry"]) == 4, (
+        f"way 1135575847 now has {len(way['geometry'])} nodes, not the 4 this test was written "
+        f"around. The point of the test is that the count must not depend on that number.")
+
+    for hn in (12, 18):
+        svg, info = rh.render_hole(hn, cfg.HOLES)
+        assert info["watercourses"] >= 1, (
+            f"{slug} hole {hn} reports {info['watercourses']} watercourse(s). Way 1135575847 crosses "
+            f"this playing line (nearest point 0.1 m or less), and is only missed because its four "
+            f"vertices all sit far away.")
+        assert info["waters"] >= 1, f"{slug} hole {hn} footer says {info['waters']}W over a crossed stream"
+        assert 'stroke="#5b9bd0" stroke-width="1.8"' in svg, (
+            f"{slug} hole {hn} counts a watercourse but draws no blue line for it")
+
+    # The corridor must still refuse water that only rounds an END of the played line, which is what
+    # a point-to-segment test could quietly undo. Measured on the geometry helper the fix rests on.
+    d = rh.dist_seg_seg
+    # a segment lying 10 m BEYOND the tee end of a 100 m line along x: nearest approach to the
+    # SEGMENT is 10 m, so a naive capsule accepts it and the played-line test must not.
+    assert abs(d(-30.0, 0.0, -10.0, 0.0, 0.0, 0.0, 100.0, 0.0) - 10.0) < 1e-6
+    # crossing is the case four endpoint distances cannot see
+    assert d(50.0, -500.0, 50.0, 500.0, 0.0, 0.0, 100.0, 0.0) == 0.0
+    assert abs(d(50.0, 20.0, 50.0, 500.0, 0.0, 0.0, 100.0, 0.0) - 20.0) < 1e-6
+    # degenerate feature segment (a single node) still measures point-to-segment
+    assert abs(d(50.0, 7.0, 50.0, 7.0, 0.0, 0.0, 100.0, 0.0) - 7.0) < 1e-6
+
+
+@needs_corpus
+def test_the_enlarged_edition_never_drops_a_whole_yardage_row_the_pocket_book_prints():
+    """The big-print book may not print FEWER yardage rows than the small one.
+
+    A sibling test already forbids dropping HALF a row (the from-tee number while the to-green one
+    stays). This is the other half of the same wrong trade: the whole row vanishing. A junior's coach
+    reading the enlarged card is told less about the hole than the junior is, and nothing on the page
+    shows a row is missing.
+
+    Cause: the view-unit geometry a row sits at is driven by `s`/`contentH`/`VBH`/`fit`, none of which
+    carried font_scale, while FSN did -- so at the coach scale the collision guard `Y0-lastY < FSN*1.35`
+    measured a doubled type against an unchanged ladder. It was doubled because `fit` was computed from
+    the POCKET card's 1.6/4.0 map column at both scales, while the enlarged card gives the map the whole
+    card width: the real printed scale was understated, so the enlarged type printed ~2.37x the pocket's
+    rather than the 2x it promises, and the guard then had to drop rows.
+
+    Realised in shipped artifacts: 12 rows across 9 holes of 4 courses -- nine 150-yard rows and three
+    250-yard ones knocked out behind them (philadelphia 17, valley-hi 2/16/17, copper-valley 1/9/11/12,
+    micke-grove 11). philadelphia 17 went [100,150,200,250,300] -> [100,200,250,300].
+
+    Both halves are asserted, because the cheap way to pass the first is to loosen the guard and let the
+    rows overlap: every row the pocket book prints must also print at coach scale, AND adjacent printed
+    row centres at coach scale must still be at least the guard's own distance apart.
+    """
+    lost, collide, holes, rows, errors = [], [], 0, 0, []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        for hn in cfg.HOLE_NUMS:
+            seen = {}
+            try:
+                for fs in (1.0, 2.0):
+                    svg, _i = rh.render_hole(hn, cfg.HOLES, font_scale=fs)
+                    # LEFT gutter only: that is the to-green number, one per printed row
+                    seen[fs] = [(float(y), float(f), int(n)) for y, f, n in re.findall(
+                        r'<text x="9" y="([\d.]+)" font-size="([\d.]+)"[^>]*>(\d+)</text>', svg)]
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:120]))
+                continue
+            holes += 1
+            small = {n for _y, _f, n in seen[1.0]}
+            big = {n for _y, _f, n in seen[2.0]}
+            rows += len(small)
+            for n in sorted(small - big):
+                lost.append((slug, hn, n, sorted(small), sorted(big)))
+            # row CENTRES, recovered from the baseline the same way render_hole placed it (Y0+FSN*0.35)
+            ctr = sorted(y - f * 0.35 for y, f, _n in seen[2.0])
+            fsn = seen[2.0][0][1] if seen[2.0] else 0.0
+            for a, b in zip(ctr, ctr[1:]):
+                if b - a < fsn * 1.35 - 1e-6:
+                    collide.append((slug, hn, round(b - a, 2), round(fsn * 1.35, 2)))
+    _assert_examined(holes, rows, errors, "enlarged-row sweep", per_hole=MIN_PAIRS_PER_HOLE)
+    assert not lost, (
+        f"{len(lost)} yardage row(s) print in the pocket book and not in the enlarged one: "
+        f"{lost[:6]}{' ...' if len(lost) > 6 else ''}")
+    assert not collide, (
+        f"{len(collide)} adjacent row pair(s) at coach scale sit closer than the guard's own "
+        f"FSN*1.35 -- the rows were bought by letting them overlap: {collide[:6]}")
