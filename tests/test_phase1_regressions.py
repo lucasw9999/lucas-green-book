@@ -10482,3 +10482,312 @@ def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
         f"only {with_origin} holes print a carry with a corroborated origin; the corpus has 90. A rule "
         f"that silenced the footer broadly would satisfy the check above, so this floor is the other "
         f"half of it.")
+
+
+def _cff_zscale(slug):
+    """The vertical scale fetch_dem_hd would use for one course, bound cleanly.
+
+    The pop list is the CORRECT one -- config, geo, render_green AND fetch_dem_hd -- because the test
+    below is about what happens when a caller forgets the last of those. It must not itself inherit a
+    stale binding while measuring one.
+    """
+    for m in ("config", "geo", "render_green", "fetch_dem_hd"):
+        sys.modules.pop(m, None)
+    os.environ["COURSE"] = slug
+    try:
+        import fetch_dem_hd
+        return fetch_dem_hd.laz_to_utm()[1]
+    except SystemExit:
+        return None            # no LAZ tile and no lidar_crs: this course has no scale to compare
+
+
+@pytest.mark.slow          # grids one real course's greens from their own point clouds
+@needs_corpus
+def test_cross_flight_check_measures_each_course_with_its_own_vertical_scale(capsys):
+    """`--all` measured every course after the first with the FIRST course's foot/metre scale.
+
+    check() rebinds a course by popping ("config", "geo", "render_green") from sys.modules and
+    re-importing config -- then does `from fetch_dem_hd import laz_to_utm`, and fetch_dem_hd is NOT in
+    that list. Its module globals (`import config`, `DIR = config.COURSE_DIR`) therefore keep pointing at
+    whichever course was bound FIRST, so laz_to_utm() reads that course's `lidar_crs`, or globs that
+    course's LAZ tiles for a CRS, and hands back ITS vertical scale for every later course.
+
+    The corpus makes this maximal: five of its point clouds are US-survey-foot State Plane (scale 0.3048)
+    and six are metric (1.0). `--all` starts at callippe (ftUS), so philadelphia -- metric, and the
+    strongest single case in legal/09 because its two passes are 100 days apart -- was gridded at 0.3048
+    and every tilt came out 3.28x too small: 0.58 / 0.95 / 1.49 / 1.37 / 0.32 % against the
+    1.91 / 3.12 / 4.88 / 4.49 / 1.05 % its own cards print, with two of the five clear/faint marks
+    (holes 1 and 2) flipped to `faint` and two round-either-side-of-a-printed-digit pairs reported as
+    agreeing exactly. legal/09's Philadelphia table was published from that run.
+
+    Both passes were scaled wrong by the same factor, so "the surveys agree" survived -- the same shape
+    of fault as the north/south grid flip already fixed in this file, and the same reason it went unseen
+    for so long. What did not survive is the claim the document actually makes: that these are the
+    numbers the cards print. The project already knew the pop was needed;
+    test_the_cross_flight_grid_matches_the_surface_it_checks pops fetch_dem_hd itself.
+
+    Asserted against the SHIPPED surface rather than against a second call of the tool: each pass's tilt
+    has to land on the tilt of the .npy the card is drawn from. A wrong vertical scale cannot satisfy
+    that, and neither can a comment.
+    """
+    import numpy as np
+    pytest.importorskip("laspy")
+    pytest.importorskip("scipy")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    prev = os.environ.get("COURSE")
+    try:
+        # Smallest point cloud first: this test grids real LAZ, so it should grid as little as it can
+        # while still exercising the real path.
+        cands = []
+        for slug in CORPUS:
+            with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
+                j = json.load(fh)
+            dates = {d for pair in (j.get("lidar_flown") or {}).get("tiles", {}).values() for d in pair}
+            laz = glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz"))
+            if len(dates) >= 2 and laz:
+                cands.append((sum(os.path.getsize(p) for p in laz), slug))
+        target = primer = want_z = None
+        for _size, slug in sorted(cands):
+            z = _cff_zscale(slug)
+            if z is None:
+                continue
+            other = next((s for s in CORPUS
+                          if s != slug and _cff_zscale(s) not in (None, z)), None)
+            if other:
+                target, primer, want_z = slug, other, z
+                break
+        if target is None:
+            pytest.skip("needs one multi-date course plus another whose vertical scale differs")
+
+        # the oracle: the tilt of the surface each card is actually drawn from
+        for m in ("config", "geo", "render_green", "fetch_dem_hd"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = target
+        import cross_flight_check as cff
+        import render_green as rg
+        cdir = os.path.join(ROOT, "courses", target)
+        shipped = {}
+        for p in sorted(glob.glob(os.path.join(cdir, "dem_hd", "hole*.json"))):
+            with open(p, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            if meta.get("insufficient"):
+                continue
+            meta["_dir"] = cdir
+            _W, _H, px_x, px_y, mask = cff._grid(meta)
+            arr = np.load(p[:-5] + ".npy").astype(float)
+            if not mask.any() or np.isnan(arr[mask]).all():
+                continue
+            arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)
+            _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
+            shipped[int(meta["hole"])] = float(S["tilt_pct"])
+        assert shipped, f"no shipped green surface to compare against on {target}"
+
+        # PRIME fetch_dem_hd with the other course, which is exactly what `--all` does to every slug
+        # after the first, then ask the tool for the target course.
+        for m in ("config", "geo", "render_green", "fetch_dem_hd"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = primer
+        import fetch_dem_hd
+        assert fetch_dem_hd.laz_to_utm()[1] != want_z, (
+            f"{primer} and {target} turn out to share a vertical scale, so this test cannot tell the "
+            f"stale binding from the right one")
+        capsys.readouterr()
+        n, _bad, _skipped, _flips, _surfd = cff.check(target)
+        printed = capsys.readouterr().out
+    finally:
+        _restore_course(prev)
+
+    rows = re.findall(r"hole\s+(\d+)\s+[\d-]+\s+([\d.]+)%.*?vs\s+[\d-]+\s+([\d.]+)%", printed)
+    assert rows and n == len(rows), (
+        f"the tool compared {n} green(s) on {target} and printed {len(rows)} row(s); this test needs at "
+        f"least one comparison to measure:\n{printed}")
+    wrong = []
+    for h, a, b in rows:
+        want = shipped.get(int(h))
+        if want is None:
+            continue
+        for got in (float(a), float(b)):
+            if abs(got - want) > 0.30:
+                wrong.append(f"hole {h}: pass reads {got:.2f}% but the shipped surface -- the one the "
+                             f"card is drawn from -- is {want:.2f}% (ratio {got/max(want, 1e-9):.3f})")
+    assert not wrong, (
+        f"tools/cross_flight_check.py measured {target} with {primer}'s vertical scale: it did not pop "
+        f"fetch_dem_hd from sys.modules, so that module's `config`/`DIR` still point at the first course "
+        f"bound in the process. Under `--all` every course after the first is measured this way, and a "
+        f"ratio near 0.305 or 3.28 is a foot/metre scale carried over:\n  " + "\n  ".join(wrong))
+    assert len(shipped) >= 5, (
+        f"only {len(shipped)} green surface(s) on {target} to check against -- too few to trust")
+
+
+@needs_corpus
+def test_the_cover_gate_is_measured_on_the_green_the_mask_describes():
+    """The >=50% coverage gate was evaluated against a vertically MIRRORED green.
+
+    `_cover` decides whether a pass saw enough of a green for its numbers to be allowed to accuse the
+    other pass's -- MIN_COVER, the rule legal/09 states as "a pass is only compared when it
+    independently put a ground return in >=50% of that green's interior cells". The mask it indexes comes
+    from `render_green.poly_to_px`, which is north-up: `(ymax-lat)/(ymax-ymin)*H`, so row 0 is the NORTH
+    edge. `_cover` computed its row as `(lat-y0)/(y1-y0)*H` with y0 = ymin, i.e. row 0 at the SOUTH, and
+    then indexed the north-up mask with it. Every pass was therefore scored against the green flipped
+    top-to-bottom.
+
+    THIS IS THE SAME FAULT, IN THE SAME FILE, THAT WAS ALREADY FOUND AND FIXED IN `_summary` -- whose
+    comment now spells out that row 0 is the north edge. The fix was never carried across to `_cover`,
+    and no test named `_cover` or MIN_COVER at all.
+
+    The consequence is not a wrong printed number but a wrong DECISION about evidence, in both
+    directions: a pass that genuinely covered the green can be scored low and dropped, so the green loses
+    its only cross-check and legal/09's excluded-pair count is wrong; and a pass that only clipped the
+    edge can be scored high and admitted, so a plane fitted to a sliver is allowed to contradict a good
+    one -- the exact failure MIN_COVER was written to prevent (castlewood-valley 12, quoted in the
+    tool).
+
+    Synthetic and decisive, because the flip is only visible on a green that is NOT symmetric about the
+    bbox centre line: the polygon lies wholly in the NORTHERN half of its bbox, so points spread over the
+    north half cover all of it and points over the south half cover none. A south-up row index swaps
+    those two answers outright, and both cross MIN_COVER.
+    """
+    import numpy as np
+    pytest.importorskip("scipy")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    prev = os.environ.get("COURSE")
+    try:
+        for m in ("config", "geo", "render_green", "fetch_dem_hd"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = CORPUS[0]
+        import cross_flight_check as cff
+
+        x0, y0, x1, y1 = -121.500, 37.700, -121.498, 37.702
+        # a square green in the NORTH half only -- rows 5..15 of a 40-row grid, clear of both halves'
+        # boundary so no rounding decides the answer
+        ring = [(37.70125, -121.4995), (37.70125, -121.4985),
+                (37.70175, -121.4985), (37.70175, -121.4995)]
+        meta = {"hole": 1, "W": 40, "H": 40, "bbox": [x0, y0, x1, y1], "polygon": ring}
+        mask = cff._grid(meta)[4]
+        assert mask.any(), "the synthetic green produced an empty mask"
+        assert not mask[meta["H"] // 2:, :].any(), (
+            "the synthetic green is not confined to the northern half of its bbox under the renderer's "
+            "own north-up convention, so this test cannot see a vertical flip")
+
+        def cover(lat_lo, lat_hi):
+            lons = np.linspace(x0 + 1e-5, x1 - 1e-5, 160)
+            lats = np.linspace(lat_lo, lat_hi, 160)
+            gl, ga = np.meshgrid(lons, lats)
+            return cff._cover(meta, mask, gl.ravel(), ga.ravel())
+
+        north = cover(37.7011, 37.7019)      # covers the whole green
+        south = cover(37.7001, 37.7009)      # touches none of it
+    finally:
+        _restore_course(prev)
+
+    assert north >= cff.MIN_COVER, (
+        f"a pass whose ground returns blanket the WHOLE green scores {north*100:.1f}% cover, under the "
+        f"{cff.MIN_COVER*100:.0f}% gate, so it is thrown out and that green loses its cross-check. "
+        f"`_cover` puts row 0 at the SOUTH ((lat-ymin)/...) while the mask it indexes is north-up "
+        f"(render_green.poly_to_px: (ymax-lat)/...), so it scored the green upside down.")
+    assert south < cff.MIN_COVER, (
+        f"a pass that put no ground return inside the green at all scores {south*100:.1f}% cover and "
+        f"passes the {cff.MIN_COVER*100:.0f}% gate -- so a plane fitted to nothing is admitted as "
+        f"evidence against a good pass, which is what MIN_COVER exists to stop. `_cover`'s row index is "
+        f"upside down relative to the mask.")
+    assert north > 0.9 and south == 0.0, (
+        f"cover reads {north*100:.1f}% over the green and {south*100:.1f}% off it; both sides of the "
+        f"gate are right but the fractions are not what the geometry says")
+
+
+@needs_corpus
+def test_the_cross_flight_run_cannot_report_a_clean_corpus_it_never_opened(tmp_path):
+    """`cross_flight_check.py --all` printed corpus-wide agreement, and exited 0, from any other cwd.
+
+    `distribution.course_slugs()` defaulted its root to `"."`, making it the only course enumerator in
+    the repo that resolves courses/ against the CWD instead of its own file -- config.py,
+    tools/gen_provenance.py, tools/verify_elevation.py, tools/check_osm_bbox.py, tools/gen_disclaimers.py
+    and tools/export_pdf.py all derive it from `__file__`. cross_flight_check.py even computes its own
+    `__file__` root for sys.path, then asks for slugs with the cwd default.
+
+    So `cd /tmp && python3 <repo>/tools/cross_flight_check.py --all` enumerated ZERO courses, examined
+    nothing, printed "0 green(s) had two passes that each covered them; 0 disagree" and returned 0 --
+    because main() ends `return 1 if refused else 0` and nothing had been refused. A run that looked at
+    no data was indistinguishable, in both its output and its exit status, from a run that checked the
+    whole corpus and found it consistent. legal/09 names this command as the reproducer for its
+    published figures, so that vacuous success is exactly the shape of evidence this tool's own
+    docstring says it must not be able to produce: "it must not be able to agree by failing".
+
+    Both halves are asserted: the enumerator must not depend on the cwd, and the tool must not answer
+    "clean" about zero greens.
+    """
+    import subprocess
+
+    import distribution
+    here = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        elsewhere = distribution.course_slugs()
+    finally:
+        os.chdir(here)
+    rooted = distribution.course_slugs(ROOT)
+    assert rooted, "no course slugs under courses/ even from the repo root -- nothing to measure"
+    assert elsewhere == rooted, (
+        f"distribution.course_slugs() found {len(elsewhere)} course(s) from another directory and "
+        f"{len(rooted)} from the repo root. It resolves courses/ against the CWD, so any caller run from "
+        f"elsewhere silently enumerates nothing; every other enumerator in this repo derives the root "
+        f"from __file__.")
+
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "cross_flight_check.py"), "--all"],
+                       cwd=str(tmp_path), capture_output=True, text=True, timeout=1800)
+    assert not (r.returncode == 0 and re.search(r"\b0 green\(s\) had two passes", r.stdout)), (
+        "tools/cross_flight_check.py --all reported a clean corpus-wide run over ZERO greens and exited "
+        "0. It examined nothing; legal/09 cites this command as the evidence for its figures.\n"
+        f"--- stdout ---\n{r.stdout[-1200:]}")
+
+
+def test_an_unrecognised_build_mode_is_not_publishable():
+    """distribution_status() promised to fail CLOSED and did not: one typo published the withheld book.
+
+    Its docstring says "Fails CLOSED, deliberately. This decides whether a book may be handed out, so
+    every uncertain input has to resolve to 'no'". Only two inputs were actually refused -- `None`, and a
+    value normalising to exactly "yardage". Everything else fell through to `(True, "Distributed", "")`.
+
+    So `"yardge"`, `"yardage mode"`, `"yardage_only"` and `"personal"` -- every one of them a plausible
+    hand-edit of the ONE field whose purpose is to say "no trustworthy post-construction elevation exists
+    here" -- each answered *publishable*. is_yardage() answers False for the same values, so generate.py
+    builds the full slope book with contours and arrows, generate.py's sharing line invites sharing, and
+    legal/03 records the course as Distributed. A misspelling of the field that withholds slope published
+    the slope.
+
+    examples/course.json documents a closed domain for it ("OPTIONAL, defaults 'full'. Set to 'yardage'
+    when ..."), and nothing in the repo validated the value. Existing coverage varied only the CASE and
+    WHITESPACE of the correct word, which is why review reached the normalisation and not the domain.
+
+    The fix is a refusal, not a docstring correction: an unrecognised build_mode is a typo in a field
+    that governs whether a number may be printed at all, and this project's governing rule is that
+    refusing is safer than guessing. "full" and an absent value stay distributable -- that default is
+    documented and 11 corpus courses rely on it -- so the closed domain is asserted from both sides.
+    """
+    for m in ("distribution",):
+        sys.modules.pop(m, None)
+    import distribution
+
+    # the documented domain: absent or "full" publishes, "yardage" is personal-use
+    for ok_mode in (None, "", "full", "Full", " FULL\n", "\tfull "):
+        course = {"slug": "x"} if ok_mode is None else {"slug": "x", "build_mode": ok_mode}
+        assert distribution.distribution_status(course) == (True, "Distributed", ""), (
+            f"build_mode={ok_mode!r} is the documented default and must stay distributable; 11 corpus "
+            f"courses record no build_mode at all")
+    for y in ("yardage", "Yardage", " yardage\n"):
+        assert distribution.is_distributable({"build_mode": y}) is False
+
+    # anything else is a typo in the field that decides whether slope may be printed
+    for bad in ("yardge", "yardage mode", "yardage_only", "yardages", "personal", "Personal",
+                "blank", "none", "full book", "0"):
+        course = {"slug": "z", "build_mode": bad}
+        ok, label, why = distribution.distribution_status(course)
+        assert ok is False, (
+            f"build_mode={bad!r} answered Distributed. It is not 'yardage', so is_yardage() is "
+            f"{distribution.is_yardage(course)} and the engine builds a FULL slope book off LiDAR, "
+            f"stamps it free to share and legal/03 records it as safe to hand out -- on a value nobody "
+            f"in this repo defines. distribution_status()'s own docstring says it fails closed.")
+        assert label == "Personal", f"build_mode={bad!r} got label {label!r}"
+        assert why and bad.strip().lower() in why.lower(), (
+            f"build_mode={bad!r} was refused with reason {why!r} -- a refusal has to name the value that "
+            f"caused it, or nobody can find the typo")

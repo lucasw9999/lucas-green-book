@@ -25,6 +25,11 @@ than slope that could be wrong -- and for Poppy Ridge the aerial also predates t
 
 
 YARDAGE = "yardage"
+FULL = "full"
+# The CLOSED domain of build_mode, and the reason distribution_status can refuse anything outside it.
+# examples/course.json documents exactly these two ("OPTIONAL, defaults 'full'. Set to 'yardage' when no
+# trustworthy post-construction elevation exists"); an absent or empty value means FULL.
+MODES = (FULL, YARDAGE)
 # A directory under courses/ whose name starts with this is SCRATCH, not a course: a synthetic fixture
 # a test authored, a cold-build staging copy, a hand-made probe. Never a real green book.
 SCRATCH_PREFIX = "_"
@@ -55,10 +60,25 @@ def is_corpus_slug(name):
     return bool(name) and not name.startswith(SCRATCH_PREFIX)
 
 
-def course_slugs(root="."):
-    """Every real course slug under root/courses, sorted. Scratch directories excluded."""
+def course_slugs(root=None):
+    """Every real course slug under root/courses, sorted. Scratch directories excluded.
+
+    root defaults to THIS FILE's directory -- the repo root -- never the cwd. It used to default to
+    ".", which made this the one enumerator in the repo that resolves courses/ against the cwd;
+    config.py, tools/gen_provenance.py, tools/verify_elevation.py, tools/check_osm_bbox.py,
+    tools/gen_disclaimers.py and tools/export_pdf.py all derive it from __file__.
+
+    That default had teeth. tools/cross_flight_check.py computes its own __file__ root for sys.path and
+    then asked here for slugs, so run from anywhere but the repo root `--all` enumerated ZERO courses,
+    examined nothing, printed "0 green(s) had two passes ... 0 disagree" and returned 0 -- a run that
+    looked at no data, indistinguishable in output and exit status from one that checked the whole corpus
+    and found it consistent. legal/09_GREEN_SURFACE_REPEATABILITY.md names that command as the reproducer
+    for its published figures, and that tool's own docstring says it must not be able to agree by failing.
+    """
     import glob
     import os
+    if root is None:
+        root = os.path.dirname(os.path.abspath(__file__))
     return sorted(s for s in (os.path.basename(os.path.dirname(p))
                               for p in glob.glob(os.path.join(root, "courses", "*", "course.json")))
                   if is_corpus_slug(s))
@@ -97,6 +117,20 @@ def distribution_status(course):
     * The mode is normalised before comparison. `"YARDAGE"` and `" yardage"` both answered
       "Distributed" too, so a stray capital or space in a hand-edited course.json -- and course.json
       IS hand-edited, it holds the scorecard transcription -- would have shipped a personal-use book.
+    * A build_mode OUTSIDE the documented domain is refused as well, and that was the hole the first two
+      bullets left open: normalising then testing one exact word means everything else falls through to
+      "Distributed". `"yardge"`, `"yardage mode"`, `"yardage_only"`, `"personal"` all answered
+      *publishable*, and because none of them equals "yardage", is_yardage() answered False too -- so
+      generate.py built the FULL slope book with contours and arrows, stamped it free to share, and
+      legal/03 recorded it as safe to hand out. A misspelling of the one field whose purpose is to say
+      "the elevation here is not trustworthy" published exactly what it was meant to withhold. Nothing in
+      the repo validated the value, and the field is hand-typed.
+
+    Refusing rather than guessing is the governing rule of this project, and it is the right way for this
+    particular uncertainty to fall: an unrecognised value is a typo, and the two things a typo could have
+    meant have opposite consequences for what gets printed. An absent or empty build_mode is NOT
+    uncertain -- "defaults 'full'" is documented and 11 corpus courses rely on it -- so it stays
+    distributable.
 
     The corpus uses only `None` (11 courses) and `"yardage"` (1), so nothing changes today; this is
     about which way the next typo falls.
@@ -109,6 +143,12 @@ def distribution_status(course):
         return (False, "Personal",
                 "built in yardage mode: no trustworthy post-construction elevation exists, so the "
                 "book prints blank greens and is personal-use only")
+    if mode and mode not in MODES:
+        return (False, "Personal",
+                f"unrecognised build_mode {mode!r}: the field that decides whether this book prints "
+                f"slope at all is neither {' nor '.join(MODES)}, so what was intended is unknown. "
+                f"Almost certainly a typo in a hand-edited course.json; fix the value rather than "
+                f"publishing on a guess")
     return (True, "Distributed", "")
 
 
