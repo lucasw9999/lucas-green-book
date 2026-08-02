@@ -436,20 +436,18 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # ways -1661718201..4); closing those would add a 5.9 km chord of open ground to the boundary
         # of a river and drown the real bank in the denominator.
         #
-        # WHAT THIS DOES NOT FIX, measured rather than guessed: a FRACTION is the wrong shape of rule
-        # for a water HAZARD, and correcting the measurement makes that visible instead of hiding it
-        # behind noding noise. A big pond mostly elsewhere is excluded however close it comes --
-        # valley-hi 2 now prints 0W over a pond 14.2 m from the played line (32.6% of its 330 m bank
-        # in the corridor), and copper-valley 18 already did that before this change, at 1.7 m and a
-        # margin of 0.001. Selecting area water the way creeks are selected -- any part in the
-        # corridor -- would take corpus area water from 87 to 114 and move 25 cards, so it is a
-        # separate, calibrated decision with its own visual review, not a rider on this one.
+        # WHAT THIS DOES NOT FIX BY ITSELF, measured rather than guessed: a FRACTION is the wrong
+        # shape of rule for a water HAZARD, and correcting the measurement makes that visible instead
+        # of hiding it behind noding noise. A big pond mostly elsewhere is excluded however close it
+        # comes -- valley-hi 2 printed 0W over a pond 15.8 m from the played line (32.6% of its 330 m
+        # bank in the corridor), and copper-valley 18 already did that before this change, at 1.7 m
+        # and a margin of 0.001. So the fraction is now only one half of an OR: see `waters`, which
+        # also admits area water that REACHES the played line at all, the way the watercourse path
+        # does. That reach half costs corpus area water 87 -> 102 on 13 cards.
         pts=[em(p['lat'],p['lon']) for p in (g.get('geometry') or [])]
         if not pts: return 0.0
         return frac_len_within(pts, line_em, buf)
     bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and in_corridor(g,40)]
-    waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
-             or g.get('tags',{}).get('natural')=='water') and g.get('geometry') and frac_in(g,45)>=0.35]
     def _seg_near_played_line(pe, pn, qe, qn, buf):
         """True when some point of the SEGMENT p->q comes within buf of the PLAYED line.
 
@@ -514,15 +512,18 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     def any_within(g, buf):
         """True when part of the feature comes within buf of the PLAYED length of this centerline.
 
-        The right test for a LINE, and the wrong one for an area -- which is why it is used only for
-        watercourses. in_corridor tests the CENTROID, and a creek is typically long and mostly
-        elsewhere: a stream that crosses this fairway has its centroid two holes away, so it was
-        excluded. That hid 49 open watercourses on 31 holes, one of them passing 0.7 m from the
-        centreline. Meanwhile the same centroid test INCLUDED features whose midpoint happens to sit
-        near the line while no part of them is visible from it.
+        The only test for a LINE, and one HALF of the test for area WATER. in_corridor tests the
+        CENTROID, and a creek is typically long and mostly elsewhere: a stream that crosses this
+        fairway has its centroid two holes away, so it was excluded. That hid 49 open watercourses on
+        31 holes, one of them passing 0.7 m from the centreline. Meanwhile the same centroid test
+        INCLUDED features whose midpoint happens to sit near the line while no part of them is
+        visible from it.
 
         "Part of the feature" means any point of it, so the walk is over its SEGMENTS -- see
-        _seg_near_played_line for the node-density defect that iterating its vertices caused.
+        _seg_near_played_line for the node-density defect that iterating its vertices caused. For an
+        area feature the walk is over the boundary EXACTLY as OSM gives it, with no closing edge
+        invented, which is the same geometry frac_in measures -- see frac_in on the four unclosed
+        Schuylkill fragments.
         """
         pts = [em(p['lat'], p['lon']) for p in (g.get('geometry') or [])]
         if len(pts) == 1:                             # a lone node: the degenerate segment p->p
@@ -531,6 +532,35 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             if _seg_near_played_line(ae, an, be, bn, buf):
                 return True
         return False
+
+    # AREA WATER: mostly-in-the-corridor OR reaches the played line at all.
+    #
+    # The fraction alone is the wrong shape of rule for a HAZARD, and it omitted water a junior can
+    # reach. Two shipped cards proved it: valley-hi 2 printed 0W with NO blue ink at all over way
+    # 1229231804, a lateral hazard whose 329.7 m bank comes 15.8 m from the played line (14.2 m
+    # unclipped) with 32.6% of that bank in the corridor against the 0.35 threshold; and copper-valley
+    # 1 dropped way 775441708, a 688 m lake the drawn playing line CROSSES TWICE (minimum distance
+    # 0.00 m), at frac 0.3349. That card still read 2W, because a stream crossing the same line was
+    # drawn -- a map showing a hoppable creek where a lake swallows the line. Omitting water is the
+    # dangerous direction; over-reporting it is merely noisy, so the gate is an OR, not a re-tuned
+    # threshold.
+    #
+    # The reach half is `any_within` at the SAME 45 m the fraction half uses and the same 45 m the
+    # watercourse path uses. Matching rather than picking a third number: a pond is wider than a
+    # ditch, so asserting that area water at 45 m is less reachable than a stream at 45 m is
+    # backwards, and one corridor half-width for all water keeps the footer's "water (blue)" a single
+    # rule. Measured cost of the reach half: corpus area water 87 -> 102 on 13 cards, and no card
+    # loses water it printed before -- an OR can only add.
+    #
+    # ASYMMETRY, noted rather than fixed: `any_within` is clipped to the PLAYED length (nothing behind
+    # the tee or past the green counts), while `frac_in` measures against dist_pt_seg, which clamps
+    # per segment and so still includes a 45 m half-disc behind the tee and past the green. One corpus
+    # card is admitted by the fraction half alone through those caps: copper-valley 15 counts way
+    # 775614088, whose nearest approach over the played length is 255.4 m (16.1 m unclipped). That is
+    # the over-report direction and it predates this gate.
+    waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
+             or g.get('tags',{}).get('natural')=='water') and g.get('geometry')
+             and (frac_in(g,45)>=0.35 or any_within(g,45))]
 
     creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g,45)]
     tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g,38)]
@@ -554,12 +584,57 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         tree_src=[(e['lat'],e['lon']) for e in treenodes]; r_tree=3
 
     def poly_pts(g): return [proj(p['lat'],p['lon']) for p in g['geometry']]
+
+    def corridor_pts(g, buf):
+        """Where g's boundary lies within buf of the centerline, projected. FRAMING, not selection.
+
+        Every other class in the frame is corridor-sized by the way it was selected -- a bunker's
+        centroid within 40 m, a tee's within 38, a fairway or tree row most of whose own length is
+        inside. AREA WATER is the exception: it is selected when it REACHES the hole (see `waters`),
+        which is right for a hazard and says nothing about how big it is. Framing around all of such a
+        feature shrinks the hole to fit water that is not on it: copper-valley 10's way 775614086 is a
+        1239.6 m lake whose nearest approach is 40.8 m and which reaches 268 m ACROSS the hole, where
+        the centerline itself spans only 148.8 m across. The frame is built on that cross extent, so
+        the drawn hole lost 52% of its length; hole 18 lost 72% to that lake and one other. The
+        enlarged edition then dropped two yardage rows the pocket book prints, because a compressed
+        ladder cannot carry 2x type -- the exact trade the row guard exists to refuse.
+
+        So water is framed to the corridor and drawn whole, clipping at the frame edge the way rough
+        and woods and creeks already do. The points returned are the ENDPOINTS of the in-corridor
+        sub-intervals of each boundary segment, which is a GEOMETRIC answer: re-noding the ring does
+        not move it, so the frame cannot depend on how a mapper clicked -- the same property
+        frac_len_within was written for. A straight segment's in-band stretch is bounded by its own
+        endpoints, so those points bound its box exactly.
+
+        Degenerate input (a single node, or nothing in the band at all) falls back to the whole
+        feature: a water this returns nothing for would otherwise contribute no frame at all, and
+        every counted hazard has to have ink on the card.
+        """
+        gg = g['geometry']
+        pts = [em(p['lat'], p['lon']) for p in gg]
+        out = []
+        for i in range(len(gg) - 1):
+            ax, ay = pts[i]
+            dxu, dyu = pts[i+1][0] - ax, pts[i+1][1] - ay
+            for j in range(len(line_em) - 1):
+                iv = capsule_interval(ax, ay, dxu, dyu, line_em[j][0], line_em[j][1],
+                                      line_em[j+1][0], line_em[j+1][1], buf)
+                if iv is None:
+                    continue
+                for u in iv:                  # both ends of the in-band stretch bound its box
+                    out.append(proj(gg[i]['lat'] + (gg[i+1]['lat'] - gg[i]['lat']) * u,
+                                    gg[i]['lon'] + (gg[i+1]['lon'] - gg[i]['lon']) * u))
+        return out or poly_pts(g)
+
     # frame around the corridor + every tree marker so no tree/tee/green is clipped.
     # big background fills (rough, woods) are NOT in the bounds -- they clip cleanly
-    # at the frame edge instead of zooming the whole hole out.
+    # at the frame edge instead of zooming the whole hole out. Water is drawn WHOLE and framed to the
+    # corridor, which is the same treatment one step finer -- see corridor_pts.
     allpts=[proj(p['lat'],p['lon']) for p in line]
-    for g in bunkers+waters+tees+fairways+treerows+[green]:
+    for g in bunkers+tees+fairways+treerows+[green]:
         allpts+=poly_pts(g)
+    for g in waters:
+        allpts+=corridor_pts(g, 45)
     allpts+=[proj(la,lo) for la,lo in tree_src]
     xs=[p[0] for p in allpts]; ys=[p[1] for p in allpts]
     wx0,wy0=min(xs),min(ys); wW=(max(xs)-wx0) or 1.0; wH=(max(ys)-wy0) or 1.0
@@ -822,12 +897,20 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # radius-spaced ticks.
     # It is NON-BINDING on the present corpus: it drops no row on any of the 198 cards at either
     # scale, and disabling it leaves every SVG byte-identical -- 830 rows printed per scale with and
-    # without it. Measured tightest realised gaps: 1.4718*FSN at the coach scale (castlewood-valley
-    # h16) and 2.1765*FSN in the pocket book (philadelphia h17), both clear of the 1.35 threshold.
-    # (The 1.365*FSN / bay-view h9 figure this comment used to carry was measured before the coach
-    # edition's `fit` was corrected, which changed every coach-scale gap; bay-view h9's tightest is
-    # now 1.7156*FSN.) So this is a floor kept against geometry the corpus does not yet contain, not
-    # a rule shaping the printed ladder -- do not attribute a missing row to it without measuring.
+    # without it. Measured tightest realised gaps: 1.4869*FSN at the coach scale (valley-hi h18) and
+    # 2.1765*FSN in the pocket book (philadelphia h17), both clear of the 1.35 threshold.
+    #
+    # RE-MEASURE THIS COMMENT WHENEVER THE FRAME CHANGES. The gaps are in view units and the frame
+    # sets the scale, so a change to what the frame contains moves every number here -- and both
+    # figures have already gone stale that way. The 1.365*FSN / bay-view h9 pair predates the coach
+    # edition's `fit` correction (bay-view h9's tightest is now 1.7156*FSN), and the pocket figure was
+    # wrong for the whole of bd768a1: a water polygon that had entered the frame compressed
+    # copper-valley h11's ladder to 1.6618*FSN while this comment still named philadelphia h17.
+    # Framing water to the corridor (corridor_pts) restored it. castlewood-valley h16, the coach
+    # holder until now, sits at 1.5966*FSN.
+    #
+    # So this is a floor kept against geometry the corpus does not yet contain, not a rule shaping the
+    # printed ladder -- do not attribute a missing row to it without measuring.
     for Y0,Xc,yd,ft in cands:
         if Y0-lastY < FSN*1.35:
             continue

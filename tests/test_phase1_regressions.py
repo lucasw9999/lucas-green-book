@@ -11530,7 +11530,8 @@ def test_water_on_the_card_depends_on_where_the_water_is_not_how_it_was_noded():
 # ---------------------------------------------------------------------------
 # End-cap exclusion, on AUTHORED geometry so it runs on a bare clone
 # ---------------------------------------------------------------------------
-WATER_CORRIDOR_M = 45.0      # render_hole's own creek corridor width: any_within(g, 45)
+WATER_CORRIDOR_M = 45.0      # render_hole's own water corridor width: any_within(g, 45), and the
+                             # same 45 the area-water gate uses on both of its halves
 WATER_GAP_M = 25.0           # how far past an end vertex the end-cap streams start: inside the
                              # corridor as a plain capsule, outside the PLAYED line
 WATER_OFF_M = 20.0           # lateral offset of the streams that must be counted
@@ -11689,12 +11690,28 @@ def test_the_corridor_length_fraction_is_the_geometry_not_a_sample():
         sys.modules.pop(m, None)
     import render_hole as rh
     f = rh.frac_len_within
-    L = [(0.0, 0.0), (100.0, 0.0)]                    # a 100 m centerline along x    assert f([(0.0, 10.0), (100.0, 10.0)], L, 45.0) == 1.0        # parallel, 10 m off: all of it
+    L = [(0.0, 0.0), (100.0, 0.0)]                    # a 100 m centerline along x
+    assert f([(0.0, 10.0), (100.0, 10.0)], L, 45.0) == 1.0        # parallel, 10 m off: all of it
     assert f([(0.0, 500.0), (100.0, 500.0)], L, 45.0) == 0.0      # 500 m off: none of it
     # a 1000 m edge running away perpendicular from the tee end: inside exactly while y <= 45
     assert abs(f([(0.0, 0.0), (0.0, 1000.0)], L, 45.0) - 0.045) < 1e-12
     # ... and one running away along the axis BEHIND the tee: inside exactly while x >= -45
     assert abs(f([(-1000.0, 0.0), (0.0, 0.0)], L, 45.0) - 0.045) < 1e-12
+    # THE MIDDLE OF THE CAPSULE. Nothing above reaches it: every crossing the cases above compute
+    # lands within r of a centerline ENDPOINT, so the two end DISCS alone reproduce all of their
+    # numbers and the rectangle branch is dead weight to them. capsule_interval returns the HULL of
+    # its parts, so where an edge runs the length of the line the discs bracket u=0 and u=1 and the
+    # hull hides a missing middle completely -- the "parallel, 10 m off -> 1.0" case above included.
+    # Proven by mutation: guarding the rectangle with `if False and E2 >= 1e-18:` takes corpus area
+    # water from 87 to 28 and changes 123 of 198 cards, and this test still passed. So the two cases
+    # below cross the corridor FAR FROM EITHER END, where only the rectangle can admit them.
+    LONG = [(0.0, 0.0), (1000.0, 0.0)]                # a 1000 m centerline along x
+    # a 1000 m edge crossing the middle of it at right angles, 500 m from both endpoints so neither
+    # disc reaches it: inside exactly while |y| <= 45, i.e. 90 m of 1000 m
+    assert abs(f([(500.0, -500.0), (500.0, 500.0)], LONG, 45.0) - 0.09) < 1e-12
+    # a 200 m edge PARALLEL to it and 10 m off, spanning x = 400..600: wholly inside the corridor and
+    # nowhere near an endpoint. The disc-only mutant answers 0.0 to both of these.
+    assert f([(400.0, 10.0), (600.0, 10.0)], LONG, 45.0) == 1.0
     # A 100x40 rectangle from x=80 to x=180, straddling the line's green end. Hand arithmetic:
     #   perimeter                       = 2*(100 + 40)                       = 280.0 m
     #   long edges (y = +-20): inside while hypot(x-100, 20) <= 45, i.e. x <= 100+sqrt(45^2-20^2)
@@ -11833,6 +11850,147 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
         f"-- (course, hole, re-noding, before, after) with the tuple being "
         f"(watercourses, waters, water_hazards, drawn water areas): {moved[:8]}"
         f"{' ...' if len(moved) > 8 else ''}")
+
+
+def _dist_to_played_line(pt, line_em):
+    """Metres from a point to the PLAYED stretch of a centerline, or inf if it sees none of it.
+
+    Written here, not imported, for the reason _dist_to_poly is: the test's model of "how far is this
+    from the hole" must not be the engine's. Projections falling BEHIND the first vertex or PAST the
+    last do not count -- water in those end caps is not on the hole (see
+    test_water_beyond_either_end_of_the_played_line_is_not_on_the_hole) -- while a projection running
+    off the end of a MIDDLE segment is clamped, because the neighbouring segment covers it.
+
+    Point-to-segment, so on a polygon this is a VERTEX witness: it can only OVER-state how far the
+    feature's boundary is, never under-state it. That direction is what makes it safe here. This test
+    demands that water the line reaches be COUNTED, so a witness that misses a close approach loses
+    the test some power and can never manufacture a failure.
+    """
+    x, y = pt
+    best = math.inf
+    n = len(line_em) - 1
+    for i in range(n):
+        ax, ay = line_em[i]
+        bx, by = line_em[i + 1]
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-9:
+            continue
+        t = ((x - ax) * dx + (y - ay) * dy) / L2
+        if (i == 0 and t < 0.0) or (i == n - 1 and t > 1.0):
+            continue                          # an end cap of the corridor, not the played line
+        t = max(0.0, min(1.0, t))
+        best = min(best, math.hypot(x - (ax + t * dx), y - (ay + t * dy)))
+    return best
+
+
+@needs_corpus
+def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
+    """Area water within reach of the played line must be counted and drawn. A FRACTION alone drops it.
+
+    THE RULE THIS ENFORCES: never omit a hazard the golfer can reach. Omitting water is the dangerous
+    direction -- a junior aims at a lake the card says is not there -- while over-reporting it is
+    merely noisy. `waters` was selected by `frac_len_within(g, 45) >= 0.35` alone, which asks "is most
+    of this pond beside this hole", not "can a ball reach it". A big water body mostly elsewhere is
+    dropped however close it comes, and two SHIPPED cards were wrong because of it:
+
+      * valley-hi 2 (way 1229231804, golf=lateral_water_hazard, 329.7 m of bank) came 15.8 m from the
+        played line -- 14.2 m ignoring the end caps -- with 32.6% of its bank in the corridor against
+        the 0.35 threshold. The card printed 0W on a 382 m hole and drew NO BLUE INK AT ALL.
+      * copper-valley 1 (way 775441708, a 688 m lake) is CROSSED BY THE DRAWN PLAYING LINE, twice --
+        true minimum distance 0.00 m -- and was dropped at frac 0.3349. The card still read 2W,
+        because a stream crossing the same line was drawn, so the map showed a hoppable creek where a
+        lake swallows the line.
+
+    So the gate is now an OR: mostly-in-the-corridor, or reaching the played line at all (`any_within`,
+    the same end-cap-clipped test the watercourse path uses, at the same 45 m). Measured cost of the
+    reach half: corpus area water 87 -> 102 on 13 cards, no card losing any.
+
+    Both named cards are asserted by NAME AND WAY ID, because the corpus sweep below would also pass on
+    an engine that admitted everything: the two concrete failures are the evidence that the sweep is
+    aimed at something real. And the sweep is the property -- one pond re-checked is a spot check.
+    """
+    named = {("valley-hi-country-club", 2): 1229231804,
+             ("copper-valley-golf-club", 1): 775441708}
+    omitted, holes, reachable, seen_named, errors = [], 0, 0, {}, []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, geom = rh.load()
+        except Exception as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        areas = [g for g in course if _is_area_water(g) and (g.get("geometry") or [])]
+        for hn in cfg.HOLE_NUMS:
+            hole = lines.get(hn)
+            if hole is None:
+                errors.append((slug, hn, "geo.hole_lines has no line for this hole"))
+                continue
+            line = hole["geometry"]
+            try:
+                svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:100]))
+                continue
+            holes += 1
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+            mlon = _mlon(la0)
+
+            def em(la, lo, _mlon=mlon, _la0=la0, _lo0=lo0):
+                return ((lo - _lo0) * _mlon, (la - _la0) * R_LAT)
+            line_em = [em(q["lat"], q["lon"]) for q in line]
+            near = []
+            for g in areas:
+                d = min(_dist_to_played_line(em(p["lat"], p["lon"]), line_em)
+                        for p in g["geometry"])
+                if d < WATER_CORRIDOR_M:
+                    near.append((g.get("id"), round(d, 2)))
+            reachable += len(near)
+            if named.get((slug, hn)):
+                seen_named[(slug, hn)] = (named[(slug, hn)],
+                                          dict(near).get(named[(slug, hn)]),
+                                          info["water_hazards"], info["waters"],
+                                          svg.count('fill="#a9d3ef"'))
+            # every reachable area water must be among the ones the card counts AND fills
+            if info["water_hazards"] < len(near) or svg.count('fill="#a9d3ef"') < len(near):
+                omitted.append((slug, hn, sorted(near, key=lambda r: r[1]),
+                                info["water_hazards"], svg.count('fill="#a9d3ef"'),
+                                info["waters"]))
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert holes == expected_holes(), \
+        f"examined {holes} holes but {expected_holes()} are present -- holes were skipped"
+    assert reachable >= 15, (
+        f"only {reachable} area-water/hole pairs come within {WATER_CORRIDOR_M:g} m of a played line in "
+        f"the whole corpus -- the witness found nothing to check, so this test proves nothing")
+
+    # THE TWO NAMED CARDS. Skipped only if that course is not built here, and never silently: their
+    # absence must not be indistinguishable from their passing.
+    for key, way in named.items():
+        slug, hn = key
+        if slug not in CORPUS:
+            continue
+        assert key in seen_named, f"{slug} hole {hn} was never examined"
+        got_way, dist, hazards, waters, fills = seen_named[key]
+        assert dist is not None, (
+            f"{slug} hole {hn}: way {way} is no longer within {WATER_CORRIDOR_M:g} m of the played line, "
+            f"so this card can no longer witness the omission it was chosen for -- re-measure it "
+            f"rather than deleting the case")
+        assert hazards >= 1 and fills >= 1 and waters >= 1, (
+            f"{slug} hole {hn} prints {waters}W over {hazards} area hazard(s) and {fills} water "
+            f"fill(s), while way {way} comes {dist} m from the played line. That is water a junior "
+            f"can reach, omitted from both the map and the footer")
+    assert not omitted, (
+        f"{len(omitted)} card(s) omit area water the played line reaches -- (course, hole, "
+        f"[(way, metres from the played line)], counted area hazards, drawn water fills, printed W): "
+        f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
 
 
 @needs_corpus
