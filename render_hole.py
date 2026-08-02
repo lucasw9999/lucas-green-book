@@ -268,6 +268,131 @@ def dist_seg_seg(ax, ay, bx, by, cx, cy, dx, dy):
                dist_pt_seg(cx, cy, ax, ay, bx, by),
                dist_pt_seg(dx, dy, ax, ay, bx, by))
 
+
+def _lin_interval(c0, cu, lo, hi):
+    """{u : lo <= c0 + cu*u <= hi} as (u0, u1), None when empty, unbounded ends allowed."""
+    if abs(cu) < 1e-15:                       # constant in u
+        return (-math.inf, math.inf) if lo <= c0 <= hi else None
+    a, b = (lo - c0) / cu, (hi - c0) / cu
+    return (a, b) if a <= b else (b, a)
+
+
+def _clip(iv, lo, hi):
+    """Intersect an interval with [lo, hi]; None when that leaves nothing."""
+    if iv is None:
+        return None
+    a, b = max(iv[0], lo), min(iv[1], hi)
+    return (a, b) if a <= b else None
+
+
+def capsule_interval(ax, ay, dxu, dyu, cx, cy, dx, dy, r):
+    """The sub-interval of u in [0,1] where A + u*(dxu,dyu) lies within r of segment C->D.
+
+    {X : dist(X, CD) <= r} is a CAPSULE, and a capsule is convex, so a straight line meets it in at
+    most ONE interval. That interval is whatever the two end DISCS and the middle RECTANGLE admit,
+    each of which is a quadratic or a pair of linear inequalities -- so the answer is closed form.
+
+    Closed form is the whole point. The alternative, sampling the edge, would make the answer depend
+    on the sampling, which is the same class of defect as making it depend on the noding: see
+    frac_len_within.
+
+    At module scope so it can be checked against hand-computed geometry rather than through a
+    rendered card.
+    """
+    parts = []
+    a = dxu * dxu + dyu * dyu
+    if a < 1e-18:
+        return None
+    for ox, oy in ((cx, cy), (dx, dy)):       # the two end discs
+        fx, fy = ax - ox, ay - oy
+        b = 2.0 * (fx * dxu + fy * dyu)
+        c = fx * fx + fy * fy - r * r
+        disc = b * b - 4.0 * a * c
+        if disc >= 0.0:
+            s = math.sqrt(disc)
+            parts.append(((-b - s) / (2.0 * a), (-b + s) / (2.0 * a)))
+    ex, ey = dx - cx, dy - cy                 # the rectangle, when CD is not degenerate
+    E2 = ex * ex + ey * ey
+    if E2 >= 1e-18:
+        E = math.sqrt(E2)
+        along = _lin_interval(((ax - cx) * ex + (ay - cy) * ey) / E2,
+                              (dxu * ex + dyu * ey) / E2, 0.0, 1.0)
+        across = _lin_interval(((ax - cx) * ey - (ay - cy) * ex) / E,
+                               (dxu * ey - dyu * ex) / E, -r, r)
+        if along is not None and across is not None:
+            rect = _clip(along, across[0], across[1])
+            if rect is not None:
+                parts.append(rect)
+    parts = [p for p in (_clip(p, 0.0, 1.0) for p in parts) if p is not None]
+    if not parts:
+        return None
+    # convexity guarantees the union is contiguous, so its hull IS the union
+    return (min(p[0] for p in parts), max(p[1] for p in parts))
+
+
+def _union_measure(ivs):
+    """Total length of a union of intervals."""
+    if not ivs:
+        return 0.0
+    tot, cur_a, cur_b = 0.0, None, None
+    for a, b in sorted(ivs):
+        if cur_b is None or a > cur_b:
+            if cur_b is not None:
+                tot += cur_b - cur_a
+            cur_a, cur_b = a, b
+        elif b > cur_b:
+            cur_b = b
+    return tot + (cur_b - cur_a)
+
+
+def frac_len_within(pts, line, buf):
+    """Fraction of `pts`'s own LENGTH lying within buf of the polyline `line`. Both in metres.
+
+    This is "how much of this feature is in the corridor" measured GEOMETRICALLY. The measure it
+    replaces counted the fraction of the feature's own VERTICES inside the corridor, and a vertex
+    count is not a property of a shape -- it is a property of how someone drew it. Re-noding a corpus
+    water polygon (extra points ON its own edges, identical outline) moved the printed water count on
+    four cards, and on a DIFFERENT four depending how finely: at the densities the regression test
+    uses, bay-view 15 (4W -> 3W, 3 area hazards -> 2), copper-valley 14 (0W -> 1W), copper-valley 18
+    (3W -> 4W) and valley-hi 5 (1W -> 0W); insert three points per edge instead and castlewood-valley
+    6 joins them while valley-hi 5 drops out. Same water, same shape, different number on the card,
+    decided by an OSM editing accident -- and by WHICH editing accident. That is the defect this repo
+    had already fixed once for LINEAR watercourses (see _seg_near_played_line) and had left standing
+    on the polygon path.
+
+    Boundary LENGTH rather than area: it is the exact continuous limit of the vertex count the
+    thresholds were calibrated against (a uniformly noded ring has vertex fraction -> length
+    fraction), it is closed form in stdlib arithmetic, and an area measure would need polygon
+    clipping against a union of capsules -- a dependency this project does not carry, for a number
+    that answers the same question.
+
+    Degenerate input: a feature with no length (one node, or every node identical) has no length
+    fraction, so it is judged by the only thing it has -- whether that point is in the corridor.
+    """
+    if not pts:
+        return 0.0
+    if len(line) < 2:
+        return 0.0
+    total = inside = 0.0
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        dxu, dyu = bx - ax, by - ay
+        seglen = math.hypot(dxu, dyu)
+        if seglen < 1e-9:
+            continue
+        total += seglen
+        ivs = []
+        for (cx, cy), (dx, dy) in zip(line, line[1:]):
+            iv = capsule_interval(ax, ay, dxu, dyu, cx, cy, dx, dy, buf)
+            if iv is not None:
+                ivs.append(iv)
+        inside += seglen * _union_measure(ivs)
+    if total <= 0.0:
+        near = min(dist_pt_seg(pts[0][0], pts[0][1], line[i][0], line[i][1],
+                               line[i+1][0], line[i+1][1]) for i in range(len(line)-1))
+        return 1.0 if near < buf else 0.0
+    return inside / total
+
+
 def render_hole(hnum, HOLES, font_scale=1.0):
     course, geom = load()
     greens=[e for e in geom if e.get('tags',{}).get('golf')=='green' and e.get('geometry')]
@@ -296,13 +421,32 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         gla,glo=centroid(g); pe,pn=em(gla,glo)
         return dist_to_line(pe,pn) < buf
     def frac_in(g, buf):
-        # fraction of the feature's own vertices that lie within `buf` of THIS hole's
-        # centerline -> excludes a neighbouring parallel hole's fairway/rough that only
-        # clips the edge (its centroid can be near, but most of it is not).
-        pts=g.get('geometry') or []
+        # How much of the feature is within `buf` of THIS hole's centerline -> excludes a
+        # neighbouring parallel hole's fairway/rough that only clips the edge (its centroid can be
+        # near, but most of it is not).
+        #
+        # Measured as a fraction of the feature's own LENGTH, in closed form. It used to be the
+        # fraction of its own VERTICES, which is not a property of the shape at all: re-noding a
+        # water polygon -- extra points ON its own edges, identical outline -- moved the printed water
+        # count on four corpus cards, and on a different four at a different density. See
+        # frac_len_within.
+        #
+        # The geometry is taken exactly as OSM gives it, with no closing edge invented. Four of the
+        # corpus's 90 water areas are unclosed multipolygon fragments of the Schuylkill (philadelphia
+        # ways -1661718201..4); closing those would add a 5.9 km chord of open ground to the boundary
+        # of a river and drown the real bank in the denominator.
+        #
+        # WHAT THIS DOES NOT FIX, measured rather than guessed: a FRACTION is the wrong shape of rule
+        # for a water HAZARD, and correcting the measurement makes that visible instead of hiding it
+        # behind noding noise. A big pond mostly elsewhere is excluded however close it comes --
+        # valley-hi 2 now prints 0W over a pond 14.2 m from the played line (32.6% of its 330 m bank
+        # in the corridor), and copper-valley 18 already did that before this change, at 1.7 m and a
+        # margin of 0.001. Selecting area water the way creeks are selected -- any part in the
+        # corridor -- would take corpus area water from 87 to 114 and move 25 cards, so it is a
+        # separate, calibrated decision with its own visual review, not a rider on this one.
+        pts=[em(p['lat'],p['lon']) for p in (g.get('geometry') or [])]
         if not pts: return 0.0
-        c=sum(1 for p in pts if dist_to_line(*em(p['lat'],p['lon'])) < buf)
-        return c/len(pts)
+        return frac_len_within(pts, line_em, buf)
     bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and in_corridor(g,40)]
     waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water') and g.get('geometry') and frac_in(g,45)>=0.35]
@@ -318,9 +462,14 @@ def render_hole(hnum, HOLES, font_scale=1.0):
 
         PLAYED, not the whole capsule. dist_to_line clamps each segment's projection to [0, 1], so
         the corridor includes a buf-radius half-disc BEHIND the tee and PAST the green. Water sitting
-        in those caps is not on the hole at all. Nine counted watercourses were reachable only through
-        them, and two cards went 0W -> 1W on a river whose nearest approach is 40.5 m away and 39.6 m
-        behind the tee (castlewood-valley 7) and 43.6 m away at the green (castlewood-valley 2).
+        in those caps is not on the hole at all. Ten counted watercourses on eight cards are reachable
+        only through them, and two of those cards would go 0W -> 1W on a river or stream whose nearest
+        approach lies behind the tee: castlewood-valley 7, where the Arroyo de la Laguna comes 40.5 m
+        from the drawn line but 39.6 m BEHIND the tee (along the tee-to-green chord) and no nearer
+        than 260.9 m over the played length, and monarch-bay 9, 42.3 m away and behind the tee, 91.4 m
+        over the played length. castlewood-valley 2 is NOT one of them and must not be cited as one:
+        the same river's 43.6 m approach there projects at t=0.9151, INSIDE the played length, so that
+        hole counts one watercourse with the caps and without them.
 
         That exclusion survives the change to a segment test because the stretch of p->q projecting
         before the first vertex, or past the last, is CLIPPED OFF this segment before any distance is
@@ -670,7 +819,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     rings=""; lastY=-999
     # Vertical guard: one printed row needs ~0.998*FSN of baseline separation (0.718 cap height +
     # two 0.14 halo strokes), so 1.35 clears it with margin while not needlessly dropping the
-    # radius-spaced ticks. Measured tightest realised gap: 1.365*FSN (coach edition, bay-view h9).
+    # radius-spaced ticks.
+    # It is NON-BINDING on the present corpus: it drops no row on any of the 198 cards at either
+    # scale, and disabling it leaves every SVG byte-identical -- 830 rows printed per scale with and
+    # without it. Measured tightest realised gaps: 1.4718*FSN at the coach scale (castlewood-valley
+    # h16) and 2.1765*FSN in the pocket book (philadelphia h17), both clear of the 1.35 threshold.
+    # (The 1.365*FSN / bay-view h9 figure this comment used to carry was measured before the coach
+    # edition's `fit` was corrected, which changed every coach-scale gap; bay-view h9's tightest is
+    # now 1.7156*FSN.) So this is a floor kept against geometry the corpus does not yet contain, not
+    # a rule shaping the printed ladder -- do not attribute a missing row to it without measuring.
     for Y0,Xc,yd,ft in cands:
         if Y0-lastY < FSN*1.35:
             continue

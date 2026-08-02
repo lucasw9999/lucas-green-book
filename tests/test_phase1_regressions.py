@@ -11512,17 +11512,327 @@ def test_water_on_the_card_depends_on_where_the_water_is_not_how_it_was_noded():
         assert 'stroke="#5b9bd0" stroke-width="1.8"' in svg, (
             f"{slug} hole {hn} counts a watercourse but draws no blue line for it")
 
-    # The corridor must still refuse water that only rounds an END of the played line, which is what
-    # a point-to-segment test could quietly undo. Measured on the geometry helper the fix rests on.
+    # Properties of the DISTANCE HELPER the corridor test rests on. These do NOT check the end-cap
+    # exclusion: dist_seg_seg has no idea where the tee is, so nothing below can fail when the
+    # clipping in _seg_near_played_line is removed -- proven by mutation, see the sibling test
+    # test_water_beyond_either_end_of_the_played_line_is_not_on_the_hole, which does drive it.
     d = rh.dist_seg_seg
     # a segment lying 10 m BEYOND the tee end of a 100 m line along x: nearest approach to the
-    # SEGMENT is 10 m, so a naive capsule accepts it and the played-line test must not.
+    # SEGMENT is 10 m, so a naive capsule accepts it -- which is why the corridor needs a clip.
     assert abs(d(-30.0, 0.0, -10.0, 0.0, 0.0, 0.0, 100.0, 0.0) - 10.0) < 1e-6
     # crossing is the case four endpoint distances cannot see
     assert d(50.0, -500.0, 50.0, 500.0, 0.0, 0.0, 100.0, 0.0) == 0.0
     assert abs(d(50.0, 20.0, 50.0, 500.0, 0.0, 0.0, 100.0, 0.0) - 20.0) < 1e-6
     # degenerate feature segment (a single node) still measures point-to-segment
     assert abs(d(50.0, 7.0, 50.0, 7.0, 0.0, 0.0, 100.0, 0.0) - 7.0) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# End-cap exclusion, on AUTHORED geometry so it runs on a bare clone
+# ---------------------------------------------------------------------------
+WATER_CORRIDOR_M = 45.0      # render_hole's own creek corridor width: any_within(g, 45)
+WATER_GAP_M = 25.0           # how far past an end vertex the end-cap streams start: inside the
+                             # corridor as a plain capsule, outside the PLAYED line
+WATER_OFF_M = 20.0           # lateral offset of the streams that must be counted
+
+# Five holes, each isolating one thing the corridor has to get right. Every centerline is four
+# COLLINEAR vertices running due south from the tee to a green at the lane origin, 300 yd long, so
+# segment 0 is the tee segment, segment 2 is the green segment and segment 1 is interior -- clipping
+# applies to the first and last only, and a hole with a single segment could not tell the two apart.
+# Lanes are 3000 m apart so no hole can see another's water.
+#   `along`  = (start, end) as a fraction of the played length measured from the TEE
+#   `beyond` = (start, end) in metres PAST an end vertex, signed: negative is behind the tee
+WATER_SYNTH = {
+    1: dict(what="crosses at mid-length", along=(0.5, 0.5), off=(-200.0, 200.0), want=1),
+    2: dict(what="behind the tee", beyond=(-WATER_GAP_M, -WATER_GAP_M - 50.0), off=(0.0, 0.0), want=0),
+    3: dict(what="past the green", beyond=(WATER_GAP_M, WATER_GAP_M + 50.0), off=(0.0, 0.0), want=0),
+    4: dict(what="beside the tee segment", along=(0.05, 0.25), off=(WATER_OFF_M,) * 2, want=1),
+    5: dict(what="beside the green segment", along=(0.75, 0.95), off=(WATER_OFF_M,) * 2, want=1),
+}
+
+
+@pytest.fixture(scope="module")
+def water_engine():
+    """A course whose water is authored, not downloaded, so the corridor's END CAPS can be driven.
+
+    No real course isolates them: the corpus holes that turn on the clip (castlewood-valley 7,
+    monarch-bay 9) also have other water and other reasons to be admitted, and a test written against
+    them cannot say which rule produced the answer. Here each hole has exactly ONE watercourse and one
+    reason.
+    """
+    slug = "_synth_water"                       # scratch, per distribution.is_corpus_slug
+    cdir = os.path.join(ROOT, "courses", slug)
+    os.makedirs(cdir, exist_ok=True)
+    lat0, lon0 = 40.0, -75.0
+    L = 300.0 * YD
+    dl = lambda m: m / R_LAT                    # metres -> degrees of latitude (due north)
+    dg = lambda m: m / _mlon(lat0)
+    geom_els, course_els, holes = [], [], {}
+    for hn, spec in WATER_SYNTH.items():
+        lon = lon0 + dg(3000.0 * (hn - 1))
+        geom_els.append(dict(type="way", id=1000 + hn, tags={"golf": "green"}, geometry=[
+            dict(lat=lat0 + dl(dy), lon=lon + dg(dx))
+            for dx, dy in ((-10, -10), (10, -10), (10, 10), (-10, 10), (-10, -10))]))
+        # tee at the NORTH end, green at the lane origin; vertex 0 is the tee, so the engine's
+        # `i == 0` clip is the behind-the-tee one and `i == n-1` the past-the-green one
+        geom_els.append(dict(type="way", id=2000 + hn, tags={"golf": "hole", "ref": str(hn)},
+                             geometry=[dict(lat=lat0 + dl(L * (1 - k / 3.0)), lon=lon)
+                                       for k in range(4)]))
+        holes[str(hn)] = [4, hn, round(L / YD)]
+        if "beyond" in spec:                    # metres past an end vertex, signed
+            ys = [(L - b if b < 0 else -b) for b in spec["beyond"]]
+        else:                                   # fraction of the played length from the tee
+            ys = [L * (1.0 - a) for a in spec["along"]]
+        course_els.append(dict(type="way", id=3000 + hn, tags={"waterway": "stream"}, geometry=[
+            dict(lat=lat0 + dl(y), lon=lon + dg(x)) for x, y in zip(spec["off"], ys)]))
+    with open(os.path.join(cdir, "osm_geom.json"), "w") as fh:
+        json.dump(dict(elements=geom_els), fh)
+    with open(os.path.join(cdir, "osm_course.json"), "w") as fh:
+        json.dump(dict(elements=course_els), fh)
+    with open(os.path.join(cdir, "course.json"), "w") as fh:
+        json.dump(dict(slug=slug, name="Synthetic Water", address="",
+                       location={"lat": lat0, "lon": lon0}, par=4 * len(WATER_SYNTH),
+                       holes_count=len(WATER_SYNTH), green_speed="",
+                       tees=[dict(name="Card", yards=round(L / YD) * len(WATER_SYNTH),
+                                  rating=70.0, slope=113)],
+                       featured_tee="Card", hole_cols=["par", "mens_hcp", "Card"], holes=holes,
+                       osm_bbox=[lat0 - 0.05, lon0 - 0.05, lat0 + 0.05, lon0 + 0.2],
+                       sources={}), fh)
+    prev = os.environ.get("COURSE")
+    try:
+        yield _engine(slug), (lat0, lon0, L)
+    finally:
+        # RESTORE FIRST, then clean up -- see the synth_engine fixture for the flaky-teardown
+        # incident that ordering fixed.
+        _restore_course(prev)
+        import shutil
+        shutil.rmtree(cdir, ignore_errors=True)
+
+
+def test_water_beyond_either_end_of_the_played_line_is_not_on_the_hole(water_engine):
+    """Water behind the tee or past the green must not be counted, drawn, or printed as W.
+
+    THE SIBLING TEST DOES NOT COVER THIS. Its four end-cap assertions call `dist_seg_seg`, a pure
+    two-segment distance that has never heard of a tee, so the clipping in `_seg_near_played_line`
+    is never executed by them. Proven by mutation: editing the two guards to `if False and i == 0`
+    / `if False and i == n-1` takes the corpus from 77 counted watercourses to 87 and moves eight
+    cards --
+
+        bay-view 11 (3->4W'courses), bay-view 17 (1->2), callippe 18 (1->2, footer 1W->2W),
+        castlewood-valley 7 (0->1, footer 0W->1W), copper-valley 11 (4->7), merion 13 (1->2),
+        monarch-bay 9 (0->1, footer 0W->1W), the-reserve 14 (0->1, footer 2W->3W)
+
+    -- and the sibling test still passed. The only thing that caught the mutant was the
+    shipped-artifact comparison, which any rebuild silences. merion 13 is the exact card this repo
+    already fixed once for counting water it should not.
+
+    The real instance is castlewood-valley 7. The Arroyo de la Laguna (way 926093106) comes within
+    40.5 m of that centerline -- inside the 45 m corridor -- but that approach is 39.6 m BEHIND the
+    tee (measured along the tee-to-green chord): restricted to the played length its nearest approach
+    is 260.9 m. Without the clip the card reads 1W over a river a junior cannot reach from the hole.
+    monarch-bay 9 is the same story at 42.3 m behind the tee against 91.4 m over the played length.
+    (castlewood-valley 2 is NOT an example of this: the same river's 43.6 m approach there projects
+    at t=0.9151, inside the played length, and that hole legitimately counts one watercourse both
+    before and after the fix.)
+
+    So the assertions here go through render_hole on AUTHORED geometry -- one watercourse per hole,
+    one reason per hole -- and they fail if the clipping is removed. Both directions are checked,
+    because the cheap way to pass the exclusion half is to clip so hard that water legitimately
+    beside the first or last stretch of the line disappears too (holes 4 and 5).
+    """
+    (cfg, rh), (lat0, lon0, L) = water_engine
+    assert set(cfg.HOLE_NUMS) == set(WATER_SYNTH), cfg.HOLE_NUMS
+    BLUE = 'stroke="#5b9bd0" stroke-width="1.8"'
+    got = {}
+    for hn in cfg.HOLE_NUMS:
+        svg, info = rh.render_hole(hn, cfg.HOLES)
+        got[hn] = (info["watercourses"], info["waters"], BLUE in svg)
+
+    # The end-cap streams must be near enough that only the clip can be excluding them. Measured in
+    # the test's own metres from the authored lat/lon, so this cannot be satisfied by a change of
+    # mind in the engine's projection.
+    course, _geom = rh.load()
+    for hn in (2, 3):
+        way = [e for e in course if e.get("id") == 3000 + hn][0]
+        end_lat = lat0 + (L / R_LAT if hn == 2 else 0.0)     # tee vertex (h2) or green vertex (h3)
+        near = min(abs(p["lat"] - end_lat) * R_LAT for p in way["geometry"])
+        assert abs(near - WATER_GAP_M) < 0.5, (
+            f"hole {hn}'s stream starts {near:.1f} m past the end vertex, not the "
+            f"{WATER_GAP_M:g} m this test authored")
+        assert near < WATER_CORRIDOR_M, (
+            f"hole {hn}'s stream is {near:.1f} m from the end of the line, outside the "
+            f"{WATER_CORRIDOR_M:g} m corridor -- it would be excluded on distance alone and this "
+            f"test would prove nothing about the end caps")
+
+    bad = [(hn, WATER_SYNTH[hn]["what"], got[hn], WATER_SYNTH[hn]["want"])
+           for hn in cfg.HOLE_NUMS if got[hn][0] != WATER_SYNTH[hn]["want"]]
+    assert not bad, (
+        "the corridor counted water by where it is not: (hole, geometry, "
+        f"(watercourses, waters, drew_blue), expected watercourses) = {bad}")
+    # a counted watercourse must have ink, and an uncounted one must have none: a card that draws
+    # blue for water it does not count contradicts its own footer just as badly
+    for hn in cfg.HOLE_NUMS:
+        wc, w, blue = got[hn]
+        assert blue == (wc > 0), f"hole {hn}: watercourses={wc} but drew_blue={blue}"
+        assert w == wc, f"hole {hn}: footer says {w}W over {wc} watercourse(s) and no area water"
+
+
+@needs_corpus                    # render_hole imports config, which needs a bound course to import
+def test_the_corridor_length_fraction_is_the_geometry_not_a_sample():
+    """frac_len_within against fractions computed by hand, and against re-noding.
+
+    Pure geometry -- the numbers below are worked out in the comments, so this is a check on the
+    closed-form capsule arithmetic itself rather than on a rendered card.
+    """
+    os.environ["COURSE"] = CORPUS[0] if CORPUS else "merion-golf-club"
+    for m in ("config", "geo", "render_hole"):
+        sys.modules.pop(m, None)
+    import render_hole as rh
+    f = rh.frac_len_within
+    L = [(0.0, 0.0), (100.0, 0.0)]                    # a 100 m centerline along x    assert f([(0.0, 10.0), (100.0, 10.0)], L, 45.0) == 1.0        # parallel, 10 m off: all of it
+    assert f([(0.0, 500.0), (100.0, 500.0)], L, 45.0) == 0.0      # 500 m off: none of it
+    # a 1000 m edge running away perpendicular from the tee end: inside exactly while y <= 45
+    assert abs(f([(0.0, 0.0), (0.0, 1000.0)], L, 45.0) - 0.045) < 1e-12
+    # ... and one running away along the axis BEHIND the tee: inside exactly while x >= -45
+    assert abs(f([(-1000.0, 0.0), (0.0, 0.0)], L, 45.0) - 0.045) < 1e-12
+    # A 100x40 rectangle from x=80 to x=180, straddling the line's green end. Hand arithmetic:
+    #   perimeter                       = 2*(100 + 40)                       = 280.0 m
+    #   long edges (y = +-20): inside while hypot(x-100, 20) <= 45, i.e. x <= 100+sqrt(45^2-20^2)
+    #                                   = 140.3115 -> 60.3115 m each
+    #   near edge (x = 80): 20 m from the line along its whole height        = 40.0 m
+    #   far edge  (x = 180): never nearer than 80 m                          = 0.0 m
+    #   fraction = (2*60.3115 + 40) / 280
+    want = (2 * (100.0 + math.sqrt(45.0**2 - 20.0**2) - 80.0) + 40.0) / 280.0
+    rect = [(80.0, -20.0), (180.0, -20.0), (180.0, 20.0), (80.0, 20.0), (80.0, -20.0)]
+    assert abs(f(rect, L, 45.0) - want) < 1e-9, f"{f(rect, L, 45.0)} != {want}"
+    # THE POINT OF THE MEASURE: re-noding that ring -- extra vertices on its own edges, identical
+    # outline -- must not move the answer. A sampled or per-vertex measure moves it by a lot; the
+    # tolerance here is for the last ulp or two of a sum taken in a different order, nothing more
+    # (the worst observed disagreement over these ten re-nodings is 5e-16).
+    for k in (2, 3, 7, 13, 40):
+        assert abs(f(_renode_ring(rect, k), L, 45.0) - f(rect, L, 45.0)) < 1e-12, f"k={k}"
+        assert abs(f(_renode_ring(rect, k, skew=True), L, 45.0)
+                   - f(rect, L, 45.0)) < 1e-12, f"k={k} skewed"
+    # a feature with no length is judged by the only thing it has: where its point is
+    assert f([(50.0, 10.0)], L, 45.0) == 1.0
+    assert f([(50.0, 500.0)], L, 45.0) == 0.0
+    assert f([(50.0, 10.0), (50.0, 10.0)], L, 45.0) == 1.0        # every node identical
+    assert f([], L, 45.0) == 0.0
+    # a degenerate CENTERLINE segment still contributes its end disc, so a line whose vertices
+    # coincide cannot swallow a feature sitting on top of it
+    assert rh.frac_len_within([(0.0, 10.0), (0.0, 10.0)], [(0.0, 0.0), (0.0, 0.0)], 45.0) == 1.0
+
+
+def _renode_ring(pts, k, skew=False):
+    """`pts` with k-1 extra vertices inserted ON each of its own edges: identical outline.
+
+    `skew` varies the insertion count per edge, which is what real OSM data looks like -- a mapper
+    traces the interesting side of a pond finely and the far side coarsely. That unevenness is what
+    made the vertex fraction disagree with the true length fraction by up to 0.18 on corpus water.
+    """
+    out = []
+    for j, (a, b) in enumerate(zip(pts, pts[1:])):
+        out.append(a)
+        n = (1 + (j % k)) if skew else k
+        for i in range(1, n):
+            fr = i / n
+            if isinstance(a, dict):
+                out.append({"lat": a["lat"] + (b["lat"] - a["lat"]) * fr,
+                            "lon": a["lon"] + (b["lon"] - a["lon"]) * fr})
+            else:
+                out.append((a[0] + (b[0] - a[0]) * fr, a[1] + (b[1] - a[1]) * fr))
+    out.append(pts[-1])
+    return out
+
+
+def _is_area_water(g):
+    """The predicate render_hole's `waters` list uses."""
+    t = g.get("tags") or {}
+    return (t.get("golf") in ("water_hazard", "lateral_water_hazard")
+            or t.get("natural") == "water")
+
+
+@needs_corpus
+def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
+    """Re-noding an AREA water polygon must not move a printed water number. It used to.
+
+    9115d7e fixed this for LINEAR watercourses and left it standing on the POLYGON path. `waters`
+    was selected by `frac_in(g, 45) >= 0.35`, and frac_in counted the fraction of the feature's own
+    VERTICES inside the corridor -- which is not a property of the shape. Inserting points ON a corpus
+    water polygon's own edges, leaving the outline bit-identical, moves four cards under the four
+    re-nodings below -- bay-view 15 (4W -> 3W, 3 area hazards -> 2), copper-valley 14 (0W -> 1W),
+    copper-valley 18 (3W -> 4W) and valley-hi 5 (1W -> 0W) -- and a DIFFERENT four at a different
+    density: three points per edge instead brings in castlewood-valley 6 (0W -> 1W) and leaves
+    valley-hi 5 alone. Same water, same shape, and the answer decided by which editing accident.
+
+    The unevenness is real, not contrived. copper-valley way 775441708 carries 175 nodes over 688 m
+    of bank, mapped finely on the side facing the hole and coarsely away from it, so its vertex
+    fraction read 0.371 where the true length fraction is 0.335 -- the threshold decision was being
+    made by where a mapper clicked. merion way 1378900893 is the same thing at the other extreme:
+    16 nodes over 549 m, vertex fraction 0.375 against a true 0.245.
+
+    So the measure is now the fraction of the feature's own LENGTH inside the corridor, in closed
+    form (render_hole.frac_len_within). This test re-nodes every area water polygon in the corpus at
+    four densities, evenly and unevenly, and requires every card's water numbers and drawn water
+    areas to be identical -- which is the property, not a spot check on one pond.
+    """
+    holes = inserted = pairs = 0
+    counts = 0
+    moved, errors = [], []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        plain = {}
+        for hn in cfg.HOLE_NUMS:
+            svg, info = rh.render_hole(hn, cfg.HOLES)
+            plain[hn] = (info["watercourses"], info["waters"], info["water_hazards"],
+                         svg.count('fill="#a9d3ef"'))
+            counts += info["waters"]
+        orig_load = rh.load
+        try:
+            for k, skew in ((2, False), (5, False), (4, True), (9, True)):
+                added = [0]
+
+                def patched(_k=k, _skew=skew, _added=added):
+                    course, geom = orig_load()
+                    out = []
+                    for g in course:
+                        pts = g.get("geometry") or []
+                        if _is_area_water(g) and len(pts) > 1:
+                            new = _renode_ring(pts, _k, skew=_skew)
+                            _added[0] += len(new) - len(pts)
+                            g = dict(g, geometry=new)
+                        out.append(g)
+                    return out, geom
+
+                rh.load = patched
+                for hn in cfg.HOLE_NUMS:
+                    try:
+                        svg, info = rh.render_hole(hn, cfg.HOLES)
+                    except Exception as e:
+                        errors.append((slug, hn, k, skew, repr(e)[:120]))
+                        continue
+                    got = (info["watercourses"], info["waters"], info["water_hazards"],
+                           svg.count('fill="#a9d3ef"'))
+                    holes += 1
+                    if got != plain[hn]:
+                        moved.append((slug, hn, f"k={k}{' skewed' if skew else ''}",
+                                      plain[hn], got))
+                inserted += added[0]
+                pairs += 1
+        finally:
+            rh.load = orig_load
+    assert not errors, f"{len(errors)} hole(s) failed to render re-noded: {errors[:5]}"
+    assert holes == 4 * expected_holes(), \
+        f"examined {holes} hole-renderings, expected {4 * expected_holes()}"
+    assert inserted > 4 * expected_holes(), (
+        f"the re-noding only inserted {inserted} vertices across {pairs} passes -- it is not "
+        f"actually re-noding anything, so this test would pass on a broken engine")
+    assert counts > 0, "the corpus reports no water at all, so nothing here could move"
+    assert not moved, (
+        f"{len(moved)} card(s) print a different water count when the SAME water is re-noded "
+        f"-- (course, hole, re-noding, before, after) with the tuple being "
+        f"(watercourses, waters, water_hazards, drawn water areas): {moved[:8]}"
+        f"{' ...' if len(moved) > 8 else ''}")
 
 
 @needs_corpus
