@@ -2884,7 +2884,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         starts -- so the sentence was corrected rather than the figure.
 
         THE 146 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
-        (see render_hole.edge_within) gave the-reserve 16 the 8,000 m^2 waste bunker it had been
+        (see render_hole.edge_within) gave the-reserve 16 the 3,568 m^2 waste bunker it had been
         printing blank ground over, and that card now prints "carry 177" for sand running to 323 -- 146
         yd of it. The old worst was philadelphia 1's 95. A card that draws more of the sand it always
         had needs the hedge MORE, not less.
@@ -14849,6 +14849,15 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
 SAND_CORRIDOR_M = 40.0       # render_hole's own bunker corridor: the 40 in `edge_within(g,40)`
 SAND_FILL = 'fill="#efe3b8"'  # one drawn bunker
 
+# The one bunker this suite and render_hole both name by OSM way id: the case the edge rule was
+# written for. Its shape figures are published in four docstrings and one live assertion string, so
+# they are constants here and MEASURED below rather than written down in five places.
+SAND_CASE = ("the-reserve-at-spanos-park", 16, 681278621)
+SAND_CASE_AREA_M2 = 3568     # shoelace on its closed 75-node ring -- see the test below
+SAND_CASE_BBOX_M2 = 8050     # the bounding box of that ring: 2.26x the sand, and NOT its area
+SAND_CASE_BBOX_M = (61.9, 130.1)  # that box, to 0.1 m, as the docstrings quote it
+SAND_CASE_NODES = 75
+
 
 def _dist_to_hole_line(pt, line_em):
     """Metres from a point to the hole's centerline, END CAPS INCLUDED -- the sand metric.
@@ -14908,13 +14917,13 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
     approximation gets.
 
     THE SHIPPED CARD IT COST: the-reserve 16, a 530 yd par 5, printed "4B 1W" with blank ground over
-    OSM way 681278621 -- tagged golf=bunker, 75 nodes, 62x130 m, about 8,000 m^2 of waste bunker whose
-    nearest edge is 6.9 m from the played line 214 m along a 477 m line, roughly 234 yd off the tee and
-    squarely in the landing zone. Its centroid sits 40.5 m out, so a 40 m bar on the centroid excluded
-    it: not counted, not drawn, and not eligible for a carry window. It appeared on NO card in the
-    corpus (centroid 40.5/120.9/133.3/176.5 m from holes 16/15/14/12). Moving the measurement to the
-    nearest EDGE at the SAME 40 m gives 62 of the 198 geometry cards at least one more bunker,
-    907 -> 984 drawn, and takes none away.
+    OSM way 681278621 -- tagged golf=bunker, 75 nodes, 3,568 m^2 of waste bunker by shoelace on its own
+    ring, whose nearest edge is 6.9 m from the played line 214 m along a 477 m line, roughly 234 yd off
+    the tee and squarely in the landing zone. Its centroid sits 40.5 m out, so a 40 m bar on the
+    centroid excluded it: not counted, not drawn, and not eligible for a carry window. It appeared on NO
+    card in the corpus (centroid 40.5/120.9/133.3/176.5 m from holes 16/15/14/12). Moving the
+    measurement to the nearest EDGE at the SAME 40 m gives 62 of the 198 geometry cards at least one
+    more bunker, 907 -> 984 drawn, and takes none away.
 
     WHY NOTHING SAW IT. test_each_card_footer_matches_its_own_map compares the footer against the drawn
     ink, but both sides of that comparison come out of render_hole's own `bunkers` list, so it
@@ -15008,9 +15017,9 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
             f"as a nearest edge under 10 m (6.9 m by segment-to-segment, more by this vertex witness) "
             f"and the docstring above needs re-measuring, not relaxing")
         assert counted >= 5 and drawn >= 5, (
-            f"{slug} hole {hn} counts {counted}B and inks {drawn} bunker(s) while way {way} -- 8,000 "
-            f"m^2 of sand -- comes {dist} m from the hole line. That card shipped as 4B with blank "
-            f"ground over it")
+            f"{slug} hole {hn} counts {counted}B and inks {drawn} bunker(s) while way {way} -- "
+            f"{SAND_CASE_AREA_M2:,} m^2 of sand -- comes {dist} m from the hole line. That card "
+            f"shipped as 4B with blank ground over it")
         assert shipped_n is None or shipped_n >= 5, (
             f"{slug} hole {hn}: the BUILT book still prints {shipped_n}B while the engine counts "
             f"{counted}B -- rebuild the books")
@@ -15021,6 +15030,140 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
         f"{len(omitted)} card(s) omit sand the hole line reaches -- (course, hole, [(way, metres from "
         f"the hole line)], counted B, drawn bunkers): {omitted[:6]}"
         f"{' ...' if len(omitted) > 6 else ''}")
+
+
+def _literals_and_comments(path):
+    """[(line, text)] for every string literal and every comment in `path`.
+
+    On the AST rather than a regex over the raw text, because the claim this file most needs to police
+    sits inside an f-string split across two source lines -- `f"... -- 8,000 " f"m^2 of sand ..."`.
+    CPython merges those Constant parts into one, so the AST sees the sentence a maintainer reads,
+    while `_prose`'s seam regex does not know about the `f` prefix and would read "8,000 " alone.
+    Comments come from tokenize, since they are not in the AST at all and this codebase keeps a lot of
+    its measurements in them.
+    """
+    import ast
+    import io
+    import tokenize
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    out = []
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.append((getattr(node, "lineno", 0), node.value))
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type == tokenize.COMMENT:
+            out.append((tok.start[0], tok.string.lstrip("#").strip()))
+    return out
+
+
+# "N m^2", excluding a rate like "4.6 pts/m^2". The window around each hit decides whether the figure
+# is a claim about SAND at all.
+_M2_FIGURE = re.compile(r"(?<![\d.,/])([\d][\d,]*(?:\.\d+)?)\s*m\^2")
+_SAND_WORD = re.compile(r"bunker|sand", re.I)
+_BBOX_WORD = re.compile(r"bbox|bounding box", re.I)
+
+
+@needs_corpus
+def test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bounding_box():
+    """"N m^2 of sand" has to be the area of the SAND.
+
+    THE DEFECT: way 681278621 -- the bunker the edge rule (render_hole.edge_within) exists for -- was
+    published with the area of its BOUNDING BOX, in four docstrings and in the failure text of a live
+    assertion in this file. Shoelace on its own closed 75-node ring gives 3,568 m^2 of sand; the box
+    around that ring is 2.26x larger, so every one of those five sentences over-stated the sand by that
+    factor. Nothing printed on a card depended on it, which is exactly why nothing caught it: it is an
+    unmeasured figure inside shipped assertion text, the class 4613a64 was written to close,
+    reintroduced three commits later in the prose of the fix that closed it.
+
+    So this test does what that lesson says: MEASURE the shape, then require every figure any file
+    publishes for it to be the measurement. Both files that name the way are swept -- render_hole.py
+    and this one -- and every "N m^2" whose surrounding sentence is about sand must be the ring's area,
+    unless that sentence says BOUNDING BOX, in which case it must be the box's. A future edit cannot
+    quietly put the box back under an area's wording, and cannot let either figure drift.
+
+    Measured two independent ways so the answer cannot be an artefact of the projection: the shoelace
+    in the hole's own local east/north frame -- the frame the 61.9 x 130.1 m box is quoted in, and the
+    frame render_hole itself reasons in -- cross-checked against pyproj's ellipsoidal geodesic area,
+    which has no projection at all. They agree to 0.17%.
+    """
+    slug, hn, way = SAND_CASE
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} is not built here, so its bunker cannot be measured")
+    cfg, rh = _engine(slug)
+    course, geom = rh.load()
+    import geo
+    loc = cfg.COURSE.get("location") or {}
+    line = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))[hn]["geometry"]
+    named = [g for g in course if g.get("id") == way and g.get("geometry")]
+    assert named, (
+        f"way {way} is no longer in {slug}'s osm_course.json; the case four docstrings quote has "
+        f"moved, so re-measure it rather than deleting this test")
+    ring = named[0]["geometry"]
+
+    # the hole's own frame, built here rather than imported: the figure under test must not come from
+    # the same code that selects the bunker
+    la0 = sum(q["lat"] for q in line) / len(line)
+    lo0 = sum(q["lon"] for q in line) / len(line)
+    ml = _mlon(la0)
+    pts = [((q["lon"] - lo0) * ml, (q["lat"] - la0) * R_LAT) for q in ring]
+    assert pts[0] == pts[-1], f"way {way} is not a closed ring ({len(pts)} points); shoelace needs one"
+    closed = pts[:-1]
+    shoelace = abs(sum(closed[i][0] * closed[(i + 1) % len(closed)][1]
+                       - closed[(i + 1) % len(closed)][0] * closed[i][1]
+                       for i in range(len(closed)))) / 2.0
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    bw, bh = max(xs) - min(xs), max(ys) - min(ys)
+    bbox = bw * bh
+
+    from pyproj import Geod
+    geod_area = abs(Geod(ellps="WGS84").polygon_area_perimeter(
+        [q["lon"] for q in ring], [q["lat"] for q in ring])[0])
+    assert abs(geod_area - shoelace) / shoelace < 0.005, (
+        f"the local frame puts way {way} at {shoelace:.1f} m^2 and the WGS84 geodesic at "
+        f"{geod_area:.1f} m^2 -- {abs(geod_area - shoelace) / shoelace * 100:.2f}% apart. The published "
+        f"figure is projection-dependent to a degree the docstrings do not say")
+
+    assert len(ring) == SAND_CASE_NODES, (
+        f"way {way} now has {len(ring)} nodes; the docstrings that quote {SAND_CASE_NODES} need "
+        f"re-measuring")
+    assert abs(shoelace - SAND_CASE_AREA_M2) <= 1.0, (
+        f"way {way}'s ring measures {shoelace:.1f} m^2 (geodesic {geod_area:.1f}) but this file "
+        f"publishes {SAND_CASE_AREA_M2} m^2")
+    assert abs(bbox - SAND_CASE_BBOX_M2) <= 2.0, (
+        f"way {way}'s bounding box measures {bw:.1f} x {bh:.1f} m = {bbox:.1f} m^2 but this file "
+        f"publishes {SAND_CASE_BBOX_M2} m^2")
+    assert (round(bw, 1), round(bh, 1)) == SAND_CASE_BBOX_M, (
+        f"way {way}'s box measures {bw:.2f} x {bh:.2f} m; the docstrings quote "
+        f"{SAND_CASE_BBOX_M[0]} x {SAND_CASE_BBOX_M[1]} m")
+    assert bbox / shoelace > 2.0, (
+        f"way {way}'s box is only {bbox / shoelace:.2f}x its ring, so the two figures are no longer "
+        f"far enough apart for this test to be worth its runtime -- re-read it before deleting it")
+
+    # THE SWEEP. Every m^2 figure about sand, in both files that name this way.
+    wrong, checked = [], 0
+    for rel in ("render_hole.py", os.path.join("tests", "test_phase1_regressions.py")):
+        for lineno, text in _literals_and_comments(os.path.join(ROOT, rel)):
+            one = " ".join(text.split())
+            for m in _M2_FIGURE.finditer(one):
+                window = one[max(0, m.start() - 80):m.end() + 80]
+                if not _SAND_WORD.search(window):
+                    continue
+                checked += 1
+                got = float(m.group(1).replace(",", ""))
+                want = SAND_CASE_BBOX_M2 if _BBOX_WORD.search(window) else SAND_CASE_AREA_M2
+                if abs(got - want) > 1.0:
+                    wrong.append((rel, lineno, m.group(1), window))
+    assert checked >= 5, (
+        f"only {checked} sand-area figure(s) found across render_hole.py and this file -- the sweep "
+        f"has lost sight of the prose it grades. It found six when it was written; the floor is five, "
+        f"so one sentence may be reworded away without a false failure")
+    assert not wrong, (
+        f"{len(wrong)} published sand area(s) are not the measured area. way {way}'s ring is "
+        f"{shoelace:.1f} m^2; its bounding box is {bw:.1f} x {bh:.1f} m = {bbox:.1f} m^2, "
+        f"{bbox / shoelace:.2f}x larger. A figure may be the box only where the sentence says so:\n  "
+        + "\n  ".join(f"{r}:{ln} publishes {v!r} m^2 in: ...{w}..." for r, ln, v, w in wrong[:6]))
 
 
 @needs_corpus

@@ -453,16 +453,22 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         The reach test for SAND, and deliberately neither of the other two in this function.
 
         AGAINST in_corridor, WHICH MEASURES THE CENTROID: a bunker is not its centroid, and the bigger
-        the sand the worse that approximation gets. the-reserve 16's way 681278621 is a 62x130 m,
-        ~8,000 m^2 waste bunker whose nearest edge comes 6.9 m from the played line 214 m along a
-        477 m line -- about 234 yd off the tee, in the landing zone -- while its centroid sits 40.5 m
-        away. At the 40 m bar the centroid test excluded it, so that card printed "4B 1W" and drew
-        blank ground over 8,000 m^2 of sand; it appeared on NO card in the corpus (centroid
-        40.5/120.9/133.3/176.5 m from holes 16/15/14/12). Water was rescued from exactly this defect
-        (see `waters`) and watercourses before it (see _seg_near_played_line); sand was the last hazard
-        still selected by one interior point. 40 m is not a new threshold -- it is the one this
-        selector already named, and the MEASUREMENT was what was wrong. Measured cost: 62 of the 198
-        geometry cards gain at least one bunker, 907 -> 984 drawn bunkers, and no card loses one.
+        the sand the worse that approximation gets. the-reserve 16's way 681278621 is a 3,568 m^2 waste
+        bunker -- shoelace on its own closed 75-node ring -- whose nearest edge comes 6.9 m from the
+        played line 214 m along a 477 m line, about 234 yd off the tee and in the landing zone, while
+        its centroid sits 40.5 m away. At the 40 m bar the centroid test excluded it, so that card
+        printed "4B 1W" and drew blank ground over all 3,568 m^2 of that sand; it appeared on NO card in the
+        corpus (centroid 40.5/120.9/133.3/176.5 m from holes 16/15/14/12). Water was rescued from
+        exactly this defect (see `waters`) and watercourses before it (see _seg_near_played_line); sand
+        was the last hazard still selected by one interior point. 40 m is not a new threshold -- it is
+        the one this selector already named, and the MEASUREMENT was what was wrong. Measured cost:
+        62 of the 198 geometry cards gain at least one bunker, 907 -> 984 drawn bunkers, and no card
+        loses one.
+
+        That ring is 61.9 x 130.1 m across, and this docstring published the area of THAT BOUNDING BOX
+        -- 8,050 m^2, 2.26x the sand -- as the bunker's area until it was measured on the ring
+        (tests: test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bounding_box).
+        The box is the wrong figure for "of sand" and the right one only where it says box.
 
         AGAINST any_within, WHICH CLIPS TO THE PLAYED LENGTH: sand past the green is real sand. A
         greenside bunker behind the green projects past t=1 and a bunker beside the tee projects before
