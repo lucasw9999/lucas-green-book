@@ -12220,6 +12220,12 @@ def test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf():
     assert not problems, "duplex rotation is wrong in the printed PDF:\n  " + "\n  ".join(problems)
 
 
+# What this test's own docstring used to say about scrollHeight. At module scope for the reason
+# _FALSE_DRIFT_CLAIM is: inside the test that scans for these shapes they are part of its own prose,
+# and the scan matched itself.
+_SCROLLHEIGHT_CLAMP_CLAIM = (r"clamps scrollHeight", r"scrollHeight is clamped")
+
+
 @needs_corpus
 def test_no_card_silently_clips_its_own_text():
     """`.card` is a fixed 3.5x5in box with overflow:hidden, so text that does not fit VANISHES.
@@ -12228,12 +12234,26 @@ def test_no_card_silently_clips_its_own_text():
     notice, an insufficient-green explanation or the guide-card legend, the tail is exactly the part
     that qualifies the claim, so silent truncation turns a hedged statement into a bare one.
 
-    Nothing in this suite could see it. The obvious probe, scrollHeight > clientHeight, is BLIND here:
-    with overflow:hidden Chrome clamps scrollHeight to clientHeight, and an injected 400px div moved
-    neither number. The card's children are absolutely positioned too. So this walks the elements that
-    directly hold visible text -- skipping SVG internals, whose rects legitimately exceed the card
-    because the hole map's background fills are clipped by the map's own viewBox on purpose -- and
-    compares each rect against the card box.
+    Nothing in this suite could see it, and the reason first written here was the wrong one. It said
+    Chrome clamps scrollHeight to clientHeight under overflow:hidden and that an injected 400px div
+    moved neither number. It does not clamp: measured in the same chrome-headless-shell build
+    tools/export_pdf.py exports with, this test's OWN probe div -- absolutely positioned 900 px down
+    inside a 480 px card -- carries card.scrollHeight past 900 while clientHeight stays put, and a
+    400 px block at that offset carries it to exactly 900+400. Every card of every book built here sits
+    at scrollHeight == clientHeight, so a bottom/right probe would not be permanently tripped by the
+    maps either.
+
+    The real reasons to walk RECTS are different, and they are measured below rather than asserted in
+    prose: scrollHeight cannot see overflow past the TOP or the LEFT edge -- a div 60 px above the card
+    box leaves it unchanged, and so does one 60 px to its left, while this test's metric measures all
+    four edges -- and it is one number for a whole card, so a failure could not name the element or
+    quote the sentence being cut. So this walks the elements that directly hold visible text -- skipping
+    SVG internals, whose rects legitimately exceed the card because the hole map's background fills are
+    clipped by the map's own viewBox on purpose -- and compares each rect against the card box.
+
+    The card's children are absolutely positioned, and the card itself is position:absolute, which is
+    why they count toward scrollHeight at all: it is a containing block. That is the detail the old
+    sentence had inverted.
 
     The metric is self-validating: it appends a deliberately overflowing element first and asserts it
     is detected, so a future change that makes the check blind fails here rather than passing quietly.
@@ -12292,6 +12312,27 @@ def test_no_card_silently_clips_its_own_text():
       d.setAttribute('class','overflow-probe');
       c.appendChild(d);
     }"""
+    # What scrollHeight ACTUALLY does here, measured instead of asserted in the docstring above. Each
+    # injected div is removed again, so this leaves the page exactly as it found it and can run before
+    # the probe check below. PROBE_TOP mirrors PROBE's own 900px offset -- one number, so the two
+    # cannot drift apart -- and PROBE_H is the block height whose sum with it is checked exactly.
+    PROBE_TOP, PROBE_H, OUTSIDE = 900, 400, 60
+    SCROLL_JS = """(k) => {
+      const cards=[...document.querySelectorAll('.card')];
+      const c=cards[0];
+      const mk=(css)=>{const d=document.createElement('div');d.style.cssText=css;
+                       d.textContent='OVERFLOW PROBE';c.appendChild(d);
+                       const v=c.scrollHeight;d.remove();return v;};
+      return {
+        cards: cards.length,
+        over: cards.filter(x=>x.scrollHeight!==x.clientHeight||x.scrollWidth!==x.clientWidth).length,
+        base: c.scrollHeight, client: c.clientHeight,
+        with_probe: mk(`position:absolute;top:${k.top}px;left:4px`),
+        with_block: mk(`position:absolute;top:${k.top}px;left:4px;width:10px;height:${k.h}px`),
+        above:      mk(`position:absolute;top:${-k.out}px;left:4px;width:10px;height:20px`),
+        left_of:    mk(`position:absolute;top:10px;left:${-k.out}px;width:20px;height:10px`),
+      };
+    }"""
     with sync_playwright() as pw:
         try:
             b = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
@@ -12299,12 +12340,22 @@ def test_no_card_silently_clips_its_own_text():
             pytest.skip("no browser available")
         pg = b.new_page()
         problems, checked, seen = [], 0, collections.Counter()
+        cards_seen, cards_over, scroll = 0, 0, None
         try:
             for bf in books:
                 ref = os.path.basename(os.path.dirname(bf))
                 pg.goto("file://" + os.path.abspath(bf))
                 pg.emulate_media(media="print")
                 clipped = pg.evaluate(JS)
+                sc = pg.evaluate(SCROLL_JS, {"top": PROBE_TOP, "h": PROBE_H, "out": OUTSIDE})
+                cards_seen += sc["cards"]
+                cards_over += sc["over"]
+                if sc["over"]:
+                    problems.append(
+                        f"{ref}: {sc['over']} of {sc['cards']} cards scroll past their own box "
+                        f"(scrollHeight/Width beyond clientHeight/Width) -- something overflows the "
+                        f"bottom or right edge")
+                scroll = scroll or (ref, sc)
                 # the check must be able to SEE overflow on this very page
                 pg.evaluate(PROBE)
                 if not any(x["cls"] == "overflow-probe" for x in pg.evaluate(JS)):
@@ -12329,6 +12380,43 @@ def test_no_card_silently_clips_its_own_text():
     assert checked, "no book was measured in a browser, so nothing was verified"
     assert_no_course_skipped(seen, "test_no_card_silently_clips_its_own_text")
     assert not problems, "text is being silently clipped:\n  " + "\n  ".join(problems[:10])
+
+    # WHY RECTS AND NOT scrollHeight, measured rather than remembered. The paragraph above used to say
+    # Chrome clamps scrollHeight to clientHeight under overflow:hidden and that a 400px div moved
+    # neither number; both halves are false on chrome-headless-shell, and the sentence was the one a
+    # future maintainer would trust when deciding this walk is over-engineered.
+    ref, sc = scroll
+    assert sc["base"] == sc["client"], (
+        f"{ref}'s first card already scrolls ({sc['base']} against a client height of {sc['client']}), "
+        f"so the baseline these measurements rest on is not the one they were taken against")
+    assert sc["with_probe"] > sc["base"] and sc["with_probe"] >= PROBE_TOP, (
+        f"{ref}: this test's own probe div, {PROBE_TOP} px down inside a {sc['client']} px card, leaves "
+        f"scrollHeight at {sc['with_probe']} (was {sc['base']}). If Chrome really did clamp it to the "
+        f"client height, the docstring above could go back to saying so -- it says the opposite because "
+        f"this is what the browser does")
+    assert sc["with_block"] == PROBE_TOP + PROBE_H, (
+        f"{ref}: a {PROBE_H} px block {PROBE_TOP} px down leaves scrollHeight at {sc['with_block']}, "
+        f"not the {PROBE_TOP + PROBE_H} its own geometry asks for")
+    assert sc["above"] == sc["base"] and sc["left_of"] == sc["base"], (
+        f"{ref}: scrollHeight is {sc['above']} with a div {OUTSIDE} px ABOVE the card and "
+        f"{sc['left_of']} with one {OUTSIDE} px to its LEFT, against a baseline of {sc['base']}. It used "
+        f"to see neither, which is this walk's reason for measuring all four edges of every rect; if it "
+        f"sees them now, that reason has changed and the docstring needs re-reading")
+    assert cards_over == 0 and cards_seen >= len(books), (
+        f"{cards_over} of {cards_seen} cards across {len(books)} book(s) scroll past their own box; the "
+        f"docstring says none do, which is what makes a bottom/right probe usable in principle")
+    doc = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                      "test_no_card_silently_clips_its_own_text")
+    for claim in _SCROLLHEIGHT_CLAMP_CLAIM:
+        for hit in re.finditer(claim, doc):
+            window = doc[max(0, hit.start() - 60):hit.end() + 200]
+            assert re.search(r"\bnot\b|never|false|wrong|does not", window, re.I), (
+                f"the docstring above still states {hit.group(0)!r} as fact. Measured just now on this "
+                f"browser: the probe div takes scrollHeight from {sc['base']} to {sc['with_probe']} "
+                f"while clientHeight stays {sc['client']}, and a {PROBE_H} px block takes it to "
+                f"{sc['with_block']}. Chrome does not clamp it; the reasons to walk rects are the top "
+                f"and left edges ({sc['above']} and {sc['left_of']}, both unchanged) and naming the "
+                f"element")
 
 
 @needs_corpus
