@@ -1052,6 +1052,114 @@ def test_the_deletion_guard_is_installed_for_every_deletion_primitive_it_claims(
             os.rmdir(live)
 
 
+def test_an_rmtree_callback_cannot_delete_a_real_course_from_inside_the_stand_down(tmp_path,
+                                                                                 monkeypatch):
+    """The stand-down that lets an approved rmtree walk its own subtree was a hole for anything
+    ELSE that ran during that walk -- and rmtree hands control to caller code by design.
+
+    The mechanism, measured before it was fixed: `guarded` set a process-global counter for the
+    duration of `real(path, ...)`, and every wrapper skipped its check while that counter was up.
+    shutil.rmtree calls the caller's `onerror` (3.11) / `onexc` (3.12) callback from inside that
+    same window, so `shutil.rmtree(<scratch>, onerror=lambda *a: os.remove(<course.json>))`
+    DELETED the scorecard with no refusal at all. Built against a fake repo under tmp_path, that
+    attack destroyed the fake course.json 1/1.
+
+    The stand-down now covers only what it was ever justified for: a name relative to a file
+    descriptor, which the predicate provably cannot resolve to a directory. shutil.rmtree's inner
+    walk is exactly that and nothing else -- os.unlink(entry.name, dir_fd=topfd) and
+    os.rmdir(entry.name, dir_fd=topfd) -- while a callback deleting by PATH is judged like any
+    other caller. That is spelling-agnostic on purpose: it closes `onerror`, `onexc` and whatever
+    the next release names the same callback, without the guard having to know the parameter list.
+
+    Both callback spellings are pinned here. The real `shutil.rmtree` only accepts `onexc` from
+    3.12, so that half is driven through a stub whose `real` invokes the callback the way rmtree
+    does -- the wrapper is what is under test either way.
+    """
+    import inspect
+    import shutil
+
+    import conftest
+
+    root = _fake_repo_for_deletion_guard(tmp_path)
+    victim = os.path.join(root, "courses", "merion-golf-club", "course.json")
+    scratch = os.path.join(root, "courses", "_synth_ticks")
+    assert os.path.exists(victim), "the fake scorecard this attack aims at must exist to be lost"
+
+    # os.remove, guarded over the FAKE root, layered over whatever the session already installed --
+    # so a win here can only destroy the fake course.json built under tmp_path.
+    monkeypatch.setattr(os, "remove", guarded_deleter(os.remove, "os.remove", root))
+    assert conftest._approved_subtree_depth == 0, "a stand-down was already open before the attack"
+
+    refused = []
+
+    def payload(*a, **k):
+        try:
+            os.remove(victim)
+            refused.append(False)
+        except AssertionError:
+            refused.append(True)
+
+    # (1) the live attack: a real shutil.rmtree over an approved scratch path, whose callback is
+    # reached because the leaf does not exist. rmtree is wrapped over the fake root as well, so the
+    # top-level approval is the fake repo's, not this checkout's.
+    fake_rmtree = guarded_deleter(shutil.rmtree, "shutil.rmtree", root, opens_subtree=True)
+    fake_rmtree(os.path.join(scratch, "does-not-exist"), onerror=payload)
+    assert refused == [True], (
+        "shutil.rmtree's onerror callback deleted a real course from inside the approved-subtree "
+        "stand-down, with no refusal raised")
+    assert os.path.exists(victim), (
+        "the hand-transcribed scorecard was DESTROYED through an rmtree callback -- the stand-down "
+        "that exists for rmtree's own dir_fd walk covered arbitrary caller code as well")
+
+    # (2) the same callback under 3.12's name for it, and under a positional onerror, driven through
+    # a stub so both are pinned on 3.11 too
+    def stub_rmtree(path, *a, **k):
+        cb = k.get("onexc") or k.get("onerror") or (a[1] if len(a) > 1 else None)
+        assert cb is not None, "this stub only models an rmtree that was given a callback"
+        cb(os.unlink, path, OSError("staged failure"))
+
+    staged = guarded_deleter(stub_rmtree, "stub.rmtree", root, opens_subtree=True)
+    for label, args, kwargs in (("onexc", (), {"onexc": payload}),
+                                ("onerror", (), {"onerror": payload}),
+                                ("a positional onerror", (False, payload), {})):
+        refused.clear()
+        staged(scratch, *args, **kwargs)
+        assert refused == [True], (
+            f"a callback passed as {label} deleted a real course from inside the stand-down")
+
+    # (3) the stand-down still does the one job it exists for, and closes afterwards
+    assert conftest._approved_subtree_depth == 0, \
+        "the stand-down outlived the rmtree that opened it; every later deletion is unguarded"
+    walked = []
+    inner = guarded_deleter(lambda path, *a, **k: walked.append(path), "stub.unlink", root)
+    outer = guarded_deleter(lambda path, *a, **k: inner("course.json", dir_fd=9), "stub.rmtree",
+                            root, opens_subtree=True)
+    outer(scratch)
+    assert walked == ["course.json"], (
+        "an approved rmtree must still be allowed to walk its own subtree with dir_fd; that is how "
+        "shutil.rmtree is implemented on this platform, and nine fixtures here depend on it")
+
+    # ...and a dir_fd deletion with no rmtree in flight is still refused outright
+    with pytest.raises(AssertionError, match="dir_fd"):
+        inner("course.json", dir_fd=9)
+
+    # (4) the residual is REAL and must stay disclosed. A callback that deletes with dir_fd= set is
+    # still waived, because a name relative to a descriptor is precisely what the predicate cannot
+    # resolve -- measured here rather than assumed, so the docstring below is describing this tree.
+    got_through = []
+    fd_holder = guarded_deleter(lambda path, *a, **k: got_through.append(path), "stub.unlink", root)
+    guarded_deleter(lambda path, *a, **k: fd_holder("course.json", dir_fd=11), "stub.rmtree", root,
+                    opens_subtree=True)(scratch)
+    assert got_through == ["course.json"], (
+        "the dir_fd waiver has changed shape; the disclosure checked next no longer matches the code")
+    disclosure = inspect.getdoc(conftest._deletion_cannot_reach_a_real_course.__wrapped__)
+    assert "dir_fd" in disclosure.split("WHAT IS NOT:", 1)[1], (
+        "the guard still waives a dir_fd deletion during an approved rmtree -- an onerror handler "
+        "calling os.unlink(name, dir_fd=<a real course's fd>) destroys the scorecard -- and its WHAT "
+        "IS NOT list no longer says so. An undisclosed residual in a session-wide interceptor over "
+        "data with no backup is worse than a disclosed one")
+
+
 def test_the_course_template_documents_every_key_the_engine_reads():
     """examples/course.json is the ONLY course data this repo ships, and a stranger's whole map of
 

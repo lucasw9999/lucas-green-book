@@ -126,9 +126,15 @@ def rmtree_target_is_scratch(path, root):
 # shutil.rmtree walks with os.unlink(name, dir_fd=fd) / os.rmdir(name, dir_fd=fd) on this platform
 # (shutil._use_fd_functions is True on macOS and Linux). Those inner names are relative to a
 # descriptor, so the predicate cannot judge them -- but they are all inside a top-level path that was
-# already judged, so the wrappers stand down for the duration. Depth-counted, not a bool, because
-# rmtree can be re-entered through an onerror handler. Single-threaded assumption stated plainly: a
-# deletion on ANOTHER thread while an approved rmtree is in flight is not checked.
+# already judged, so the wrappers stand down FOR THOSE and nothing else. The stand-down is scoped to
+# dir_fd deletions rather than to the whole call because rmtree hands control to caller code during
+# that walk: its onerror (3.11) / onexc (3.12) callback used to inherit a blanket stand-down, and
+# `shutil.rmtree(<scratch>, onerror=lambda *a: os.remove(<course.json>))` deleted the scorecard with
+# no refusal. A callback that deletes by PATH is judged like any other caller now, which closes both
+# callback spellings -- and any future rename of them -- without this file knowing the parameter list.
+# Depth-counted, not a bool, because a callback may itself rmtree a scratch directory, and a bool
+# would close the outer stand-down when that inner one returned. Single-threaded assumption stated
+# plainly: a dir_fd deletion on ANOTHER thread while an approved rmtree is in flight is not checked.
 _approved_subtree_depth = 0
 
 _REFUSAL_ADVICE = (
@@ -150,7 +156,7 @@ def refuse_unless_deletable(call, path, kwargs, root):
 
 
 def guarded_deleter(real, call, root, opens_subtree=False):
-    """Wrap one deletion primitive. `opens_subtree` marks rmtree, whose inner calls are pre-approved.
+    """Wrap one deletion primitive. `opens_subtree` marks rmtree, whose inner dir_fd calls are waived.
 
     Returned rather than defined inline so the truth table can build a guard bound to a FAKE root and
     attack the wrapper -- the dir_fd and `path=` cases live here, not in the predicate, and a wrapper
@@ -158,7 +164,11 @@ def guarded_deleter(real, call, root, opens_subtree=False):
     """
     def guarded(path, *a, **k):
         global _approved_subtree_depth
-        if not _approved_subtree_depth:
+        # The waiver is exactly as wide as its justification: a name relative to a file descriptor,
+        # inside an rmtree whose top-level path was already judged. Everything else -- including a
+        # deletion by path from an onerror/onexc callback running during that same walk -- is judged.
+        walking_own_subtree = _approved_subtree_depth and k.get("dir_fd") is not None
+        if not walking_own_subtree:
             refuse_unless_deletable(call, path, k, root)
         if not opens_subtree:
             return real(path, *a, **k)
@@ -195,6 +205,15 @@ def _deletion_cannot_reach_a_real_course():
         through the os module -- rasterio and laspy both write through Python, but nothing here
         enforces that.
       * another thread deleting while an approved rmtree is in flight.
+      * a deletion that passes dir_fd= WHILE an approved shutil.rmtree is in flight -- whether from
+        that rmtree's own onerror/onexc callback or from another thread. This is the residual the
+        stand-down still leaves, and it is measured rather than supposed: an onerror handler calling
+        os.unlink("course.json", dir_fd=<a real course's fd>) destroys the scorecard. The waiver
+        cannot be narrower, because a name relative to a descriptor is exactly what the predicate
+        cannot resolve to a directory portably, and nothing tells rmtree's own walk apart from
+        anyone else's. Two things bound it: nothing in this repo passes dir_fd at all, and outside an
+        approved rmtree it is refused outright. A callback deleting by PATH is checked -- that one WAS
+        open, and closed; see guarded_deleter.
 
     Everything not under courses/ is delegated untouched, including pytest's own tmp_path cleanup --
     but on a PROOF that it is elsewhere (see _canonical_forms), not because the check failed to
