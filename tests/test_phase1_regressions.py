@@ -10742,8 +10742,9 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
     # _code_only, because this file's own docstring at the top names MAX_TEE_RELIEF_FT and so does a
     # comment beside the constant -- so a raw grep here was satisfied by PROSE. Proven: deleting the
     # constant and the four-line gate, leaving only the module docstring's mention, left this
-    # assertion green (and the whole suite at 219 passed). Assertion (4) below deliberately reads the
-    # docstring instead; that one is ABOUT the prose.
+    # assertion green (and the whole suite green with it -- 225 passed at 42446b7, the tree it was
+    # measured on; this read 219, which was the count six commits before that).
+    # Assertion (4) below deliberately reads the docstring instead; that one is ABOUT the prose.
     assert "MAX_TEE_RELIEF_FT" in _code_only(fhe_src), "the pad-relief gate this test is about is gone"
 
     # 1. The artifact genuinely cannot attribute an omission: no recorded hole carries a refusal.
@@ -10805,7 +10806,10 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
 
     IT WAS GUARDED BY NOTHING, proven by deletion. The only test that named the constant grepped the
     RAW module source for it, which the module docstring satisfies; deleting the constant and the gate
-    left the suite at 219 passed. tee_median_is_trustworthy was called zero times in this suite, because
+    left the suite green -- 225 passed, 1 skipped, the whole count at the commit this was measured on
+    (42446b7). The number is written against that tree deliberately: an earlier draft of this paragraph
+    quoted 219, which was the count six commits earlier, and a bare "the suite at N passed" goes stale
+    with the next test anyone adds. tee_median_is_trustworthy was called zero times in this suite, because
     every corpus test reads a hole_elev.json already on disk and the one test that re-runs the stage is
     behind both @pytest.mark.network and a cold-build flag. What the deletion buys: merion h11 starts
     printing "green 35.3 ft below the tee (-10.7 m, 3917 tee returns)" off a pad spanning 3.1 ft, and
@@ -12020,9 +12024,14 @@ def test_no_card_silently_clips_its_own_text():
                                     f"see clipped text and its silence means nothing")
                     continue
                 checked += 1
-                seen[ref] += 1     # PAST the probe check, for the same reason as the three
-                                   # sites above: a book whose probe fails is a book this
-                                   # test measured nothing on.
+                seen[ref] += 1     # PAST the probe check -- and NOT for the reason the three sites
+                                   # above moved. This one was never vacuous: the only path that skips
+                                   # a book also appends to `problems`, so `assert not problems`
+                                   # already failed the mutation. What the move buys is WHICH
+                                   # assertion fires: the coverage guard now names the book that
+                                   # measured nothing, instead of it being one line in a problems list
+                                   # that prints only its first ten. A message improvement, recorded as
+                                   # that rather than as a fourth vacuous guard.
                 for x in clipped:
                     problems.append(
                         f"{ref} card {x['ci']}: text overruns the card by {x['over']}px and is cut off "
