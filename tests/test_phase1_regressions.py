@@ -12193,6 +12193,140 @@ def test_a_leftover_scratch_directory_cannot_blank_the_provenance_record():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _gen_disclaimers():
+    """tools/gen_disclaimers.py, imported fresh. Popped first because these tests reassign its ROOT."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    sys.modules.pop("gen_disclaimers", None)
+    import gen_disclaimers
+    return gen_disclaimers
+
+
+def _synth_disclaimer_tree(tmp, mutate=lambda h: h):
+    """A courses/ + legal/ tree holding real built books, optionally with their markup mutated.
+
+    Real HTML, not a hand-written stub: the thing under test is an extractor aimed at the markup
+    generate.py actually emits, and a stub of that markup is a second thing to get wrong. Two pocket
+    books and one coach edition, which is the minimum that exercises both sections of the record.
+    Returns (out_path, text_before)."""
+    for slug, files in (("merion-golf-club", ("greenbook.html", "greenbook_coach.html")),
+                        ("valley-hi-country-club", ("greenbook.html",))):
+        d = os.path.join(tmp, "courses", slug)
+        os.makedirs(d, exist_ok=True)
+        for fn in files:
+            with open(os.path.join(ROOT, "courses", slug, fn), encoding="utf-8") as fh:
+                h = fh.read()
+            with open(os.path.join(d, fn), "w", encoding="utf-8") as fh:
+                fh.write(mutate(h))
+    os.makedirs(os.path.join(tmp, "legal"), exist_ok=True)
+    out = os.path.join(tmp, "legal", "05_DISCLAIMER_TEXT.md")
+    import shutil
+    shutil.copyfile(os.path.join(ROOT, "legal", "05_DISCLAIMER_TEXT.md"), out)
+    with open(out, encoding="utf-8") as fh:
+        return out, fh.read()
+
+
+def _run_gen_disclaimers(tmp, out, argv):
+    """gen_disclaimers.main() against a temp tree, with ROOT/OUT/argv restored afterwards."""
+    gd = _gen_disclaimers()
+    real_root, real_out, real_argv = gd.ROOT, gd.OUT, sys.argv
+    gd.ROOT, gd.OUT = tmp, out
+    try:
+        sys.argv = ["gen_disclaimers.py"] + list(argv)
+        return gd.main()
+    finally:
+        gd.ROOT, gd.OUT, sys.argv = real_root, real_out, real_argv
+
+
+@needs_corpus
+def test_a_stylesheet_refactor_cannot_blank_the_disclaimer_record():
+    """The sibling defect fixed in 2d97cd5, surviving one file over in tools/gen_disclaimers.py.
+
+    That generator reads legal/05 out of its OWN output HTML with
+    `re.findall(r'<div class="abtxt">(.*?)</div>')` and had **no floor on blocks found** -- main()
+    checked only that the book FILES exist, which is a different question from whether any printed
+    legal text was extracted from them. So a stylesheet refactor to `class="abtxt legal"` -- one
+    space, the most ordinary edit CSS ever receives -- matched nothing, build() emitted
+    "Covers **0** built books (0 pocket, 0 enlarged)" and "*(none built)*" under both sections,
+    --check reported STALE, and **obeying its printed remedy blanked the legal record**: measured
+    here, 114 lines and 4 quoted variants down to 34 and none, with the writer returning 0 as though
+    it had succeeded.
+
+    legal/05 is the file whose entire value is being the exact printed words -- its own stated
+    standard is that a "verbatim" record which is not verbatim is worse than none. An empty one whose
+    remedy is to commit the emptiness is the worst reachable state, and it was one CSS class away.
+
+    Same shape as test_a_leftover_scratch_directory_cannot_blank_the_provenance_record, for the
+    generator that fix's own commit message pointed at as already getting its guard right. It did get
+    the ENUMERATOR right (both main() and build() go through the filtered _books helper); what it
+    never had was a floor on the EXTRACTION."""
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="greenbook-disclaimerfloor-")
+    try:
+        out, before = _synth_disclaimer_tree(
+            tmp, lambda h: h.replace('<div class="abtxt">', '<div class="abtxt legal">'))
+        rc_check = _run_gen_disclaimers(tmp, out, ["--check"])
+        rc_write = _run_gen_disclaimers(tmp, out, [])
+        with open(out, encoding="utf-8") as fh:
+            after = fh.read()
+        assert after == before, (
+            f"legal/05 was blanked by a CSS class rename: {len(before.splitlines())} lines became "
+            f"{len(after.splitlines())}. A record that calls itself verbatim must refuse to be "
+            f"rewritten from an extractor that matched nothing")
+        assert "Covers **0** built books" not in after and "*(none built)*" not in after, (
+            "the record now claims to cover zero books; that is the emptiness, committed")
+        assert rc_check != 1, (
+            f"--check returned 1 (STALE) when the extractor found no printed legal text at all. "
+            f"STALE means 'regenerate me', and regenerating destroys the record -- the failure is "
+            f"in the extractor, and the exit code has to say so")
+        assert rc_check and rc_write, (
+            f"--check returned {rc_check} and a plain run returned {rc_write}; an extractor that "
+            f"matched nothing in {2} pocket books and 1 coach edition is a failure, not a success")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@needs_corpus
+def test_the_disclaimer_extractor_survives_a_nested_div():
+    """`(.*?)</div>` stops at the FIRST close tag, which need not be the block's own.
+
+    Not reachable today and measured so: all 15 built books carry exactly one `.abtxt` block each,
+    containing `<b>` and nothing else -- no nested `<div>` anywhere in any of them. It is one markup
+    change away from being reachable, though (a `<div class="ig">` wrapper around the QR caption
+    already lives a few lines below in the same panel), and the failure mode is the quiet one: the
+    record keeps its shape and silently loses its tail, so the licence line -- which is the LAST
+    sentence of every block -- is the first thing to go. The floor added beside this test cannot see
+    that, because a truncated block is still a block.
+
+    So the extractor matches the block's own balanced close tag. This test wraps a nested div around
+    the middle of a real block and asserts the whole thing still comes out."""
+    gd = _gen_disclaimers()
+    with open(os.path.join(ROOT, "courses", "merion-golf-club", "greenbook.html"),
+              encoding="utf-8") as fh:
+        h = fh.read()
+    plain = gd._abtxt_blocks_from_html(h) if hasattr(gd, "_abtxt_blocks_from_html") else None
+    assert plain is not None, ("no html-level extractor to test; _abtxt_blocks reads a path, so a "
+                              "nested-div case cannot be built without writing into courses/")
+    assert len(plain) == 1, f"expected one .abtxt block in a real pocket book, got {len(plain)}"
+    tail = "CC BY-NC-ND 4.0."
+    assert plain[0].endswith(tail), f"real block does not end with the licence line: {plain[0][-60:]!r}"
+    # wrap a nested div around one interior element, the way a styling change would. `<b>independent</b>`
+    # is chosen because it appears exactly once in the file and sits near the START of the block, so an
+    # inner close tag that terminated the match would drop nearly the whole thing.
+    marker = "<b>independent</b>"
+    assert h.count(marker) == 1, (
+        f"{marker} appears {h.count(marker)} times; this test needs a unique interior element inside "
+        f"the .abtxt block so the wrapper it inserts is provably nested")
+    nested = h.replace(marker, f'<div class="hl">{marker}</div>', 1)
+    got = gd._abtxt_blocks_from_html(nested)
+    assert len(got) == 1, f"a nested <div> split one block into {len(got)}"
+    assert got[0].endswith(tail), (
+        f"a nested <div> truncated the block at the inner close tag, silently dropping everything "
+        f"after it -- including the licence line this record exists to quote. Got tail: "
+        f"{got[0][-70:]!r}")
+    assert got[0] == plain[0], "the nested wrapper changed the extracted words"
+
+
 @needs_corpus
 def test_no_implausible_elevation_figure_is_recorded():
     """No hole may record a tee-to-green change beyond the plausibility bound.

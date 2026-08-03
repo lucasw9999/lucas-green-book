@@ -51,6 +51,14 @@ WHY = """## Why this text covers the risks
 """
 
 
+class ExtractionFailed(Exception):
+    """The extractor found no printed legal text in a book that is sitting right there on disk.
+
+    Raised rather than returning an empty list, because an empty list is what silently produced a
+    legal record covering ZERO books whose printed remedy was to commit the emptiness. See main().
+    """
+
+
 def _text_of(abtxt_html):
     """The printed words of one <div class="abtxt"> block, tags and entities resolved."""
     t = re.sub(r"<[^>]+>", "", abtxt_html)
@@ -58,9 +66,66 @@ def _text_of(abtxt_html):
     return re.sub(r"\s+", " ", t).strip()
 
 
+_DIV_OPEN = re.compile(r"<div\b", re.I)
+_DIV_CLOSE = re.compile(r"</div\s*>", re.I)
+
+
+def _balanced_div_body(h, start):
+    """h[start:] up to the close tag of the <div> that ends at `start`, or None if it never closes.
+
+    The extractor used `(.*?)</div>`, which stops at the FIRST close tag in the block rather than the
+    block's OWN. Every `.abtxt` block in all 15 built books today holds `<b>` and nothing else, so the
+    truncation is latent and not live -- but the failure mode is the quiet one, and it eats the block
+    from the middle outward to the END, where the licence line is. A record whose whole value is being
+    the exact printed words cannot lose its tail without saying so, and no floor on block COUNT can
+    see it: a truncated block is still a block. So the close tag is matched by depth.
+    """
+    depth, pos = 1, start
+    while True:
+        c = _DIV_CLOSE.search(h, pos)
+        if c is None:
+            return None
+        o = _DIV_OPEN.search(h, pos)
+        if o is not None and o.start() < c.start():
+            depth += 1
+            pos = o.end()
+            continue
+        depth -= 1
+        if depth == 0:
+            return h[start:c.start()]
+        pos = c.end()
+
+
+def _abtxt_blocks_from_html(h, where="<html>"):
+    """Every printed "About & legal" block in one book's HTML, in document order."""
+    out = []
+    for m in re.finditer(r'<div class="abtxt"\s*>', h):
+        body = _balanced_div_body(h, m.end())
+        if body is None:
+            raise ExtractionFailed(
+                f"{where}: an <div class=\"abtxt\"> block is never closed, so the printed legal text "
+                f"cannot be read out of it")
+        out.append(_text_of(body))
+    return out
+
+
 def _abtxt_blocks(path):
-    h = open(path, encoding="utf-8").read()
-    return [_text_of(m) for m in re.findall(r'<div class="abtxt">(.*?)</div>', h, re.S)]
+    with open(path, encoding="utf-8") as fh:
+        h = fh.read()
+    blocks = _abtxt_blocks_from_html(h, os.path.relpath(path, ROOT))
+    if not blocks:
+        # THE FLOOR. Its absence is the defect fixed in gen_provenance.py by 2d97cd5, surviving here:
+        # main() checked that the book FILES exist, which is a different question from whether any
+        # printed legal text came out of them. A stylesheet refactor to `class="abtxt legal"` -- one
+        # space -- matched nothing, build() emitted "Covers 0 built books" and "*(none built)*",
+        # --check said STALE, and obeying the remedy took legal/05 from 114 lines and four quoted
+        # variants to 34 and none, with the writer exiting 0.
+        raise ExtractionFailed(
+            f"{os.path.relpath(path, ROOT)}: no <div class=\"abtxt\"> block found, but the book is "
+            f"built and on disk. The printed markup changed and this extractor did not; fix the "
+            f"extractor. Do NOT regenerate -- an empty legal/05 is worse than a stale one, because "
+            f"a record that calls itself verbatim and quotes nothing still reads as complete")
+    return blocks
 
 
 def _wrap(t, width=96):
@@ -138,7 +203,16 @@ def main():
               "  belongs in this record. Build one first:\n"
               "    COACH=1 COURSE=<slug> python3 generate.py")
         return 1
-    new = build()
+    # The floor, wrapped around build() rather than repeated beside it -- the enumerator fault 2d97cd5
+    # fixed in the sibling was exactly a guard that asked a different question from the body, so this
+    # one asks build()'s own question by running it. An extractor that matched nothing cannot answer
+    # "is this file stale?", and 1 (STALE) is the one answer that must never be given for it: STALE
+    # means "regenerate me", and regenerating is what destroys the record.
+    try:
+        new = build()
+    except ExtractionFailed as e:
+        print(f"cannot read the printed legal text out of the built books:\n  {e}")
+        return 2
     if "--check" in sys.argv:
         cur = open(OUT, encoding="utf-8").read() if os.path.exists(OUT) else ""
         if cur.strip() != new.strip():
