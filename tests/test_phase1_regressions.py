@@ -2316,6 +2316,76 @@ def test_every_third_party_import_is_declared():
         "install instructions:\n  " + "\n  ".join(sorted(set(unguarded))))
 
 
+def test_the_software_licence_record_matches_the_repo_it_describes():
+    """legal/10 was the only record in legal/ that nothing checked, and it had drifted.
+
+    Every other document there is tied to something: legal/03 has `gen_provenance --check` and 17
+    references in this file, legal/05 has `gen_disclaimers --check`, legal/09 has ten, legal/11 has a
+    test of its own. legal/10 -- the one that says which third-party code this project asks you to
+    install and under what licence -- had none, and it published "44 tracked files" against a repo that
+    holds 46. The two it had not noticed were added by the very audit round that wrote it:
+    legal/11_HORIZONTAL_EARTH_MODEL.md and tests/conftest.py.
+
+    A stale file count is small on its own. What it shows is that this document alone had no way to
+    fail, and the claim that matters here is not the count: it is that the licence table COVERS the
+    dependency list. That asymmetry is the file's own stated reason for existing -- an AGPL dependency
+    sat in requirements.txt unnoticed because legal/ was thorough about data licences and silent about
+    software ones -- and adding a package without recording its licence recreates it exactly.
+
+    Two properties, both derived from the repo rather than from a list here:
+      * every package requirements.txt declares, INCLUDING the "# OPTIONAL:" ones, has a row;
+      * the tracked-file count the document publishes is the count git reports.
+
+    Versions are deliberately NOT asserted. The document records what was verified from installed
+    metadata on one machine; requiring the reader's numpy to match would fail the suite for having a
+    newer package, which is the machine-pinned-calibration defect this file has fixed five times over.
+    """
+    import subprocess
+    doc_path = os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md")
+    with open(doc_path, encoding="utf-8") as fh:
+        doc = fh.read()
+
+    # (1) every declared dependency has a row. Compared on the INSTALL name (the table's first column)
+    # and also accepted under its import name, since DIST_TO_IMPORT is what declared_dependencies
+    # returns and the table names the package you pip install.
+    rows = {c.strip().strip("`*").strip().lower()
+            for line in doc.splitlines() if line.startswith("|")
+            for c in [line.split("|")[1]] if c.strip() and "---" not in c}
+    inverse = {v: k for k, v in DIST_TO_IMPORT.items()}
+    missing = sorted(d for d in declared_dependencies()
+                     if d not in rows and inverse.get(d, d) not in rows)
+    assert not missing, (
+        f"requirements.txt declares {missing} and legal/10 records no licence for it. That is the "
+        f"exact asymmetry this document was written to close -- an AGPL dependency sitting in "
+        f"requirements.txt with nothing in legal/ saying so.")
+    # ...and no row invents a dependency, which is how a table outlives the thing it describes
+    known = declared_dependencies() | {DIST_TO_IMPORT.get(k, k) for k in rows}
+    stale_rows = sorted(r for r in rows
+                        if DIST_TO_IMPORT.get(r, r) not in declared_dependencies()
+                        and r not in ("package", "chromium"))
+    assert not stale_rows, (
+        f"legal/10 records a licence for {stale_rows}, which requirements.txt no longer declares -- a "
+        f"licence table describing a dependency set the project has moved off is worse than none")
+    assert len(known) >= 9, f"only {len(known)} packages in play; the table cannot be right"
+
+    # (2) the published file count
+    said = re.search(r"ships \*\*(\d+) tracked files", doc)
+    assert said, ("legal/10 no longer states how much of this repository is tracked, which is the "
+                  "premise of its 'nothing here is redistributed' section")
+    try:
+        listing = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                                 capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        pytest.skip(f"git unavailable: {e}")
+    if listing.returncode != 0:
+        pytest.skip("not a git checkout")
+    tracked = [p for p in listing.stdout.split("\0") if p]
+    assert int(said.group(1)) == len(tracked), (
+        f"legal/10 publishes {said.group(1)} tracked files; git reports {len(tracked)}. The document "
+        f"is a legal record of what this repository redistributes, and it is the only one in legal/ "
+        f"with nothing checking it -- which is why it drifted by exactly the files the audit added.")
+
+
 def test_no_test_carries_the_same_skip_condition_twice():
     """A decorator applied twice is a slip that reads as a second guard, and pytest hides it.
 
