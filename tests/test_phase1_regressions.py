@@ -2323,8 +2323,16 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
     references in this file, legal/05 has `gen_disclaimers --check`, legal/09 has ten, legal/11 has a
     test of its own. legal/10 -- the one that says which third-party code this project asks you to
     install and under what licence -- had none, and it published "44 tracked files" against a repo that
-    holds 46. The two it had not noticed were added by the very audit round that wrote it:
-    legal/11_HORIZONTAL_EARTH_MODEL.md and tests/conftest.py.
+    holds 46.
+
+    THE +2 IS NOT TWO NEW FILES, and the first account of it said so wrongly. 69414b2 introduced this
+    document saying 44 against a tree that held 43 -- the same commit having untracked
+    legal/04_INDEPENDENT_CREATION_DEFENSE.md and legal/08_AUDIT_2026-07-13.md -- so it was over by one
+    on the day it was written; 44 was never a true count of anything. THREE files were tracked after it:
+    legal/11_HORIZONTAL_EARTH_MODEL.md, surface_io.py and tests/conftest.py. So the gap is three
+    additions minus a one-file birth error, and the document was wrong in both directions at once. That
+    arithmetic is measured from git, over a closed interval, in
+    test_the_licence_guards_account_of_its_own_drift_is_the_one_git_tells.
 
     A stale file count is small on its own. What it shows is that this document alone had no way to
     fail, and the claim that matters here is not the count: it is that the licence table COVERS the
@@ -2383,7 +2391,118 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
     assert int(said.group(1)) == len(tracked), (
         f"legal/10 publishes {said.group(1)} tracked files; git reports {len(tracked)}. The document "
         f"is a legal record of what this repository redistributes, and it is the only one in legal/ "
-        f"with nothing checking it -- which is why it drifted by exactly the files the audit added.")
+        f"with nothing checking it -- which is why it drifted unnoticed for two rounds.")
+
+
+# The closed historical interval the guard above tells a story about: legal/10's birth, and the commit
+# that corrected its file count. Both are identifiers, not measurements -- everything derived FROM them
+# below is measured -- and the interval is closed, so a file added tomorrow cannot make the story false.
+LEGAL10_BORN = "69414b2"
+LEGAL10_RECOUNTED = "d8e8c29"
+
+# The false account, in the shapes it was written in. At module scope on purpose: inside the test that
+# scans for them these literals are part of that test's own prose, and the scan matched itself.
+_FALSE_DRIFT_CLAIM = (r"exactly the files (?:the audit|it) added", r"drifted by exactly")
+
+
+def test_the_licence_guards_account_of_its_own_drift_is_the_one_git_tells():
+    """The story a guard tells about WHY a record drifted has to be the story in the history.
+
+    d8e8c29 fixed a real defect: legal/10 published "44 tracked files" against a repo holding 46, and
+    the number is derived from `git ls-files` now, so the guard itself is sound. Its ACCOUNT was wrong
+    twice, in the commit message and in the shipped docstring:
+
+      * it named TWO files as the whole gap. THREE were added between legal/10's birth and that fix --
+        legal/11_HORIZONTAL_EARTH_MODEL.md, surface_io.py and tests/conftest.py -- and surface_io.py
+        was named nowhere, in either place.
+      * it treated 44 as having once been right. It never was: 69414b2 introduced the document saying
+        44 against a tree that held 43, the same commit having untracked legal/04 and legal/08. It was
+        over by one on the day it was written.
+
+    So the +2 is 3 additions MINUS a 1-file birth error, and the sentence in the guard's own failure
+    text -- "it drifted by exactly the files the audit added" -- was false in both of its halves. That
+    matters more here than a wrong figure would elsewhere: legal/10 is a legal record of what this
+    repository redistributes, and the sentence a maintainer reads when its guard fires tells them where
+    to look.
+
+    Every figure below is measured from git over a CLOSED interval, so this test does not go stale when
+    the next file is added: the tree sizes at both ends, the count the document published at both ends,
+    and the set of paths added between them. The account itself is required to live in the guard that
+    fires -- test_the_software_licence_record_matches_the_repo_it_describes -- because that is the prose
+    a maintainer reads when the count is wrong again, and it is checked there against every path git
+    reports and against both halves of the arithmetic.
+    """
+    import subprocess
+
+    def git(*args):
+        r = subprocess.run(("git",) + args, cwd=ROOT, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            pytest.skip(f"git {' '.join(args)} failed: {r.stderr.strip()[:120]}")
+        return r.stdout
+
+    try:
+        born = git("rev-list", "--max-parents=100", "-n", "1", LEGAL10_BORN).strip()
+    except Exception as e:
+        pytest.skip(f"git unavailable: {e}")
+    if not born:
+        pytest.skip("not a git checkout")
+    doc_rel = "legal/10_SOFTWARE_DEPENDENCIES.md"
+    added_in = git("log", "--diff-filter=A", "--format=%H", LEGAL10_BORN, "--", doc_rel).split()
+    assert added_in and added_in[-1].startswith(LEGAL10_BORN), (
+        f"{doc_rel} was not introduced at {LEGAL10_BORN} but at {added_in[-1:] or 'nowhere'} -- the "
+        f"interval this test audits has moved, so re-read the history before editing it")
+
+    def published(rev):
+        m = re.search(r"ships \*\*(\d+) tracked files",
+                      git("show", f"{rev}:{doc_rel}"))
+        assert m, f"legal/10 at {rev} states no tracked-file count"
+        return int(m.group(1))
+
+    def tree_size(rev):
+        return len([p for p in git("ls-tree", "-r", "--name-only", "-z", rev).split("\0") if p])
+
+    said_then, held_then = published(LEGAL10_BORN), tree_size(LEGAL10_BORN)
+    said_now, held_now = published(LEGAL10_RECOUNTED), tree_size(LEGAL10_RECOUNTED)
+    changes = git("diff", "--name-status", LEGAL10_BORN, LEGAL10_RECOUNTED).splitlines()
+    added = sorted(ln.split("\t")[1] for ln in changes if ln.startswith("A\t"))
+    deleted = sorted(ln.split("\t")[1] for ln in changes if ln.startswith("D\t"))
+
+    over_at_birth = said_then - held_then
+    assert over_at_birth > 0, (
+        f"legal/10 published {said_then} at {LEGAL10_BORN} against a tree of {held_then}, so it was "
+        f"NOT wrong at birth and this test's whole premise has changed")
+    assert said_now == held_now, (
+        f"{LEGAL10_RECOUNTED} was supposed to make the published count right: it says {said_now} "
+        f"against a tree of {held_now}")
+    assert said_now - said_then == len(added) - len(deleted) - over_at_birth, (
+        f"the arithmetic does not close: the published count moved {said_then} -> {said_now} while git "
+        f"shows {len(added)} addition(s), {len(deleted)} deletion(s) and a {over_at_birth}-file error "
+        f"at birth")
+
+    GUARD = "test_the_software_licence_record_matches_the_repo_it_describes"
+    here = os.path.join(ROOT, "tests", "test_phase1_regressions.py")
+    prose = _func_prose(here, GUARD)
+    unnamed = [p for p in added if os.path.basename(p) not in prose]
+    assert not unnamed, (
+        f"{len(added)} file(s) were added between {LEGAL10_BORN} and {LEGAL10_RECOUNTED} and {GUARD} "
+        f"does not name {unnamed}. All of {added} are the gap; naming a subset is how the original "
+        f"account came to credit two files for a three-file change")
+    for figure, what in ((said_then, "the count legal/10 published at birth"),
+                         (held_then, "the number of files the tree actually held then")):
+        assert re.search(rf"\b{figure}\b", prose), (
+            f"{GUARD} does not state {what} ({figure}); both halves of the birth error have to be "
+            f"written down or the next reader cannot tell {said_then} was never right")
+
+    # ...and the false sentence itself, in whichever prose still carries it. Commit messages are
+    # history and are left alone; a live failure message is not history, it is what a maintainer reads.
+    for fn in (GUARD, "test_the_licence_guards_account_of_its_own_drift_is_the_one_git_tells"):
+        text = _func_prose(here, fn)
+        for claim in _FALSE_DRIFT_CLAIM:
+            for hit in re.finditer(claim, text):
+                window = text[max(0, hit.start() - 120):hit.end() + 80]
+                assert re.search(r"\bnot\b|never|false|wrong", window, re.I), (
+                    f"{fn} still claims the drift was {hit.group(0)!r}. It was "
+                    f"{len(added)} addition(s) less a {over_at_birth}-file error at birth")
 
 
 def test_no_test_carries_the_same_skip_condition_twice():
