@@ -29,6 +29,7 @@ import glob
 import json
 import math
 import os
+import pathlib
 import re
 import sys
 
@@ -379,73 +380,14 @@ def _courses_diff(before, after):
     return vanished, touched
 
 
-def rmtree_target_is_scratch(path, root):
-    """May a test recursively DELETE `path`? True only for scratch space, never for course data.
-
-    _courses_are_read_only below NOTICES a real course being destroyed, at session teardown, which for
-    this directory is worth nothing: courses/ is gitignored, there is no copy in history, on a remote or
-    anywhere else, and course.json is a scorecard a human transcribed from published cards and
-    cross-verified. A report that it is gone is not a recovery. So the guard that MATTERS has to say no
-    before the syscall, not after it.
-
-    What it is for is one editing slip. Nine tests and fixtures here call shutil.rmtree on a
-    HARD-CODED path under courses/ -- `courses/_synth_ticks`, `_synth_gate`, `_synth_trees`,
-    `_synth_notrees`, `_synth_water`, `_synth_bmode`, `_synth_rmguard`, `_testmsg`, `_cold_<ref>` --
-    because config.py resolves courses/ from the repo root and a tmp_path cannot stand in. Every one
-    of them is a copy-paste away from a slug that names a real course, and the mistake would be
-    silent: rmtree(ignore_errors=True), which they all pass, does not even raise.
-
-    Three answers, and the last two are the ones a plain `startswith("_")` test would miss:
-      * courses/<scratch>/... -- yes. That is the whole point; the fixtures must keep working.
-      * courses/<real slug>/... -- no, asked of distribution.is_corpus_slug, this repo's single
-        spelling of "is that a course or somebody's scratch?"
-      * courses/ itself, or ANY directory containing it (root, a parent of root) -- no. Those are not
-        "not a corpus slug", they are worse than one bad slug, and the shape of the check that only
-        looks at the first path segment under courses/ answers them wrongly by default.
-
-    Pure and root-parameterised so it can be truth-tabled against real slugs without a real courses/
-    tree in the way -- the alternative is a predicate testable only by deleting something.
-    """
-    import distribution
-    courses = os.path.abspath(os.path.join(root, "courses"))
-    p = os.path.abspath(str(path))
-    if p == courses or courses.startswith(p + os.sep):
-        return False                       # courses/ itself, or something that holds it
-    rel = os.path.relpath(p, courses)
-    if rel.startswith(os.pardir + os.sep) or rel == os.pardir:
-        return True                        # nowhere near courses/: tmp_path and friends
-    return not distribution.is_corpus_slug(rel.split(os.sep)[0])
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _rmtree_cannot_reach_a_real_course():
-    """Refuse the syscall, not just report it afterwards.
-
-    Wrapping shutil.rmtree rather than offering a helper the fixtures are asked to remember: a helper
-    is exactly the kind of guard this file keeps finding inert, because a new fixture written next
-    month calls shutil.rmtree like the eight before it and nothing notices. There is one choke point
-    and this is it -- every deletion in this suite, and any that production code reached through a
-    test, goes through the same function.
-
-    Everything not under courses/ is delegated untouched, including pytest's own tmp_path cleanup.
-    """
-    import shutil
-    real = shutil.rmtree
-
-    def guarded(path, *a, **k):
-        if not rmtree_target_is_scratch(path, ROOT):
-            raise AssertionError(
-                f"REFUSING shutil.rmtree({path!r}): that is course data, not scratch space.\n"
-                f"  courses/ is gitignored -- no copy in history, none on a remote -- and course.json\n"
-                f"  is a hand-transcribed, cross-verified scorecard. Write fixtures to tmp_path, or to\n"
-                f"  a slug starting with '_' if config.py has to resolve them under courses/.")
-        return real(path, *a, **k)
-
-    shutil.rmtree = guarded
-    try:
-        yield
-    finally:
-        shutil.rmtree = real
+# The deletion guard -- the predicate AND the wrappers that install it -- lives in tests/conftest.py.
+# It was defined here, and its own comment called itself "one choke point ... every deletion in this
+# suite", which was true of this file and nothing else: there is no other test module today, so
+# `pytest tests/<any new file>` would have run entirely unguarded. conftest.py is the only file pytest
+# loads for every module in this directory, and pytest puts that directory on sys.path before this
+# module is imported. Imported by name rather than respelled, so the truth table below measures the
+# code that actually runs.
+from conftest import guarded_deleter, rmtree_target_is_scratch
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -467,9 +409,10 @@ def _courses_are_read_only():
     as data loss; see the regression test named in _courses_snapshot.
 
     It NOTICES; it does not prevent. For a directory with no copy anywhere that is only half a guard,
-    so _rmtree_cannot_reach_a_real_course above refuses the syscall instead -- see
+    so tests/conftest.py's _deletion_cannot_reach_a_real_course refuses the syscall instead -- see
     rmtree_target_is_scratch. This one stays because deletion is not the only way to lose the data:
-    it also catches a real course.json or book being REWRITTEN in place, which no rmtree guard sees.
+    it also catches a real course.json or book being REWRITTEN in place, which no deletion guard sees
+    -- os.replace and open(..., "w") destroy just as thoroughly and never call unlink.
 
     What it is for is the accident nobody would remember to prevent: a fixture that builds a course
     under courses/ instead of tmp_path is a natural thing to write, and would look fine until the day it
@@ -696,8 +639,14 @@ def test_rmtree_refuses_a_real_course_before_the_syscall_and_still_allows_scratc
 
     Then one live assertion that the wrapper is actually INSTALLED, because a predicate nothing calls
     is this file's most-repeated defect. It is aimed at courses/sample-golf-club -- corpus-shaped by
-    name, absent by construction -- so a guard that failed open raises FileNotFoundError from the real
-    rmtree rather than deleting anything. Both outcomes are safe; only one is the right exception.
+    name, absent by construction -- so there is nothing there to lose whatever the guard does.
+
+    An earlier version of this docstring said the absence made the probe safe because "a guard that
+    failed open raises FileNotFoundError from the real rmtree rather than deleting anything". That is
+    wrong: ignore_errors=True swallows FileNotFoundError, so a failed-open guard would return quietly
+    and this test would fail with DID NOT RAISE. The probe is safe because the path does not exist,
+    not because rmtree would complain -- and DID NOT RAISE is the failure mode to expect if the
+    session fixture stops being installed.
     """
     import shutil
 
@@ -739,6 +688,264 @@ def test_rmtree_refuses_a_real_course_before_the_syscall_and_still_allows_scratc
         # empty by construction, so this can never leave scratch behind under courses/ -- the leak
         # distribution.is_corpus_slug records having happened once with _synth_ticks
         if os.path.isdir(live):
+            os.rmdir(live)
+
+
+# Every attack in the table below is aimed at a FAKE repo root built under tmp_path. That is
+# deliberate: a truth-table entry that wins must destroy fake data, never the one copy of the corpus.
+# (label, path built from (fake_root, tmp_path), may-delete)
+DELETION_GUARD_TRUTH_TABLE = [
+    # ---- refuse: real course data, however the path is spelled -------------------------------
+    ("a real course, plain absolute path",
+     lambda r, t: os.path.join(r, "courses", "merion-golf-club"), False),
+    ("a real course reached through .. traversal",
+     lambda r, t: os.path.join(r, "courses", "_synth_ticks", os.pardir, "merion-golf-club"), False),
+    ("a real course as a pathlib.Path",
+     lambda r, t: pathlib.Path(r) / "courses" / "merion-golf-club", False),
+    ("a real course with a trailing separator",
+     lambda r, t: os.path.join(r, "courses", "merion-golf-club") + os.sep, False),
+    ("a real course with a doubled separator",
+     lambda r, t: os.path.join(r, "courses") + os.sep + os.sep + "merion-golf-club", False),
+    ("a subdirectory of a real course",
+     lambda r, t: os.path.join(r, "courses", "merion-golf-club", "dem_hd"), False),
+    ("a file inside a real course",
+     lambda r, t: os.path.join(r, "courses", "merion-golf-club", "course.json"), False),
+    ("courses/ itself, which holds every course",
+     lambda r, t: os.path.join(r, "courses"), False),
+    ("the repo root, which contains courses/", lambda r, t: r, False),
+    ("the parent of the repo root", lambda r, t: str(t), False),
+    # the four that FAILED OPEN before this table existed
+    ("a real course spelled in a different case (APFS and NTFS fold it to the same directory)",
+     lambda r, t: os.path.join(r, "COURSES", "Merion-Golf-Club"), False),
+    ("a real course as a bytes path",
+     lambda r, t: os.path.join(r, "courses", "merion-golf-club").encode(), False),
+    ("a real course through a symlinked ancestor, target already realpath'd",
+     lambda r, t: os.path.realpath(os.path.join(str(t), "link-to-repo", "courses",
+                                                "merion-golf-club")), False),
+    ("a real course through a symlinked ancestor, left unresolved",
+     lambda r, t: os.path.join(str(t), "link-to-repo", "courses", "merion-golf-club"), False),
+    # ---- permit: scratch space and everything genuinely elsewhere ----------------------------
+    ("a scratch slug -- eight fixtures here depend on this",
+     lambda r, t: os.path.join(r, "courses", "_synth_ticks"), True),
+    ("a path inside a scratch course",
+     lambda r, t: os.path.join(r, "courses", "_cold_merion-golf-club", "laz"), True),
+    ("a scratch slug in a different case is still scratch",
+     lambda r, t: os.path.join(r, "courses", "_SYNTH_TICKS"), True),
+    ("a path nowhere near courses/ -- pytest's own tmp_path cleanup takes this branch",
+     lambda r, t: os.path.join(str(t), "elsewhere"), True),
+    ("a sibling whose name merely starts with 'courses'",
+     lambda r, t: os.path.join(r, "courses-backup"), True),
+]
+
+
+def _fake_repo_for_deletion_guard(tmp_path):
+    """A repo-shaped tree with one real course and one scratch slug, plus a symlinked ancestor."""
+    root = tmp_path / "fake-repo"
+    (root / "courses" / "merion-golf-club" / "dem_hd").mkdir(parents=True)
+    (root / "courses" / "merion-golf-club" / "course.json").write_text("{}", encoding="utf-8")
+    (root / "courses" / "_synth_ticks").mkdir()
+    (root / "courses" / "_cold_merion-golf-club" / "laz").mkdir(parents=True)
+    (root / "courses-backup").mkdir()
+    link = tmp_path / "link-to-repo"
+    if not link.exists():
+        link.symlink_to(root, target_is_directory=True)
+    return str(root)
+
+
+def test_the_deletion_guard_denies_by_default_over_every_spelling_of_a_real_course(tmp_path,
+                                                                                  monkeypatch):
+    """The guard that refuses a deletion inside courses/ FAILED OPEN, and one case was live here.
+
+    It was built the wrong way round. The predicate asked "can I see that this is a real course?" and
+    its last resort for anything it did not recognise was `return True` -- an ALLOW default -- so every
+    spelling of a path it failed to place under courses/ was permitted. It compared with
+    os.path.abspath, which normalises neither symlinks nor case, so four spellings of a real course
+    slipped through:
+
+      * courses/ -> COURSES/, a case difference. Not theoretical: this repo lives on APFS, which is
+        case-insensitive, so os.path.samefile(courses/merion-golf-club, COURSES/merion-golf-club) is
+        True and the guard permitted deleting the real thing.
+      * a bytes path -- str(b"/x") is "b'/x'", which abspath resolved against the cwd, landing nowhere
+        near courses/.
+      * dir_fd= plus a relative name, which abspath resolved against the cwd instead of the fd.
+      * the repo reached through a symlinked ancestor with the target realpath'd, so the two sides of
+        the comparison spelled the same directory differently.
+
+    Rebuilt to answer the opposite question -- "is this PROVABLY scratch?" -- with one `return False`
+    fall-through, and to canonicalise with realpath plus case folding on both sides before comparing.
+    Because canonicalisation is what failed, the path is now reduced three ways (lexical, fully
+    resolved, and ancestors-resolved-leaf-literal) and a deletion is permitted only if ALL THREE land
+    somewhere safe.
+
+    A truth table rather than a handful of asserts, because this is the guard standing between an
+    editing slip and the only copy of the corpus: every spelling above must stay pinned so a later
+    normalisation change cannot silently reopen one. Every case is aimed at a FAKE repo under
+    tmp_path -- an attack that wins here destroys fake data.
+    """
+    root = _fake_repo_for_deletion_guard(tmp_path)
+    # cwd inside the fake repo, so a relative spelling resolves there rather than into this checkout
+    monkeypatch.chdir(root)
+
+    wrong = []
+    for label, build, expected in DELETION_GUARD_TRUTH_TABLE:
+        got = rmtree_target_is_scratch(build(root, tmp_path), root)
+        if bool(got) is not expected:
+            verb = "PERMITTED" if got else "refused"
+            want = "must be permitted" if expected else "MUST BE REFUSED"
+            wrong.append(f"  {verb} {label} -- {want}")
+    assert not wrong, (
+        "the deletion guard answers the wrong way for %d of %d spellings:\n%s\n"
+        "A wrongly PERMITTED row is destroyed course data: courses/ is gitignored, there is no copy "
+        "in history or on a remote, and course.json is a hand-transcribed, cross-verified scorecard."
+        % (len(wrong), len(DELETION_GUARD_TRUTH_TABLE), "\n".join(wrong)))
+
+    # a relative spelling, resolved against the cwd bound above
+    assert not rmtree_target_is_scratch(os.path.join("courses", "merion-golf-club"), root), \
+        "a real course named relative to the repo root must be refused"
+    assert rmtree_target_is_scratch(os.path.join("courses", "_synth_ticks"), root), \
+        "a scratch slug named relative to the repo root must still be removable"
+
+    # the verifier's exact symlink case, which needs the ROOT side spelled through the link and the
+    # TARGET side already resolved -- the two sides then disagree textually about one directory
+    via_link = str(tmp_path / "link-to-repo")
+    assert not rmtree_target_is_scratch(
+        os.path.realpath(os.path.join(via_link, "courses", "merion-golf-club")), via_link), \
+        "a real course is still a real course when the repo root is reached through a symlink"
+
+    # ...and a predicate that cannot read its argument at all must refuse, never fall through to allow
+    for junk in (5, None, object(), b"", ""):
+        assert not rmtree_target_is_scratch(junk, root), \
+            f"{junk!r} is not a path; a guard that cannot read its argument must refuse"
+
+
+def test_the_deletion_guard_covers_the_wrapper_plumbing_not_just_the_predicate(tmp_path):
+    """The predicate is half of it. These four cases live in the WRAPPER and one was a fail-open.
+
+    Aimed at a guard built over a FAKE repo root and a recording stub, so every case that "wins"
+    deletes nothing at all:
+
+      * `shutil.rmtree(path=...)` as a keyword -- the wrapper's own signature has to bind it, or a
+        caller spelling it that way walks straight past the check.
+      * `dir_fd=` plus a relative name. os.path.abspath resolved such a name against the CWD, which is
+        not the directory the descriptor names, so the old predicate reported a real course as being
+        nowhere near courses/ and PERMITTED it. Refused outright now: nothing in this repo passes
+        dir_fd, and a descriptor cannot be turned back into a path portably.
+      * a predicate that raises must PROPAGATE and must not delete. `if not pred(...)` has that
+        property, and pinning it stops a later `try/except: pass` from turning the guard into a
+        formality.
+      * the re-entrancy window. shutil.rmtree walks its own tree with os.unlink(name, dir_fd=fd) on
+        this platform, so refusing every dir_fd would break the nine fixtures the guard exists to
+        keep working. The wrappers stand down inside a rmtree that was already approved -- and must
+        NOT stand down otherwise.
+    """
+    import conftest
+
+    root = _fake_repo_for_deletion_guard(tmp_path)
+    calls = []
+    guard = guarded_deleter(lambda path, *a, **k: calls.append(path), "stub.remove", root)
+
+    real = os.path.join(root, "courses", "merion-golf-club")
+    scratch = os.path.join(root, "courses", "_synth_ticks")
+
+    with pytest.raises(AssertionError, match="course data"):
+        guard(path=real)
+    assert not calls, "the guard let a real course through when the path came in as a keyword"
+
+    with pytest.raises(AssertionError, match="dir_fd"):
+        guard("merion-golf-club", dir_fd=7)
+    assert not calls, "a name relative to a file descriptor was deleted unchecked"
+
+    guard(scratch)
+    assert calls == [scratch], "the guard blocked a legitimate scratch deletion"
+
+    # a raising predicate propagates, and nothing is deleted
+    calls.clear()
+    boom = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("predicate blew up"))
+    saved = conftest.rmtree_target_is_scratch
+    conftest.rmtree_target_is_scratch = boom
+    try:
+        with pytest.raises(RuntimeError, match="predicate blew up"):
+            guard(scratch)
+    finally:
+        conftest.rmtree_target_is_scratch = saved
+    assert not calls, (
+        "the guard swallowed an exception from its own predicate and deleted anyway -- an unreadable "
+        "answer must never read as permission")
+
+    # the re-entrancy bypass is scoped to an APPROVED rmtree and nothing else
+    assert conftest._approved_subtree_depth == 0, \
+        "the approved-subtree counter leaked; every later deletion in this session is unguarded"
+    inner = []
+    inner_guard = guarded_deleter(lambda path, *a, **k: inner.append(path), "stub.unlink", root)
+    outer = guarded_deleter(lambda path, *a, **k: inner_guard(real, dir_fd=3), "stub.rmtree", root,
+                            opens_subtree=True)
+    outer(scratch)
+    assert inner == [real], (
+        "an approved rmtree must be allowed to walk its own subtree with dir_fd; it is how "
+        "shutil.rmtree is implemented on this platform")
+    assert conftest._approved_subtree_depth == 0, "the bypass outlived the rmtree that opened it"
+    with pytest.raises(AssertionError, match="course data"):
+        inner_guard(real)
+
+
+def test_the_deletion_guard_is_installed_for_every_deletion_primitive_it_claims():
+    """A predicate nothing calls is this suite's most-repeated defect. This checks the LIVE wrappers.
+
+    The guard used to wrap shutil.rmtree alone, while its comment claimed "every deletion in this
+    suite". A single os.unlink of a real course.json is the worse loss -- it destroys the
+    hand-transcribed scorecard and leaves the folder looking intact -- and nothing stopped it.
+
+    Every probe is aimed at courses/sample-golf-club, which is corpus-shaped by NAME and absent by
+    construction, so the wrapper is the only thing that can speak. Note what the absence does and does
+    not buy: a guard that failed open would NOT raise FileNotFoundError through
+    rmtree(ignore_errors=True), which swallows it -- the commit that added this probe claimed it would.
+    What makes the probe safe is that there is nothing there to delete, and what makes it meaningful is
+    that a missing guard shows up as "DID NOT RAISE".
+    """
+    import shutil
+
+    absent = os.path.join(ROOT, "courses", "sample-golf-club")
+    assert not os.path.exists(absent), "every probe here relies on the path NOT existing"
+
+    for label, call in (
+            ("shutil.rmtree", lambda: shutil.rmtree(absent, ignore_errors=True)),
+            ("shutil.rmtree(path=)", lambda: shutil.rmtree(path=absent, ignore_errors=True)),
+            ("os.remove", lambda: os.remove(os.path.join(absent, "course.json"))),
+            ("os.unlink", lambda: os.unlink(os.path.join(absent, "course.json"))),
+            ("os.rmdir", lambda: os.rmdir(absent)),
+            ("os.removedirs", lambda: os.removedirs(absent)),
+            ("pathlib.Path.unlink", lambda: pathlib.Path(absent, "course.json").unlink()),
+            ("pathlib.Path.rmdir", lambda: pathlib.Path(absent).rmdir()),
+            ("a case-different spelling", lambda: shutil.rmtree(
+                os.path.join(ROOT, "COURSES", "sample-golf-club"), ignore_errors=True)),
+            ("a bytes path", lambda: shutil.rmtree(absent.encode(), ignore_errors=True)),
+    ):
+        with pytest.raises(AssertionError) as e:
+            call()
+        assert "course data" in str(e.value), (
+            f"{label} reached a corpus-shaped path under courses/ without the session guard "
+            f"speaking: {e.value!r}")
+
+    # ...and it does not stand in the way of the scratch directory the fixtures actually remove. This
+    # also exercises the re-entrancy bypass for real: rmtree walks the tree with dir_fd on macOS.
+    live = os.path.join(ROOT, "courses", "_synth_rmguard")
+    os.makedirs(os.path.join(live, "dem_hd"), exist_ok=True)
+    with open(os.path.join(live, "dem_hd", "hole01.json"), "w", encoding="utf-8") as fh:
+        fh.write("{}")
+    try:
+        shutil.rmtree(live, ignore_errors=True)
+        assert not os.path.exists(live), (
+            "the guard blocked a legitimate scratch cleanup, or refused the dir_fd calls "
+            "shutil.rmtree makes while walking its own subtree")
+    finally:
+        # rmtree above either emptied it or the guard is broken; either way leave nothing behind --
+        # the leak distribution.is_corpus_slug records having happened once with _synth_ticks
+        if os.path.isdir(live):
+            for base, dirs, files in os.walk(live, topdown=False):
+                for f in files:
+                    os.remove(os.path.join(base, f))
+                for d in dirs:
+                    os.rmdir(os.path.join(base, d))
             os.rmdir(live)
 
 
@@ -1923,6 +2130,9 @@ def test_every_third_party_import_is_declared():
     optional_used = []
     local = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "*.py"))}
     local |= {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "tools", "*.py"))}
+    # tests/*.py too -- the comment above always claimed "test-only helpers" but the set did not carry
+    # them, so tests/conftest.py, which holds the deletion guard, read as an undeclared dependency.
+    local |= {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "tests", "*.py"))}
     missing = []
     for p in sorted(glob.glob(os.path.join(ROOT, "*.py"))
                     + glob.glob(os.path.join(ROOT, "tools", "*.py"))
