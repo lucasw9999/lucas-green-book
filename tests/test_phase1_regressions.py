@@ -1357,11 +1357,19 @@ def test_every_printed_caveat_matches_the_data_behind_it():
                           + "\n  ".join(problems[:10]))
 
 
-def _arc_yd_for(ref, panel_html):
-    """The drawn centreline length in yards for the hole this panel shows, from the engine itself.
+def _hole_info_for(ref, panel_html):
+    """render_hole's own `info` for the hole this panel shows, or None.
 
-    The card yardage is the SCORECARD's walked figure; the drawn OSM line can be longer or shorter.
-    Any bound on the gutter pair has to use the line the numbers were measured on."""
+    Three fields of it bound or explain the gutter pair, and all three have to come from the engine
+    rather than be recomputed here:
+      * arc_yd -- the card yardage is the SCORECARD's walked figure and the drawn OSM line can be
+        longer or shorter, so any bound has to use the line the numbers were measured on;
+      * green_gap_yd -- the distance between the two points the pair is measured FROM, because the
+        left number is a radius about the green CENTROID while the right one is a walk to the line's
+        green END. Recomputing it here would be a second copy of that frame's centroid, projection
+        and vertex order;
+      * length_m -- the tee-to-green chord, so arc/chord says whether the hole is straight by the
+        engine's own rule (render_hole.PAR3_STRAIGHT_MAX / WANDER_MAX, both 1.02)."""
     m = re.search(r'<div class="hnum">(\d+)</div>', panel_html)
     if not m:
         return None
@@ -1370,7 +1378,7 @@ def _arc_yd_for(ref, panel_html):
         _svg, info = rh.render_hole(int(m.group(1)), cfg.HOLES)
     except Exception:
         return None
-    return info.get("arc_yd")
+    return info
 
 
 @needs_corpus
@@ -3176,20 +3184,36 @@ def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_ca
 
 @needs_corpus
 def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
-    """A player can ADD the two numbers on a row. On a dogleg they will not reach the card yardage,
-    and the guide has to say so, because the arithmetic is a twelve-year-old's first instinct.
+    """A player can ADD the two numbers on a row. They will not reach the card yardage, and the guide
+    has to say WHY, because the arithmetic is a twelve-year-old's first instinct.
 
     Left is the STRAIGHT distance to the green centre -- the shot you actually have to hit. Right is
-    the distance from the tee WALKED along the centreline, which is how a scorecard measures. On a
-    straight hole those sum to the card; on a bend they cannot, and the gap grows as the tick moves
-    into the corner. philadelphia 17 is the extreme: card 472, drawn arc 441, and its 300-yd row
-    reads 300 + 118 = 418. Both numbers are individually true. 50 of 198 cards have a row off by
-    10 yd or more.
+    the distance from the tee WALKED along the centreline, which is how a scorecard measures. Two
+    different measures, so their sum is not the card. philadelphia 17 is the extreme: card 472, drawn
+    arc 441, and its 300-yd row reads 300 + 118 = 418. Both numbers are individually true. 64 of 252
+    cards have a row off by 10 yd or more.
 
-    THAT WORKED EXAMPLE READ "300 + 102 = 402" over a card that prints 118, and the count read 196
+    THE PRINTED LEGEND BLAMED THE DOGLEG, AND THE DATA SAYS OTHERWISE. It read "on a dogleg they do
+    not add up", which tells a reader on a straight hole that their card should add up. Measured over
+    the shipped books with the engine's own straightness rule (arc/chord <= 1.02, render_hole's
+    PAR3_STRAIGHT_MAX and WANDER_MAX): of the 813 printed pairs on STRAIGHT holes, 639 -- 79% -- do
+    not add up, by a median 3 yd, 209 of them by 5 or more and 60 by 10 or more. The worst is 28 yd on
+    philadelphia 12, whose arc/chord is 1.0003: dead straight, 300 + 252 = 552 against a 580 card. It
+    is not a dogleg phenomenon at all, and the legend now names the cause instead: two different
+    measures. (The mismatch is not even one-signed -- 130 of 1047 rows sum HIGH, 724 low, 193 exactly.
+    17 of the 130 high rows sit on holes bent past 1.02, including philadelphia 17 above, so "straight
+    holes overshoot" is false too.)
+
+    THE WORKED EXAMPLE READ "300 + 102 = 402" over a card that prints 118, and the count read 196
     over a corpus of 198. Nothing could see either: the assertions below bound the sum from ABOVE and
     say nothing about the one row the docstring names. Both figures are now re-derived from the shipped
     cards and checked against this prose, along with the headroom the upper bound has left.
+
+    BOTH EDITIONS, and that is a fix too. This opened only greenbook.html, and its map regex required
+    the pocket edition's `<div class="lay">` wrapper -- the enlarged edition uses `<div class="cmap">`
+    with a longer caption -- so 229 of the corpus's 1047 gutter pairs were graded by nothing, and so
+    was the enlarged edition's copy of the caveat sentence. The enlarged card is the one whose legend
+    row has the least room, so it is the one most likely to lose that sentence to a silent clip.
 
     Neither number may quietly become the other, so this asserts what each IS rather than that they
     agree:
@@ -3213,15 +3237,29 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     _hits = [s for s in CORPUS if s.startswith(ex.group(1))]
     example_card = (_hits[0], int(ex.group(2))) if len(_hits) == 1 else (None, None)
     example_rows, worst_excess, cards_seen, cards_off = {}, None, 0, 0
-    for ref in CORPUS:
-        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
-        if not os.path.exists(p):
-            continue
-        with open(p, encoding="utf-8") as fh:
+    # The evidence for what the printed legend now SAYS. It blamed the dogleg; these count how the
+    # pairs behave on holes the engine itself calls straight, so the sentence on the card cannot drift
+    # away from the data underneath it.
+    straight_pairs, straight_bad, straight_worst, bent_high = 0, 0, (0, None), 0
+    # BOTH editions. Globbing greenbook*.html rather than greenbook.html: the enlarged edition prints
+    # the same two numbers from the same engine call and carries its own copy of the caveat sentence,
+    # and neither was graded here.
+    books = [f for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html")))
+             if os.path.basename(os.path.dirname(f)) in set(CORPUS)]
+    assert books, "no book built"
+    for bf in books:
+        ref = os.path.basename(os.path.dirname(bf))
+        with open(bf, encoding="utf-8") as fh:
             html = fh.read()
-        assert re.search(r"on a dogleg they do <b>not</b> add up", html), (
-            f"{ref}: the guide card no longer explains why the two gutter numbers do not sum -- "
-            f"a reader who adds them finds up to 54 yd of unexplained discrepancy")
+        # Whitespace-insensitive: the enlarged edition's source wraps this sentence across lines, so a
+        # literal regex could only ever have matched the pocket copy -- which is half the reason the
+        # enlarged edition went ungraded.
+        assert re.search(r"different\s+measures,\s+so\s+they\s+do\s+<b>not</b>\s+add\s+up",
+                         " ".join(html.split()) or html), (
+            f"{os.path.basename(bf)} ({ref}): the guide card no longer explains why the two gutter "
+            f"numbers do not sum -- a reader who adds them finds up to 54 yd of unexplained "
+            f"discrepancy. It must not blame the DOGLEG either: 639 of the 813 pairs on holes this "
+            f"engine calls straight do not add up, worst 28 yd on a hole of arc/chord 1.0003.")
         for blk in re.split(r'<div class="panel ', html)[1:]:
             if not re.match(r'hole[\s"]', blk):
                 # `hole ycard` too. poppy-ridge's yardage edition uses class="panel hole ycard", so
@@ -3229,8 +3267,10 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                 # LEAST like the others, which is exactly where a check is worth most.
                 continue
             ym = re.search(r'class="ymain"[^>]*>(\d+)</span>', blk)
-            sm = re.search(r'<div class="lay"><div class="minilab">HOLE</div>(<svg.*?</svg>)',
-                           blk, re.S)
+            # `lay` is the pocket wrapper, `cmap` the enlarged one, whose caption reads
+            # "HOLE &middot; tee &rarr; green" -- hence HOLE[^<]* rather than HOLE</div>.
+            sm = re.search(r'<div class="(?:lay|cmap)"><div class="minilab">HOLE[^<]*</div>'
+                           r'(<svg.*?</svg>)', blk, re.S)
             if not (ym and sm):
                 continue
             svg = sm.group(1)
@@ -3242,7 +3282,11 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                     lanes.setdefault(round(float(y), 1), {})[
                         "L" if float(x) < vbw / 2 else "R"] = int(txt)
             card = int(ym.group(1))
-            arc = _arc_yd_for(ref, blk) or card
+            _hi = _hole_info_for(ref, blk) or {}
+            arc = _hi.get("arc_yd") or card
+            green_gap = _hi.get("green_gap_yd") or 0.0
+            chord = (_hi.get("length_m") or 0.0) / 0.9144
+            straight = bool(chord) and arc <= 1.02 * chord
             hole_no = re.search(r'<div class="hnum">\s*(\d+)', blk)
             cards_seen += 1
             if any("R" in v and abs(card - (v["L"] + v["R"])) >= 10
@@ -3262,23 +3306,58 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                 if v["L"] not in (100, 150, 200, 250, 300):
                     problems.append(f"{ref}: a to-green label reads {v['L']}, which is not one of "
                                     f"the fixed radii -- it is no longer a straight-line distance")
-                # The ceiling is max(card, arc), and finding that took two wrong guesses worth
-                # recording. Bounding on the CARD flagged 115 legitimate rows: castlewood-valley 1 is
-                # drawn 444 yd against a 429 card, so every row there exceeds the card by ~12. Bounding
-                # on the ARC failed too, because the from-tee figure is scaled to the CARD, so on a
-                # hole drawn shorter than its card the pair exceeds the arc. Only the larger of the two
-                # is a real ceiling, and against it the whole corpus fits inside +4 yd.
+                if "R" in v:
+                    off = v["L"] + v["R"] - card
+                    if straight:
+                        straight_pairs += 1
+                        straight_bad += bool(off)
+                        if abs(off) > abs(straight_worst[0]):
+                            straight_worst = (
+                                off, f"{ref} hole {hole_no.group(1) if hole_no else '?'} "
+                                     f"(arc/chord {arc/chord:.4f})")
+                    elif off > 0:
+                        bent_high += 1
+                # The ceiling is DERIVED, not fitted. Finding max(card, arc) took two wrong
+                # guesses worth recording: bounding on the CARD flagged 115 legitimate rows
+                # (castlewood-valley 1 is drawn 444 yd against a 429 card, so every row there exceeds
+                # the card by ~12), and bounding on the ARC failed too because the from-tee figure is
+                # scaled to the CARD, so on a hole drawn shorter than its card the pair exceeds the
+                # arc. Only the larger of the two is a real ceiling, and against it the whole corpus
+                # fits inside +4 yd.
                 #
-                # THAT BOUND HAS EXACTLY ZERO HEADROOM, measured: callippe 1 realises +4 (100 + 337
-                # against a 433 card and a 424 yd drawn line), which is the bound itself. So the next
-                # row to exceed it fails here, and the right response is to understand WHY -- the two
-                # numbers measure differently (a straight radius against a walked distance scaled to
-                # the card), so a genuine excess is not "rounding" -- rather than to raise the 4.
+                # What was fitted was the slack beside it. The bound read `limit + 4`, and the 4 was
+                # the largest excess this corpus happens to realise -- callippe 1's +4 -- so the bound
+                # had exactly zero headroom and any new row above it failed for no stated reason.
+                # The slack a genuine row can need is derivable, because the two numbers are measured
+                # from points a KNOWN distance apart. Write L for the printed radius, R for the printed
+                # from-tee figure, A for the drawn arc, C for the card and g for green_gap_yd -- the
+                # distance from the line's green END to the green CENTROID that L is a radius about:
+                #
+                #   * the tick's walk to the green end is at least its straight distance, which by the
+                #     triangle inequality is at least L - g. So the walk from the TEE to the tick is
+                #     at most A - (L - g), and by the same inequality L <= A + g.
+                #   * R is the card scaled by that walked fraction, R <= C*(A - L + g)/A (the par-3 and
+                #     forward/past-tee mechanisms give C - L and C - walk_left, both smaller).
+                #
+                # Substituting: for C <= A the two terms cancel to L + R <= A + g exactly; for C > A the
+                # coefficient of L turns negative and the bound is C + g*C/A. One expression covers both:
+                #
+                #       L + R <= max(C, A) + g*max(1, C/A) + 1
+                #
+                # with +1 for the two roundings (round(ft_exact) and round(arc_yd), <=0.5 each).
+                # Measured over all 1047 pairs in both editions it holds everywhere, tightest slack
+                # 1.46 yd (valley-hi 2, where g is only 0.46). g is a median 2.17 yd, mean 2.93, max
+                # 12.18; at callippe 1 it is 6.62, so the derived allowance there is +7.62 against a
+                # realised +4. The tripwire below still pins that realised maximum exactly -- that is
+                # the part which actually discriminates, and it is now separate from the bound.
                 limit = max(card, arc)
-                if "R" in v and v["L"] + v["R"] > limit + 4:
+                derived = limit + green_gap * max(1.0, card / (arc or card or 1)) + 1
+                if "R" in v and v["L"] + v["R"] > derived:
                     problems.append(f"{ref}: a row reads {v['L']} + {v['R']} = {v['L']+v['R']} "
-                                    f"against a card of {card} and a drawn line of {arc} yd -- past "
-                                    f"both, so one of the two is measuring more than the hole")
+                                    f"against a card of {card}, a drawn line of {arc} yd and a "
+                                    f"green-end gap of {green_gap:.2f} yd -- past the derived ceiling "
+                                    f"of {derived:.2f}, so one of the two is measuring more than the "
+                                    f"hole")
     # ~4 rows a hole, so scale with the corpus rather than pinning 500 against an actual 830.
     assert checked >= 2 * expected_geometry_holes(), (
         f"only {checked} gutter rows checked across {expected_geometry_holes()} holes -- at under two rows a "
@@ -3319,6 +3398,46 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         + (f"+{worst_excess[0]} yd ({worst_excess[1]} hole {worst_excess[2]})" if worst_excess
            else "nothing -- no row carried both numbers")
         + ". A bound and the figure quoted beside it are two statements of one measurement.")
+
+    # (c) the CAUSE the legend prints. The card says the two numbers are "different measures, so they
+    # do not add up"; it used to say "on a dogleg", which tells a reader on a straight hole that theirs
+    # should add up. Re-measured here off the shipped cards, against the engine's own straightness
+    # rule, so the printed explanation stays tied to the data: if non-additivity ever really does
+    # become a dogleg phenomenon, the sentence should change back and this is where that shows up.
+    said_str = re.search(r"of the (\d+) printed pairs on STRAIGHT holes, (\d+) -- (\d+)% -- do\s+"
+                         r"not add up, by a median (\d+) yd, (\d+) of them by 5 or more and (\d+) "
+                         r"by 10 or more", doc)
+    assert said_str, (
+        "this test's docstring no longer states how the pair behaves on STRAIGHT holes, which is the "
+        "whole evidence for what the printed legend blames. Measured now: %d of %d straight-hole "
+        "pairs do not add up (%.0f%%), worst %+d yd on %s."
+        % (straight_bad, straight_pairs, 100.0 * straight_bad / max(straight_pairs, 1),
+           straight_worst[0], straight_worst[1]))
+    assert (int(said_str.group(1)), int(said_str.group(2))) == (straight_pairs, straight_bad), (
+        f"the docstring says {said_str.group(2)} of {said_str.group(1)} straight-hole pairs do not add "
+        f"up; measured now it is {straight_bad} of {straight_pairs}")
+    assert int(said_str.group(3)) == round(100.0 * straight_bad / max(straight_pairs, 1)), (
+        f"the docstring says {said_str.group(3)}%; measured it is "
+        f"{100.0 * straight_bad / max(straight_pairs, 1):.0f}%")
+    assert straight_bad > straight_pairs // 2, (
+        f"only {straight_bad} of {straight_pairs} pairs on straight holes fail to add up. The legend on "
+        f"every card says the two numbers are different measures that do not add up; if straight holes "
+        f"now mostly DO add up, that sentence is the wrong explanation and needs re-reading.")
+    said_worst = re.search(r"worst is (\d+) yd on ([a-z][a-z-]*) (\d+), whose arc/chord is "
+                           r"([\d.]+)", doc)
+    assert said_worst, "the docstring no longer names the worst straight-hole row"
+    assert int(said_worst.group(1)) == abs(straight_worst[0]) and \
+        said_worst.group(2) in (straight_worst[1] or "") and \
+        f" {said_worst.group(3)} " in (straight_worst[1] or ""), (
+        f"the docstring names {said_worst.group(2)} {said_worst.group(3)} off by "
+        f"{said_worst.group(1)} yd as the worst straight-hole row; measured it is "
+        f"{straight_worst[1]} off by {straight_worst[0]:+d}")
+    # ...and the refuted half of the story, kept measured so it cannot come back: rows that sum HIGH
+    # are not confined to straight holes either.
+    said_bent = re.search(r"(\d+) of the (\d+) high rows sit on holes bent past 1\.02", doc)
+    assert said_bent and int(said_bent.group(1)) == bent_high, (
+        f"the docstring says {said_bent.group(1) if said_bent else 'nothing'} high rows sit on holes "
+        f"bent past arc/chord 1.02; measured now it is {bent_high}")
 
 
 @needs_corpus

@@ -805,6 +805,14 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         e, n = em(la, lo)
         return math.hypot(e-gce, n-gcn)
 
+    # How far the drawn line's GREEN END sits from that centroid. Published in `info` because it is
+    # what bounds the two gutter numbers against each other: the left number is a radius about the
+    # CENTROID while the right one is a walk along the line to its END, so the two are measured from
+    # points this far apart and their sum can exceed the hole's length by about this much. A test that
+    # wants to bound the pair has to know it, and computing it a second time there would be a copy of
+    # this frame's centroid, projection and vertex order -- the drift this module keeps removing.
+    green_gap_yd = _dist_to_green(ordered[-1]['lat'], ordered[-1]['lon']) / 0.9144
+
     def point_at_radius(R_m):
         """(lat, lon, arc_from_tee_m) for the point on the centerline whose straight-line distance
         to the green centre is R_m, taking the crossing nearest the green. None when the line never
@@ -1129,7 +1137,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               water_hazards=len(waters), watercourses=len(creeks),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
-              arc_yd=round(arc_yd), card_yd=total_yd,
+              arc_yd=round(arc_yd), card_yd=total_yd, green_gap_yd=round(green_gap_yd, 2),
               tee_ticks=tee_ok or par3_straight or fwd_tee or past_tee,
               line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee, past_tee=past_tee,
               carry_origin_known=origin_known,

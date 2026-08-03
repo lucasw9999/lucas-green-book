@@ -666,7 +666,7 @@ def guide_panel():
     <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; dark red (&ge;5%);
     steeper is always <b>darker</b>, so it reads in black and white too.
     <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add up.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; different measures, so they do <b>not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
   <div class="legrow"><span><b>green N ft above/below</b> = <b>measured</b> height vs the back tee.
@@ -1206,8 +1206,8 @@ def coach_about_card():
     not putting surface: coloured, not numbered. <b>Grey numbers</b> = yd from the <b>front edge</b>, down
     the middle. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to
-    green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add
-    up.</span></div>
+    green (straight), <b>right</b> = from the tee (walked) &mdash; different measures, so they do
+    <b>not</b> add up.</span></div>
 ''' + _faint_note() + _no_fall_note() + _no_tree_note() + '''
   <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
     conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>
