@@ -10392,6 +10392,58 @@ def test_disclaimer_record_matches_what_the_books_print():
 
 
 @needs_corpus
+@needs_corpus
+def test_the_check_gate_reports_how_many_greens_the_pair_digest_actually_covers():
+    """The surface pair's integrity check is DORMANT on the whole corpus, and nothing said so.
+
+    surface_io.commit_surface writes array_sha256 into each meta and render_green refuses a pair whose
+    array does not hash to it. That check reads `meta.get(DIGEST_KEY) not in (None, digest)`, so a
+    MISSING digest is accepted -- correctly, because a surface built before the digest existed has
+    nothing on disk to compare against. The consequence is that the guard is inert on every green it
+    has not been re-run over, and all 198 shipped metas predate it: coverage is 0%, with no reader of
+    any artifact able to tell that from full coverage.
+
+    Making a missing digest an ERROR is the wrong fix -- it would refuse all 198 built greens and stop
+    every book until a full rebuild. What was missing is DISCLOSURE, so `gen_provenance --check` now
+    counts it. That gate already runs before a merge, it already reads every dem_hd meta for the
+    density range, and it is where the other coverage figures about the corpus are printed.
+
+    Deliberately not an exit code: an old surface is not a defect, and turning the front-door gate red
+    for it is the same mistake as failing a fresh clone for having no courses.
+    """
+    import subprocess
+    import surface_io
+    metas = [p for p in glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))
+             if not os.path.basename(os.path.dirname(os.path.dirname(p))).startswith("_")]
+    if not metas:
+        pytest.skip("no green surfaces built here")
+    without = 0
+    for p in metas:
+        try:
+            with open(p, encoding="utf-8") as fh:
+                if surface_io.DIGEST_KEY not in json.load(fh):
+                    without += 1
+        except Exception:
+            without += 1
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "gen_provenance.py"), "--check"],
+                       cwd=ROOT, capture_output=True, text=True)
+    if r.returncode == 2:
+        pytest.skip(r.stdout.strip())
+    assert r.returncode == 0, r.stdout + r.stderr
+    said = re.search(r"(\d+) of (\d+) green surfaces carry", r.stdout)
+    assert said, (
+        f"`gen_provenance --check` no longer reports how many green surfaces carry a pair digest, so "
+        f"the corpus can sit at {len(metas) - without} of {len(metas)} covered with nothing saying it:\n"
+        + r.stdout)
+    assert (int(said.group(1)), int(said.group(2))) == (len(metas) - without, len(metas)), (
+        f"the gate reports {said.group(1)} of {said.group(2)} surfaces digested; counted from the "
+        f"artifacts it is {len(metas) - without} of {len(metas)}")
+    if without:
+        assert "UNVERIFIED" in r.stdout, (
+            f"{without} surfaces are read without their integrity check and the gate does not say the "
+            f"word -- a count nobody reads as a gap is not a disclosure:\n" + r.stdout)
+
+
 def test_provenance_doc_matches_the_build_artifacts():
     """legal/03 documented 8 of 12 books, named the wrong dataset for one, and carried project-name
     'years' wrong by 2-12 years. It is now generated from the artifacts; this fails if it drifts.

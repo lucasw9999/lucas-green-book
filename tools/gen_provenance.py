@@ -30,6 +30,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import distribution  # noqa: E402
+import surface_io  # noqa: E402  -- for DIGEST_KEY only; see _digest_coverage
 OUT = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
 
 # The card suppresses any measured tee-to-green change under this as level -- generate.py's
@@ -489,6 +490,34 @@ reproduced here uncut, so a claim can always be traced to what was actually writ
 {full_text}"""
 
 
+def _digest_coverage():
+    """(n_with_digest, n_metas) over every built green surface.
+
+    A COVERAGE figure for a guard that is silent when it does nothing. surface_io.commit_surface writes
+    array_sha256 beside each array and render_green refuses a pair whose array does not hash to it --
+    but that test reads `meta.get(DIGEST_KEY) not in (None, digest)`, so a MISSING key is accepted.
+    That is the right call (a surface built before the digest existed has nothing to compare against)
+    and it means the check is INERT on every surface not rebuilt since. When this was written that was
+    all 198 of them: 0% coverage, and no artifact anywhere said so.
+
+    Printed by --check rather than enforced. An old surface is not a defect, and turning the gate that
+    runs before every merge red over one would be the same mistake as failing a fresh clone for having
+    no courses. Not written into legal/03 either: the document records what each BOOK was built from,
+    and this is a fact about how thoroughly this repo can re-verify its own intermediate files.
+    """
+    with_digest = total = 0
+    for slug in distribution.course_slugs(ROOT):
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+            total += 1
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    if surface_io.DIGEST_KEY in json.load(fh):
+                        with_digest += 1
+            except Exception:
+                pass
+    return with_digest, total
+
+
 def main():
     # The SAME enumerator build() uses, deliberately. This was a raw glob over courses/*/course.json
     # while build() calls distribution.course_slugs(), which drops `_`-prefixed scratch directories --
@@ -507,6 +536,16 @@ def main():
         return 2
     text = build()
     if "--check" in sys.argv:
+        # Said BEFORE the staleness verdict, so it is printed on the pass as well as the fail: a
+        # coverage figure that only appears when something else is already wrong is not a disclosure.
+        digested, metas = _digest_coverage()
+        if metas:
+            print(f"pair digests: {digested} of {metas} green surfaces carry "
+                  f"{surface_io.DIGEST_KEY}"
+                  + ("" if digested == metas else
+                     f"; the other {metas - digested} are read UNVERIFIED -- render_green accepts a "
+                     f"missing digest because there is nothing on disk to compare with, so those pairs "
+                     f"gain the check only when they are rebuilt"))
         cur = open(OUT).read() if os.path.exists(OUT) else ""
         if cur != text:
             print("STALE: legal/03_PROVENANCE_BY_COURSE.md does not match the build artifacts.\n"
