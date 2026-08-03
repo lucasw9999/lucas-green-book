@@ -1971,6 +1971,104 @@ def test_the_contour_interval_is_the_one_the_legend_states():
             f"edition's '15 cm each' legend is wrong")
 
 
+TREE_BEARING_COURSES = 11    # corpus courses carrying BOTH trees_lidar.json and osm_course.json
+
+
+def tree_marker_prose_verdict(quoted, total, n_courses, full_n=None):
+    """None if a quoted corpus-wide marker figure is consistent with a sweep of `n_courses`, else why.
+
+    This was `if len(seen) == 11: assert quoted == {total}` written inline, and the gate was the
+    defect: on any machine whose corpus is PARTIAL the branch simply did not run, so the figure in two
+    docstrings was watched by nothing at all and a stale number stayed green. The corpus is gitignored
+    and nobody else has all of it, which makes "the full corpus" the unusual case rather than the
+    normal one.
+
+    A subset cannot hold more markers than the whole, so `total <= quoted` is sound for ANY subset --
+    and it is the direction that catches the staleness this watcher exists for: the water filter
+    removed 615 markers, which made the published figure too HIGH, and a partial sweep detects exactly
+    that. Only the exact equality needs every course.
+
+    Pure and parameterised so the partial branch can be driven from a table rather than only on a
+    machine that happens to be missing corpus data -- a branch reachable only by deleting the one copy
+    of the corpus is a branch nobody tests.
+    """
+    full_n = TREE_BEARING_COURSES if full_n is None else full_n
+    if len(quoted) != 1:
+        return (f"quotes {sorted(quoted)} as its corpus-wide marker figure; exactly one is needed, or "
+                f"there is nothing for the sweep's {total:,} to be compared against")
+    (q,) = quoted
+    if n_courses >= full_n:
+        if q != total:
+            return (f"quotes {q:,} tree markers; the sweep just counted {total:,} across {n_courses} "
+                    f"courses. Update the prose, or say which population the figure is of -- "
+                    f"fetch_trees.py quotes the pre-filter one on purpose and says so.")
+        return None
+    if total > q:
+        return (f"quotes {q:,} tree markers, and a PARTIAL sweep of {n_courses} of {full_n} courses "
+                f"has already counted {total:,}. A subset cannot hold more than the whole, so the "
+                f"prose figure is stale whatever the missing courses hold.")
+    return None
+
+
+# (label, quoted, total, n_courses, must_complain). Figures written with _ separators on purpose: the
+# watcher this table is about greps its two target docstrings for a comma-formatted 6x,xxx literal, and
+# a table full of those would be noise if the regex ever widened to the module.
+TREE_PROSE_VERDICT_TABLE = [
+    ("the full corpus, prose agrees", {66_123}, 66_123, 11, False),
+    ("the full corpus, prose stale HIGH -- what the water filter caused", {66_738}, 66_123, 11, True),
+    ("the full corpus, prose stale LOW", {66_000}, 66_123, 11, True),
+    ("more courses than the census expects, prose agrees", {66_123}, 66_123, 12, False),
+    ("a partial sweep the prose could still be right about", {66_123}, 40_000, 7, False),
+    ("a partial sweep already PAST the published figure -- unwatched before", {66_123}, 66_500, 7,
+     True),
+    ("a partial sweep exactly at the published figure", {66_123}, 66_123, 7, False),
+    ("no figure quoted at all, full corpus", set(), 66_123, 11, True),
+    ("no figure quoted at all, partial corpus -- unwatched before", set(), 40_000, 7, True),
+    ("two different figures quoted", {66_123, 66_500}, 66_123, 11, True),
+]
+
+
+def test_the_tree_marker_prose_watcher_is_not_asleep_on_a_partial_corpus():
+    """The watcher over the corpus-wide tree-marker figure ran only when all 11 courses were present.
+
+    Everywhere else in this suite a corpus-dependent check is marked @needs_corpus so a partial run
+    SKIPS visibly. This one was an `if` in the middle of a test that keeps running, so on a partial
+    corpus it reported nothing and passed -- and courses/ is gitignored, so a partial corpus is what
+    every machine but this one has.
+
+    Driven as a table because the partial branch cannot otherwise be reached here without deleting
+    corpus data, which is the one thing this project's guards exist to prevent. Two rows are the ones
+    that were previously unwatched: a partial sweep that has already counted MORE markers than the
+    prose publishes, and a docstring that quotes no figure at all.
+    """
+    import inspect
+
+    wrong = []
+    for label, quoted, total, n_courses, must_complain in TREE_PROSE_VERDICT_TABLE:
+        verdict = tree_marker_prose_verdict(quoted, total, n_courses)
+        if (verdict is not None) is not must_complain:
+            got = f"complained ({verdict})" if verdict else "was silent"
+            want = "must complain" if must_complain else "must be silent"
+            wrong.append(f"  {label}: {got} -- {want}")
+    assert not wrong, (
+        "the tree-marker prose watcher answers the wrong way for %d of %d cases:\n%s"
+        % (len(wrong), len(TREE_PROSE_VERDICT_TABLE), "\n".join(wrong)))
+
+    # ...and it must be the function the live sweep actually calls, or this table grades a copy. Both
+    # reads go through _in_code, because the sweep's own comment NAMES the gate it removed -- a raw
+    # grep here was satisfied by that comment, which is the exact false-pass _in_code exists for.
+    sweep_src = inspect.getsource(test_no_tree_marker_sits_on_a_playing_surface)
+    assert _in_code("tree_marker_prose_verdict(", sweep_src), (
+        "the sweep no longer calls tree_marker_prose_verdict, so this table measures a helper nothing "
+        "uses and the figure is unwatched again")
+    assert not _in_code("len(seen) == 11", sweep_src), (
+        "the hardcoded full-corpus gate is back in CODE; that is what made the watcher silent on "
+        "every machine but this one")
+    live = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                       "test_no_tree_marker_sits_on_a_playing_surface")
+    assert live, "the sweep's prose could not be read"
+
+
 @needs_corpus
 def test_no_tree_marker_sits_on_a_playing_surface():
     """The README promises trees are "never placed on greens/fairways/tees/bunkers". Hold the corpus
@@ -2039,15 +2137,16 @@ def test_no_tree_marker_sits_on_a_playing_surface():
     # while 615 of that total were inside a mapped feature. Re-derived from the sweep that just ran,
     # over the same courses, so the number in the prose is the number on disk. Deliberately written
     # without any five-digit literal of its own, or this watcher would trip on its own explanation.
-    if len(seen) == 11:
-        for fn in ("test_no_tree_marker_sits_on_a_playing_surface",
-                   "test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one"):
-            prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
-            quoted = {int(x.replace(",", "")) for x in re.findall(r"\b(6[0-9],[0-9]{3})\b", prose)}
-            assert quoted == {total}, (
-                f"{fn} quotes {sorted(quoted)} tree markers; the sweep just counted {total:,} across "
-                f"{len(seen)} courses. Update the prose, or say which population the figure is of -- "
-                f"fetch_trees.py quotes the pre-filter one on purpose and says so.")
+    #
+    # The comparison lives in tree_marker_prose_verdict, and it is NOT gated on a full corpus any more:
+    # this was `if len(seen) == 11:`, which meant the figure was watched by nothing on every machine
+    # whose courses/ is incomplete -- i.e. every machine but this one, courses/ being gitignored.
+    for fn in ("test_no_tree_marker_sits_on_a_playing_surface",
+               "test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one"):
+        prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
+        quoted = {int(x.replace(",", "")) for x in re.findall(r"\b(6[0-9],[0-9]{3})\b", prose)}
+        complaint = tree_marker_prose_verdict(quoted, total, len(seen))
+        assert complaint is None, f"{fn} {complaint}"
 
 
 @needs_corpus
@@ -2770,6 +2869,39 @@ def test_no_test_skips_itself_when_one_of_this_repos_own_modules_is_missing(tmp_
     assert legit >= 10, (
         f"only {legit} optional-dependency skips left; pymupdf (AGPL, deliberately optional) and "
         f"playwright are meant to keep theirs, so this test is no longer measuring anything")
+
+    # ...and the SKIPPABLE table's playwright entry makes a claim about every site it covers -- "each
+    # carries a second skip for a missing browser too". That claim is the argument for allowing the
+    # skip at all, so it is checked here rather than trusted. It was FALSE for one of three:
+    # test_the_card_footer_cannot_break_mid_phrase called pw.chromium.launch() bare, so on a machine
+    # that installed requirements.txt and NOT the separate `python3 -m playwright install chromium`
+    # step -- the split this very table cites as the reason playwright may be skipped -- that test
+    # crashed where its two siblings skipped.
+    parents = {}
+    for n in ast.walk(tree):
+        for ch in ast.iter_child_nodes(n):
+            parents[ch] = n
+
+    def _guarded_by_a_skip(node):
+        while node is not None:
+            if isinstance(node, ast.Try) and any(
+                    isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                    and c.func.attr == "skip"
+                    for h in node.handlers for c in ast.walk(h)):
+                return True
+            node = parents.get(node)
+        return False
+
+    launches = [n for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "launch" and "chromium" in ast.unparse(n.func)]
+    assert launches, "no chromium.launch left in the suite; this check has nothing to measure"
+    bare = sorted({n.lineno for n in launches if not _guarded_by_a_skip(n)})
+    assert not bare, (
+        "the SKIPPABLE table says each playwright test 'carries a second skip for a missing browser "
+        "too', and these chromium.launch call(s) are not inside a try that skips, so they CRASH "
+        "instead on a machine that has playwright but not the browser: line(s) "
+        + ", ".join(str(b) for b in bare))
 
     # (3) the helper's own branches, driven from probe modules in tmp_path -- NOT in tests/, which
     # test_every_third_party_import_is_declared globs, and a probe importing a package on purpose
@@ -5669,9 +5801,21 @@ def test_the_card_footer_cannot_break_mid_phrase():
         from playwright.sync_api import sync_playwright
     except ImportError:
         pytest.skip("playwright not installed")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+    exe = export_pdf._headless_shell()
     checked = 0
     with sync_playwright() as pw:
-        browser = pw.chromium.launch()
+        # The browser is a SEPARATE `python3 -m playwright install chromium` step -- the same split
+        # the SKIPPABLE table in test_no_test_skips_itself_when_one_of_this_repos_own_modules_is_missing
+        # cites as its reason for letting a playwright import skip. This launch was bare, so that
+        # table's claim that "each carries a second skip for a missing browser too" was false here and
+        # this test CRASHED on a machine the other two skipped on. Same shape as those two, including
+        # the exporter's headless-shell path, so the three agree.
+        try:
+            browser = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
+        except Exception:
+            pytest.skip("no browser available")
         page = browser.new_page()
         try:
             for slug in CORPUS:
@@ -6368,6 +6512,14 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
     tear with the digest stripped is measurably wrong -- because a check that refused everything would
     satisfy the middle assertion alone, and a test that only proved the refusal would not show what
     was at stake.
+
+    WHAT THE DIGEST-STRIPPED TEAR PRINTS, re-measured from this fixture at full precision:
+    2.0000000000% -> 4.0000000000%, ratio exactly 2.0000000000. The commit that added this fixture
+    published "2.03% -> 4.05%"; neither number appears anywhere in the tree and neither reproduces,
+    here or at that commit. Exactly 2.000 is not luck -- the synthetic surface is an exact plane
+    (100.0 + 0.03*r), so halving the recorded ground extent under an unchanged 60x60 array doubles
+    rise-over-run exactly. The ratio is pinned below rather than left as a `> 1.8` floor, because a
+    figure this docstring publishes has to be watched or it drifts.
     """
     import numpy as np
 
@@ -6422,6 +6574,16 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
         f"halving the recorded extent under an unchanged array must roughly double the printed tilt "
         f"({honest:.2f}% -> {s2['tilt_pct']:.2f}%); if it does not, this fixture no longer "
         f"demonstrates the defect")
+    # ...and the figures the docstring publishes, pinned. Measured 2.0000000000 -> 4.0000000000,
+    # ratio 2.0000000000; exact because the surface is an exact plane. The bands are wide enough to
+    # survive an ordinary float difference and tight enough that a changed fixture cannot quietly
+    # keep the prose true -- checked by mutation: the previously published 2.03 fails this bound.
+    assert abs(honest - 2.00) < 0.05, (
+        f"the matched pair no longer prints the 2.00% this test's docstring publishes: "
+        f"{honest:.4f}% -- re-measure the docstring before changing this bound")
+    assert abs(s2["tilt_pct"] / honest - 2.000) < 0.05, (
+        f"the digest-stripped tear no longer DOUBLES the printed tilt: {honest:.4f}% -> "
+        f"{s2['tilt_pct']:.4f}%, ratio {s2['tilt_pct'] / honest:.4f} where 2.000 was measured")
 
 
 def test_no_slope_label_claims_an_unputtable_number(gate_course):
