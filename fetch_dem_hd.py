@@ -40,6 +40,10 @@ OVERWRITE = os.environ.get("OVERWRITE", "").lower() not in ("", "0", "false", "n
 # explaining them, so swapping the tuple for ("key_point",) passed every assertion while dropping
 # key points and keeping withheld ones. NOT "overlap": see the note at the filter.
 DISOWNED_FLAGS = ("withheld", "synthetic")
+# The three outcomes of looking one of those bits up, named so main() can TALLY them and a test can
+# assert on them rather than parse a log line.
+FILTER_APPLIED = "applied"
+FILTER_UNAVAILABLE = "unavailable"
 MARGIN_M = 12.0
 R_LAT = 111320.0
 # Trust thresholds for a green surface. Above/below these the surface was not really measured,
@@ -50,6 +54,61 @@ COVER_R_M = 1.0                             # a green node is "measured" if a gr
                                             # within this radius of it
 UNCOVERED_MAX = 0.02                        # max share of the green interior with no return nearby
 def mlon(lat): return 111320.0*math.cos(math.radians(lat))
+
+
+def disowned_mask(las, flag):
+    """(mask, status) for one producer-disowned point flag on one tile.
+
+    (array, FILTER_APPLIED)     -- the bit is present; True marks the points the PRODUCER disowns.
+    (None,  FILTER_UNAVAILABLE) -- this point format carries no such bit, so the filter DID NOT RUN.
+
+    This was an inline `try: bad = np.asarray(getattr(las, _flag)).astype(bool) / except Exception:
+    continue` with no message, and every way it could fail was silent. A laspy attribute rename, a
+    dtype it could not cast, or an absent bit all quietly disabled the one check that keeps
+    vendor-disowned measurements out of the 0.4 m surface a book prints slope reads from.
+
+    Extracted so the caller can TALLY the outcome and report it, because the log could not tell a
+    disabled filter from a working one. Measured over all 78 tiles in the corpus: `withheld` resolves
+    on 78 of 78 and marks 19,979,730 points, of which 0 are class-2 ground; `synthetic` marks none
+    anywhere. So `bad.any()` is true on every tile and the only line the old code printed was
+    "dropping 0 ground point(s) flagged withheld" -- which reads exactly like a no-op, and is what a
+    disabled filter also looks like.
+
+    Only AttributeError is read as "no such bit". That is what laspy raises for a dimension it does not
+    have, and it is the one cause the original comment named. Everything else propagates: a filter that
+    cannot run for a reason nobody anticipated must stop the build, not silently shrink itself.
+    """
+    try:
+        raw = getattr(las, flag)
+    except AttributeError:
+        return None, FILTER_UNAVAILABLE
+    return np.asarray(raw).astype(bool), FILTER_APPLIED
+
+
+def format_disowned_report(tally):
+    """The per-flag disclosure lines for a whole run's `tally`, so the three states are legible.
+
+    Printed unconditionally, on the pass as well as the fail -- the same argument
+    tools/gen_provenance.py makes for its pair-digest coverage figure: a status that only appears when
+    something else is already wrong is not a disclosure. "ran on 78 of 78 tiles, 0 ground point(s)
+    dropped" and "DID NOT RUN on 78 of 78 tiles" are the two readings that used to be identical.
+    """
+    out = []
+    for flag in DISOWNED_FLAGS:
+        t = tally.get(flag) or {}
+        ran, missing = t.get(FILTER_APPLIED, 0), t.get(FILTER_UNAVAILABLE, 0)
+        n = ran + missing
+        if not n:
+            continue
+        if missing:
+            out.append(f"  !! disowned-point filter `{flag}` DID NOT RUN on {missing} of {n} tile(s): "
+                       f"that point format carries no such bit, so any point the producer disowns "
+                       f"reached this surface UNFILTERED")
+        if ran:
+            out.append(f"  disowned-point filter `{flag}`: ran on {ran} of {n} tile(s), "
+                       f"{t.get('flagged', 0):,} point(s) flagged, "
+                       f"{t.get('dropped', 0):,} ground point(s) dropped")
+    return out
 
 
 def is_insufficient(nan_frac, dens, uncovered):
@@ -263,15 +322,22 @@ def main():
     targets=build_targets()
     tiles=sorted(glob.glob(f"{DIR}/laz/*.laz"))
     print("tiles:",[os.path.basename(t) for t in tiles])
+    disowned_tally = {f: {FILTER_APPLIED: 0, FILTER_UNAVAILABLE: 0, "flagged": 0, "dropped": 0}
+                      for f in DISOWNED_FLAGS}
     for tf in tiles:
         las=laspy.read(tf)
         cls=np.asarray(las.classification)
         g=cls==2
         # Drop points the PRODUCER disowns. LAS carries a `withheld` bit for measurements the vendor
         # marked as not to be used and a `synthetic` bit for points that were computed rather than
-        # measured; neither belongs in a surface this book prints a slope read off. Every tile in the
-        # corpus today has ZERO of both, so this changes no shipped surface -- it is here so the next
-        # course's tiles cannot quietly contribute rejected points to a green.
+        # measured; neither belongs in a surface this book prints a slope read off.
+        #
+        # What the corpus actually holds, measured over all 78 tiles rather than assumed: `withheld`
+        # is set on 78 of 78 tiles, 19,979,730 points in all -- so this filter is LIVE, not dormant.
+        # ZERO of those points are class-2 GROUND, which is why it changes no shipped surface; and
+        # `synthetic` marks nothing anywhere. (This comment used to say "every tile in the corpus has
+        # ZERO of both", which was false on 78 of 78 and made a live filter read as a no-op.) It is
+        # here so the next course's tiles cannot quietly contribute rejected points to a green.
         #
         # Deliberately NOT filtering `overlap`, which is a different thing: those are valid returns in
         # the strip where two flight lines meet, and USGS flags them only so derivative products CAN
@@ -281,14 +347,18 @@ def main():
         # percentage points -- below what the card resolves. Measured, see
         # legal/09_GREEN_SURFACE_REPEATABILITY.md.
         for _flag in DISOWNED_FLAGS:
-            try:
-                bad = np.asarray(getattr(las, _flag)).astype(bool)
-            except Exception:
-                continue                    # older point format without the bit
-            if bad.any():
-                print(f"  {os.path.basename(tf)}: dropping {int((g & bad).sum())} ground point(s) "
+            bad, _status = disowned_mask(las, _flag)
+            _t = disowned_tally[_flag]
+            _t[_status] += 1
+            if bad is None:
+                continue           # this point format has no such bit; reported in the run summary
+            _t["flagged"] += int(bad.sum())
+            n_drop = int((g & bad).sum())
+            _t["dropped"] += n_drop
+            if n_drop:
+                print(f"  {os.path.basename(tf)}: dropping {n_drop} ground point(s) "
                       f"flagged {_flag}")
-                g = g & ~bad
+            g = g & ~bad
         # reproject ground points to the course UTM zone (metres); scale Z to metres
         x,y = pt2utm.transform(np.asarray(las.x)[g], np.asarray(las.y)[g])
         z = np.asarray(las.z)[g]*zscale
@@ -302,6 +372,11 @@ def main():
                 t['acc_x'].append(x[m]); t['acc_y'].append(y[m]); t['acc_z'].append(z[m]); used+=1
         print(f"  {os.path.basename(tf)}: {g.sum()} ground pts, fed {used} greens")
         del las,cls,x,y,z
+
+    # Say what the producer-disowned filter DID, always. Without this, a filter that ran and found no
+    # ground points to drop and a filter that never ran at all produce the same output.
+    for _line in format_disowned_report(disowned_tally):
+        print(_line)
 
     for hn,t in sorted(targets.items()):
         if not t['acc_x']:

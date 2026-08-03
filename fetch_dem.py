@@ -159,8 +159,88 @@ def _green_interior_stats(arr, bbox, W, H, polygon):
     return (1.0 if n_in == 0 else n_nan / n_in), n_in, relief
 
 
-class NoGeoreference(Exception):
+class UnusableReply(Exception):
+    """The reply cannot be used, and retrying it will not change that.
+
+    Base class so main()'s no-retry handler covers every such verdict by kind rather than by name --
+    a new one added later must not fall through to the generic `except Exception`, which retries four
+    times and then reports a fetch failure for something that was never transient.
+    """
+
+
+class NoGeoreference(UnusableReply):
     """The reply carries no GeoTIFF transform, so the extent it covers is unknown."""
+
+
+class NotSquareInMetres(UnusableReply):
+    """Reserved: kept so `UnusableReply` has more than one concrete kind and the base-class handler in
+    main() is exercised by intent rather than by accident. NOT raised for an anisotropic reply -- see
+    sampling_note for why such a reply is recorded rather than refused."""
+
+
+# How far off square a served pixel may be before its sampling is no longer "0.5 m". Set from the
+# corpus, not guessed: across all 198 built surfaces the served pixel measures between 1.000041 and
+# 1.008503 off square (integer W,H against a real-valued span), so this admits every real one with
+# ~6x margin. The failure it exists to catch is 1/cos(lat) -- 1.2637 at monarch-bay -- rejected by 5x.
+PIXEL_ASPECT_MAX = 1.05
+
+
+def served_pixel_aspect(bbox, W, H):
+    """max/min of the served pixel's two side lengths IN METRES. 1.0 is square.
+
+    Reads the property off the ARTIFACT -- the bbox the GeoTIFF carries and the array's own shape --
+    which is the only way to know the service honoured the request. A URL-literal assertion proves a
+    string was sent; ArcGIS REST silently IGNORES parameters it does not recognise, so what was sent
+    and what was honoured are different questions, and only the second one matters here.
+
+    The centre latitude comes from the bbox itself, so this needs nothing from the caller and can be
+    applied to any recorded surface, including the 198 already on disk.
+    """
+    xmin, ymin, xmax, ymax = bbox
+    clat = (ymin + ymax) / 2.0
+    mx = (xmax - xmin) * mlon(clat) / W
+    my = (ymax - ymin) * R_LAT / H
+    lo, hi = min(abs(mx), abs(my)), max(abs(mx), abs(my))
+    return float("inf") if lo == 0 else hi / lo
+
+
+def sampling_note(bbox, W, H):
+    """(source string, warning or None) -- the provenance claim this patch's pixels actually support.
+
+    The whole squareness of this stage's grid rested on ONE query parameter, `adjustAspectRatio=false`,
+    and nothing had ever checked it. ArcGIS REST silently ignores parameters it does not recognise, so
+    if that one is dropped, renamed, or retired the service goes back to keeping `size` and stretching
+    the bbox to square pixels IN DEGREES -- 1/cos(lat) anisotropic, 1.2637 at monarch-bay's 37.6916 deg,
+    measured by re-issuing all six shipped URLs. The external-contract review that covered OSM, ASPRS,
+    TNM and R&A never ran at ArcGIS, and this is the path a BRAND-NEW course takes for every green the
+    LiDAR stage refuses: the least gated and most used producer in the pipeline.
+
+    RECORDED, not refused. An expanded reply is still a usable surface once it is placed right -- the
+    bbox is read off the GeoTIFF either way, so it degrades to merely anisotropic rather than
+    mis-georeferenced, which is the decision
+    test_a_seamless_green_records_the_extent_its_array_actually_covers exists to hold. What must not
+    survive is the CLAIM: `source="USGS 3DEP seamless 1 m @0.5m sampling"` is what
+    tools/gen_provenance.py prints into legal/03, and on an anisotropic grid it is false. So the source
+    string states the sampling the pixels support, and the caller prints the warning.
+
+    Every consumer tests `"seamless" in source.lower()` (fetch_dem.is_seamless, generate.py,
+    gen_provenance._greens), so both spellings keep that word.
+    """
+    xmin, ymin, xmax, ymax = bbox
+    clat = (ymin + ymax) / 2.0
+    mx = (xmax - xmin) * mlon(clat) / W
+    my = (ymax - ymin) * R_LAT / H
+    aspect = served_pixel_aspect(bbox, W, H)
+    if aspect <= PIXEL_ASPECT_MAX:
+        return "USGS 3DEP seamless 1 m @0.5m sampling", None
+    return ("USGS 3DEP seamless 1 m, sampled "
+            f"{mx:.3f} m E-W x {my:.3f} m N-S (ANISOTROPIC, not 0.5 m square)",
+            f"served pixels are {aspect:.4f}x from square in metres ({mx:.4f} m E-W vs {my:.4f} m "
+            f"N-S). exportImage did not honour adjustAspectRatio=false -- 1/cos(lat) is "
+            f"{1 / math.cos(math.radians(clat)):.4f} here, so check the request parameters against "
+            f"the current ArcGIS REST API. The surface is still placed correctly (its bbox is read "
+            f"off the GeoTIFF), but render_green's gauss(arr, 3.0) is one sigma in PIXELS, so the read "
+            f"is blurred unequally, and the '@0.5m sampling' provenance claim is NOT being recorded")
 
 
 def _served_patch(raw):
@@ -185,6 +265,10 @@ def _served_patch(raw):
     Refuses rather than guessing when there is no transform at all, the same way _fetch_patch does:
     a surface whose position on the ground is unknown cannot be measured, and this project prefers a
     refusal to an unsupported number.
+
+    Squareness in METRES is measured separately, at the point where the claim about it gets written --
+    see sampling_note. It is not a refusal here, because an expanded reply is still usable once placed
+    right; what it must not do is go on calling itself 0.5 m sampling.
     """
     with rasterio.open(io.BytesIO(raw)) as ds:
         arr = ds.read(1).astype('float64')
@@ -313,8 +397,11 @@ def main():
                 raw = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'greenbook/1.0'}), timeout=120).read()
                 arr, bbox = _served_patch(raw)
                 break
-            except NoGeoreference as e:
-                refused = str(e)        # not transient: retrying cannot conjure up a transform
+            except UnusableReply as e:
+                # not transient: retrying cannot conjure up a transform, nor make a degrees-square
+                # grid square in metres. Caught by BASE CLASS so a verdict added later cannot fall
+                # through to the generic handler below and be retried four times as a network blip.
+                refused = str(e)
                 break
             except Exception as e:
                 print(f"hole {hn}: attempt {attempt+1} failed ({e}); retry"); time.sleep(1.5)
@@ -345,6 +432,12 @@ def main():
         if flat:
             print(f"hole {hn}: CONSTANT surface across the green ({relief*100:.1f} cm of relief) -- "
                   f"outside 3DEP coverage, not a flat green; no slope will be printed")
+        # The provenance claim this patch's pixels actually support. "@0.5m sampling" is only true if
+        # the service honoured adjustAspectRatio=false, which nothing checked -- and that string is what
+        # gen_provenance prints into legal/03. Measured off the served bbox and the array's own shape.
+        _source, _aniso = sampling_note([xmin, ymin, xmax, ymax], W, H)
+        if _aniso:
+            print(f"hole {hn}: !! {_aniso}")
         # ONE unit: the array carries no georeference, so an array beside a stale bbox is a printed
         # slope for ground the pixels do not cover. See surface_io.commit_surface.
         surface_io.commit_surface(
@@ -352,7 +445,7 @@ def main():
             dict(hole=hn, approach_bearing=appr, bbox=[xmin, ymin, xmax, ymax], W=W, H=H,
                  green_id=green['id'], green_center=[clat, clon],
                  polygon=[[p['lat'], p['lon']] for p in gpoly],
-                 source="USGS 3DEP seamless 1 m @0.5m sampling",
+                 source=_source,
                  nan_frac=nan_frac, insufficient=insufficient,
                  # A seamless raster has no point cloud, so there is no measured point
                  # density. Report None rather than inventing a plausible number.

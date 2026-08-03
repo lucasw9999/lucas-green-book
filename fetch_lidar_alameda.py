@@ -49,6 +49,47 @@ ABSENT = -1        # the server says this tile is not in this sub-project (HTTP 
 UNKNOWN = -2       # we could not find out -- network error, timeout, 5xx, or a 403 denial
 
 
+def absence_is_credible(n_candidates, n_absent):
+    """Can `n_absent` authoritative 404s out of `n_candidates` honestly be read as the survey's edge?
+
+    False only for a TOTAL sweep, and that one case is the point. A real survey edge clips SOME of a
+    course's candidate cells -- most courses here have none clipped, Castlewood Hill has a cell whose
+    copy covers a 470-ft strip -- so a partial absence is ordinary and stays ordinary. But this module
+    is only ever run for a course known to be in Alameda County, so EVERY candidate cell 404ing is not
+    a fact about the survey's footprint: it means these URLs address nothing.
+
+    The three strings they are built from -- BASE, SUBS, PREFIX -- have never been verified against the
+    producer, and a USGS reorganisation is not hypothetical: fetch_lidar._BUCKETS exists only because
+    surveys moved under a `legacy/` bucket. Measured on the pre-fix module with every HEAD answered 404,
+    a 9-cell course printed "edge of coverage, skip" nine times and then "That is the edge of the
+    survey" about 100% of itself, before exiting with the unrelated "no tiles downloaded".
+
+    This is the same false claim 08cb08d removed for a timeout and a later fix removed for a 403,
+    reached through a third status code. head_size's own docstring is the argument: "better to fail the
+    fetch than to build on a gap that a network wobble invented" is exactly as true of a gap a stale
+    URL invented.
+    """
+    return not (n_candidates and n_absent >= n_candidates)
+
+
+def check_paths():
+    """[] if the hardcoded USGS paths are self-consistent, else a list of what does not line up.
+
+    Offline and structural -- it cannot tell you the paths are CURRENT, only that they are not
+    internally contradictory, which catches the likeliest edit slip. USGS names a tile
+    `<PREFIX>_<cell>.laz` where PREFIX is `USGS_LPC_` plus the project directory that ends BASE, and
+    tools/gen_provenance.py reads project names back off disk assuming exactly that shape. Editing one
+    and not the other 404s every tile, which is the sweep absence_is_credible exists to refuse.
+    """
+    errs = []
+    project = BASE.rstrip("/").rsplit("/", 1)[-1]
+    if PREFIX != "USGS_LPC_" + project:
+        errs.append(f"PREFIX {PREFIX!r} != 'USGS_LPC_' + {project!r} (the project directory ending BASE)")
+    if not SUBS:
+        errs.append("SUBS is empty, so no sub-project would ever be probed")
+    return errs
+
+
 def head_size(url, tries=3):
     """Content-Length of a tile; ABSENT if the server says it is not there, UNKNOWN if we could not
     ask.
@@ -123,6 +164,14 @@ def main():
     fetch_lidar.sweep_partials(f"{DIR}/laz")
     tiles = covering_tiles(config.COURSE["osm_bbox"])
     print(f"{len(tiles)} candidate tiles for {config.SLUG}")
+    # Say up front whether the hardcoded paths are even self-consistent. Cheap, offline, and it names
+    # the suspect before 75 HEADs go out rather than after they have all 404'd.
+    _path_errs = check_paths()
+    if _path_errs:
+        raise SystemExit("the hardcoded USGS paths in this module are inconsistent:\n  "
+                         + "\n  ".join(_path_errs)
+                         + "\n  Fix BASE / SUBS / PREFIX; every HEAD would 404 and no tile could be "
+                           "found.")
     items = []        # every sub-project copy that exists, as a TNM-shaped record
     absent = []
     unknown = []
@@ -138,11 +187,12 @@ def main():
             print(f"  {t}: not probed -- a HEAD was unresolvable (see below); NOT treated as absent")
             continue
         if not copies:
-            # Genuinely absent: every sub-project answered an authoritative 404. A HEAD that
-            # merely FAILED landed in `unknown` instead and aborts the run below, so reaching here
-            # really does mean the edge of the survey.
+            # Absent as far as the server is concerned: every sub-project answered an authoritative
+            # 404. A HEAD that merely FAILED landed in `unknown` instead and aborts the run below. That
+            # makes this cell's emptiness real, but it does NOT by itself make it the survey's edge --
+            # see absence_is_credible, and the total-sweep check after the loop.
             absent.append(t)
-            print(f"  {t}: not in any sub-project (404) -- edge of coverage, skip")
+            print(f"  {t}: not in any sub-project (404) -- absent from these URLs, skip")
             continue
         for sub, url, sz in copies:
             items.append({"downloadURL": url, "sizeInBytes": sz})
@@ -154,6 +204,23 @@ def main():
             f"could not determine whether {len(unknown)} tile(s) exist: {', '.join(unknown)}\n"
             f"  These are network failures, not 404s, so the survey may well cover them. Building now\n"
             f"  would leave greens with no ground returns for a reason that is not real. Re-run.")
+    if not absence_is_credible(len(tiles), len(absent)):
+        # A TOTAL sweep. Every HEAD was authoritative, so this is not a network story -- and it is not
+        # a footprint story either, because this module is only run for a course known to be in Alameda
+        # County. What it means is that these URLs address nothing. Raised here, so the "That is the
+        # edge of the survey" note below is never reached with 100% of a course behind it.
+        raise SystemExit(
+            f"all {len(tiles)} candidate tile(s) answered 404. That is NOT the edge of the survey:\n"
+            f"  this module is only run for a course known to be inside the Alameda County 2021\n"
+            f"  survey, so a course lying entirely outside it is not the explanation. The likely cause\n"
+            f"  is that the hardcoded paths are stale -- USGS has reorganised staged delivery before\n"
+            f"  (fetch_lidar._BUCKETS exists because surveys moved under a `legacy/` bucket).\n"
+            f"  Check these three against the producer, none of which is verified anywhere:\n"
+            f"    BASE   = {BASE}\n"
+            f"    SUBS   = {', '.join(SUBS)}\n"
+            f"    PREFIX = {PREFIX}\n"
+            f"  Publishing this as a survey gap would leave every green unread for a reason that is\n"
+            f"  not real -- the same false claim this module already refuses for a timeout and a 403.")
     # WHICH LOCAL FILE HOLDS WHICH COPY is fetch_lidar.plan_downloads' job, not ours. It was decided
     # here too, and the two answers disagreed in the way that costs ground returns: this module
     # tested `os.path.exists(fn) and os.path.getsize(fn) >= sz - 1024`, which is ONE-SIDED, so a file

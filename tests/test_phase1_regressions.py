@@ -18725,3 +18725,316 @@ def test_the_earth_models_published_spread_names_every_module_that_carries_it():
     assert said == len(others), (
         f"geo.py says the constant is a literal in {m.group(1)} shipped modules; counted off the tree "
         f"there are {len(others)}: {', '.join(others)}")
+
+
+def _smallest_corpus_tile():
+    """The smallest real LAZ tile in the corpus, or None. Smallest so a test can read it cheaply."""
+    tiles = glob.glob(os.path.join(ROOT, "courses", "*", "laz", "*.laz"))
+    return min(tiles, key=os.path.getsize) if tiles else None
+
+
+def test_a_disabled_disowned_point_filter_is_distinguishable_from_one_that_found_nothing():
+    """fetch_dem_hd drops points the PRODUCER disowns, and every way that filter can fail was silent.
+
+    The filter was `try: bad = np.asarray(getattr(las, _flag)).astype(bool) / except Exception:
+    continue`, with no message. A laspy attribute rename, a dtype it could not cast, or a point format
+    without the bit ALL silently disabled the one check that keeps vendor-disowned measurements out of
+    the 0.4 m surface a book prints slope reads from -- and the log looked the same either way. The
+    stage had no test on this filter at all.
+
+    Measured across all 78 tiles in the corpus, which also corrects the claim the code made about
+    itself. The comment said "Every tile in the corpus today has ZERO of both":
+
+      * `withheld` is present on **78 of 78** tiles, **19,979,730 points** in total -- not zero.
+      * **0** of those are class-2 GROUND, which is why no shipped surface changes. That part was right.
+      * `synthetic`: 0 points anywhere in the corpus.
+
+    So the filter is LIVE, `bad.any()` is true on every tile, and the line it prints is "dropping 0
+    ground point(s) flagged withheld" -- which reads exactly like a no-op. The three states a reader
+    needs to tell apart are now each stated: the bit ran and dropped points, ran and found none, or
+    was NOT AVAILABLE so the filter did not run.
+
+    Only AttributeError means "no such bit" -- that is what laspy raises for a dimension it does not
+    have, and it is the one cause the original comment named. Anything else propagates: a filter that
+    cannot run for a reason nobody anticipated must stop the build, not quietly shrink itself."""
+    import numpy as np
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem_hd"):
+        sys.modules.pop(m, None)
+    fdh = _import_first_party("fetch_dem_hd")
+
+    assert hasattr(fdh, "disowned_mask"), (
+        "fetch_dem_hd has no disowned_mask(): the flag lookup is still an inline getattr inside a bare "
+        "`except Exception: continue`, so a disabled filter cannot be told from an empty one")
+    assert fdh.FILTER_APPLIED != fdh.FILTER_UNAVAILABLE, "the two outcomes must be distinguishable"
+
+    class FakeLas:
+        withheld = np.array([True, False, True])
+
+    # the bit is present -> the filter RAN, and says so
+    mask, status = fdh.disowned_mask(FakeLas(), "withheld")
+    assert status == fdh.FILTER_APPLIED
+    assert list(mask) == [True, False, True]
+
+    # the bit is absent -> the filter DID NOT RUN, and says that instead of looking like an empty one
+    mask, status = fdh.disowned_mask(FakeLas(), "synthetic")
+    assert status == fdh.FILTER_UNAVAILABLE and mask is None, (
+        "a missing bit must report that the filter did not run; returning an all-False mask would be "
+        "indistinguishable from a tile with nothing flagged")
+
+    # ...but any OTHER failure must not be swallowed into "unavailable"
+    class Exploding:
+        @property
+        def withheld(self):
+            raise ValueError("laspy changed the dtype")
+
+    try:
+        fdh.disowned_mask(Exploding(), "withheld")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "an unexpected failure inside the flag lookup was swallowed. The bare `except Exception` "
+            "made a laspy API change silently disable the filter; only 'this format has no such bit' "
+            "may be tolerated")
+
+    # And the corpus fact the code asserted about itself, measured on a real tile: the bit is THERE.
+    tile = _smallest_corpus_tile()
+    if tile is None:
+        pytest.skip("no LAZ tiles present (courses/ is gitignored)")
+    import laspy
+    with laspy.open(tile) as f:
+        chunk = next(f.chunk_iterator(2_000_000))
+        mask, status = fdh.disowned_mask(chunk, "withheld")
+    assert status == fdh.FILTER_APPLIED, (
+        f"{os.path.basename(tile)}: the withheld bit does not resolve, so this filter is inert on real "
+        f"corpus data")
+    src = open(os.path.join(ROOT, "fetch_dem_hd.py"), encoding="utf-8").read()
+    assert "has ZERO of both" not in src, (
+        "fetch_dem_hd still claims every corpus tile has ZERO withheld and synthetic points. Measured: "
+        "78 of 78 tiles carry withheld points, 19,979,730 in all; what is zero is the GROUND points "
+        "among them, which is the reason no shipped surface changes")
+
+
+def test_a_total_404_sweep_is_not_published_as_the_edge_of_the_survey():
+    """The claim 08cb08d removed for a timeout and a later fix removed for a 403, reached through a 404.
+
+    fetch_lidar_alameda.py hardcodes three unverified strings -- BASE (a six-segment USGS staged-delivery
+    path), SUBS (three sub-project directory names) and PREFIX (a tile filename prefix) -- and nothing
+    has ever checked them against the producer. A USGS reorganisation makes every HEAD 404. That
+    demonstrably happens: fetch_lidar._BUCKETS exists only because surveys moved under a `legacy/`
+    bucket.
+
+    Measured on the current tree with every HEAD answered 404, on a 9-cell course: the module prints
+    "not in any sub-project (404) -- edge of coverage, skip" nine times and then
+
+        NOTE 9 candidate tile(s) are not on the server (authoritative 404): ...
+             That is the edge of the survey. Greens there will have no ground returns and
+             the honesty gate will leave them unread rather than invent a surface.
+
+    for 9 of 9 candidate cells -- 100% of the course -- before exiting with the unrelated message "no
+    tiles downloaded". The module's own docstring is the argument against that: a green with no ground
+    returns is what the honesty gate has to catch, and "better to fail the fetch than to build on a gap
+    that a network wobble invented" is exactly as true of a gap a stale URL invented.
+
+    CORRECTING THE FINDING THAT SENT ME HERE: this does NOT exit 0 when laz/ already holds tiles.
+    `plan_downloads` counts cached copies only against the items it was asked about, and a total sweep
+    leaves that list empty, so got == 0 and the run raises. What is wrong is the DIAGNOSIS, not the exit
+    code: an operator is told in the module's own words that the survey does not reach their course,
+    when the cause is a fixable path.
+
+    A real survey edge clips SOME of a course's candidate cells. A course is only fetched with this
+    module when it is known to be in Alameda County, so ALL of them 404ing is not a footprint fact."""
+    import contextlib
+    import io
+    import urllib.error
+
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    fla = _import_first_party("fetch_lidar_alameda")
+
+    assert hasattr(fla, "absence_is_credible"), (
+        "fetch_lidar_alameda has no absence_is_credible(): a sweep in which EVERY candidate tile 404s "
+        "is still reported as the edge of the survey")
+    # a real edge clips some cells...
+    assert fla.absence_is_credible(9, 0) and fla.absence_is_credible(9, 1)
+    assert fla.absence_is_credible(9, 8), "a course may legitimately sit almost outside the survey"
+    # ...but not all of them
+    assert not fla.absence_is_credible(9, 9), (
+        "every candidate cell answering 404 means these URLs address nothing, not that the survey "
+        "stops short of a course chosen for being inside it")
+    assert not fla.absence_is_credible(1, 1)
+
+    # The paths must at least be SELF-consistent, which is checkable with no network and catches the
+    # likeliest edit slip: USGS names a tile <PREFIX>_<cell>.laz where PREFIX is USGS_LPC_ plus the
+    # project directory that ends BASE. Editing one and not the other 404s every tile.
+    project = fla.BASE.rstrip("/").rsplit("/", 1)[-1]
+    assert fla.PREFIX == "USGS_LPC_" + project, (
+        f"PREFIX {fla.PREFIX!r} does not match the project directory {project!r} at the end of BASE; "
+        f"every HEAD would 404 and the run would call it the edge of the survey")
+    assert fla.check_paths() == [], f"the module's own path check fails today: {fla.check_paths()}"
+
+    # And the tiles ON DISK are the strongest offline evidence these constants are the ones that
+    # produced the shipped data: 32 Alameda tiles across 4 courses, every one named from PREFIX.
+    on_disk = [os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "courses", "*", "laz", "*.laz"))
+               if project in os.path.basename(p)]
+    if on_disk:
+        bad = [n for n in on_disk if not n.startswith(fla.PREFIX + "_")]
+        assert not bad, f"{len(bad)} tile(s) on disk do not match PREFIX: {bad[:3]}"
+
+    real = fla.urllib.request.urlopen
+    try:
+        fla.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(
+            urllib.error.HTTPError("u", 404, "Not Found", {}, None))
+        buf = io.StringIO()
+        exited = None
+        with contextlib.redirect_stdout(buf):
+            try:
+                fla.main()
+            except SystemExit as e:
+                exited = str(e)
+        out = buf.getvalue()
+        assert "That is the edge of the survey" not in out, (
+            f"every candidate tile 404'd and the run published it as the survey's edge:\n{out[-600:]}")
+        assert exited, "a sweep that resolved no tile at all must stop the run"
+        assert "no tiles downloaded" != exited, (
+            f"the run aborted with a message that names neither the cause nor the suspect: {exited!r}")
+        for token in ("BASE", "SUBS", "PREFIX"):
+            assert token in exited, (
+                f"the abort message does not name {token}, which is one of the three unverified "
+                f"strings that would produce exactly this sweep: {exited!r}")
+    finally:
+        fla.urllib.request.urlopen = real
+
+
+def test_the_served_dem_pixel_must_be_square_in_metres():
+    """The gap-fill DEM's squareness rested on ONE query parameter, and ArcGIS ignores what it
+    does not recognise.
+
+    fetch_dem.py asks 3DEP exportImage for `bbox` in degrees with `size={W},{H}` derived from the
+    bbox's METRIC aspect, and the only thing making both be honoured is `adjustAspectRatio=false`.
+    ArcGIS REST silently ignores unknown parameters, so if that one is dropped, renamed or misspelled
+    the service goes back to keeping `size` and stretching the bbox to square pixels IN DEGREES.
+    Nothing reported it: the parameter had never been covered by any check, and the external-contract
+    review that covered OSM, ASPRS, TNM and R&A did not run at ArcGIS.
+
+    What that costs, in the artifact:
+      * the grid becomes anisotropic by 1/cos(lat) -- 1.2637 at monarch-bay's 37.6916 deg N, measured
+        by re-issuing all six shipped URLs. render_green smooths with `gauss(arr, 3.0)`, ONE sigma in
+        PIXELS, so the read is blurred 1.5 m one way and 1.9 m the other.
+      * `source="USGS 3DEP seamless 1 m @0.5m sampling"` becomes FALSE, and gen_provenance prints that
+        string into legal/03. An uncheckable claim in the provenance record is the thing that record
+        exists to not be.
+
+    This is the path a BRAND-NEW course takes for every green LiDAR refuses, which makes it the least
+    gated and most used producer in the pipeline.
+
+    Checked as a property of the REPLY, not as a substring of the request. A URL-literal assertion
+    proves a string was sent; it cannot prove the service honoured it, and honouring it is the whole
+    question. The tolerance is set from the shipped corpus rather than guessed: across all 198 built
+    surfaces the served pixel is between 1.000041 and 1.008503 off square, so 1.05 admits every real
+    one with 6x margin while rejecting the 1.2637 failure by 5x.
+
+    DISCLOSED, not refused, and the distinction is forced by an existing decision:
+    test_a_seamless_green_records_the_extent_its_array_actually_covers records that an expanded reply is
+    still a usable surface once it is placed right, because the bbox is read off the GeoTIFF either way
+    -- it "degrades to merely anisotropic rather than mis-georeferenced". Refusing it would contradict
+    that. What must not survive is the CLAIM: an anisotropic patch no longer records
+    "@0.5m sampling", and the run says which parameter stopped being honoured."""
+    import io as _io
+
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem"):
+        sys.modules.pop(m, None)
+    fd = _import_first_party("fetch_dem")
+
+    assert hasattr(fd, "served_pixel_aspect"), (
+        "fetch_dem has no served_pixel_aspect(): nothing checks that the raster 3DEP actually served "
+        "has square pixels in metres, so dropping adjustAspectRatio=false is silent")
+    assert 1.02 <= fd.PIXEL_ASPECT_MAX <= 1.10, (
+        f"PIXEL_ASPECT_MAX={fd.PIXEL_ASPECT_MAX} is outside the range the corpus justifies: real "
+        f"surfaces reach 1.0085 off square and the failure mode is 1.2637")
+
+    R_LAT, clat = 111320.0, 37.6916
+    mlon = R_LAT * math.cos(math.radians(clat))
+
+    # square in METRES: 0.5 m each way, which is what adjustAspectRatio=false yields. The residual
+    # 3e-6 is this test's own construction -- dlon is sized at the bbox's SOUTH edge while the
+    # predicate uses its centre latitude -- and is four orders of magnitude below the failure.
+    W = H = 100
+    dlon, dlat = W * 0.5 / mlon, H * 0.5 / R_LAT
+    square = [0.0, clat, dlon, clat + dlat]
+    ratio = fd.served_pixel_aspect(square, W, H)
+    assert abs(ratio - 1.0) < 1e-4, f"a 0.5 m x 0.5 m grid measured as {ratio}"
+
+    # square in DEGREES: exactly what the service returns when the flag is not honoured
+    degsq = [0.0, clat, dlat, clat + dlat]
+    ratio = fd.served_pixel_aspect(degsq, W, H)
+    assert abs(ratio - 1 / math.cos(math.radians(clat))) < 1e-3, (
+        f"a degrees-square grid must measure as 1/cos(lat) = "
+        f"{1 / math.cos(math.radians(clat)):.4f}, got {ratio:.4f}")
+    assert ratio > fd.PIXEL_ASPECT_MAX, "the real failure mode is inside the tolerance"
+
+    # _served_patch must ACCEPT the square reply and REFUSE the degrees-square one, off the GeoTIFF
+    def tiff(bounds):
+        xmin, ymin, xmax, ymax = bounds
+        prof = dict(driver="GTiff", height=H, width=W, count=1, dtype="float32",
+                    crs="EPSG:4326", transform=from_bounds(xmin, ymin, xmax, ymax, W, H))
+        with rasterio.io.MemoryFile() as mem:
+            with mem.open(**prof) as ds:
+                ds.write(np.zeros((H, W), dtype="float32"), 1)
+            return mem.read()
+
+    # _served_patch must read BOTH replies back intact -- an expanded reply is still usable once it is
+    # placed right, which is the decision
+    # test_a_seamless_green_records_the_extent_its_array_actually_covers holds and this must not
+    # contradict. What must not survive an expanded reply is the CLAIM.
+    arr, got = fd._served_patch(tiff(square))
+    assert arr.shape == (H, W), f"the square reply was not read back intact: {arr.shape}"
+    assert abs(got[0] - square[0]) < 1e-9 and abs(got[3] - square[3]) < 1e-9
+    arr, got = fd._served_patch(tiff(degsq))
+    assert arr.shape == (H, W) and abs(got[3] - degsq[3]) < 1e-9, (
+        "an anisotropic reply must still be read and placed; refusing it would contradict the "
+        "recorded decision that such a surface degrades to anisotropic rather than mis-georeferenced")
+
+    # ...and the provenance claim must follow the pixels, not the request
+    src_ok, warn_ok = fd.sampling_note(square, W, H)
+    assert "@0.5m sampling" in src_ok, f"a square grid must record 0.5 m sampling, got {src_ok!r}"
+    assert warn_ok is None, f"a square grid warned anyway: {warn_ok}"
+
+    src_bad, warn_bad = fd.sampling_note(degsq, W, H)
+    assert "@0.5m sampling" not in src_bad, (
+        f"a grid {fd.served_pixel_aspect(degsq, W, H):.4f}x from square still records "
+        f"'@0.5m sampling', which gen_provenance prints into legal/03 as a provenance claim: {src_bad!r}")
+    assert "ANISOTROPIC" in src_bad, f"the recorded source does not say what it is: {src_bad!r}"
+    assert warn_bad and "adjustAspectRatio" in warn_bad, (
+        f"nothing reports the parameter that stopped being honoured: {warn_bad!r}")
+
+    # every consumer classifies a seamless surface by this substring, so both spellings must keep it
+    for s in (src_ok, src_bad):
+        assert fd.is_seamless({"source": s}), f"{s!r} no longer reads as a seamless surface"
+
+    # NoGeoreference must still be caught by main()'s no-retry handler
+    assert issubclass(fd.NoGeoreference, fd.UnusableReply)
+    assert issubclass(fd.NotSquareInMetres, fd.UnusableReply)
+
+    # ...and the tolerance must not refuse anything actually shipped
+    worst, worst_at, n = 1.0, None, 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        with open(p, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        if not meta.get("bbox") or not meta.get("W"):
+            continue
+        n += 1
+        r = fd.served_pixel_aspect(meta["bbox"], meta["W"], meta["H"])
+        if r > worst:
+            worst, worst_at = r, os.path.relpath(p, ROOT)
+    if n:
+        assert n >= 150, f"only {n} surfaces checked; expected the whole corpus"
+        assert worst < fd.PIXEL_ASPECT_MAX, (
+            f"{worst_at} is {worst:.6f} off square, which this gate would now refuse. Either the "
+            f"tolerance is too tight or that surface really is anisotropic")
