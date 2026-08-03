@@ -10088,7 +10088,12 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
     import shutil
     import tempfile
     fhe_src = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
-    assert "MAX_TEE_RELIEF_FT" in fhe_src, "the pad-relief gate this test is about is gone"
+    # _code_only, because this file's own docstring at the top names MAX_TEE_RELIEF_FT and so does a
+    # comment beside the constant -- so a raw grep here was satisfied by PROSE. Proven: deleting the
+    # constant and the four-line gate, leaving only the module docstring's mention, left this
+    # assertion green (and the whole suite at 219 passed). Assertion (4) below deliberately reads the
+    # docstring instead; that one is ABOUT the prose.
+    assert "MAX_TEE_RELIEF_FT" in _code_only(fhe_src), "the pad-relief gate this test is about is gone"
 
     # 1. The artifact genuinely cannot attribute an omission: no recorded hole carries a refusal.
     #    (If a future change DOES record one, this test should be revisited, not the document.)
@@ -10135,6 +10140,130 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
     assert "MAX_TEE_RELIEF_FT" in doc0, (
         "the module docstring still lists only some of the reasons a hole gets no figure; the "
         "pad-relief refusal is the one legal/03 was misled by")
+
+
+@needs_corpus
+def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
+    """MAX_TEE_RELIEF_FT decides whether a hole PRINTS a height, and nothing exercised it.
+
+    The gate is four lines inside tee_median_is_trustworthy: a mapped tee pad whose sampled ground
+    spans more than 2.5 ft is not a level teeing ground, so the median over it does not stand for a tee
+    height and the hole gets no figure at all. That is the one refusal in fetch_hole_elev.py that fires
+    on holes which resolved an anchor AND have a usable green surface -- everything else about them
+    looks fine, which is exactly why it has to be the code that says no.
+
+    IT WAS GUARDED BY NOTHING, proven by deletion. The only test that named the constant grepped the
+    RAW module source for it, which the module docstring satisfies; deleting the constant and the gate
+    left the suite at 219 passed. tee_median_is_trustworthy was called zero times in this suite, because
+    every corpus test reads a hole_elev.json already on disk and the one test that re-runs the stage is
+    behind both @pytest.mark.network and a cold-build flag. What the deletion buys: merion h11 starts
+    printing "green 35.3 ft below the tee (-10.7 m, 3917 tee returns)" off a pad spanning 3.1 ft, and
+    philadelphia h18 "green 33.2 ft above the tee" off a pad spanning 6.2 ft -- a datum ambiguous by
+    twice the smallest height the book will print.
+
+    So this calls the predicate directly, with the REAL ring samples from the corpus on both sides of
+    the threshold. The corpus leaves an empty band there, and that band is the evidence the constant is
+    a boundary between two populations rather than a cut through one:
+
+        steepest pad ACCEPTED    philadelphia  3   2.13 ft   (1298 returns)
+        --------------------------------- 2.5 ---------------------------------
+        flattest pad REFUSED     castlewood-hill 9 2.75 ft   (838 returns)
+                                 merion 1          2.95 ft   (3839 returns)
+                                 merion 11         3.12 ft   (3917 returns)
+                                 bay-view 3        3.57 ft   (4569 returns)
+                                 castlewood-hill 18 4.30 ft  (150 returns)
+                                 philadelphia 18   6.22 ft   (967 returns)
+
+    Measured over all 177 holes that get a tee sample (169 on a mapped pad, 8 in the box fallback) by
+    running the shipped sampler; so the two rows either side of the line pin the constant into
+    (2.13, 2.75] and this test fails if the gate is deleted, stubbed out, or the number is moved out of
+    that band. It calls a PURE PREDICATE with recorded numbers -- it reads no LiDAR and re-runs no
+    stage, which is what makes a gate on the elevation pipeline affordable to watch at all. (It carries
+    @needs_corpus only because fetch_hole_elev imports config, which resolves a course directory at
+    import and exits without one; nothing below reads a course file.)
+
+    The BOX branch is asserted too, and asserted to be DIFFERENT: it gates on the count only, because
+    there is no containment guarantee and the box legitimately reaches off the pad onto the ground a
+    raised tee sits above -- bay-view 16's box spans 31.2 ft and is right to be accepted on 10,429
+    returns. Applying the relief gate there would cost 8 more holes their height for a spread that is
+    an artifact of the sampling region, not a property of the tee.
+    """
+    sys.modules.pop("fetch_hole_elev", None)
+    _config, _rh = _engine(a_course())
+    import fetch_hole_elev as fhe
+    FT_US = 0.30480060960121924        # the 5 State Plane courses; merion/philadelphia are metric
+
+    def raw(ft, vscale=1.0):
+        """`ft` of measured pad relief expressed back in the CRS vertical units the gate is handed."""
+        return ft / (3.28084 * vscale)
+
+    # (1) merion h1 -- 3839 class-2 returns on a mapped pad over a usable green surface, refused for
+    # relief and nothing else. This is the hole legal/03 published a wrong reason for.
+    ok, why = fhe.tee_median_is_trustworthy(3839, raw(2.953), True, 1.0)
+    assert not ok, (
+        "merion h1's real tee pad spans 2.95 ft of height and the gate accepts it, so the hole would "
+        "print a height off ground whose own spread is nearly the smallest figure the card prints. "
+        f"MAX_TEE_RELIEF_FT is {getattr(fhe, 'MAX_TEE_RELIEF_FT', 'GONE')}")
+    assert "not a level teeing ground" in why, (
+        f"the refusal no longer says what is wrong with the pad, so the run log stops being the only "
+        f"record of why this hole prints nothing: {why!r}")
+    assert "spans 3.0 ft" in why, (
+        f"the refusal must quote the spread it MEASURED, not just the limit it failed -- that number "
+        f"is the only record of how far off a level tee this pad is: {why!r}")
+
+    # (2) the two rows either side of the empty band, which is what pins the constant.
+    assert not fhe.tee_median_is_trustworthy(838, raw(2.755), True, 1.0)[0], (
+        "castlewood-hill 9 is the FLATTEST pad the corpus refuses, at 2.75 ft; accepting it means the "
+        "threshold has risen past the whole refused population")
+    assert fhe.tee_median_is_trustworthy(1298, raw(2.133), True, 1.0)[0], (
+        "philadelphia 3 is the STEEPEST pad the corpus accepts, at 2.13 ft, and it prints a height "
+        "today; refusing it means the threshold has fallen into the accepted population")
+    assert 2.133 < fhe.MAX_TEE_RELIEF_FT < 2.755, (
+        f"MAX_TEE_RELIEF_FT = {fhe.MAX_TEE_RELIEF_FT} is no longer inside the band the corpus leaves "
+        f"empty (2.13, 2.75). Re-measure both ends before moving it; the two assertions above say "
+        f"which holes decide it")
+    assert fhe.MAX_TEE_RELIEF_FT < 3.0, (
+        "the limit must stay below the 3 ft floor generate.elev_phrase suppresses under, which is what "
+        "ties it to something: a pad ambiguous by more than the smallest height the book prints cannot "
+        "anchor that height")
+
+    # (3) the other five refusals, so no single edit can quietly re-admit them
+    for slug, hn, n, ft in (("merion", 11, 3917, 3.117), ("bay-view", 3, 4569, 3.568),
+                            ("castlewood-hill", 18, 150, 4.302),
+                            ("philadelphia", 18, 967, 6.224)):
+        assert not fhe.tee_median_is_trustworthy(n, raw(ft), True, 1.0)[0], (
+            f"{slug} {hn}'s pad spans {ft} ft and is being accepted; it would print a height off "
+            f"ground that is not level")
+
+    # (4) the CRS axis scale is applied, so the five US-survey-foot courses are gated on feet and not
+    # on raw ftUS read as metres. callippe 11 spans 2.00 ft and prints a height; drop the scale and it
+    # reads 6.6 ft and the hole goes silent.
+    assert fhe.tee_median_is_trustworthy(5058, raw(2.000, FT_US), True, FT_US)[0], (
+        "callippe 11's pad spans 2.00 ft and is being refused -- the gate is reading raw ftUS as if it "
+        "were metres, which makes it 3.28x stricter on 5 of the 11 courses")
+    assert not fhe.tee_median_is_trustworthy(5058, raw(3.568, FT_US), True, FT_US)[0], \
+        "a 3.57 ft spread on a ftUS course is accepted; the scale is being applied the wrong way"
+
+    # (5) enough points for the spread to mean anything, and the BOX branch, which is a different
+    # question with a different answer -- see this test's docstring.
+    assert not fhe.tee_median_is_trustworthy(29, raw(0.2), True, 1.0)[0], \
+        "a 29-point pad is accepted; a spread over that many returns is not a measurement of the pad"
+    assert fhe.tee_median_is_trustworthy(10429, raw(31.245), False, 1.0)[0], (
+        "bay-view 16's 15 m BOX spans 31.2 ft and is being refused: the box is not the pad, so its "
+        "spread is the ground around a raised tee and the count is the only signal there")
+    assert not fhe.tee_median_is_trustworthy(150, raw(0.2), False, 1.0)[0], (
+        "a 150-point box is accepted; with no containment guarantee a small sample may not be the tee "
+        "at all, which is what MIN_TEE_PTS is for")
+
+    # (6) and the module comment must quote the spread the gate actually computes. It quoted the
+    # PEAK-TO-PEAK figures (5.1 and 9.1 ft) beside a gate defined on p95-p5, on the two pads it names
+    # as the reason for the threshold -- so the derivation could not be checked against the code.
+    cmt = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
+    cmt = cmt.split("MAX_TEE_RELIEF_FT = ")[0]
+    assert "4.3 ft of relief" in cmt and "6.2 ft of relief" in cmt, (
+        "the comment deriving MAX_TEE_RELIEF_FT no longer quotes castlewood-hill 18's 4.3 ft and "
+        "philadelphia 18's 6.2 ft -- the p95-p5 spreads this gate measures, re-measured through the "
+        "shipped ring sampler and pinned in (3) above")
 
 
 @needs_corpus

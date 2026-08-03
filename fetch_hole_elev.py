@@ -79,9 +79,13 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # the standard error of the median (1.253*sd/sqrt(n)) with a 0.25 ft ceiling, and that gate was INERT:
 # over the corpus it ranged 0.002-0.146 ft and refused nothing, and it cannot refuse anything above
 # about 100 returns because sqrt(n) swamps sd. It also ranked the wrong way round -- castlewood-hill 18
-# has 5.1 ft of relief and a +1.06 ft/m slope along the hole axis, which is not a tee, and it scored
-# BETTER than philadelphia 18 (9.1 ft of relief) purely by having fewer points. Measured against the
-# actual implied error, sd correlates 4x better than se (0.44 vs 0.11).
+# has 4.3 ft of relief and falls 1.06 ft per metre along the hole axis, which is not a tee, and it
+# scored BETTER than philadelphia 18 (6.2 ft of relief) purely by having fewer points. Measured against
+# the actual implied error, sd correlates 4x better than se (0.44 vs 0.11).
+# (Those two read 5.1 and 9.1 ft here for as long as the gate has existed, which are their PEAK-TO-PEAK
+# spreads. The gate measures p95-p5 -- see tee_elevations -- so the comment was quoting a spread the
+# code never computes, on the one pad it names as the reason for the threshold. Re-measured through the
+# shipped ring sampler: 4.30 and 6.22 ft.)
 #
 # What the figure needs is that the sampled ground IS a tee: a mown, near-level pad whose median stands
 # for the whole of it. So bound the spread directly. 2.5 ft of relief across a pad admits a real teeing
@@ -92,6 +96,14 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # the datum would be ambiguous by more than the smallest quantity the book is willing to print. Costs
 # 6 of 177 holes their printed height (bay-view h3, castlewood-hill h9 and h18,
 # merion h1 and h11, philadelphia h18). Printing nothing is the honest outcome for those.
+# The corpus leaves an EMPTY BAND around the threshold, which is the evidence that it separates two
+# populations rather than cutting through one: the flattest pad it refuses is castlewood-hill 9 at
+# 2.75 ft and the steepest it accepts is philadelphia 3 at 2.13 ft, so 2.5 sits inside a 0.62 ft gap
+# that no hole occupies. Both ends are pinned by
+# test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height, which is where to look before
+# moving this number: the gate itself was exercised by NOTHING for as long as it existed, and deleting
+# it left the whole suite green while merion h11 started printing "green 35.3 ft below the tee" off a
+# pad spanning 3.1 ft.
 MAX_TEE_RELIEF_FT = 2.5   # p5-p95 spread of the ring sample; a tee is level or it is not a tee
 MIN_RING_PTS = 30         # and enough points for that spread to mean anything
 GROUND = 2              # LAS classification for bare earth
