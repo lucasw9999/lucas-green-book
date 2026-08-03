@@ -10182,6 +10182,101 @@ def test_elevation_change_scales_only_the_tee_height():
 
 
 @needs_corpus
+def test_hole_elev_refuses_to_drop_a_hole_it_measured_before():
+    """hole_elev.json was the one derived artifact under courses/ with NO loss guard.
+
+    Every sibling has one, because every one of them can lose data for reasons that have nothing to do
+    with the ground: fetch_osm._check_response (churn, a green floor, ALLOW_SHRINK),
+    fetch_trees.check_layer (ALLOW_NO_TREES / ALLOW_TREE_LOSS and a per-hole floor),
+    surface_io.commit_surface (the pair plus its digest), lidar_dates.write_lidar_flown (load and set
+    one key). fetch_hole_elev had `if not rows: return 1`, which blocks TOTAL loss and nothing else.
+
+    A PARTIAL loss needs no crash to happen: fewer laz/ tiles on disk than last time, a first tile
+    whose CRS is read differently, MIN_TEE_PTS on a box that used to just clear it. And the corpus
+    cannot tell such a loss from the status quo, because the artifact is ALREADY partial on 8 of its 11
+    courses -- 171 rows over 198 holes, bay-view at 11 of 18, merion 12, monarch-bay 13,
+    castlewood-hill 15, philadelphia 16, castlewood-valley 16, callippe 17, valley-hi 17. A hole
+    silently dropping out looks exactly like a hole that never had a figure.
+
+    Nothing downstream objects either, which is the worst part: generate.py omits the elevation line
+    for a hole with no row (elev_phrase), and gen_provenance's "measured on N of 18" follows the loss
+    DOWN, so the book stays internally consistent and reads as finished. The only tripwire is
+    `gen_provenance --check` reporting STALE, and the remedy it prints regenerates the document -- which
+    launders the loss into the record.
+
+    So the guard is PER HOLE, not a total: a course can hold its count while a hole trades places with
+    another, and it is the named hole whose card loses its height. Waived by ALLOW_ELEV_LOSS for a
+    genuine loss (a green rebuilt, a tee re-mapped), spelled the way this project's other hatches are
+    and parsed so that =0 does not read as yes.
+    """
+    _config, _rh = _engine(CORPUS[0])
+    sys.modules.pop("fetch_hole_elev", None)
+    import fetch_hole_elev as fhe
+
+    def stored(where, holes):
+        p = os.path.join(str(where), "hole_elev.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"holes": {str(h): {"change_ft": 4.0 + h} for h in holes}}, f)
+        return p
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p = stored(td, [1, 2, 3])
+        three = {"1": {}, "2": {}, "3": {}}
+
+        # the same set, and a bigger one, pass
+        fhe.check_rows(three, p)
+        fhe.check_rows(dict(three, **{"4": {}}), p)
+
+        # a hole that HAD a figure and now has none is refused, and the hole is NAMED
+        prev = os.environ.pop("ALLOW_ELEV_LOSS", None)
+        try:
+            with pytest.raises(SystemExit) as e:
+                fhe.check_rows({"1": {}, "3": {}}, p)
+            assert "2" in str(e.value), f"the refusal must name the hole that was lost: {e.value}"
+            # a swap that keeps the COUNT is still a loss, which is why the guard is per hole
+            with pytest.raises(SystemExit) as e2:
+                fhe.check_rows({"1": {}, "2": {}, "9": {}}, p)
+            assert "3" in str(e2.value), f"a same-count swap must still be refused: {e2.value}"
+
+            # the waiver lets a real loss through, loudly, and =0 does not read as yes
+            os.environ["ALLOW_ELEV_LOSS"] = "0"
+            with pytest.raises(SystemExit):
+                fhe.check_rows({"1": {}, "3": {}}, p)
+            os.environ["ALLOW_ELEV_LOSS"] = "1"
+            import contextlib
+            import io
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                fhe.check_rows({"1": {}, "3": {}}, p)
+            assert "WARNING" in buf.getvalue() and "2" in buf.getvalue(), \
+                f"a waived loss must still be reported: {buf.getvalue()!r}"
+        finally:
+            os.environ.pop("ALLOW_ELEV_LOSS", None)
+            if prev is not None:
+                os.environ["ALLOW_ELEV_LOSS"] = prev
+
+        # a FIRST run has nothing to compare against, and an unreadable baseline is not a hard stop --
+        # the same call fetch_trees._stored_layer makes, for the same reason: this file is derived
+        with tempfile.TemporaryDirectory() as td2:
+            fhe.check_rows({"1": {}}, os.path.join(td2, "hole_elev.json"))
+            bad = os.path.join(td2, "hole_elev.json")
+            with open(bad, "w", encoding="utf-8") as f:
+                f.write("{not json")
+            fhe.check_rows({"1": {}}, bad)
+
+    # and it has to be the LAST GATE BEFORE THE BYTES LAND, or it is a guard nobody runs
+    src = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
+    body = src[src.index("def main("):]
+    assert _in_code("check_rows(rows,", body), \
+        "fetch_hole_elev.main never calls its own loss guard, so nothing runs it"
+    writes = [k for k in ("write_hole_elev(", "os.replace(") if k in body]
+    assert writes, "main() no longer writes hole_elev.json by any spelling this test knows"
+    assert body.index("check_rows(rows,") < min(body.index(k) for k in writes), \
+        "the loss guard must run BEFORE the bytes land, not after them"
+
+
+@needs_corpus
 def test_recorded_green_height_matches_the_built_surface():
     """hole_elev.json's green_z_m must equal the green surface's own median, unscaled.
 

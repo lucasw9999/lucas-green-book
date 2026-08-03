@@ -489,6 +489,77 @@ def elevation_change_m(green_z_m, tee_z_raw, vscale):
     return green_z_m - tee_z_raw * vscale
 
 
+def _env_on(name):
+    """An escape hatch is ON only if it is not an explicit off.
+
+    Parsed the way fetch_trees._env_on parses its two, NOT for truthiness: bool(os.environ.get(..))
+    makes ALLOW_ELEV_LOSS=0 and =false mean YES, and this one waives the guard that stands between a
+    survey that came back thinner and a book that quietly stops printing a height it used to.
+    """
+    return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
+
+
+def stored_rows(path):
+    """{hole: row} for the hole_elev.json already on disk; {} when there is none to compare against.
+
+    An unreadable file is treated as no baseline rather than a hard stop, which is the call
+    fetch_trees._stored_layer makes and the opposite of fetch_osm._digitized_of's -- and the
+    distinction is whether a human made the data. Nothing here is hand-made: this run re-measures
+    every hole from the tiles and the green surfaces, so a corrupt baseline costs this guard its
+    comparison and nothing else.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {str(h): r for h, r in (json.load(f).get("holes") or {}).items()}
+    except Exception:
+        return {}
+
+
+def check_rows(rows, path):
+    """Refuse to commit hole_elev.json when a hole that HAD a height no longer has one.
+
+    This artifact was the only derived file under courses/ with no loss guard. Its siblings all have
+    one, because every one of them can lose data for reasons that have nothing to do with the ground:
+    fetch_osm._check_response (churn, a green floor, ALLOW_SHRINK), fetch_trees.check_layer
+    (ALLOW_NO_TREES / ALLOW_TREE_LOSS and a per-hole floor), surface_io.commit_surface (the pair and
+    its digest), lidar_dates.write_lidar_flown (load and set one key). Here there was only
+    `if not rows: return 1`, which blocks TOTAL loss and nothing between that and everything.
+
+    NO CRASH IS NEEDED TO CAUSE A PARTIAL ONE: fewer laz/ tiles on disk than last time, a first tile
+    whose CRS reads differently (geo.vertical_scale keys off it), a tee box that used to just clear
+    MIN_TEE_PTS. And the corpus cannot tell such a loss from the status quo, because this file is
+    ALREADY partial on 8 of its 11 courses -- 171 rows over 198 holes, bay-view at 11 of 18, merion 12,
+    monarch-bay 13, castlewood-hill 15, philadelphia 16, castlewood-valley 16, callippe 17, valley-hi
+    17. A hole dropping out looks exactly like a hole that never had a figure.
+
+    Nor does anything downstream object. generate.py omits the elevation line for a hole with no row,
+    and gen_provenance's "measured on N of 18" follows the loss DOWN, so the book stays internally
+    consistent and reads as finished; the only tripwire is `gen_provenance --check` calling the
+    document STALE, and the remedy it prints regenerates the document, which launders the loss into
+    the record.
+
+    PER HOLE, not a total, for the reason fetch_trees.check_layer is: a course can hold its count while
+    one hole trades places with another, and it is the named hole whose card silently loses its height.
+    """
+    prev = stored_rows(path)
+    lost = sorted(int(h) for h in prev if h not in rows)
+    if not lost:
+        return
+    detail = ", ".join(f"{h} ({prev[str(h)].get('change_ft')} ft)" for h in lost)
+    if not _env_on("ALLOW_ELEV_LOSS"):
+        raise SystemExit(
+            "REFUSING to write %s: hole(s) %s had a measured height in the stored file and this run\n"
+            "  produced none. Those cards would drop the elevation line with nothing to show a\n"
+            "  measurement was lost -- the book stays self-consistent and legal/03's \"measured on N\n"
+            "  of 18\" follows the loss down. Check that every laz/ tile is still on disk, that the\n"
+            "  first tile's CRS still reads the same, and read the per-hole refusals printed above.\n"
+            "  Set ALLOW_ELEV_LOSS=1 if the loss is real (a green rebuilt, a tee re-mapped)."
+            % (path, detail))
+    print("WARNING: ALLOW_ELEV_LOSS set -- hole(s) %s lose the height they had" % detail)
+
+
 def main():
     if config.BUILD_MODE == "yardage":
         print(f"{config.SLUG} is a yardage-mode course: no green surfaces, so no elevation change "
@@ -579,6 +650,9 @@ def main():
     print(f"  => {len(rows)} of {len(holes)} holes measured")
     if "--write" in sys.argv:
         p = f"{DIR}/hole_elev.json"
+        # LAST GATE BEFORE THE BYTES LAND, like fetch_trees.check_layer: everything above measures the
+        # tiles, and this asks whether the measurement is one the book may be rebuilt on.
+        check_rows(rows, p)
         tmp = p + ".part"
         with open(tmp, "w") as f:
             json.dump({"tee_radius_m": TEE_R_M, "min_tee_points": MIN_TEE_PTS,
