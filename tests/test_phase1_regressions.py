@@ -2308,6 +2308,37 @@ def test_every_third_party_import_is_declared():
         "install instructions:\n  " + "\n  ".join(sorted(set(unguarded))))
 
 
+def test_no_test_carries_the_same_skip_condition_twice():
+    """A decorator applied twice is a slip that reads as a second guard, and pytest hides it.
+
+    Two tests here carried `@needs_corpus` twice. `needs_corpus` is a single
+    `pytest.mark.skipif(not CORPUS, ...)`, and pytest skips if ANY skipif condition holds, so the
+    outcome is identical and one reason is reported -- nothing was masked and neither test needed a
+    second guard. That is exactly why it survived: a duplicate here costs nothing today and cannot be
+    seen in the run output.
+
+    It still has to go, and it has to stay gone: the next reader of a doubly-guarded test has to work
+    out whether the second decorator is a different condition that matters. Only EXACT duplicates are
+    flagged -- same mark, same args, same kwargs -- so stacking two genuinely different skipifs, or a
+    skipif with a different reason, remains available and is not the pattern this catches.
+    """
+    import inspect
+    dupes = []
+    for name, fn in sorted(vars(sys.modules[__name__]).items()):
+        if not (name.startswith("test_") and inspect.isfunction(fn)):
+            continue
+        marks = getattr(fn, "pytestmark", [])
+        # repr, not the values themselves: a mark's arguments can legitimately be unhashable
+        # (parametrize takes a list), and this only needs identity of the SPELLING.
+        keys = [(m.name, repr(m.args), repr(sorted(m.kwargs.items()))) for m in marks]
+        for k in set(keys):
+            if keys.count(k) > 1:
+                dupes.append(f"{name}: @{k[0]} applied {keys.count(k)} times with identical arguments")
+    assert not dupes, (
+        "a test carries the same mark more than once. pytest treats the duplicate as a no-op, so it is "
+        "invisible in the run output and reads as a second, different guard:\n  " + "\n  ".join(dupes))
+
+
 def test_no_test_skips_itself_when_one_of_this_repos_own_modules_is_missing(tmp_path):
     """A test whose subject is a module must FAIL when that module is gone, not skip.
 
@@ -2882,7 +2913,6 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             f"with them.")
 
 
-@needs_corpus
 @needs_corpus
 def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings():
     """The green's height must come from the GREEN, not from the patch the green sits in.
@@ -4907,7 +4937,6 @@ def test_hole_line_choice_does_not_depend_on_element_order():
     assert len(msgs) == 1, "the refusal message depends on element order"
 
 
-@needs_corpus
 @needs_corpus
 def test_every_green_has_its_own_printed_scale_bar():
     """One measured 5-yd bar per green, each found by its OWN caption.
@@ -9790,7 +9819,6 @@ def test_no_tree_marker_sits_on_a_building():
     assert total_on_building == 0, f"{total_on_building} of {checked} tree markers sit on a building"
 
 
-@pytest.mark.slow
 @pytest.mark.slow          # rebuilds one book from source, then measures it in a browser
 @needs_corpus
 def test_rule_4_3_holds_for_a_book_BUILT_FROM_THE_CURRENT_CODE():
@@ -14539,7 +14567,12 @@ def test_an_interrupted_build_cannot_leave_a_green_beside_someone_elses_metadata
 # The green card's own arithmetic: the compass sectors, the confidence gate, the
 # view-unit-to-yard conversion, and the figures the module quotes about its own kernels
 # ---------------------------------------------------------------------------
-# The sphere the whole engine measures on -- 111320 m per degree of latitude, i.e. R = 6378138 m.
+# The sphere the whole engine measures on -- 111320 m per degree of latitude, i.e. R = 6378166 m.
+# (That read 6378138 m, which is WGS84's equatorial 6378137 with a digit slipped, and is 28.18 m
+# short of the sphere 111320 m/deg actually implies. Nothing computed off it -- R_SPHERE is derived
+# below -- so it moved no number; it was a stated figure of the Earth that was not this one, in the
+# note whose whole job is to say which sphere these tests measure on. Pinned now by
+# test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER.)
 # Every ground length below is computed on THIS sphere deliberately. A geodesic taken on some other
 # figure of the Earth differs from the pipeline's by up to ~0.3%, which is LARGER than the pixel
 # anisotropy these tests exist to measure, so it would report an earth-model difference as a
@@ -15842,6 +15875,19 @@ def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER(
         assert abs(said - got) <= 0.005, (
             f"the legal record says the model runs {said:+}% in {what} at {lat}N; measured it is "
             f"{got:+.4f}%")
+
+    # (a2) this file's OWN note on that sphere must state the radius 111320 m/deg implies. It said
+    # 6378138 m -- WGS84's equatorial 6378137 with a digit slipped, and 28.18 m short of the truth.
+    # Nothing computes off the literal, so no printed number moved; what was wrong is a stated figure
+    # of the Earth in the note whose entire job is to say which sphere the tests below measure on.
+    # Derived here rather than repeated, so the note cannot drift from R_SPHERE again. Above the
+    # corpus gate on purpose: it needs no course data, and everything below returns without one.
+    with open(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), encoding="utf-8") as fh:
+        note = fh.read().split("R_SPHERE = R_LAT")[0].rsplit("# The sphere the whole engine", 1)[-1]
+    said_r = re.search(r"R = (\d+) m", note)
+    assert said_r and int(said_r.group(1)) == round(R_SPHERE), (
+        f"the R_SPHERE note says R = {said_r.group(1) if said_r else 'nothing'} m; 111320 m per degree "
+        f"of latitude implies {R_SPHERE:.3f} m, i.e. {round(R_SPHERE)}")
 
     if not CORPUS:
         return
