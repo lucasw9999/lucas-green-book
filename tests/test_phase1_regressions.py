@@ -2810,8 +2810,14 @@ def test_a_printed_carry_never_overstates_what_it_clears():
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
         "Clearing it needs more than N", which is false where the sand is long: philadelphia 1 prints
         "carry 213" for sand occupying the line out to 308 yd, so clearing it needs 308. Sand runs a
-        median 23 yd past the printed number and up to 95. The number is right -- it is where the sand
+        median 23 yd past the printed number and up to 146. The number is right -- it is where the sand
         starts -- so the sentence was corrected rather than the figure.
+
+        THE 146 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
+        (see render_hole.edge_within) gave the-reserve 16 the 8,000 m^2 waste bunker it had been
+        printing blank ground over, and that card now prints "carry 177" for sand running to 323 -- 146
+        yd of it. The old worst was philadelphia 1's 95. A card that draws more of the sand it always
+        had needs the hedge MORE, not less.
 
         THAT WORST CASE USED TO READ 126 yd, on the-reserve 8, and it went stale the moment
         `render_hole` stopped printing a carry on a par 3 -- the-reserve 8 is a 237-yd par 3 and no
@@ -12081,11 +12087,12 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     wording is the load-bearing part, not the computation: it is the difference between an omission and
     an over-claim.
 
-    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 95 yards
-    of it, philadelphia 1 printing "carry 213" for sand reaching 308 -- so a bare "carry N" would read
+    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 146 yards
+    of it, the-reserve 16 printing "carry 177" for sand reaching 323 -- so a bare "carry N" would read
     as the whole obstacle rather than its near edge. (It read 126 until par-3 carries were suppressed,
-    which removed the case it named; the figure is now measured and pinned by
-    test_a_printed_carry_never_overstates_what_it_clears.)
+    which removed the case it named, then 95 until the bunker selector was moved from a feature's
+    centroid to its nearest edge and that waste bunker appeared on the card at all; the figure is
+    measured and pinned by test_a_printed_carry_never_overstates_what_it_clears.)
 
     BOTH EDITIONS, because both print the numbers. This read only `greenbook.html`, so the three
     ENLARGED books -- merion, monarch-bay and philadelphia, which print 12, 8 and 11 carries and carry
@@ -14345,6 +14352,183 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
         f"{len(omitted)} card(s) omit area water the played line reaches -- (course, hole, "
         f"[(way, metres from the played line)], counted area hazards, drawn water fills, printed W): "
         f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
+
+
+SAND_CORRIDOR_M = 40.0       # render_hole's own bunker corridor: the 40 in `edge_within(g,40)`
+SAND_FILL = 'fill="#efe3b8"'  # one drawn bunker
+
+
+def _dist_to_hole_line(pt, line_em):
+    """Metres from a point to the hole's centerline, END CAPS INCLUDED -- the sand metric.
+
+    The sibling _dist_to_played_line drops whatever projects behind the first vertex or past the last,
+    because a river whose only near approach is behind the tee is not on the hole. SAND IS NOT LIKE
+    THAT: greenside sand sits past the green end of the line and tee-side sand before its start, and
+    both are hazards a junior finds. Over the corpus 149 bunker/hole pairs come within 40 m only
+    through those caps -- 78 past the green, 71 behind the tee -- so a played-length metric would grade
+    the card against a rule that omits greenside bunkers, which is the opposite of this file's job.
+
+    Written here rather than imported, for the reason _dist_to_poly and _dist_to_played_line are: the
+    test's model of "how far is this from the hole" must not be the engine's. Point-to-segment, so on a
+    polygon this is a VERTEX witness -- it can only OVER-state how far the boundary is, never
+    under-state it. That direction is what makes it safe: this test demands that reachable sand be
+    COUNTED, so a witness that misses a close approach costs the test power and can never manufacture a
+    failure.
+    """
+    x, y = pt
+    best = math.inf
+    for i in range(len(line_em) - 1):
+        ax, ay = line_em[i]
+        bx, by = line_em[i + 1]
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-9:
+            continue
+        t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+        best = min(best, math.hypot(x - (ax + t * dx), y - (ay + t * dy)))
+    return best
+
+
+def _shipped_footer_sand(slug):
+    """{hole: the N in "NB"} read off the built pocket book, {} when that course has no book."""
+    f = os.path.join(ROOT, "courses", slug, "greenbook.html")
+    if not os.path.exists(f):
+        return {}
+    with open(f, encoding="utf-8") as fh:
+        html = fh.read()
+    out = {}
+    for panel in re.findall(r'<div class="panel hole">.*?(?=<div class="panel|\Z)', html, re.S):
+        hm = re.search(r'<div class="hnum">(\d+)</div>', panel)
+        bm = re.search(r"(\d+)B (\d+)W", panel)
+        if hm and bm:
+            out[int(hm.group(1))] = int(bm.group(1))
+    return out
+
+
+@needs_corpus
+def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
+    """A bunker the hole line reaches must be COUNTED in the footer and INKED on the map.
+
+    THE RULE THIS ENFORCES: never omit a hazard the golfer can reach. Sand was the last hazard class
+    still selected by ONE INTERIOR POINT -- `in_corridor(g, 40)` measured the CENTROID -- long after
+    water (an OR with a reach test) and watercourses (point-to-segment, not per-vertex) had both been
+    moved off that measure. A bunker is not its centroid, and the bigger the sand the worse that
+    approximation gets.
+
+    THE SHIPPED CARD IT COST: the-reserve 16, a 530 yd par 5, printed "4B 1W" with blank ground over
+    OSM way 681278621 -- tagged golf=bunker, 75 nodes, 62x130 m, about 8,000 m^2 of waste bunker whose
+    nearest edge is 6.9 m from the played line 214 m along a 477 m line, roughly 234 yd off the tee and
+    squarely in the landing zone. Its centroid sits 40.5 m out, so a 40 m bar on the centroid excluded
+    it: not counted, not drawn, and not eligible for a carry window. It appeared on NO card in the
+    corpus (centroid 40.5/120.9/133.3/176.5 m from holes 16/15/14/12). Moving the measurement to the
+    nearest EDGE at the SAME 40 m gives 62 of the 198 geometry cards at least one more bunker,
+    907 -> 984 drawn, and takes none away.
+
+    WHY NOTHING SAW IT. test_each_card_footer_matches_its_own_map compares the footer against the drawn
+    ink, but both sides of that comparison come out of render_hole's own `bunkers` list, so it
+    re-implements the rule it grades and is blind to a bunker the rule never selected.
+    test_a_printed_carry_never_overstates_what_it_clears already loads the UNFILTERED OSM bunker set
+    but asserts only the over-report direction. So this test starts from the unfiltered set, measures
+    each bunker's distance to the hole line with its own geometry (see _dist_to_hole_line), and asserts
+    the direction nothing asserted before: inside the bar means counted and inked. Over-reporting is
+    the other test's job -- omitting is this one's.
+
+    Graded against the ENGINE and against the BUILT BOOK, because those are two different claims: the
+    engine's rule can be right while the shipped footer a junior reads is stale.
+    """
+    named = {("the-reserve-at-spanos-park", 16): 681278621}
+    omitted, stale, holes, reachable, errors = [], [], 0, 0, []
+    seen_named, contributed = {}, collections.Counter()
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, geom = rh.load()
+        except Exception as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        sand = [g for g in course
+                if (g.get("tags") or {}).get("golf") == "bunker" and (g.get("geometry") or [])]
+        shipped = _shipped_footer_sand(slug)
+        for hn in cfg.HOLE_NUMS:
+            hole = lines.get(hn)
+            if hole is None:
+                errors.append((slug, hn, "geo.hole_lines has no line for this hole"))
+                continue
+            line = hole["geometry"]
+            try:
+                svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:100]))
+                continue
+            holes += 1
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+            mlon = _mlon(la0)
+
+            def em(la, lo, _mlon=mlon, _la0=la0, _lo0=lo0):
+                return ((lo - _lo0) * _mlon, (la - _la0) * R_LAT)
+            line_em = [em(q["lat"], q["lon"]) for q in line]
+            near = []
+            for g in sand:
+                d = min(_dist_to_hole_line(em(p["lat"], p["lon"]), line_em) for p in g["geometry"])
+                if d < SAND_CORRIDOR_M:
+                    near.append((g.get("id"), round(d, 2)))
+            reachable += len(near)
+            contributed[slug] += len(near)
+            drawn = svg.count(SAND_FILL)
+            if named.get((slug, hn)):
+                seen_named[(slug, hn)] = (named[(slug, hn)], dict(near).get(named[(slug, hn)]),
+                                          info["bunkers"], drawn, shipped.get(hn))
+            if info["bunkers"] < len(near) or drawn < len(near):
+                omitted.append((slug, hn, sorted(near, key=lambda r: r[1])[:4],
+                                info["bunkers"], drawn))
+            if shipped.get(hn) is not None and shipped[hn] < len(near):
+                stale.append((slug, hn, len(near), shipped[hn], info["bunkers"]))
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert holes == expected_holes(), \
+        f"examined {holes} holes but {expected_holes()} are present -- holes were skipped"
+    assert reachable >= 200, (
+        f"only {reachable} bunker/hole pairs come within {SAND_CORRIDOR_M:g} m of a hole line in the "
+        f"whole corpus -- the witness found nothing to check, so this test proves nothing")
+    assert_no_course_skipped(contributed, "test_sand_the_hole_line_reaches_is_never_missing_from_the_card")
+
+    # THE NAMED CARD. Skipped only if that course is not built here, and never silently: its absence
+    # must not be indistinguishable from its passing.
+    for key, way in named.items():
+        slug, hn = key
+        if slug not in CORPUS:
+            continue
+        assert key in seen_named, f"{slug} hole {hn} was never examined"
+        got_way, dist, counted, drawn, shipped_n = seen_named[key]
+        assert dist is not None, (
+            f"{slug} hole {hn}: way {way} is no longer within {SAND_CORRIDOR_M:g} m of the hole line, so "
+            f"this card can no longer witness the omission it was chosen for -- re-measure it rather "
+            f"than deleting the case")
+        assert dist < 10.0, (
+            f"{slug} hole {hn}: way {way} measures {dist} m from the hole line; the case is documented "
+            f"as a nearest edge under 10 m (6.9 m by segment-to-segment, more by this vertex witness) "
+            f"and the docstring above needs re-measuring, not relaxing")
+        assert counted >= 5 and drawn >= 5, (
+            f"{slug} hole {hn} counts {counted}B and inks {drawn} bunker(s) while way {way} -- 8,000 "
+            f"m^2 of sand -- comes {dist} m from the hole line. That card shipped as 4B with blank "
+            f"ground over it")
+        assert shipped_n is None or shipped_n >= 5, (
+            f"{slug} hole {hn}: the BUILT book still prints {shipped_n}B while the engine counts "
+            f"{counted}B -- rebuild the books")
+    assert not stale, (
+        f"{len(stale)} built card(s) print fewer bunkers than the hole line reaches -- (course, hole, "
+        f"reachable, printed B, engine B): {stale[:6]}{' ...' if len(stale) > 6 else ''}")
+    assert not omitted, (
+        f"{len(omitted)} card(s) omit sand the hole line reaches -- (course, hole, [(way, metres from "
+        f"the hole line)], counted B, drawn bunkers): {omitted[:6]}"
+        f"{' ...' if len(omitted) > 6 else ''}")
 
 
 @needs_corpus

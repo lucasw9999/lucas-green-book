@@ -447,7 +447,44 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         pts=[em(p['lat'],p['lon']) for p in (g.get('geometry') or [])]
         if not pts: return 0.0
         return frac_len_within(pts, line_em, buf)
-    bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and in_corridor(g,40)]
+    def edge_within(g, buf):
+        """True when the feature's nearest EDGE lies within buf of the centerline, END CAPS INCLUDED.
+
+        The reach test for SAND, and deliberately neither of the other two in this function.
+
+        AGAINST in_corridor, WHICH MEASURES THE CENTROID: a bunker is not its centroid, and the bigger
+        the sand the worse that approximation gets. the-reserve 16's way 681278621 is a 62x130 m,
+        ~8,000 m^2 waste bunker whose nearest edge comes 6.9 m from the played line 214 m along a
+        477 m line -- about 234 yd off the tee, in the landing zone -- while its centroid sits 40.5 m
+        away. At the 40 m bar the centroid test excluded it, so that card printed "4B 1W" and drew
+        blank ground over 8,000 m^2 of sand; it appeared on NO card in the corpus (centroid
+        40.5/120.9/133.3/176.5 m from holes 16/15/14/12). Water was rescued from exactly this defect
+        (see `waters`) and watercourses before it (see _seg_near_played_line); sand was the last hazard
+        still selected by one interior point. 40 m is not a new threshold -- it is the one this
+        selector already named, and the MEASUREMENT was what was wrong. Measured cost: 62 of the 198
+        geometry cards gain at least one bunker, 907 -> 984 drawn bunkers, and no card loses one.
+
+        AGAINST any_within, WHICH CLIPS TO THE PLAYED LENGTH: sand past the green is real sand. A
+        greenside bunker behind the green projects past t=1 and a bunker beside the tee projects before
+        t=0, and both are clipped away whole, so any_within(g,40) would DROP 72 bunkers on 83 shipped
+        cards -- bay-view 12 would go 1B -> 0B over way 872811004, whose nearest edge is 8.9 m from the
+        line and projects just behind the tee (t=-0.04). Across the corpus 149 bunkers reach within
+        40 m but only through those caps: 78 past the green, 71 behind the tee. That clip is right for
+        a river whose only near approach is behind the tee and wrong for the class of hazard a junior
+        actually finds beside a green. So the metric here is the one in_corridor already used --
+        dist_pt_seg per segment, which admits a buf-radius cap at each end -- moved off the centroid
+        and onto the boundary.
+
+        Built on frac_len_within rather than a fourth copy of the geometry: a positive in-band LENGTH
+        is exactly "some part of this boundary is inside buf", it is closed form, and it does not move
+        when a mapper re-nodes the ring. Checked against a direct segment-to-segment minimum over
+        every bunker on all 198 cards: the two agree on every one. Degenerate input (one node, or every
+        node identical) falls through to frac_len_within's own point test.
+        """
+        pts=[em(p['lat'],p['lon']) for p in (g.get('geometry') or [])]
+        if not pts: return False
+        return frac_len_within(pts, line_em, buf) > 0.0
+    bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and edge_within(g,40)]
     def _seg_near_played_line(pe, pn, qe, qn, buf):
         """True when some point of the SEGMENT p->q comes within buf of the PLAYED line.
 
@@ -589,8 +626,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         """Where g's boundary lies within buf of the centerline, projected. FRAMING, not selection.
 
         Every other class in the frame is corridor-sized by the way it was selected -- a bunker's
-        centroid within 40 m, a tee's within 38, a fairway or tree row most of whose own length is
-        inside. AREA WATER is the exception: it is selected when it REACHES the hole (see `waters`),
+        nearest edge within 40 m, a tee's centroid within 38, a fairway or tree row most of whose own
+        length is inside. Sand is selected by REACH, like water and for the same reason (see
+        edge_within), and is still framed WHOLE rather than through this function, because a bunker's
+        own extent bounds how far that can pull the frame: moving sand onto the edge rule re-framed 44
+        of the 198 cards and the worst of them, philadelphia 7, prints its map at 0.0113 in per metre
+        where it printed 0.0141 -- 20% smaller, against the 52% of its length copper-valley 10 lost to
+        one lake. Nothing is dropped for the room: no yardage row and no from-tee row moves on any card
+        of either edition. AREA WATER is the exception: it is selected when it REACHES the hole (see
+        `waters`),
         which is right for a hazard and says nothing about how big it is. Framing around all of such a
         feature shrinks the hole to fit water that is not on it: copper-valley 10's way 775614086 is a
         1239.6 m lake whose nearest approach is 40.8 m and which reaches 268 m ACROSS the hole, where
