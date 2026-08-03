@@ -1167,7 +1167,9 @@ def test_an_rmtree_callback_cannot_delete_a_real_course_from_inside_the_stand_do
 
     Both callback spellings are pinned here. The real `shutil.rmtree` only accepts `onexc` from
     3.12, so that half is driven through a stub whose `real` invokes the callback the way rmtree
-    does -- the wrapper is what is under test either way.
+    does -- the wrapper is what is under test either way. The LIVE half takes whichever of the two
+    names this interpreter actually declares, so it keeps exercising the real rmtree once `onerror`
+    is removed instead of quietly reducing to the stub.
     """
     import inspect
     import shutil
@@ -1196,8 +1198,17 @@ def test_an_rmtree_callback_cannot_delete_a_real_course_from_inside_the_stand_do
     # (1) the live attack: a real shutil.rmtree over an approved scratch path, whose callback is
     # reached because the leaf does not exist. rmtree is wrapped over the fake root as well, so the
     # top-level approval is the fake repo's, not this checkout's.
+    # The keyword is chosen by version rather than hardcoded: `onerror` is deprecated from 3.12 in
+    # favour of `onexc`. A hardcoded `onerror=` would raise TypeError on the Python that drops it --
+    # loud rather than a false pass, so it fails safe -- but the LIVE half of the attack would stop
+    # running at all, leaving only the stub in (2) covering the callback path, and a stub cannot show
+    # that the real rmtree still reaches caller code from inside the stand-down.
+    # Not read off inspect.signature, because by this point the session guard has replaced
+    # shutil.rmtree with a (path, *a, **k) wrapper that declares neither name; 3.12 is the documented
+    # boundary and a wrong guess surfaces immediately as a TypeError out of the call below.
+    live_cb = "onexc" if sys.version_info >= (3, 12) else "onerror"
     fake_rmtree = guarded_deleter(shutil.rmtree, "shutil.rmtree", root, opens_subtree=True)
-    fake_rmtree(os.path.join(scratch, "does-not-exist"), onerror=payload)
+    fake_rmtree(os.path.join(scratch, "does-not-exist"), **{live_cb: payload})
     assert refused == [True], (
         "shutil.rmtree's onerror callback deleted a real course from inside the approved-subtree "
         "stand-down, with no refusal raised")
@@ -2277,6 +2288,12 @@ def test_the_tree_marker_prose_watcher_is_not_asleep_on_a_partial_corpus():
     corpus data, which is the one thing this project's guards exist to prevent. Two rows are the ones
     that were previously unwatched: a partial sweep that has already counted MORE markers than the
     prose publishes, and a docstring that quotes no figure at all.
+
+    Restoring the old behaviour faithfully -- the full-corpus gate and nothing else -- leaves BOTH of
+    those red, 2 of 10, re-measured below. The count is 1 of 10 only under a DIFFERENT mutation, one
+    that reinstates the gate after the "exactly one figure quoted" arity check so the empty-set row is
+    still caught on the way in; the commit that built this table reported that count for the faithful
+    one. Both mutations are run below, so neither number can drift out of this prose again.
     """
     import inspect
 
@@ -2290,6 +2307,26 @@ def test_the_tree_marker_prose_watcher_is_not_asleep_on_a_partial_corpus():
     assert not wrong, (
         "the tree-marker prose watcher answers the wrong way for %d of %d cases:\n%s"
         % (len(wrong), len(TREE_PROSE_VERDICT_TABLE), "\n".join(wrong)))
+
+    # ...and what the table is WORTH, measured by mutation rather than quoted from memory. Two
+    # restorations of the old behaviour, because they do not give the same answer and the difference is
+    # the whole reason the count was reported low: the faithful one drops the arity check with the
+    # gate, so the empty-set-on-a-partial-corpus row goes unwatched too.
+    def old_gate_only(quoted, total, n_courses):
+        return "stale" if n_courses >= TREE_BEARING_COURSES and quoted != {total} else None
+
+    def old_gate_after_the_arity_check(quoted, total, n_courses):
+        if len(quoted) != 1:
+            return "arity"
+        return "stale" if n_courses >= TREE_BEARING_COURSES and quoted != {total} else None
+
+    for mutant, expected_red in ((old_gate_only, 2), (old_gate_after_the_arity_check, 1)):
+        red = sorted(label for label, q, t, n, must in TREE_PROSE_VERDICT_TABLE
+                     if ((mutant(q, t, n) is not None) is not must))
+        assert len(red) == expected_red, (
+            f"{mutant.__name__} leaves {len(red)} of {len(TREE_PROSE_VERDICT_TABLE)} rows red "
+            f"({red}), not the {expected_red} this test's docstring publishes. Re-measure both counts "
+            f"before editing that prose -- they are what says the table is not decoration")
 
     # ...and it must be the function the live sweep actually calls, or this table grades a copy. Both
     # reads go through _in_code, because the sweep's own comment NAMES the gate it removed -- a raw
@@ -6719,7 +6756,8 @@ def _commit_synth_green(cdir, hole, zfn, n=60, span_deg=0.0004):
         return arr, json.load(fh)
 
 
-def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_printed_slope(gate_course):
+def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_printed_slope(gate_course,
+                                                                                        monkeypatch):
     """commit_surface stages both files and renames them, which leaves a two-syscall window -- and the
     window's outcomes were NOT equally survivable. This closes the half that was silent.
 
@@ -6750,17 +6788,48 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
     satisfy the middle assertion alone, and a test that only proved the refusal would not show what
     was at stake.
 
-    WHAT THE DIGEST-STRIPPED TEAR PRINTS, re-measured from this fixture at full precision:
-    2.0000000000% -> 4.0000000000%, ratio exactly 2.0000000000. The commit that added this fixture
-    published "2.03% -> 4.05%"; neither number appears anywhere in the tree and neither reproduces,
-    here or at that commit. Exactly 2.000 is not luck -- the synthetic surface is an exact plane
-    (100.0 + 0.03*r), so halving the recorded ground extent under an unchanged 60x60 array doubles
-    rise-over-run exactly. The ratio is pinned below rather than left as a `> 1.8` floor, because a
-    figure this docstring publishes has to be watched or it drifts.
+    WHAT THE DIGEST-STRIPPED TEAR PRINTS, and at what precision the claim is actually good for.
+    The engine reports one decimal place -- s["tilt_pct"] is round(tilt_pct, 1) at
+    render_green.py:909 -- so what a card would show is 2.0% -> 4.0%. The physical values behind
+    those, re-measured off the unrounded tilt green_summary computes: 2.0212001437% ->
+    4.0424002875%, ratio 2.0000000000000657, i.e. 2 to within 7e-14.
+
+    That ratio is the part the exact plane earns. The surface is 100.0 + 0.03*r, so halving the
+    recorded ground extent under an unchanged 60x60 array doubles rise-over-run exactly, and the
+    ratio comes out at 2 to the last few bits. It says nothing about the VALUE being a round number:
+    an earlier revision of this docstring published the pair as 2 and 4 carried out to ten decimal
+    places, calling the ratio exact to ten places too, and reasoned from the exact plane to those
+    zeros -- but the zeros are round(tilt_pct, 1) and nothing else, ten decimals quoted for a figure
+    the code carries to one. The revision before THAT published "2.03% -> 4.05%", which is the raw
+    value at 2 dp with each digit off by 0.01 (true 2.02 -> 4.04).
+
+    Pinned below against the RAW values, because that is where the argument lives. A band on the
+    display value would not be a pin at all: any raw tilt from just above 1.95 to 2.05 reads as 2.0,
+    so +/-0.05 on the displayed number is +/-2.5% on the physical quantity -- wide enough that it
+    accepted 2.03 -> 4.05, the pair it was written to retire. Both that pair and a fixture whose raw
+    tilt IS 2.03 are run through the bound below and must be rejected by it.
+
+    The `> 1.8 * honest` floor is still there, ALONGSIDE the ratio pin rather than replaced by it: the
+    floor says the fixture still demonstrates the defect at all, and the pin says the published
+    figures still describe this tree. Both are checked, and so is the fact that the floor exists.
     """
+    import inspect
+
     import numpy as np
 
     import render_green
+
+    # s["tilt_pct"] is round(tilt_pct, 1) (render_green.py:909), so the figures this docstring
+    # publishes have to be read off the UNROUNDED value green_summary computes. Recorded per render.
+    raw_tilts = []
+    _real_green_summary = render_green.green_summary
+
+    def _spy(*a, **k):
+        surf, core, S = _real_green_summary(*a, **k)
+        raw_tilts.append(S["tilt_pct"])
+        return surf, core, S
+
+    monkeypatch.setattr(render_green, "green_summary", _spy)
 
     # WHY the same-shape case is reachable: both producers truncate metres to whole pixels.
     for mod, expr, res, a, b in (("fetch_dem.py", "W = max(48, int(wm/0.5))", 0.5, 30.0, 30.4),
@@ -6811,16 +6880,52 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
         f"halving the recorded extent under an unchanged array must roughly double the printed tilt "
         f"({honest:.2f}% -> {s2['tilt_pct']:.2f}%); if it does not, this fixture no longer "
         f"demonstrates the defect")
-    # ...and the figures the docstring publishes, pinned. Measured 2.0000000000 -> 4.0000000000,
-    # ratio 2.0000000000; exact because the surface is an exact plane. The bands are wide enough to
-    # survive an ordinary float difference and tight enough that a changed fixture cannot quietly
-    # keep the prose true -- checked by mutation: the previously published 2.03 fails this bound.
-    assert abs(honest - 2.00) < 0.05, (
-        f"the matched pair no longer prints the 2.00% this test's docstring publishes: "
-        f"{honest:.4f}% -- re-measure the docstring before changing this bound")
-    assert abs(s2["tilt_pct"] / honest - 2.000) < 0.05, (
-        f"the digest-stripped tear no longer DOUBLES the printed tilt: {honest:.4f}% -> "
-        f"{s2['tilt_pct']:.4f}%, ratio {s2['tilt_pct'] / honest:.4f} where 2.000 was measured")
+    # ...and the figures the docstring publishes, pinned. Expressed as ONE predicate so the pair this
+    # test was written to retire can be run through the very bound that retired it, rather than
+    # declared to fail by eye. The bound is on the RAW tilt, because s["tilt_pct"] is
+    # round(tilt_pct, 1) and a 1-dp display value cannot carry a claim about a physical quantity: any
+    # raw tilt from just above 1.95 to 2.05 reads as 2.0, so a 0.05 band on the display value is a
+    # +/-2.5% band on the thing being measured. The RATIO gets the tight band, because the ratio is
+    # what the exact-plane argument is actually about.
+    honest_raw, torn_raw = raw_tilts[0], raw_tilts[-1]
+
+    def pinned(h, t):
+        return abs(h - 2.0212001437) < 1e-6 and abs(t / h - 2.0) < 1e-9
+
+    assert (honest, s2["tilt_pct"]) == (2.0, 4.0), (
+        f"the DISPLAYED tilts moved off 2.0% -> 4.0%: {honest} -> {s2['tilt_pct']}. Those two are "
+        f"the only tilt figures the engine reports anywhere; the physical values behind them are "
+        f"checked next")
+    assert pinned(honest_raw, torn_raw), (
+        f"the raw tilts moved off the measured 2.0212001437% -> 4.0424002875%, ratio "
+        f"2.0000000000000657: {honest_raw:.10f}% -> {torn_raw:.10f}%, ratio "
+        f"{torn_raw / honest_raw:.16f} -- re-measure this docstring before changing the bound")
+    assert not pinned(2.03, 4.05), (
+        "the bound ACCEPTS 2.03 -> 4.05, the pair this test was written to retire. Re-measured on "
+        "the display values the old bound compared: abs(2.03 - 2.00) = 0.0300 < 0.05 passes, and "
+        "4.05/2.03 = 1.9951 is 0.0049 from 2.000, which passes too. A pin that admits the figure it "
+        "replaced is not watching anything")
+    assert not pinned(2.0300260510288437, 2 * 2.0300260510288437), (
+        "a fixture whose RAW tilt is the retired 2.03 passes the bound. Through round(..., 1) it "
+        "reads 2.0 -> 4.1, a display ratio of 2.05 whose float value sits 0.04999999999999982 from "
+        "2.0 -- inside a 0.05 band by 2e-16. That empirical slip is why the band is on the raw value")
+
+    # The prose above has to describe the code that shipped, and twice it did not. Both pinned.
+    doc = test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_printed_slope.__doc__
+    assert "2.0000000000%" not in doc, (
+        "the docstring still publishes 2.0000000000% -> 4.0000000000%. Ten decimal places for a "
+        "value render_green.py:909 reports as round(tilt_pct, 1): the zeros are the ROUNDING, not a "
+        "measurement. The raw values are 2.0212001437% -> 4.0424002875%, so the exact-plane argument "
+        "explains the RATIO and not the VALUE")
+    assert "rather than left as a" not in doc, (
+        "the docstring says the ratio is pinned 'rather than left as a > 1.8 floor'. That floor is "
+        "still live in this very test -- asserted below -- so the pin was added ALONGSIDE it, not "
+        "instead of it")
+    src = inspect.getsource(
+        test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_printed_slope)
+    assert "1.8 * honest" in src, (
+        "the > 1.8 * honest floor is gone, so the docstring's account of what replaced what needs "
+        "re-reading before this pin is removed")
 
 
 def test_no_slope_label_claims_an_unputtable_number(gate_course):
