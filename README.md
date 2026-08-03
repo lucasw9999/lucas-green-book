@@ -97,7 +97,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. This file rebinds
-`COURSE` and drops modules from `sys.modules` at 69 sites, so a test can silently reconfigure the next
+`COURSE` and drops modules from `sys.modules` at 87 sites, so a test can silently reconfigure the next
 one, and file order alone will never show it — a real `IndexError` in `render_hole` hid behind that for
 its whole life and only appeared under shuffling:
 ```bash
@@ -143,7 +143,11 @@ also the project's only measurement of how repeatable these surfaces are: see
 [`legal/09_GREEN_SURFACE_REPEATABILITY.md`](legal/09_GREEN_SURFACE_REPEATABILITY.md).
 
 ## Editions &amp; extras
-- **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex, top‑flip; slips into a back‑pocket
+- **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex **flipped on the LONG edge** (what
+  every sheet note in the book itself says; on portrait paper that turns the sheet about its vertical
+  centreline, which is the mirroring the imposition compensates for — a top/short‑edge flip prints
+  every back behind the wrong front). The cut cards then read upright when you turn a leaf over its
+  top edge. Slips into a back‑pocket
   yardage‑book cover. Each hole shows the back tee as the headline yardage, in its own tee colour.
 - **Large‑print edition** (`COURSE=<slug> COACH=1 python3 generate.py`) — each hole split across two
   cards (course map, then green) with larger type, for coaches. Marked a **practice edition** (past

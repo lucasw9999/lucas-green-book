@@ -1455,9 +1455,13 @@ def test_the_course_template_documents_every_key_the_engine_reads():
             src = fh.read()
         reads |= set(re.findall(r'COURSE\.get\(["\'](\w+)["\']', src))
         reads |= set(re.findall(r'COURSE\[["\'](\w+)["\']\]', src))
-    # keys that exist only to be written by a fetch stage, not authored by a person
-    DERIVED = {"lidar", "lidar_project"}
-    undocumented = sorted(k for k in reads - known - DERIVED)
+    # No waiver. This carried `DERIVED = {"lidar", "lidar_project"}` with the comment "keys that exist
+    # only to be written by a fetch stage, not authored by a person", and that was false for BOTH.
+    # `lidar_project` is read by fetch_lidar.py to PIN a survey and is hand-authored; `lidar` is a
+    # hand-written fetch recipe on the-reserve-at-spanos-park that no code writes and no code reads. The
+    # waiver was the only reason the template could omit them, so it hid a live knob and a dead field in
+    # the one input a human types by hand. Both are documented in examples/course.json now.
+    undocumented = sorted(k for k in reads - known)
     assert not undocumented, (
         "the engine reads these course.json keys but examples/course.json neither carries nor "
         "documents them, so nobody outside this machine can learn they exist:\n  "
@@ -1479,7 +1483,9 @@ def test_no_real_course_carries_a_key_the_template_never_mentions():
         pytest.skip("no examples/course.json")
     with open(p, encoding="utf-8") as fh:
         known = {k.lstrip("_") for k in json.load(fh)}
-    DERIVED = {"lidar", "lidar_project"}     # written by a fetch stage, never authored by hand
+    # No waiver here either -- see the sibling above. `lidar` is hand-authored on
+    # the-reserve-at-spanos-park and read by nothing, which is the opposite of "written by a fetch
+    # stage", and the waiver saying so was what kept it out of the shipped template.
     missing, checked = [], 0
     for slug in CORPUS:
         cj = os.path.join(ROOT, "courses", slug, "course.json")
@@ -1488,7 +1494,7 @@ def test_no_real_course_carries_a_key_the_template_never_mentions():
         checked += 1
         with open(cj, encoding="utf-8") as fh:
             for k in json.load(fh):
-                if k.lstrip("_") not in known and k.lstrip("_") not in DERIVED:
+                if k.lstrip("_") not in known:
                     missing.append(f"{k} (in {slug})")
     assert checked >= 5, f"only {checked} course.json files examined"
     assert not missing, ("real courses carry keys the template never mentions:\n  "
@@ -2442,15 +2448,23 @@ def test_the_hand_written_verdict_matches_the_machine_verdict():
     summary legitimately abbreviates ("Merion (East)" for "Merion Golf Club — East Course"). Scoped to
     the verdict LIST only: Poppy Ridge is discussed at length elsewhere in the same document, which is
     exactly where it should be.
+
+    The heading ANCHOR is matched loosely -- any `###` heading ending "are CLEAN" -- because it used to
+    require the literal "distributed books are CLEAN", and that phrasing was itself a defect: it counted
+    eleven COURSES while calling them books, when there are fourteen books. See
+    test_the_summary_verdict_counts_books_and_courses_as_different_things. Every assertion below is
+    unchanged; only the anchor stopped depending on the wrong wording being present. A heading this
+    cannot find still fails loudly on the next line rather than silently checking nothing.
     """
     p = os.path.join(ROOT, "legal", "00_SUMMARY_AND_VERDICT.md")
     if not os.path.exists(p):
         pytest.skip("no legal/00 summary")
     with open(p, encoding="utf-8") as fh:
         doc = fh.read()
-    m = re.search(r"distributed books are CLEAN\s*\n(.*?)\n\s*\n", doc, re.S)
+    m = re.search(r"^###[^\n]*?are CLEAN\s*\n(.*?)\n\s*\n", doc, re.S | re.M)
     assert m, "legal/00 no longer has a parsable list of distributed books under its verdict heading"
     listed = " ".join(m.group(1).split())
+    assert len(listed) > 40, f"the verdict list parsed as {listed!r}, which is too short to be the list"
 
     import distribution
     wrong = []
@@ -19038,3 +19052,437 @@ def test_the_served_dem_pixel_must_be_square_in_metres():
         assert worst < fd.PIXEL_ASPECT_MAX, (
             f"{worst_at} is {worst:.6f} off square, which this gate would now refuse. Either the "
             f"tolerance is too tight or that surface really is anisotropic")
+
+
+def _count_words():
+    return {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+            "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+            "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18}
+
+
+def _word_to_int(w):
+    w = w.strip().lower()
+    return int(w) if w.isdigit() else _count_words().get(w)
+
+
+def test_the_summary_verdict_counts_books_and_courses_as_different_things():
+    """legal/00 is the document a lawyer reads FIRST, and its headline conflated two counts.
+
+    "### All ELEVEN distributed books are CLEAN" -- then eleven COURSE names. There are eleven
+    distributed courses and FOURTEEN distributed books: eleven pocket plus three enlarged coach
+    editions (merion, monarch-bay, philadelphia). legal/README.md gets this right in as many words --
+    "All eleven distributed courses - fourteen books to give away (eleven pocket, three enlarged)" --
+    so the two front-door documents disagreed on how many things this project hands out.
+
+    The only test that read legal/00's list checked its MEMBERSHIP against distribution.py and never
+    read the count word, which is exactly the gap legal/00:22's own parenthetical records having been
+    burned by once already: "The heading also once said ELEVEN while listing only six courses."
+    A number a document states about itself, with nothing reading it, is the drift this repo keeps
+    finding.
+
+    Reads the words rather than the list length alone, so a heading can no longer be right about the
+    membership and wrong about the total."""
+    with open(os.path.join(ROOT, "legal", "00_SUMMARY_AND_VERDICT.md"), encoding="utf-8") as fh:
+        s = fh.read()
+    head = re.search(r"^###\s*.*?\ball\s+([A-Za-z]+|\d+)\s+distributed\s+(\w+)", s,
+                     re.M | re.I)
+    assert head, "legal/00 no longer carries an 'All <N> distributed ...' verdict heading"
+    n_head, noun = _word_to_int(head.group(1)), head.group(2).lower()
+    assert n_head is not None, f"cannot read the count word {head.group(1)!r} in legal/00's heading"
+
+    # the list that heading introduces: course names separated by the middle dot
+    after = s[head.end():]
+    block = after.split("\n\n", 1)[0]
+    listed = [c.strip() for c in re.split(r"·", block.replace("\n", " ")) if c.strip()]
+    listed = [re.sub(r"\.$", "", c) for c in listed]
+    assert len(listed) >= 8, f"could not parse the course list under the heading, got {listed}"
+
+    # legal/README.md is the other front-door document; the two must agree, and it distinguishes them
+    with open(os.path.join(ROOT, "legal", "README.md"), encoding="utf-8") as fh:
+        rm = fh.read()
+    m = re.search(r"all\s+(\w+)\s+distributed\s+courses\s*[—-]+\s*(\w+)\s+books\s+to\s+give\s+away\s*"
+                  r"\(\s*(\w+)\s+pocket,\s*(\w+)\s+enlarged\s*\)", rm, re.I)
+    assert m, "legal/README.md no longer states the courses/books split this test cross-checks against"
+    rm_courses, rm_books, rm_pocket, rm_coach = (_word_to_int(g) for g in m.groups())
+    assert rm_courses == len(listed), (
+        f"legal/README says {rm_courses} distributed courses; legal/00 lists {len(listed)}: {listed}")
+    assert rm_pocket + rm_coach == rm_books, (
+        f"legal/README's own split does not add up: {rm_pocket} pocket + {rm_coach} enlarged != "
+        f"{rm_books} books")
+
+    # THE DEFECT: the heading counted books and named courses.
+    if noun.startswith("book"):
+        assert n_head == rm_books, (
+            f"legal/00's heading says 'All {head.group(1)} distributed BOOKS' and then lists "
+            f"{len(listed)} COURSES. There are {rm_books} distributed books ({rm_pocket} pocket + "
+            f"{rm_coach} enlarged) across {rm_courses} courses -- legal/README.md says exactly that. "
+            f"A count of courses labelled as books, in the document a lawyer reads first")
+    else:
+        assert n_head == len(listed), (
+            f"legal/00's heading says {head.group(1)} distributed {noun} and lists {len(listed)}")
+    # and it must not leave the OTHER count unsaid
+    assert re.search(r"\b(fourteen|14)\b", s), (
+        f"legal/00 states a course count but never the book count. There are {rm_books} distributed "
+        f"books and the reader of the verdict page cannot learn that")
+
+    if not CORPUS:
+        return
+    # where the corpus is present, both numbers must match the artifacts
+    import distribution
+    pocket = coach = 0
+    for slug in CORPUS:
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
+            ok = distribution.distribution_status(json.load(fh))[0]
+        if not ok:
+            continue
+        if os.path.exists(os.path.join(ROOT, "courses", slug, "greenbook.html")):
+            pocket += 1
+        if os.path.exists(os.path.join(ROOT, "courses", slug, "greenbook_coach.html")):
+            coach += 1
+    if pocket + coach:
+        assert (rm_pocket, rm_coach) == (pocket, coach), (
+            f"the legal records say {rm_pocket} pocket + {rm_coach} enlarged; the built corpus has "
+            f"{pocket} + {coach}")
+
+
+def _shipped_legal_records():
+    """The set of legal/ paths a stranger receives, as "legal/NN_....md".
+
+    git ls-files where this IS a checkout, file presence where it is not. Both readings are needed and
+    they answer the same question in the two places this runs: locally, legal/04 and legal/08 are
+    PRESENT on disk but gitignored, so only git can tell they are not shipped; inside
+    test_a_fresh_clone_gets_a_clean_suite's copy of the tracked files there is no .git at all, and the
+    two are simply absent. Asking git alone made this test fail in the fresh-clone tree, where it read
+    every record as local-only.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["git", "ls-files", "legal/"], cwd=ROOT, capture_output=True,
+                             text=True, check=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        out = []
+    if out:
+        return set(out)
+    return {f"legal/{n}" for n in os.listdir(os.path.join(ROOT, "legal"))}
+
+
+def test_the_legal_index_says_which_records_are_local_only():
+    """legal/ is handed to a lawyer or a club as a folder, and its index listed files that are not in it.
+
+    `legal/README.md` indexes 12 numbered records. Git ships 10 of them:
+    `04_INDEPENDENT_CREATION_DEFENSE.md` and `08_AUDIT_2026-07-13.md` are deliberately gitignored, and
+    the intent is recorded at `.gitignore:58-68` and under legal/00's Risk review -- but nothing in the
+    index said so, so a reader handed the folder finds two entries with no files and no explanation. In
+    a folder whose stated standard is that a record which is not what it claims is worse than none, an
+    index that overstates its own contents is the same fault one level up.
+
+    Asserted both ways: every indexed record is either shipped or marked local-only, and nothing marked
+    local-only is actually shipped."""
+    with open(os.path.join(ROOT, "legal", "README.md"), encoding="utf-8") as fh:
+        rm = fh.read()
+    indexed = sorted(set(re.findall(r"`(\d\d_[A-Za-z0-9_.\-]+\.md)`", rm)))
+    assert len(indexed) >= 10, f"only {len(indexed)} records found in the index: {indexed}"
+    shipped = _shipped_legal_records()
+    unmarked = []
+    for rec in indexed:
+        if f"legal/{rec}" in shipped:
+            continue
+        # the index must SAY it is local-only, on the row that names it
+        row = next((ln for ln in rm.splitlines() if f"`{rec}`" in ln), "")
+        if not re.search(r"local[-‑ ]only|not in git|gitignored|not shipped", row, re.I):
+            unmarked.append(rec)
+    assert not unmarked, (
+        "legal/README.md indexes %d record(s) that are not shipped, with nothing on their row saying "
+        "so -- a reader handed this folder finds the entry and no file: %s"
+        % (len(unmarked), ", ".join(unmarked)))
+    # and nothing may be marked local-only while actually being shipped
+    for ln in rm.splitlines():
+        m = re.search(r"`(\d\d_[A-Za-z0-9_.\-]+\.md)`", ln)
+        if m and re.search(r"local[-‑ ]only|not in git|gitignored", ln, re.I):
+            assert f"legal/{m.group(1)}" not in shipped, (
+                f"{m.group(1)} is marked local-only in the index but is shipped")
+
+
+def test_the_data_sources_record_matches_the_sources_the_books_actually_credit():
+    """legal/01 is the ODbL / public-domain compliance argument and NOTHING referenced it.
+
+    Measured: no test, no tool and no module names it. Its only mentions anywhere are
+    `legal/README.md:16` and `PIPELINE.md:84`. Every other legal record has something tied to it --
+    legal/03 and legal/05 have generators with `--check`, legal/09 has six code references, legal/11
+    has two -- and this one, the record of WHY the data may be used at all, had none.
+
+    That also corrects a claim made in commit d8e8c29, whose message says legal/10 "was the only
+    document in legal/ with nothing tied to it". legal/01 had nothing tied to it then and still had
+    nothing now; legal/07 has no .py reference either, though it is at least cited by three sibling
+    records, which legal/01 is not.
+
+    What can honestly be checked is the thing the record exists to support: every data source the BOOKS
+    credit must be documented here, and every source documented here must be one the pipeline really
+    uses. A compliance argument that omits a source the books credit is the gap that matters, and it is
+    measurable without asserting anything about the legal reasoning itself."""
+    with open(os.path.join(ROOT, "legal", "01_DATA_SOURCES_AND_LICENSES.md"), encoding="utf-8") as fh:
+        rec = fh.read()
+    # The sources the pipeline is built on, each with the phrase the record must carry for it.
+    NEEDED = {
+        "OpenStreetMap": "OpenStreetMap",
+        "ODbL": "ODbL",
+        "USGS 3DEP": "3DEP",
+        "USDA NAIP": "NAIP",
+    }
+    missing = [name for name, token in NEEDED.items() if token not in rec]
+    assert not missing, (
+        "legal/01 is the record of why this project may use its data, and it does not document: "
+        + ", ".join(missing))
+    # every source a BUILT BOOK credits in its printed panel must be documented here
+    if CORPUS:
+        credited = set()
+        for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+            if not distribution_is_corpus(os.path.basename(os.path.dirname(p))):
+                continue
+            with open(p, encoding="utf-8") as fh:
+                h = fh.read()
+            for name, token in NEEDED.items():
+                if token.lower() in _printed_text(h).lower():
+                    credited.add(name)
+        assert credited, "no built book credits any known source; the scan found nothing"
+        undocumented = sorted(n for n in credited if NEEDED[n] not in rec)
+        assert not undocumented, (
+            "the books credit sources legal/01 does not document: " + ", ".join(undocumented))
+
+
+def distribution_is_corpus(slug):
+    import distribution
+    return distribution.is_corpus_slug(slug)
+
+
+def test_the_readme_print_instruction_matches_what_every_sheet_says():
+    """README told the reader to duplex the pocket book "top-flip"; every sheet says LONG edge.
+
+    Those are opposite printer settings. On portrait paper a long-edge flip turns the sheet about its
+    VERTICAL centreline, which is what generate.py's imposition compensates for by placing each back
+    card in the column-mirrored slot -- see test_every_duplex_back_lands_behind_its_own_front. A
+    top-edge (short-edge) flip turns it about the horizontal centreline instead, so following README
+    lands hole 4's green behind hole 6's map on real paper while every digital check stays green.
+
+    The word "top-flip" is not simply wrong -- it is true of the finished CARD, which reads upright when
+    the reader turns a cut leaf over its top edge, and that is why the backs are rotated 180 degrees
+    (`generate.py`: "reads upright after a TOP flip"). It was in the wrong list: README:146 is a list of
+    PRINT parameters, where the only flip that means anything is the printer's.
+
+    Measured: 51 sheet notes across the corpus say "duplex, flip on LONG edge"; nothing compared them
+    with README."""
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+        rm = fh.read()
+    m = re.search(r"^-\s+\*\*Standard pocket book\*\*.*?(?=\n-\s+\*\*)", rm, re.S | re.M)
+    assert m, "README no longer describes the standard pocket book's print parameters"
+    spec = m.group(0)
+    assert re.search(r"duplex", spec, re.I), "the pocket-book bullet no longer names duplex printing"
+    long_at = re.search(r"long[- ‑]?edge", spec, re.I)
+    assert long_at, (
+        "README's pocket-book print parameters do not say the sheet flips on the LONG edge, which is "
+        "what every sheet note in every built book says and what generate.py's imposition assumes:\n  "
+        + " ".join(spec.split())[:300])
+    # The wrong setting may be NAMED -- explaining what goes wrong is useful -- but not PRESCRIBED, so
+    # it must not be the first flip direction the reader meets. Ordering, not absence: a flat ban made
+    # this test fail on the very sentence that warns against the mistake.
+    wrong_at = re.search(r"top[- ‑]flip|short[- ‑]?edge", spec, re.I)
+    assert wrong_at is None or wrong_at.start() > long_at.start(), (
+        "README's pocket-book print parameters name a top/short-edge flip BEFORE the long-edge one, so "
+        "that is the setting a reader will apply. It is the OPPOSITE of what the sheets specify:\n  "
+        + " ".join(spec.split())[:300])
+    if not CORPUS:
+        return
+    # ...and what the sheets say is what README must agree with, read off the artifacts. Scoped to the
+    # printer-facing `.sheetnote`, not to every "duplex" in the file: the stylesheet carries a comment
+    # about the cut CARD reading upright after a TOP flip, which is a true statement about a different
+    # flip and is not an instruction to a printer.
+    notes = set()
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        with open(p, encoding="utf-8") as fh:
+            h = fh.read()
+        for body in re.findall(r'<div class="sheetnote">(.*?)</div>', h, re.S):
+            t = _printed_text(body)
+            if re.search(r"duplex", t, re.I):
+                notes.add(t)
+    assert notes, "no sheet note found in any built book"
+    assert all("LONG edge" in n for n in notes), (
+        f"the built sheet notes do not all specify a long-edge flip: {sorted(notes)[:4]}")
+
+
+def test_the_suite_reports_its_own_module_drop_count_correctly():
+    """README publishes a figure about this suite, and it was wrong by 27%.
+
+    `README.md:100` warns that the suite rebinds COURSE and "drops modules from `sys.modules` at 69
+    sites", which is the argument for running it in a shuffled order -- a real IndexError in
+    render_hole hid behind exactly that for its whole life. Measured off the token stream with comments
+    and string literals stripped, so every hit is executable: 87. It was 83 before this campaign added
+    four.
+
+    The figure is the evidence for the advice. Understating it by 27% understates how much cross-test
+    state this suite carries, which is the one thing that warning exists to convey."""
+    n = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "tests", "*.py"))):
+        with open(p, encoding="utf-8") as fh:
+            n += len(re.findall(r"sys\s*\.\s*modules\s*\.\s*pop", _code_only(fh.read())))
+    assert n >= 50, f"only {n} sys.modules.pop sites found; this test is not measuring the suite"
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
+        rm = fh.read()
+    m = re.search(r"drops modules from `sys\.modules` at (\d+) sites", rm)
+    assert m, "README no longer states how many sites drop modules from sys.modules"
+    assert int(m.group(1)) == n, (
+        f"README says the suite drops modules from sys.modules at {m.group(1)} sites; counted off the "
+        f"token stream (comments and strings stripped, so all of them executable) there are {n}. That "
+        f"figure is the evidence for the shuffled-order advice beside it")
+
+
+def test_every_tracked_module_carries_the_licence_header():
+    """The per-file header is the project's own ownership claim and nothing enforced it.
+
+    All 25 tracked `.py` files carry the copyright line, the trademark sentence and a matching
+    SPDX-License-Identifier today -- and this campaign added no new file, while an earlier one added
+    two. A header applied by hand to every new file, with no gate, is a claim that lapses the first time
+    someone forgets. legal/README.md and the ownership memo both rest on it being on every file.
+
+    The SPDX line must MATCH the prose licence, not merely be present: a file claiming PolyForm in
+    words and something else in the machine-readable tag is worse than one with no tag.
+
+    Enumerated off the FILESYSTEM, not `git ls-files`, so it also holds inside
+    test_a_fresh_clone_gets_a_clean_suite's copy of the tracked files -- that tree has no `.git`, and
+    asking git there returned nothing, which made this gate pass over zero files while claiming to have
+    checked them. The three globs are exactly the tracked set: this repo has no `.py` anywhere else."""
+    files = sorted(os.path.relpath(p, ROOT) for p in
+                   glob.glob(os.path.join(ROOT, "*.py"))
+                   + glob.glob(os.path.join(ROOT, "tools", "*.py"))
+                   + glob.glob(os.path.join(ROOT, "tests", "*.py")))
+    assert len(files) >= 20, f"only {len(files)} module(s) found: {files}"
+    NEED = ("Copyright (c) 2026 Lucas Wu",
+            '"Lucas Green Book" is a trademark of Lucas Wu',
+            "PolyForm Noncommercial 1.0.0",
+            "SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0")
+    bad = []
+    for rel in files:
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            head = fh.read(1500)
+        gone = [n for n in NEED if n not in head]
+        if gone:
+            bad.append(f"{rel} (missing: {'; '.join(gone)})")
+    assert not bad, ("%d of %d tracked module(s) do not carry the full licence header:\n  %s"
+                     % (len(bad), len(files), "\n  ".join(bad)))
+
+
+@needs_corpus
+def test_no_competitor_brand_name_appears_in_any_book():
+    """legal/00 asserts this "(grep-verified across all HTML/PDF)" and no grep ran in any gate.
+
+    The claim is load-bearing: the About panel's narrow wording -- "this book names no such brand" --
+    is what forecloses passing-off, and legal/00 repeats it as a verdict. It is true today, measured at
+    0 hits across all 15 books in both HTML and PDF, which is exactly when a claim should be pinned:
+    while it costs nothing.
+
+    The PDFs are checked as well as the HTML, because that is what the claim says and because the PDF is
+    what leaves this machine. A name reaching a book through an SVG label or a font-embedded string
+    would not show up in a source grep of the engine.
+
+    Read with PyMuPDF, which requirements.txt already declares OPTIONAL and tools/check_scale.py already
+    uses to measure the printed scale bar -- so this needs no new dependency and no new row in
+    legal/10. Guarded, as an optional package must be; without it the HTML half still runs. Proven to
+    read real text rather than silently returning nothing: the scan finds the control string "Lucas
+    Green Book" in 30 of 30 book files, so a zero-hit brand result is a measurement and not an empty
+    reader."""
+    BRANDS = ("StrackaLine", "Stracka Line", "GolfLogix", "Golf Logix", "SwingU", "18Birdies",
+              "Arccos", "TheGrint", "Hole19")
+    CONTROL = "lucas green book"
+    hits, controls_missed = [], []
+    books = [p for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html")))
+             + sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf")))
+             if distribution_is_corpus(os.path.basename(os.path.dirname(p)))]
+    assert len(books) >= 10, f"only {len(books)} book file(s) found to scan"
+    n_html = n_pdf = 0
+    for p in books:
+        rel = os.path.relpath(p, ROOT)
+        if p.endswith(".pdf"):
+            try:
+                import fitz
+            except ImportError:
+                continue
+            with fitz.open(p) as doc:
+                text = "".join(page.get_text() for page in doc)
+            n_pdf += 1
+        else:
+            with open(p, encoding="utf-8") as fh:
+                text = fh.read()
+            n_html += 1
+        low = text.lower()
+        hits += [f"{rel}: {b}" for b in BRANDS if b.lower() in low]
+        if CONTROL not in low:
+            controls_missed.append(rel)
+    assert n_html >= 10, f"only {n_html} HTML book(s) scanned"
+    assert not controls_missed, (
+        "the scan read no recognisable text out of these book(s), so a zero brand-name result from "
+        "them would prove nothing: " + ", ".join(controls_missed))
+    assert not hits, ("legal/00 states that no competitor brand name appears anywhere in any book, "
+                      "grep-verified across all HTML/PDF. Found:\n  " + "\n  ".join(hits))
+
+
+def test_the_template_says_which_of_its_fields_the_engine_never_reads():
+    """`examples/course.json` is what config.py's own error message calls the documentation of "every
+    field", for the ONE input a human types by hand -- and three of its fifteen data fields are read by
+    nothing.
+
+    Measured over every `COURSE.get("x")` / `COURSE["x"]` in the engine and tools:
+
+      * `green_speed` -- 0 production readers. All 12 local courses carry it; 11 hold an em-dash and
+        the-reserve says "fast". No card prints it. (Nor could this project support it: green speed is
+        measured on the ground on the day, and these books are built from remote public data.)
+      * `holes_count` -- 0 readers; `len(holes)` is what the engine counts. On 2 of 12 courses.
+      * `slug` -- 0 readers; the slug is the DIRECTORY name (config.SLUG). On all 12.
+
+    A template that presents a dead field exactly like a live one costs a transcriber real work and
+    invites a value that will never appear. They cannot simply be deleted -- the shipped template must
+    mention every key a real course.json carries, which is what
+    test_no_real_course_carries_a_key_the_template_never_mentions enforces -- so the fix is that the
+    template SAYS SO, and this test is what keeps it saying so.
+
+    Two live keys were also missing entirely, hidden by a waiver in the two sibling tests that claimed
+    `lidar` and `lidar_project` were "written by a fetch stage, never authored by hand". Both are
+    hand-authored: `lidar_project` is read by fetch_lidar.py to PIN a survey and refuse a substitute,
+    and `lidar` is a hand-written fetch recipe on the-reserve that no code writes and no code reads.
+    The waiver was the only thing letting the template omit them; it is gone."""
+    p = os.path.join(ROOT, "examples", "course.json")
+    with open(p, encoding="utf-8") as fh:
+        tmpl = json.load(fh)
+    reads = set()
+    for f in (sorted(glob.glob(os.path.join(ROOT, "*.py")))
+              + sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))):
+        with open(f, encoding="utf-8") as fh:
+            src = fh.read()
+        reads |= set(re.findall(r'COURSE\.get\(["\'](\w+)["\']', src))
+        reads |= set(re.findall(r'COURSE\[["\'](\w+)["\']\]', src))
+        reads |= set(re.findall(r'\bj\.get\(["\'](\w+)["\']', src))
+        reads |= set(re.findall(r'\bcourse\.get\(["\'](\w+)["\']', src))
+    data_keys = [k for k in tmpl if not k.startswith("_")]
+    assert len(data_keys) >= 10, f"only {len(data_keys)} data fields in the template: {data_keys}"
+    undisclosed = []
+    for k in sorted(data_keys):
+        if k in reads:
+            continue
+        doc = " ".join(tmpl.get("_" + k) or []) if isinstance(tmpl.get("_" + k), list) \
+            else str(tmpl.get("_" + k) or "")
+        if not re.search(r"NOT READ|not read by", doc, re.I):
+            undisclosed.append(k)
+    assert not undisclosed, (
+        "examples/course.json documents %d field(s) the engine never reads, without saying so. "
+        "config.py's own error message calls this file the documentation of every field, and it is the "
+        "only input transcribed by hand: %s" % (len(undisclosed), ", ".join(undisclosed)))
+    # ...and the reverse claim must be true: nothing marked NOT READ may actually be read
+    for k in data_keys:
+        doc = " ".join(tmpl.get("_" + k) or []) if isinstance(tmpl.get("_" + k), list) \
+            else str(tmpl.get("_" + k) or "")
+        if re.search(r"NOT READ", doc):
+            assert k not in reads, f"the template says {k} is NOT READ, but the engine reads it"
+    # the two keys the removed waiver used to hide must now be documented
+    known = {k.lstrip("_") for k in tmpl}
+    for k in ("lidar", "lidar_project"):
+        assert k in known, (
+            f"{k} is hand-authored and was hidden from the template by a waiver claiming a fetch stage "
+            f"writes it; the template must document it")
