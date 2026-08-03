@@ -1883,12 +1883,13 @@ def test_no_tree_marker_sits_on_a_playing_surface():
                 surfaces.append((kind, [(q["lon"], q["lat"]) for q in e["geometry"]]))
         if not surfaces:
             continue
-        seen[ref] += 1
         for hn, pts in (trees.items() if isinstance(trees, dict) else []):
             for entry in pts:
                 lat, lon = ((entry[0], entry[1]) if isinstance(entry, (list, tuple))
                             else (entry["lat"], entry["lon"]))
                 total += 1
+                seen[ref] += 1     # beside the per-MARKER counter. One per COURSE made this
+                                   # vacuous: blanking a course's trees_lidar.json to {} passed.
                 for kind, poly in surfaces:
                     if inside(lon, lat, poly):
                         offenders.append(f"{ref} hole {hn}: a tree marker sits on a {kind} "
@@ -3096,13 +3097,14 @@ def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_ca
         if not os.path.exists(os.path.join(ROOT, "courses", ref, "osm_geom.json")):
             continue
         cfg, rh = _engine(ref)
-        seen[ref] += 1
         for hn in sorted(cfg.HOLES):
             try:
                 svg, info = rh.render_hole(hn, cfg.HOLES)
             except Exception:
                 continue
             checked += 1
+            seen[ref] += 1     # PAST the except. Above the loop this was vacuous: making
+                               # render_hole raise for one course passed.
             card, arc = info["card_yd"], info["arc_yd"]
             if not card:
                 continue
@@ -3134,7 +3136,10 @@ def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_ca
     assert len(refused) <= 4, (
         f"{len(refused)} holes print no from-tee number, against 2 expected: {refused[:8]}. Either a "
         f"guard has tightened or a course's centrelines have changed.")
-    assert_no_course_skipped(seen, "test_a_from_tee_number_is_never_scaled_off_a_disagreeing_line")
+    # the label is the test's own name: it is what the failure prints, and a name that does not
+    # exist sends the reader looking for the wrong test.
+    assert_no_course_skipped(
+        seen, "test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_card")
     assert not problems, ("a printed from-tee distance rests on a line that contradicts the "
                           "scorecard:\n  " + "\n  ".join(problems[:8]))
 
@@ -8639,7 +8644,6 @@ def test_green_binding_wins_by_a_wide_margin_not_a_hair():
             lines = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
         except SystemExit:
             continue
-        seen[ref] += 1
         for hn, w in sorted(lines.items()):
             try:
                 bound, gend, _tend = geo.match_green(w["geometry"], greens)
@@ -8655,6 +8659,8 @@ def test_green_binding_wins_by_a_wide_margin_not_a_hair():
                                       (gend["lon"] - lo) * mlon), g.get("id")))
             ds.sort()
             checked += 1
+            seen[ref] += 1     # PAST the except. Above the loop this was vacuous: making
+                               # geo.match_green raise for one course passed.
             assert bound.get("id") == ds[0][1], (
                 f"{ref} hole {hn}: bound to green {bound.get('id')} at "
                 f"{next(d for d, i in ds if i == bound.get('id')):.1f} m while green {ds[0][1]} is "
@@ -11419,7 +11425,6 @@ def test_no_card_silently_clips_its_own_text():
         try:
             for bf in books:
                 ref = os.path.basename(os.path.dirname(bf))
-                seen[ref] += 1
                 pg.goto("file://" + os.path.abspath(bf))
                 pg.emulate_media(media="print")
                 clipped = pg.evaluate(JS)
@@ -11430,6 +11435,9 @@ def test_no_card_silently_clips_its_own_text():
                                     f"see clipped text and its silence means nothing")
                     continue
                 checked += 1
+                seen[ref] += 1     # PAST the probe check, for the same reason as the three
+                                   # sites above: a book whose probe fails is a book this
+                                   # test measured nothing on.
                 for x in clipped:
                     problems.append(
                         f"{ref} card {x['ci']}: text overruns the card by {x['over']}px and is cut off "
