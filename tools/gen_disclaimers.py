@@ -60,7 +60,7 @@ class ExtractionFailed(Exception):
 
 
 def _text_of(abtxt_html):
-    """The printed words of one <div class="abtxt"> block, tags and entities resolved."""
+    """The printed words of one HTML fragment, tags and entities resolved."""
     t = re.sub(r"<[^>]+>", "", abtxt_html)
     t = html.unescape(t)
     return re.sub(r"\s+", " ", t).strip()
@@ -68,6 +68,14 @@ def _text_of(abtxt_html):
 
 _DIV_OPEN = re.compile(r"<div\b", re.I)
 _DIV_CLOSE = re.compile(r"</div\s*>", re.I)
+
+# Every printed string whose exact wording is legally load-bearing: the copyright, the trademark, and
+# both licence sentences. Used to PROVE the class list below is complete -- see _unrecorded_legal_text.
+LEGAL_MARKS = ("© 2026 Lucas Wu", "Lucas Green Book™", "CC BY-NC-ND", "All rights reserved.")
+
+# Tags that never wrap content, so the element walk must not push them on its stack.
+_VOID_TAGS = frozenset("br img meta link hr input path circle rect line polygon polyline use stop "
+                       "source area base col embed param track wbr".split())
 
 
 def _balanced_div_body(h, start):
@@ -96,36 +104,154 @@ def _balanced_div_body(h, start):
         pos = c.end()
 
 
-def _abtxt_blocks_from_html(h, where="<html>"):
-    """Every printed "About & legal" block in one book's HTML, in document order."""
+def _class_blocks_from_html(h, cls, where="<html>"):
+    """Every printed `<div class="cls">` block in one book's HTML, in document order."""
     out = []
-    for m in re.finditer(r'<div class="abtxt"\s*>', h):
+    for m in re.finditer(r'<div class="%s"\s*>' % re.escape(cls), h):
         body = _balanced_div_body(h, m.end())
         if body is None:
             raise ExtractionFailed(
-                f"{where}: an <div class=\"abtxt\"> block is never closed, so the printed legal text "
+                f"{where}: a <div class=\"{cls}\"> block is never closed, so the printed legal text "
                 f"cannot be read out of it")
         out.append(_text_of(body))
     return out
 
 
+def _abtxt_blocks_from_html(h, where="<html>"):
+    """Every printed "About & legal" block in one book's HTML, in document order."""
+    return _class_blocks_from_html(h, "abtxt", where)
+
+
+def _cover_lines_from_html(h):
+    """The front cover's own attribution line(s) -- SVG <text>, not a div, so it needs its own reader.
+
+    Twelve books print "(c) 2026 Lucas Wu . Lucas Green Book(TM)" on the cover and no legal record
+    mentioned a cover at all. It read as captured to any containment check, because that exact string is
+    also a substring of the About panel's closing sentence -- which is the difference between a record
+    that QUOTES a printed line and one that happens to contain it.
+    """
+    return [t for t in (_text_of(m.group(1)) for m in re.finditer(r"<text\b[^>]*>(.*?)</text>", h, re.S))
+            if any(k in t for k in LEGAL_MARKS)]
+
+
+def _elements(h):
+    """(tag, class, body_start, body_end) for every balanced element in `h`.
+
+    A whole-document walk, used only to PROVE that the named classes above miss nothing. The class list
+    is the drift this file exists to prevent: `.dcopy` printed a second licence line on every one of 15
+    books for as long as this generator has existed, and a `--check` gate ran green over it on every
+    merge because the gate only ever asked about `.abtxt`.
+    """
+    stack, out = [], []
+    for m in re.finditer(r"<(/?)([A-Za-z][\w:-]*)\b[^>]*?(/?)>", h):
+        closing, tag, selfclose = m.group(1), m.group(2).lower(), m.group(3)
+        if closing:
+            for i in range(len(stack) - 1, -1, -1):
+                if stack[i][0] == tag:
+                    t, cls, bs = stack.pop(i)
+                    del stack[i:]
+                    out.append((t, cls, bs, m.start()))
+                    break
+            continue
+        if selfclose or tag in _VOID_TAGS:
+            continue
+        cls = re.search(r'class="([^"]*)"', m.group(0))
+        stack.append((tag, cls.group(1) if cls else "", m.end()))
+    return out
+
+
+def _printed_legal_blocks(h):
+    """[(tag, class, printed_text)] for the SMALLEST elements in `h` that carry a legal mark.
+
+    Smallest by tree POSITION, not by string containment. The cover attribution is a substring of the
+    About panel's last sentence, so a containment test discards the About panel as though it were a
+    wrapper -- measured, that took the corpus's 8 distinct legal blocks down to 5 and dropped every
+    pocket "About & legal" variant, which is the record's main content.
+    """
+    hits = [(t, c, a, b) for t, c, a, b in _elements(h)
+            if any(k in _text_of(h[a:b]) for k in LEGAL_MARKS)]
+    return [(t, c, _text_of(h[a:b])) for t, c, a, b in hits
+            if not any((a2, b2) != (a, b) and a <= a2 and b2 <= b for _, _, a2, b2 in hits)]
+
+
+def _quoted_blocks(md):
+    """Every blockquoted block in a generated record, unwrapped and space-collapsed."""
+    out, cur = set(), []
+    for line in md.splitlines() + [""]:
+        if line.startswith(">"):
+            cur.append(re.sub(r"^>\s?", "", line))
+        elif cur:
+            out.add(re.sub(r"\s+", " ", " ".join(cur)).strip())
+            cur = []
+    return out
+
+
+def _unrecorded_legal_text(record):
+    """{printed text -> [where it prints]} for every legal block `record` does not QUOTE.
+
+    THE COMPLETENESS GUARD, and the reason the section list above cannot go stale the way it did. The
+    sections are still keyed on named classes, because that is what makes the record readable and lets
+    each variant be attributed to the books that print it -- but a hand-kept list of classes in a
+    generated document is exactly the drift this file exists to stop. So every printed legal block in
+    every book is found independently of that list, and anything not quoted makes the generator refuse.
+
+    Exact equality against the QUOTED blocks, not containment anywhere in the file: the cover line is a
+    substring of the About panel, so containment reported it recorded on all 12 books while no section
+    named a cover.
+    """
+    quoted = _quoted_blocks(record)
+    missing = {}
+    for f in list(_books("greenbook.html")) + list(_books("greenbook_coach.html")):
+        slug = os.path.basename(os.path.dirname(f))
+        coach = os.path.basename(f) == "greenbook_coach.html"
+        with open(f, encoding="utf-8") as fh:
+            h = fh.read()
+        for tag, cls, text in _printed_legal_blocks(h):
+            if text not in quoted:
+                missing.setdefault(text, []).append(
+                    f"{slug}{' (coach)' if coach else ''} <{tag} class=\"{cls}\">")
+    return missing
+
+
 def _abtxt_blocks(path):
+    return _panel_blocks(path, "abtxt")
+
+
+def _panel_blocks(path, cls):
+    """Every printed `<div class="cls">` block in one built book, with a FLOOR on finding any.
+
+    The floor's absence is the defect fixed in gen_provenance.py by 2d97cd5, surviving here: main()
+    checked that the book FILES exist, which is a different question from whether any printed legal
+    text came out of them. A stylesheet refactor to `class="abtxt legal"` -- one space -- matched
+    nothing, build() emitted "Covers 0 built books" and "*(none built)*", --check said STALE, and
+    obeying the remedy took legal/05 from 114 lines and four quoted variants to 34 and none, with the
+    writer exiting 0.
+    """
     with open(path, encoding="utf-8") as fh:
         h = fh.read()
-    blocks = _abtxt_blocks_from_html(h, os.path.relpath(path, ROOT))
+    rel = os.path.relpath(path, ROOT)
+    blocks = _class_blocks_from_html(h, cls, rel)
     if not blocks:
-        # THE FLOOR. Its absence is the defect fixed in gen_provenance.py by 2d97cd5, surviving here:
-        # main() checked that the book FILES exist, which is a different question from whether any
-        # printed legal text came out of them. A stylesheet refactor to `class="abtxt legal"` -- one
-        # space -- matched nothing, build() emitted "Covers 0 built books" and "*(none built)*",
-        # --check said STALE, and obeying the remedy took legal/05 from 114 lines and four quoted
-        # variants to 34 and none, with the writer exiting 0.
         raise ExtractionFailed(
-            f"{os.path.relpath(path, ROOT)}: no <div class=\"abtxt\"> block found, but the book is "
-            f"built and on disk. The printed markup changed and this extractor did not; fix the "
-            f"extractor. Do NOT regenerate -- an empty legal/05 is worse than a stale one, because "
-            f"a record that calls itself verbatim and quotes nothing still reads as complete")
+            f"{rel}: no <div class=\"{cls}\"> block found, but the book is built and on disk. The "
+            f"printed markup changed and this extractor did not; fix the extractor. Do NOT regenerate "
+            f"-- an empty legal/05 is worse than a stale one, because a record that calls itself "
+            f"verbatim and quotes nothing still reads as complete")
     return blocks
+
+
+def _cover_lines(path):
+    """The front cover's attribution line(s) in one built book, with the same floor."""
+    with open(path, encoding="utf-8") as fh:
+        h = fh.read()
+    rel = os.path.relpath(path, ROOT)
+    lines = _cover_lines_from_html(h)
+    if not lines:
+        raise ExtractionFailed(
+            f"{rel}: the front cover prints no attribution carrying the copyright or the trademark. "
+            f"Either the cover changed or this extractor did; fix whichever it is rather than "
+            f"regenerating a record that stops mentioning a cover")
+    return lines
 
 
 def _wrap(t, width=96):
@@ -150,17 +276,28 @@ def _books(pattern):
             yield f
 
 
+def _by_variant(pattern, reader):
+    """{printed text -> [slugs]} over one edition's books, using `reader(path)` to extract."""
+    out = {}
+    for f in _books(pattern):
+        slug = os.path.basename(os.path.dirname(f))
+        for b in reader(f):
+            out.setdefault(b, []).append(slug)
+    return out
+
+
 def build():
-    books = {}                                   # printed text -> [course slugs]
-    for f in _books("greenbook.html"):
-        slug = os.path.basename(os.path.dirname(f))
-        for b in _abtxt_blocks(f):
-            books.setdefault(b, []).append(slug)
-    coach = {}
-    for f in _books("greenbook_coach.html"):
-        slug = os.path.basename(os.path.dirname(f))
-        for b in _abtxt_blocks(f):
-            coach.setdefault(b, []).append(slug)
+    books = _by_variant("greenbook.html", _abtxt_blocks)
+    coach = _by_variant("greenbook_coach.html", _abtxt_blocks)
+    # The BACK COVER prints the copyright, the trademark and the licence sentence a second time, and no
+    # legal record held it. 15 instances across 15 books, in three variants -- and it is not a duplicate
+    # of the About panel: it TRANSPOSES the copyright and the trademark, the coach edition adds the
+    # sentence "Practice aid.", and poppy-ridge's personal-use wording appears on both panels while only
+    # one was captured. This file's stated standard is that a "verbatim" record which is not verbatim is
+    # worse than none, so every printed instance is quoted, not one per book.
+    dcopy = _by_variant("greenbook.html", lambda f: _panel_blocks(f, "dcopy"))
+    dcopy_coach = _by_variant("greenbook_coach.html", lambda f: _panel_blocks(f, "dcopy"))
+    cover = _by_variant("greenbook.html", _cover_lines)
 
     # Count BOTH editions. This counted pocket slugs only, so the file said "Covers 12 built books"
     # while section B below it documented three more -- and export_pdf --check reports 15. A record whose
@@ -174,7 +311,21 @@ def build():
          "Re-run after any wording change; `--check` fails if this file is stale.", "",
          f"Covers **{n}** built books ({len(_pocket)} pocket, {len(_coach)} enlarged). Blocks differ per",
          "course where the data differs (a rebuilt",
-         "course, a NAIP-traced green), so each variant is listed with the courses that print it.", ""]
+         "course, a NAIP-traced green), so each variant is listed with the courses that print it.", "",
+         "**Every place a book prints the copyright, the trademark or a licence sentence is quoted "
+         "below**, not",
+         "one panel per book. A book prints them in three places, and the wordings are not identical:",
+         "the inside *About & legal* panel leads with the copyright, the BACK COVER leads with the "
+         "trademark,",
+         "and the front cover carries the attribution alone. The licence SENTENCE itself is one spelling "
+         "in one",
+         "function (`generate.py`, `sharing_line()`), so it cannot differ between panels -- the ordering "
+         "of the",
+         "attribution around it is a typographic choice, deliberate on a cover. Sections C-E were "
+         "missing for as",
+         "long as this generator existed: 27 printed instances the record did not quote, while a "
+         "`--check` gate",
+         "ran green over them on every merge because it only ever asked about one CSS class.", ""]
 
     def section(letter, title, mapping):
         L.append(f"## {letter}. {title}")
@@ -187,6 +338,9 @@ def build():
 
     section("A", 'Pocket edition "About & legal"', books)
     section("B", 'Coach / ENLARGED edition "About & legal"', coach)
+    section("C", "Pocket edition back cover -- copyright, trademark & licence", dcopy)
+    section("D", "Coach / ENLARGED edition back cover -- copyright, trademark & licence", dcopy_coach)
+    section("E", "Front cover attribution", cover)
     L.append(WHY)
     return "\n".join(L)
 
@@ -212,6 +366,24 @@ def main():
         new = build()
     except ExtractionFailed as e:
         print(f"cannot read the printed legal text out of the built books:\n  {e}")
+        return 2
+    # THE COMPLETENESS GUARD. Checked against the text just built, so it constrains what gets WRITTEN
+    # and not only what is already on disk. The sections above are keyed on named CSS classes, which is
+    # what makes the record readable -- and a hand-kept list of classes inside a generated document is
+    # the drift this whole file exists to prevent. `.dcopy` proves it: every book has printed the
+    # copyright, the trademark and the licence sentence a second time on its back cover for as long as
+    # this generator has existed, and `--check` passed on every merge because it only asked about
+    # `.abtxt`. So every printed legal block is found by an independent whole-document walk, and one
+    # this record does not QUOTE is a refusal rather than a silent omission.
+    unrecorded = _unrecorded_legal_text(new)
+    if unrecorded:
+        print("the built books print legal text this record would not quote -- refusing to write a\n"
+              "  record that calls itself verbatim while omitting %d block(s), %d printed instance(s):"
+              % (len(unrecorded), sum(len(v) for v in unrecorded.values())))
+        for txt, where in unrecorded.items():
+            print(f"    {txt[:150]}\n      on: {', '.join(where[:4])}"
+                  + (f" (+{len(where) - 4} more)" if len(where) > 4 else ""))
+        print("  Add a section for it in build(), or fix the extractor if the markup moved.")
         return 2
     if "--check" in sys.argv:
         cur = open(OUT, encoding="utf-8").read() if os.path.exists(OUT) else ""
