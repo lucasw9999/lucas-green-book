@@ -247,6 +247,32 @@ def _code_only(src):
     return " ".join(out)
 
 
+def _in_code(needle, src, header=""):
+    """Is `needle` present in `src` as CODE, rather than in a comment or a string literal?
+
+    The readable form of `_code_only`, and the one most call sites want. Two things it does that a
+    bare `needle in src` cannot:
+
+      * strips comments and string literals (see _code_only), so a comment naming the very identifier
+        a guard checks for cannot satisfy the guard. That has happened four times in this repo, twice
+        live; every positive source grep in this file is one explanatory comment away from it, because
+        the house style is to name the code in the prose beside it.
+      * ignores whitespace on BOTH sides, because _code_only re-joins tokens with single spaces:
+        `os.replace(tmp, path)` comes back as `os . replace ( tmp , path )`. So the needle can be
+        written the way the code is written.
+
+    `header` re-attaches a synthetic prefix for a FRAGMENT that cannot tokenise on its own -- the
+    usual case is a function body split off at `def name(`, which starts `):` and makes tokenize
+    raise. Pass `header="def f("` for those, and _code_only's own refusal explains it if you forget.
+
+    NOT for a needle that is itself a string literal or message text in the source under test
+    (`"examples/course.json"`, an error message, an Overpass query body): those are stripped, so this
+    helper would report them absent. A comment there produces a false ALARM, not a false pass, so a
+    plain `in` is the right check.
+    """
+    return needle.replace(" ", "") in _code_only(header + src).replace(" ", "")
+
+
 def _elev_rows(slug):
     """{hole: record} from a course's hole_elev.json, {} when the stage was not run."""
     fp = os.path.join(ROOT, "courses", slug, "hole_elev.json")
@@ -685,12 +711,20 @@ def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_rea
     # (4) and the logic just measured is the logic the session fixture runs, with the scratch rule
     # borrowed rather than respelled. Both are what made this defect survive: a closure nothing could
     # call, and a rule this file kept its own copy of.
+    #
+    # Both of these read CODE, not prose, and that distinction is live rather than theoretical: the
+    # second one was satisfied by _courses_snapshot's OWN DOCSTRING, which says "asked of
+    # distribution.is_corpus_slug". Proven by mutation -- replacing the live call with an inline
+    # startswith("_"), which is exactly the fourth copy of the rule this assertion forbids, left the
+    # test PASSING. The fixture's docstring names _courses_snapshot too, so the first one is the same
+    # shape one edit away. `def f(` re-attaches a header because a body split off at `def name(`
+    # starts "):" and does not tokenise.
     src = inspect.getsource(sys.modules[__name__])
     guard = src.split("def _courses_are_read_only(", 1)[1].split("\n@pytest.fixture", 1)[0]
-    assert "_courses_snapshot(ROOT)" in guard, (
+    assert _in_code("_courses_snapshot(ROOT)", guard, header="def f("), (
         "the session guard has grown its own snapshot again -- it must call _courses_snapshot, or this "
         "test measures a copy of the logic instead of the logic that runs")
-    assert "is_corpus_slug" in inspect.getsource(_courses_snapshot), (
+    assert _in_code("is_corpus_slug", inspect.getsource(_courses_snapshot)), (
         "the scratch-slug rule must come from distribution.is_corpus_slug; a local startswith('_') "
         "here is the fourth copy of a rule that already drifted once")
 
@@ -1102,13 +1136,15 @@ def test_a_missing_required_key_names_itself():
     four mistakes into four rounds of guessing.
     """
     src = open(os.path.join(ROOT, "config.py"), encoding="utf-8").read()
-    assert "_REQUIRED" in src and "is missing" in src, \
+    # _REQUIRED is CODE, so it goes through _in_code; "is missing" is the MESSAGE TEXT, so it does not
+    # (a comment quoting it would be a false alarm here, not a false pass).
+    assert _in_code("_REQUIRED", src) and "is missing" in src, \
         "config.py no longer names its required keys before indexing them"
     for key in ("name", "address", "hole_cols", "holes"):
         assert f'"{key}"' in src.split("_REQUIRED")[1].split("_missing")[0], \
             f"{key} is indexed by config.py but not covered by the required-key guard"
     guard = src.split("_missing = ")[1].split("# hole ->")[0]
-    assert "for k in _REQUIRED if k not in COURSE" in guard, \
+    assert _in_code("for k in _REQUIRED if k not in COURSE", guard), \
         "the guard must collect ALL missing keys, not stop at the first"
     assert "examples/course.json" in guard, \
         "the message must point at the documented template"
@@ -3531,7 +3567,7 @@ def test_a_nine_hole_course_is_a_first_class_course(tmp_path):
     # adding a test-only env hook to production code. _check_course is the gate every course.json
     # passes and is where an 18-hole assumption would live, so exercising it directly is the honest
     # coverage; NHOLES is asserted separately below against the corpus.
-    assert "len(HOLE_NUMS)" in open(os.path.join(ROOT, "config.py"), encoding="utf-8").read(), \
+    assert _in_code("len(HOLE_NUMS)", open(os.path.join(ROOT, "config.py"), encoding="utf-8").read()), \
         "NHOLES must be derived from the file's own holes, never a constant"
     gen = open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read()
     # Anchored on scorecard_panel's OWN branch. This used to match "config.NHOLES <= 9", which lived
@@ -3540,8 +3576,10 @@ def test_a_nine_hole_course_is_a_first_class_course(tmp_path):
     # code was rewritten. A proxy string is not the thing.
     sc = gen[gen.index("def scorecard_panel"):]
     sc = sc[:sc.index("\ndef ")]
-    assert "len(nums) <= 9" in sc, \
+    assert _in_code("len(nums) <= 9", sc), \
         "scorecard_panel must collapse OUT/IN into one Total for a nine-hole card"
+    # ...and that branch must SAY why it has no front/back split, which is a comment on purpose --
+    # so this one is a plain `in`, not _in_code.
     assert "no front/back split" in sc, \
         "the nine-hole scorecard branch must say why it has no front/back split"
 
@@ -4984,7 +5022,8 @@ def test_both_editions_share_one_playline_definition():
     assert hasattr(generate, "playline_html"), "the shared playline helper is gone"
     for fn_name in ("hole_panel", "coach_map_card"):
         src = inspect.getsource(getattr(generate, fn_name))
-        assert "playline_html(" in src, f"{fn_name} no longer uses the shared playline helper"
+        assert _in_code("playline_html(", src), \
+            f"{fn_name} no longer uses the shared playline helper"
         assert "elev_phrase(" not in src and "carry_phrase(" not in src, (
             f"{fn_name} builds the row itself again -- that is how the two editions drift")
     # ...and the duplex upright-back rule, which was the last one still written twice: the pocket path
@@ -4993,7 +5032,8 @@ def test_both_editions_share_one_playline_definition():
     assert hasattr(generate, "is_upright_back"), "the shared upright-back helper is gone"
     for fn_name in ("main", "build_coach"):
         src = inspect.getsource(getattr(generate, fn_name))
-        assert "is_upright_back(" in src, f"{fn_name} no longer uses the shared upright-back rule"
+        assert _in_code("is_upright_back(", src), \
+            f"{fn_name} no longer uses the shared upright-back rule"
         # The right disjunct was already asserted on the line above, so `A or B` was `A or True`.
         # What this means to say is that the last-card test is not RE-INLINED here: the helper is
         # called and the raw index comparison is absent. Both, not either.
@@ -6169,7 +6209,8 @@ def test_one_hole_line_chooser_for_the_whole_pipeline():
                  "fetch_hole_elev.py"):
         with open(os.path.join(ROOT, name), encoding="utf-8") as fh:
             src = fh.read()
-        assert "hole_lines(" in src, f"{name} no longer uses the shared hole-line chooser"
+        assert _in_code("hole_lines(", src), \
+            f"{name} no longer uses the shared hole-line chooser"
 
 
 @needs_corpus
@@ -7146,9 +7187,17 @@ def test_the_surface_builder_refuses_to_guess_a_zone_or_a_vertical_unit():
         "fetch_dem_hd still defaults the course longitude -- that silently picks California zone 10"
     assert "src = UTM" not in src, \
         "fetch_dem_hd still assumes a CRS-less cloud is in the course UTM zone with metres for Z"
-    # and both stops must be reachable failures, not comments (there are exactly two: the missing
-    # location and the missing CRS -- counted, not guessed)
-    assert src.count("raise SystemExit") >= 2, "the guards must actually stop the run"
+    # and both stops must be reachable failures, not comments. EXACTLY three, not `>= 2`: the module
+    # raises SystemExit three times -- the missing location, a CRS whose vertical unit
+    # geo.vertical_scale refuses to read, and a CRS-less cloud -- so a `>= 2` floor left slack for
+    # either of the two guards this test is about to be DELETED and still pass. Counted on tokenised
+    # code, so a comment quoting the statement cannot stand in for it either. If a fourth guard is
+    # added on purpose, raise this number and say what it is.
+    assert _code_only(src).count("raise SystemExit") == 3, (
+        f"fetch_dem_hd.py has {_code_only(src).count('raise SystemExit')} live SystemExit guards, not "
+        f"3. The three are: no course location (silently picks California zone 10), a CRS whose "
+        f"vertical unit cannot be read, and a CRS-less cloud (every printed slope 3.28x too steep on "
+        f"a ftUS survey). Losing one is silent in the output.")
 
 
 def test_a_mixed_crs_tile_directory_is_refused_not_projected_through_one_guess(tmp_path):
@@ -7452,7 +7501,7 @@ def test_the_density_and_coverage_gate_measures_the_green_itself():
     # after the import, so removing the query while keeping `from scipy.spatial import cKDTree`
     # cannot satisfy this -- the same import-vs-use hole that let a proxy string stand in for the
     # scorecard's nine-hole branch elsewhere in this file
-    assert "cKDTree(" in src.split("import cKDTree", 1)[1], \
+    assert _in_code("cKDTree(", src.split("import cKDTree", 1)[1]), \
         "coverage needs a nearest-return query, not just the import"
     assert 0 < fdh.COVER_R_M <= 2.0 and 0 < fdh.UNCOVERED_MAX <= 0.10
 
@@ -7665,7 +7714,7 @@ def test_course_json_is_written_atomically(tmp_path):
 
     src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
     assert 'json.dump(j, open(p, "w")' not in src, "course.json must not be written in place"
-    assert "os.replace(tmp, path)" in src, "the write must be staged and renamed"
+    assert _in_code("os.replace(tmp, path)", src), "the write must be staged and renamed"
 
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import lidar_dates as ld
@@ -7829,7 +7878,7 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
     # and it must be called where a build starts, or it is another guard nobody runs
     for mod in ("fetch_dem.py", "fetch_dem_hd.py"):
         with open(os.path.join(ROOT, mod), encoding="utf-8") as fh:
-            assert "surface_io.sweep_staged(" in fh.read(), (
+            assert _in_code("surface_io.sweep_staged(", fh.read()), (
                 f"{mod} never sweeps stale staging files, so a killed run's litter survives every "
                 f"later build")
 
@@ -7968,6 +8017,11 @@ def test_multipolygon_relations_become_drawable_features(tmp_path):
     src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
     i = src.index("_flatten_relations(rel['elements'])")
     tail = src[i:i + 900]
+    # A plain `in`, deliberately, where the rest of this file's positive source greps now go through
+    # _in_code: what is asserted here is ORDER, and the window is a raw character slice anchored on a
+    # string literal. _code_only deletes string literals and re-joins tokens without line structure,
+    # so it would destroy both the anchor and the ordering this expresses. Weaker than the others, and
+    # named as such rather than left looking equivalent.
     assert "os.replace" in tail and "osm_course.json" in tail, \
         ("the flattened rings must be written back to osm_course.json; appending to the in-memory "
          "dict alone left every consumer reading a file with no fairways")
@@ -8727,7 +8781,7 @@ def test_one_shared_rule_decides_what_may_be_distributed():
 
     # the generator must consult it rather than re-deriving the rule
     src = open(os.path.join(ROOT, "tools", "gen_provenance.py"), encoding="utf-8").read()
-    assert "distribution.distribution_status" in src, \
+    assert _in_code("distribution.distribution_status", src), \
         "gen_provenance.py must use the shared rule, or the record can disagree with what ships"
     assert 'status = "Personal" if' not in src, "the inline copy of the rule must be gone"
 
@@ -8883,12 +8937,13 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     # both fetchers must run the check, or a missing tile copy goes unnoticed again
     for mod in ("fetch_lidar.py", "fetch_lidar_alameda.py"):
         src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
-        assert "lidar_coverage.report" in src, f"{mod} never verifies its tiles against the greens"
+        assert _in_code("lidar_coverage.report", src), \
+            f"{mod} never verifies its tiles against the greens"
         # ...and both must sweep stale .part files. A transfer killed outright leaves one that no
         # exception handler runs to remove; observed for real when a Merion fetch was killed mid-tile
         # and left a 26 MB .part sitting in laz/. It is never valid data -- a .part is only renamed
         # into place after its size is checked against TNM.
-        assert "sweep_partials(" in src, \
+        assert _in_code("sweep_partials(", src), \
             f"{mod} must remove stale partial downloads before deciding what is cached"
 
     # ...and the sweep itself must actually delete them. Asserting the source text of two
@@ -8978,7 +9033,9 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
     src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
     i = src.index("if rings and not nnear:")
     block = src[i:src.index("per_tile[name]", i)]   # scoped structurally, not by a character budget
-    assert "continue" in block and "NOT counted" in block, \
+    # "continue" is CODE and goes through _in_code; "NOT counted" is the COMMENT that explains it,
+    # which this assertion wants on purpose, so that one stays a plain `in`.
+    assert _in_code("continue", block, header="def f():\n    ") and "NOT counted" in block, \
         "a tile with no points over a green must be excluded from the printed flight range"
 
 
@@ -9354,6 +9411,9 @@ def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
     # scope to the REPORTING block in main(), not the early-exit `if unknown: break` that stops
     # probing once the run is already doomed
     i = src.index("could not determine whether")
+    # Plain `in`, like the fetch_osm ordering check and for the same reason: the window is a raw
+    # character slice centred on a MESSAGE STRING, which _code_only strips, so the anchor would
+    # disappear along with the comments. See _in_code's docstring for when it does apply.
     assert "raise SystemExit" in src[max(0, i - 300):i + 200], \
         "an undetermined tile must stop the fetch, not be treated as the edge of the survey"
 
@@ -10859,7 +10919,7 @@ def test_the_cross_flight_check_shares_the_renderers_plane_fit():
     # and the renderer must still get its numbers from that same shared function
     with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as f:
         src = f.read()
-    assert src.count("lstsq") == 1, (
+    assert _code_only(src).count("lstsq") == 1, (
         "render_green.py fits a least-squares plane in more than one place, so the card and the "
         "cross-flight check can disagree about the same green")
 
@@ -11116,11 +11176,11 @@ def test_the_tree_finder_does_not_filter_on_a_vegetation_class():
         "fetch_trees.py now selects candidates by classification 5. Ten of eleven courses have no "
         "class-5 points, so this empties the tree layer while the hole-map legend still promises "
         "trees. The filter must stay height-above-ground.")
-    assert "hgt>2.5" in body.replace(" ", ""), "the 2.5 m height floor is gone"
-    assert "hgt<35" in body.replace(" ", ""), "the 35 m ceiling is gone -- nothing that tall is a tree"
+    assert _in_code("hgt>2.5", body), "the 2.5 m height floor is gone"
+    assert _in_code("hgt<35", body), "the 35 m ceiling is gone -- nothing that tall is a tree"
     for cl, why in ((6, "buildings: a roof is 2.5-35 m up and reads exactly like canopy"),
                     (7, "noise"), (9, "water"), (17, "bridge decks"), (18, "high noise")):
-        assert f"cls!={cl}" in body.replace(" ", ""), (
+        assert _in_code(f"cls!={cl}", body), (
             f"class {cl} is no longer excluded from tree candidates ({why})")
 
     # and the docstring must not go back to claiming a vegetation class it does not use
@@ -11763,7 +11823,8 @@ def test_the_card_deck_has_exactly_one_implementation():
     with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as f:
         src = f.read()
     body = src.split("def main(", 1)[1].split("\ndef ", 1)[0]
-    assert "build_deck()" in body, "main() no longer calls build_deck -- there are two decks again"
+    assert _in_code("build_deck()", body, header="def f("), \
+        "main() no longer calls build_deck -- there are two decks again"
     # No grep for the removed words "Front"/"Mid"/"Finish". They appear in the comments that explain why
     # they were removed, so the grep failed on prose -- the same trap that made the fetch_dem_hd guard
     # test pass on a comment, inverted. The tab check below is strictly stronger anyway: it requires a
@@ -12065,12 +12126,12 @@ def test_the_surface_builder_drops_points_the_producer_disowns():
 
     # and the set must actually narrow the ground mask, not merely exist
     body = src.split("def main(", 1)[-1]
-    assert "DISOWNED_FLAGS" in body, (
+    assert _in_code("DISOWNED_FLAGS", body, header="def f("), (
         "main() no longer consults DISOWNED_FLAGS -- the set is defined and unused, which is worse than "
         "absent, because the comment beside it claims it works")
     assert re.search(r"g\s*=\s*g\s*&\s*~\s*bad", body), (
         "the flags are read but the ground mask is not narrowed by them")
-    assert "cls==2" in body.replace(" ", ""), "the ground-class selection itself is gone"
+    assert _in_code("cls==2", body, header="def f("), "the ground-class selection itself is gone"
     assert re.search(r"NOT filtering|not filtering", src), (
         "the note explaining why `overlap` is kept is gone; without it the flag reads like an oversight")
 
@@ -12127,7 +12188,7 @@ def test_the_cross_flight_check_cannot_agree_by_failing_to_read_a_date():
         "REFUSED is now byte-identical to the 'nothing to compare' return, which is how a refusal came "
         "to read as a pass")
     src_main = open(os.path.join(ROOT, "tools", "cross_flight_check.py"), encoding="utf-8").read()
-    assert "return 1 if refused else 0" in src_main, (
+    assert _in_code("return 1 if refused else 0", src_main), (
         "main() no longer exits non-zero when a course was refused. A run that could not examine a "
         "course must not report success -- this tool's output is the evidence in "
         "legal/09_GREEN_SURFACE_REPEATABILITY.md.")
@@ -12136,7 +12197,7 @@ def test_the_cross_flight_check_cannot_agree_by_failing_to_read_a_date():
     with open(os.path.join(ROOT, "tools", "cross_flight_check.py"), encoding="utf-8") as f:
         src = f.read()
     after = src.split("def check(", 1)[-1]
-    assert "dates_recoverable(" in after, (
+    assert _in_code("dates_recoverable(", after, header="def f("), (
         "cross_flight_check.check() no longer consults dates_recoverable, so the refusal is defined and "
         "unused -- worse than absent, because the docstring claims the run cannot agree by failing")
 
