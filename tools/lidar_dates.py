@@ -410,6 +410,41 @@ def tile_dates(path, rings=()):
         return first, last, nnear, crs_ok, whole_first, whole_last
 
 
+def write_lidar_flown(path, record):
+    """Add `record` to course.json at `path` as "lidar_flown", preserving every other field.
+
+    Extracted from main() so a TEST can drive it, the same move fetch_dem.is_flat_fill and
+    fetch_dem_hd.keeps_existing_surface record: this is the only code in the project that rewrites
+    course.json, and inline inside main() it could only be exercised by a full LiDAR run.
+
+    ATOMIC, because course.json is HAND-AUTHORED -- the scorecard transcription, the bbox, the tee
+    table -- and nothing can regenerate it. Writing in place means a crash or a full disk truncates it,
+    in a directory the project documents as unrecoverable. trees_lidar.json is written in place
+    deliberately: it is derived from the LAZ, a re-run rebuilds it, and a truncated one fails loudly at
+    render_hole.py's json.load rather than reading as empty. (dem_hd used to be in this sentence too;
+    its .npy/.json pair now commits through surface_io.commit_surface, because a torn pair there is a
+    printed number, not a stop.)
+
+    ADDITIVE, never a rewrite from a template: the existing file is loaded and one key is set, so no
+    field this tool does not know about can be dropped or defaulted. A run that recovered no dates
+    returns before reaching here rather than recording an empty one.
+
+    BOTH ENDS NAME utf-8, the read as much as the write -- config.py's note on the same file, with the
+    same receipt: 11 of the 12 course.json in this corpus carry an em-dash, and they survive only
+    because they happen to be written as \\u2014 escapes. A hand-typed one read back through a
+    non-utf-8 locale comes back mojibake, and this function would then COMMIT that mojibake over the
+    transcription, atomically and permanently. json.dump's ensure_ascii makes the write side ASCII
+    whatever the locale, so the read was the whole exposure and the one side that had no encoding.
+    """
+    with open(path, encoding="utf-8") as f:
+        j = json.load(f)
+    j["lidar_flown"] = record
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(j, f, indent=2)
+    os.replace(tmp, path)
+
+
 def main():
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import config
@@ -508,20 +543,8 @@ def main():
 
     if "--write" in sys.argv:
         p = os.path.join(config.COURSE_DIR, "course.json")
-        j = json.load(open(p))
-        j["lidar_flown"] = {"first": d1.isoformat(), "last": d2.isoformat(),
-                            "label": label, "tz": tzname, "basis": basis, "tiles": per_tile}
-        # Atomic: course.json is HAND-AUTHORED -- the scorecard transcription, the bbox, the tee
-        # table -- and nothing can regenerate it. Writing in place means a crash or a full disk
-        # truncates it, in a directory the project documents as unrecoverable. trees_lidar.json is
-        # written in place deliberately: it is derived from the LAZ, a re-run rebuilds it, and a
-        # truncated one fails loudly at render_hole.py's json.load rather than reading as empty.
-        # (dem_hd used to be in this sentence too; its .npy/.json pair now commits through
-        # surface_io.commit_surface, because a torn pair there is a printed number, not a stop.)
-        tmp = p + ".part"
-        with open(tmp, "w") as f:
-            json.dump(j, f, indent=2)
-        os.replace(tmp, p)
+        write_lidar_flown(p, {"first": d1.isoformat(), "last": d2.isoformat(),
+                              "label": label, "tz": tzname, "basis": basis, "tiles": per_tile})
         print(f"  wrote lidar_flown into {p}")
     return 0
 

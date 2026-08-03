@@ -7102,13 +7102,95 @@ def test_one_junk_gps_time_cannot_drag_a_whole_survey_back_eight_years():
         assert ok and ok[0].date() == inst.date(), f"clean tile should date to {inst.date()}, got {ok}"
 
 
-def test_course_json_is_written_atomically():
+def test_course_json_is_written_atomically(tmp_path):
     """course.json is HAND-AUTHORED -- the scorecard transcription, the bbox, the tee table -- and
     nothing regenerates it. tools/lidar_dates.py --write rewrote it in place, so a crash or a full
-    disk truncates it, in a directory the project documents as unrecoverable."""
+    disk truncates it, in a directory the project documents as unrecoverable.
+
+    The two source assertions are kept and retargeted at the current spelling; the write moved into
+    write_lidar_flown() so the rest of this could stop being a grep. What follows DRIVES that function
+    against a scratch course.json and measures the file, which is the only way to see the third
+    property -- that the read side names its encoding.
+
+    Three things a rewrite of the one irreplaceable file has to get right:
+      * an exception mid-write leaves the file exactly as it was;
+      * every field the tool does not know about survives, byte for byte;
+      * a non-ASCII character in a hand-typed field survives the ROUND TRIP. config.py names this on
+        the read side of the same file, with the receipt -- 11 of 12 course.json here carry an
+        em-dash, and they survive only because they happen to be written as \\u2014 escapes. The write
+        side is ASCII whatever the locale (json.dump's ensure_ascii), so the READ was the whole
+        exposure, and it was the one side with no encoding named: a hand-typed em-dash read back
+        through a non-utf-8 locale comes back mojibake and this function then commits the mojibake
+        over the transcription, atomically and for good. Simulated by forcing exactly that locale for
+        opens that do not say otherwise, which is what a cp1252 machine is.
+    """
+    import builtins
+
     src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
     assert 'json.dump(j, open(p, "w")' not in src, "course.json must not be written in place"
-    assert "os.replace(tmp, p)" in src, "the write must be staged and renamed"
+    assert "os.replace(tmp, path)" in src, "the write must be staged and renamed"
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import lidar_dates as ld
+
+    hand_typed = "Merion Golf Club — East Course"
+    original = {"slug": "x", "name": hand_typed, "hole_cols": ["par", "mens_hcp", "Card"],
+                "holes": {"1": [4, 1, 380]}, "a_field_this_tool_never_heard_of": [1, {"k": "v"}]}
+
+    def fresh(where):
+        p = os.path.join(str(where), "course.json")
+        # written as RAW utf-8, not \\u escapes: the escaped form is ASCII on disk and cannot show the
+        # defect, which is precisely why the corpus has never tripped it
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(original, f, indent=2, ensure_ascii=False)
+        return p, open(p, "rb").read()
+
+    # (1) an exception while the record is being encoded must not touch the file
+    d1 = tmp_path / "fail"; d1.mkdir()
+    p, before = fresh(d1)
+
+    class Unencodable:
+        pass
+
+    with pytest.raises(TypeError):
+        ld.write_lidar_flown(p, {"label": "2021-06-21", "tiles": Unencodable()})
+    assert open(p, "rb").read() == before, (
+        "a failed write destroyed course.json -- the hand-transcribed scorecard, with no copy in "
+        "history, on a remote, or anywhere else")
+    assert not os.path.exists(p + ".part") or open(p, "rb").read() == before, \
+        "the staged file must never be what course.json becomes"
+
+    # (2) a successful write adds one key and preserves the rest, INCLUDING the em-dash
+    real_open = builtins.open
+
+    def locale_cp1252(file, mode="r", *a, **k):
+        """`open` on a machine whose locale encoding is cp1252 -- i.e. unqualified text opens use it."""
+        if "b" not in mode and "encoding" not in k and len(a) < 2:
+            k["encoding"] = "cp1252"
+        return real_open(file, mode, *a, **k)
+
+    d2 = tmp_path / "ok"; d2.mkdir()
+    p, before = fresh(d2)
+    builtins.open = locale_cp1252
+    try:
+        ld.write_lidar_flown(p, {"label": "2021-06-21", "basis": "whole tiles"})
+    finally:
+        builtins.open = real_open
+    with open(p, encoding="utf-8") as f:
+        after = json.load(f)
+    assert after["name"] == hand_typed, (
+        f"the hand-typed course name came back through the wrong codec and was committed over the "
+        f"transcription: {after['name']!r} instead of {hand_typed!r}. Every course.json read in this "
+        f"project names encoding='utf-8' (config.py explains why on this exact field); the one path "
+        f"that REWRITES the file did not.")
+    assert after["a_field_this_tool_never_heard_of"] == original["a_field_this_tool_never_heard_of"], \
+        "a field this tool does not know about was dropped or defaulted"
+    assert after["holes"] == original["holes"] and after["hole_cols"] == original["hole_cols"], \
+        "the scorecard itself must round-trip untouched"
+    assert after["lidar_flown"] == {"label": "2021-06-21", "basis": "whole tiles"}, \
+        "the one key this tool owns must actually be written"
+    assert set(after) - set(original) == {"lidar_flown"}, \
+        f"the write invented keys: {sorted(set(after) - set(original))}"
 
 
 @needs_corpus
