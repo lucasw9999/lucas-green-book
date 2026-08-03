@@ -3204,11 +3204,15 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     the shipped books with the engine's own straightness rule (arc/chord <= 1.02, render_hole's
     PAR3_STRAIGHT_MAX and WANDER_MAX): of the 813 printed pairs on STRAIGHT holes, 639 -- 79% -- do
     not add up, by a median 3 yd, 209 of them by 5 or more and 60 by 10 or more. The worst is 28 yd on
-    philadelphia 12, whose arc/chord is 1.0003: dead straight, 300 + 252 = 552 against a 580 card. It
-    is not a dogleg phenomenon at all, and the legend now names the cause instead: two different
-    measures. (The mismatch is not even one-signed -- 130 of 1047 rows sum HIGH, 724 low, 193 exactly.
-    17 of the 130 high rows sit on holes bent past 1.02, including philadelphia 17 above, so "straight
-    holes overshoot" is false too.)
+    philadelphia 12, whose arc/chord is 0.9997 -- the drawn line is a HAIR SHORTER than the tee-green
+    chord it spans, which is as straight as a traced centreline gets: 300 + 252 = 552 against a 580
+    card. (That ratio read 1.0003 here, in the caveat's failure message and in the commit that added
+    both. 1.0003 is chord/arc, 551.181/551 -- the reciprocal, and the direction that would make this
+    hole a faint dogleg, i.e. the very story the sentence exists to refute. It was the one figure in
+    this docstring nothing asserted.) It is not a dogleg phenomenon at all, and the legend now names
+    the cause instead: two different measures. (The mismatch is not even one-signed -- 130 of 1047 rows
+    sum HIGH, 724 low, 193 exactly. 17 of the 130 high rows sit on holes bent past 1.02, including
+    philadelphia 17 above, so "straight holes overshoot" is false too.)
 
     THE WORKED EXAMPLE READ "300 + 102 = 402" over a card that prints 118, and the count read 196
     over a corpus of 198. Nothing could see either: the assertions below bound the sum from ABOVE and
@@ -3246,7 +3250,28 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     # The evidence for what the printed legend now SAYS. It blamed the dogleg; these count how the
     # pairs behave on holes the engine itself calls straight, so the sentence on the card cannot drift
     # away from the data underneath it.
-    straight_pairs, straight_bad, straight_worst, bent_high = 0, 0, (0, None), 0
+    straight_pairs, straight_bad, straight_worst, bent_high = 0, 0, (0, None, None), 0
+    # Every figure the prose states about the SHAPE of the mismatch, kept beside the ones about its
+    # extent. The three sentences below used to be graded by regexes that CAPTURED these and asserted
+    # only the first two or three groups of each, so the median, the two tail counts, the high/low/exact
+    # split and the worst row's own arc/chord ratio were all free to be anything -- and one of them was
+    # the reciprocal of the truth. Proven by mutation before this was written: replacing them with
+    # 9 / 999 / 888 / 777 / 111 / 222 / 9.9999 still gave 1 passed.
+    straight_offs, rows_pairs, rows_high, rows_low, rows_exact = [], 0, 0, 0, 0
+    # The derived bound's own worked figures: {(course prefix, hole): (g, allowance)} and the tightest
+    # slack any pair realises against it. Both are stated in the comment beside the bound, and one of
+    # them was wrong there.
+    allowance, tightest = {}, None
+    # Pulled from the prose BEFORE the sweep, so the messages inside it can quote the docstring's own
+    # numbers instead of carrying a second hard-coded copy that nothing checks. Every group of all
+    # three is asserted against the measurement after the loop.
+    said_str = re.search(r"of the (\d+) printed pairs on STRAIGHT holes, (\d+) -- (\d+)% -- do\s+"
+                         r"not add up, by a median (\d+) yd, (\d+) of them by 5 or more and (\d+) "
+                         r"by 10 or more", doc)
+    said_worst = re.search(r"worst is (\d+) yd on ([a-z][a-z-]*) (\d+), whose arc/chord is "
+                           r"([\d.]+)", doc)
+    said_split = re.search(r"(\d+) of (\d+) rows sum HIGH, (\d+) low, (\d+) exactly", doc)
+    said_bent = re.search(r"(\d+) of the (\d+) high rows sit on holes bent past 1\.02", doc)
     # BOTH editions. Globbing greenbook*.html rather than greenbook.html: the enlarged edition prints
     # the same two numbers from the same engine call and carries its own copy of the caveat sentence,
     # and neither was graded here.
@@ -3264,8 +3289,13 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                          " ".join(html.split()) or html), (
             f"{os.path.basename(bf)} ({ref}): the guide card no longer explains why the two gutter "
             f"numbers do not sum -- a reader who adds them finds up to 54 yd of unexplained "
-            f"discrepancy. It must not blame the DOGLEG either: 639 of the 813 pairs on holes this "
-            f"engine calls straight do not add up, worst 28 yd on a hole of arc/chord 1.0003.")
+            f"discrepancy. It must not blame the DOGLEG either: "
+            + (f"{said_str.group(2)} of the {said_str.group(1)}" if said_str else "most of the")
+            + f" pairs on holes this engine calls straight do not add up, worst "
+            + (f"{said_worst.group(1)} yd on a hole of arc/chord {said_worst.group(4)}"
+               if said_worst else "28 yd on a hole this engine calls straight")
+            + ". Those figures come from the docstring above, which is checked against the shipped "
+              "cards at the end of this test rather than restated here.")
         for blk in re.split(r'<div class="panel ', html)[1:]:
             if not re.match(r'hole[\s"]', blk):
                 # `hole ycard` too. poppy-ridge's yardage edition uses class="panel hole ycard", so
@@ -3314,13 +3344,22 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                                     f"the fixed radii -- it is no longer a straight-line distance")
                 if "R" in v:
                     off = v["L"] + v["R"] - card
+                    rows_pairs += 1
+                    if off > 0:
+                        rows_high += 1
+                    elif off < 0:
+                        rows_low += 1
+                    else:
+                        rows_exact += 1
                     if straight:
                         straight_pairs += 1
                         straight_bad += bool(off)
+                        if off:
+                            straight_offs.append(abs(off))
                         if abs(off) > abs(straight_worst[0]):
                             straight_worst = (
                                 off, f"{ref} hole {hole_no.group(1) if hole_no else '?'} "
-                                     f"(arc/chord {arc/chord:.4f})")
+                                     f"(arc/chord {arc/chord:.4f})", arc / chord)
                     elif off > 0:
                         bent_high += 1
                 # The ceiling is DERIVED, not fitted. Finding max(card, arc) took two wrong
@@ -3353,11 +3392,22 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                 # with +1 for the two roundings (round(ft_exact) and round(arc_yd), <=0.5 each).
                 # Measured over all 1047 pairs in both editions it holds everywhere, tightest slack
                 # 1.46 yd (valley-hi 2, where g is only 0.46). g is a median 2.17 yd, mean 2.93, max
-                # 12.18; at callippe 1 it is 6.62, so the derived allowance there is +7.62 against a
+                # 12.18; at callippe 1 it is 6.62, so the derived allowance there is +7.76 against a
                 # realised +4. The tripwire below still pins that realised maximum exactly -- that is
                 # the part which actually discriminates, and it is now separate from the bound.
+                #
+                # THE NAMED CASE AND THE TIGHTEST SLACK ARE BOTH RE-DERIVED BELOW. That +7.76 read
+                # +7.62 -- g + 1, dropping the max(1, C/A) factor this paragraph exists to derive --
+                # while the 440.76 the same allowance implies at callippe 1 was right, so the prose
+                # contradicted its own arithmetic in a comment nothing graded.
                 limit = max(card, arc)
                 derived = limit + green_gap * max(1.0, card / (arc or card or 1)) + 1
+                if "R" in v:
+                    allowance[(ref, int(hole_no.group(1)) if hole_no else 0)] = \
+                        (green_gap, derived - limit)
+                    if tightest is None or derived - (v["L"] + v["R"]) < tightest[0]:
+                        tightest = (derived - (v["L"] + v["R"]), ref,
+                                    hole_no.group(1) if hole_no else "?", green_gap)
                 if "R" in v and v["L"] + v["R"] > derived:
                     problems.append(f"{ref}: a row reads {v['L']} + {v['R']} = {v['L']+v['R']} "
                                     f"against a card of {card}, a drawn line of {arc} yd and a "
@@ -3404,6 +3454,35 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         + (f"+{worst_excess[0]} yd ({worst_excess[1]} hole {worst_excess[2]})" if worst_excess
            else "nothing -- no row carried both numbers")
         + ". A bound and the figure quoted beside it are two statements of one measurement.")
+    # The DERIVED bound's two worked figures, which were prose beside the arithmetic and nothing else.
+    # The allowance at the named hole read g + 1, dropping the max(1, C/A) factor the paragraph spends
+    # eight lines deriving -- and the 440.76 the same sentence implies for that row was right, so the
+    # comment disagreed with itself.
+    said_g = re.search(r"at ([a-z][a-z-]*) (\d+) it is ([\d.]+), so the derived allowance there is "
+                       r"\+([\d.]+)", doc)
+    assert said_g, "the derived bound no longer works an example, which is where its factor went wrong"
+    keys = [k for k in allowance
+            if k[0].startswith(said_g.group(1)) and k[1] == int(said_g.group(2))]
+    assert len(keys) == 1, (
+        f"the derived bound works its example on {said_g.group(1)} {said_g.group(2)}, which matches "
+        f"{keys} of the cards that print a pair")
+    got_g, got_allow = allowance[keys[0]]
+    assert abs(got_g - float(said_g.group(3))) < 0.005 and \
+        abs(got_allow - float(said_g.group(4))) < 0.005, (
+        f"the bound says g at {keys[0]} is {said_g.group(3)} and the allowance +{said_g.group(4)}; measured "
+        f"they are {got_g:.2f} and +{got_allow:.4f}. g + 1 is not the allowance -- the max(1, C/A) "
+        f"factor is the whole point of the derivation above.")
+    said_tight = re.search(r"tightest slack\s+([\d.]+) yd \(([a-z][a-z-]*) (\d+), where g is only "
+                           r"([\d.]+)\)", doc)
+    assert said_tight, "the bound no longer says how little room the tightest real pair has"
+    assert tightest is not None and abs(tightest[0] - float(said_tight.group(1))) < 0.005 and \
+        tightest[1].startswith(said_tight.group(2)) and tightest[2] == said_tight.group(3) and \
+        abs(tightest[3] - float(said_tight.group(4))) < 0.005, (
+        f"the bound names {said_tight.group(2)} {said_tight.group(3)} with {said_tight.group(1)} yd of "
+        f"slack and g {said_tight.group(4)}; measured the tightest is "
+        + (f"{tightest[1]} hole {tightest[2]} at {tightest[0]:.2f} yd, g {tightest[3]:.2f}"
+           if tightest else "nothing at all")
+        + ". A bound with no stated headroom is a bound nobody can tell is close.")
 
     # (c) the CAUSE the legend prints. The card says the two numbers are "different measures, so they
     # do not add up"; it used to say "on a dogleg", which tells a reader on a straight hole that theirs
@@ -3425,12 +3504,23 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     assert int(said_str.group(3)) == round(100.0 * straight_bad / max(straight_pairs, 1)), (
         f"the docstring says {said_str.group(3)}%; measured it is "
         f"{100.0 * straight_bad / max(straight_pairs, 1):.0f}%")
+    # THE SHAPE OF THE MISMATCH, not just its count -- the three figures the same sentence states and
+    # nothing checked. A median of 3 yd is the reason the legend can be one sentence rather than a
+    # warning; if it grew, the card's wording would be understating a real discrepancy.
+    import statistics
+    med = statistics.median(straight_offs) if straight_offs else 0
+    tail5 = sum(1 for o in straight_offs if o >= 5)
+    tail10 = sum(1 for o in straight_offs if o >= 10)
+    assert int(said_str.group(4)) == round(med), (
+        f"the docstring says the straight-hole mismatch runs a median {said_str.group(4)} yd; measured "
+        f"over the {len(straight_offs)} non-additive pairs it is {med:g}")
+    assert (int(said_str.group(5)), int(said_str.group(6))) == (tail5, tail10), (
+        f"the docstring says {said_str.group(5)} of them miss by 5 or more and {said_str.group(6)} by "
+        f"10 or more; measured it is {tail5} and {tail10}")
     assert straight_bad > straight_pairs // 2, (
         f"only {straight_bad} of {straight_pairs} pairs on straight holes fail to add up. The legend on "
         f"every card says the two numbers are different measures that do not add up; if straight holes "
         f"now mostly DO add up, that sentence is the wrong explanation and needs re-reading.")
-    said_worst = re.search(r"worst is (\d+) yd on ([a-z][a-z-]*) (\d+), whose arc/chord is "
-                           r"([\d.]+)", doc)
     assert said_worst, "the docstring no longer names the worst straight-hole row"
     assert int(said_worst.group(1)) == abs(straight_worst[0]) and \
         said_worst.group(2) in (straight_worst[1] or "") and \
@@ -3438,12 +3528,31 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         f"the docstring names {said_worst.group(2)} {said_worst.group(3)} off by "
         f"{said_worst.group(1)} yd as the worst straight-hole row; measured it is "
         f"{straight_worst[1]} off by {straight_worst[0]:+d}")
+    # THE RATIO ITSELF, which was captured and not asserted -- and was the RECIPROCAL of the truth. The
+    # docstring, the caveat assertion's message and the commit body all said 1.0003, which is
+    # chord/arc (551.181/551); this hole's arc/chord is 0.9997. Inverted, it reads as a hole a hair
+    # LONGER than its chord, which is the direction that would make it a faint dogleg -- exactly the
+    # story the sentence exists to refute. The one figure in this docstring that was wrong was the one
+    # nothing checked.
+    assert straight_worst[2] is not None and \
+        abs(float(said_worst.group(4)) - straight_worst[2]) < 0.00005, (
+        f"the docstring says the worst straight row's arc/chord is {said_worst.group(4)}; measured it "
+        f"is {straight_worst[2]:.4f}. A ratio the wrong way up turns the evidence that the hole is "
+        f"DEAD STRAIGHT into evidence that it bends.")
     # ...and the refuted half of the story, kept measured so it cannot come back: rows that sum HIGH
     # are not confined to straight holes either.
-    said_bent = re.search(r"(\d+) of the (\d+) high rows sit on holes bent past 1\.02", doc)
+    assert said_split, "the docstring no longer states the SIGN split, which is what refutes 'straight holes overshoot'"
+    assert (int(said_split.group(1)), int(said_split.group(2)), int(said_split.group(3)),
+            int(said_split.group(4))) == (rows_high, rows_pairs, rows_low, rows_exact), (
+        f"the docstring says {said_split.group(1)} of {said_split.group(2)} rows sum high, "
+        f"{said_split.group(3)} low and {said_split.group(4)} exactly; measured it is {rows_high} of "
+        f"{rows_pairs}, {rows_low} and {rows_exact}")
     assert said_bent and int(said_bent.group(1)) == bent_high, (
         f"the docstring says {said_bent.group(1) if said_bent else 'nothing'} high rows sit on holes "
         f"bent past arc/chord 1.02; measured now it is {bent_high}")
+    assert int(said_bent.group(2)) == rows_high, (
+        f"the same sentence calls the high rows {said_bent.group(2)} while the split above them counts "
+        f"{rows_high} -- one measurement, stated twice, so both must move together")
 
 
 @needs_corpus
