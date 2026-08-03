@@ -23,6 +23,11 @@ import surface_io
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
+# Sweep stale staging files first, the same way fetch_lidar.py sweeps laz/. A run killed outright
+# (SIGKILL, laptop asleep, power) leaves a .holeNN.*.part that commit_surface's `finally` never got to
+# run for, and it then sits in dem_hd/ forever -- which matters because that file is the only on-disk
+# trace of the surface pair's rename window, and evidence a dead run also leaves is not evidence.
+surface_io.sweep_staged(OUT)
 RES = 0.4                                   # target metres/pixel
 # replace a working 1 m fallback with a blank green. Parsed the way fetch_trees.py parses its two
 # escape hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and

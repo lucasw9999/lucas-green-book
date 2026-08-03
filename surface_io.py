@@ -12,12 +12,45 @@ green_center are what place every pixel. Both producers (fetch_dem_hd.py at 0.4 
 cloud, fetch_dem.py at 1 m from the seamless DEM) write into the same directory, so the rule lives
 here once rather than in each of them.
 """
+import glob
 import hashlib
 import json, os
 
 import numpy as np
 
 DIGEST_KEY = "array_sha256"
+_STAGED_GLOB = ".hole*.part"
+
+
+def staged_names(base):
+    """The two staging paths commit_surface writes for `base`. One spelling, used by the sweep too."""
+    d, n = os.path.dirname(base), os.path.basename(base)
+    return os.path.join(d, f".{n}.npy.part"), os.path.join(d, f".{n}.json.part")
+
+
+def sweep_staged(out_dir):
+    """Remove stale staging files in a dem_hd directory. Returns what it removed.
+
+    The `finally` in commit_surface handles an exception; it cannot handle the process not coming back
+    -- a SIGKILL, a laptop asleep mid-build, power. Then a `.holeNN.*.part` sits there forever.
+
+    Never valid data, by the same argument fetch_lidar.py's laz/ sweep makes: a staged file is only
+    ever renamed into place after its write returns, so anything still wearing the staged name is by
+    construction incomplete. And it must be swept rather than tolerated, because a leftover
+    `.holeNN.json.part` is the ONLY on-disk trace of the two-rename window in commit_surface -- as
+    evidence it is worth nothing if a finished run leaves one too.
+
+    Matched on the dot-prefixed staged pattern alone, so it can never reach a real `holeNN.npy` or
+    `holeNN.json`.
+    """
+    gone = []
+    for stale in sorted(glob.glob(os.path.join(out_dir, _STAGED_GLOB))):
+        os.remove(stale)
+        gone.append(stale)
+    if gone:
+        print(f"  removed {len(gone)} stale staged surface file(s) from a killed run: "
+              f"{', '.join(os.path.basename(g) for g in gone)}")
+    return gone
 
 
 def array_digest(arr):
@@ -87,17 +120,26 @@ def commit_surface(base, arr, meta):
 
     Surfaces built before the digest existed carry no DIGEST_KEY and are read unverified -- there is
     nothing to compare them against. They gain the check the next time they are rebuilt.
+
+    Both staged files are removed if anything goes wrong before the renames. A .part left behind is not
+    just untidy: dem_hd/.holeNN.json.part is the one on-disk trace of the rename window above, so it is
+    evidence, and evidence a failed run also leaves is worth nothing. sweep_staged covers the case no
+    `finally` can -- the process not coming back at all.
     """
-    d, n = os.path.dirname(base), os.path.basename(base)
-    t_npy = os.path.join(d, f".{n}.npy.part")
-    t_json = os.path.join(d, f".{n}.json.part")
-    # np.save is given an open handle, not a path: handed a path it APPENDS ".npy" unless the name
-    # already ends in it, which would turn the staged name into ".holeNN.npy.part.npy".
-    with open(t_npy, "wb") as f:
-        np.save(f, arr)
-    # A copy, not a mutation: a producer that reused its meta dict after committing would otherwise
-    # carry one hole's digest onto the next.
-    with open(t_json, "w", encoding="utf-8") as f:
-        json.dump(dict(meta, **{DIGEST_KEY: array_digest(arr)}), f)
-    os.replace(t_npy, base + ".npy")
-    os.replace(t_json, base + ".json")
+    t_npy, t_json = staged_names(base)
+    try:
+        # np.save is given an open handle, not a path: handed a path it APPENDS ".npy" unless the name
+        # already ends in it, which would turn the staged name into ".holeNN.npy.part.npy".
+        with open(t_npy, "wb") as f:
+            np.save(f, arr)
+        # A copy, not a mutation: a producer that reused its meta dict after committing would otherwise
+        # carry one hole's digest onto the next.
+        with open(t_json, "w", encoding="utf-8") as f:
+            json.dump(dict(meta, **{DIGEST_KEY: array_digest(arr)}), f)
+        os.replace(t_npy, base + ".npy")
+        os.replace(t_json, base + ".json")
+    finally:
+        for t in (t_npy, t_json):
+            # after a successful pair of renames neither exists, so this is a no-op on the happy path
+            if os.path.exists(t):
+                os.remove(t)

@@ -7714,6 +7714,91 @@ def test_course_json_is_written_atomically(tmp_path):
     assert set(after) - set(original) == {"lidar_flown"}, \
         f"the write invented keys: {sorted(set(after) - set(original))}"
 
+    # (3) and the staging file does not outlive the failure. Measured here rather than tolerated: the
+    # assertion above says the file is intact "or" the .part is gone, which a leftover satisfies.
+    assert not os.path.exists(os.path.join(str(d1), "course.json.part")), (
+        "a failed write left course.json.part beside the scorecard. Staging litter under courses/ is "
+        "the one directory nothing sweeps, and a stray .part next to the file it was staging for reads "
+        "as an interrupted rewrite of the hand-transcribed card.")
+
+
+def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
+    """Both atomic writes in this project stage a `.part` and rename it. Neither swept up after itself.
+
+    Staging is the right shape -- os.replace is atomic, so an interrupted write cannot be mistaken for
+    a finished one -- but the failure path was never finished. An exception between "open the .part"
+    and "rename it" left the .part on disk forever:
+
+      * tools/lidar_dates.py write_lidar_flown -> courses/<slug>/course.json.part
+      * surface_io.commit_surface -> courses/<slug>/dem_hd/.holeNN.npy.part and .holeNN.json.part
+
+    Nothing removes either. fetch_lidar.py:sweep_stale_parts and fetch_lidar_alameda both do exactly
+    this for laz/, with the argument that applies unchanged here -- a .part is never valid data,
+    because both are only renamed into place after the write returns. There is a real example on disk
+    from a killed download, dated the day before this was written.
+
+    Why it matters more than tidiness, and it is not that the disk fills up: a stray course.json.part
+    sitting beside course.json is indistinguishable from an interrupted rewrite of the ONE
+    hand-transcribed file in the project, so the next person to look has to decide whether the
+    scorecard is trustworthy. And dem_hd/.holeNN.json.part is the only on-disk trace of the surface
+    pair's two-rename window, which makes it evidence -- worth nothing if a successful run leaves one
+    too.
+
+    Both directions: the litter is gone after a FAILED write, and the pair still lands after a
+    successful one.
+    """
+    import numpy as np
+
+    import surface_io
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    ld = _import_first_party("lidar_dates")
+
+    class Unencodable:
+        pass
+
+    # (1) course.json's staged file
+    cj = tmp_path / "course.json"
+    cj.write_text(json.dumps({"slug": "x", "holes": {"1": [4, 1, 380]}}), encoding="utf-8")
+    with pytest.raises(TypeError):
+        ld.write_lidar_flown(str(cj), {"label": "2021-06-21", "tiles": Unencodable()})
+    assert not os.path.exists(str(cj) + ".part"), \
+        "a failed course.json write left course.json.part beside the hand-transcribed scorecard"
+
+    # (2) the surface pair's staged files
+    dem = tmp_path / "dem_hd"
+    dem.mkdir()
+    base = str(dem / "hole03")
+    arr = np.zeros((8, 8))
+    with pytest.raises(TypeError):
+        surface_io.commit_surface(base, arr, {"hole": 3, "bbox": Unencodable()})
+    left = sorted(os.path.basename(p) for p in glob.glob(os.path.join(str(dem), "*")))
+    assert left == [], (
+        f"an interrupted surface commit left staging litter in dem_hd: {left}. The .npy is written "
+        f"first, so a meta that fails to encode leaves BOTH a stale array and the marker that is "
+        f"supposed to mean 'a write was interrupted here'.")
+
+    # ...and a successful commit still leaves exactly the pair, with nothing staged
+    surface_io.commit_surface(base, arr, {"hole": 3, "bbox": [0, 0, 1, 1], "W": 8, "H": 8})
+    assert sorted(os.path.basename(p) for p in glob.glob(os.path.join(str(dem), "*"))) == \
+        ["hole03.json", "hole03.npy"], "a successful commit must leave the pair and nothing else"
+
+    # (3) and the sweep that catches what no `finally` can -- a SIGKILL, a laptop asleep, power loss.
+    # Same house pattern and same argument as fetch_lidar.py's laz/ sweep.
+    for name in (".hole03.npy.part", ".hole03.json.part", ".hole07.json.part"):
+        (dem / name).write_text("x", encoding="utf-8")
+    swept = surface_io.sweep_staged(str(dem))
+    assert sorted(os.path.basename(p) for p in swept) == \
+        [".hole03.json.part", ".hole03.npy.part", ".hole07.json.part"], \
+        f"the sweep did not remove every staged file: {swept}"
+    assert sorted(os.path.basename(p) for p in glob.glob(os.path.join(str(dem), "*"))) == \
+        ["hole03.json", "hole03.npy"], "the sweep took a real surface with it"
+    # and it must be called where a build starts, or it is another guard nobody runs
+    for mod in ("fetch_dem.py", "fetch_dem_hd.py"):
+        with open(os.path.join(ROOT, mod), encoding="utf-8") as fh:
+            assert "surface_io.sweep_staged(" in fh.read(), (
+                f"{mod} never sweeps stale staging files, so a killed run's litter survives every "
+                f"later build")
+
 
 @needs_corpus
 def test_each_card_footer_matches_its_own_map():

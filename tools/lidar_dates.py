@@ -435,14 +435,23 @@ def write_lidar_flown(path, record):
     non-utf-8 locale comes back mojibake, and this function would then COMMIT that mojibake over the
     transcription, atomically and permanently. json.dump's ensure_ascii makes the write side ASCII
     whatever the locale, so the read was the whole exposure and the one side that had no encoding.
+
+    AND IT SWEEPS UP. A staged write that fails leaves course.json.part, and nothing removed it -- the
+    laz/ fetchers both sweep their own .part files, this path did not. A stray .part sitting beside the
+    one hand-transcribed file in the project is indistinguishable from an interrupted rewrite OF that
+    file, so the next person to look has to decide whether the scorecard can be trusted.
     """
     with open(path, encoding="utf-8") as f:
         j = json.load(f)
     j["lidar_flown"] = record
     tmp = path + ".part"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(j, f, indent=2)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(j, f, indent=2)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
 
 
 def main():
