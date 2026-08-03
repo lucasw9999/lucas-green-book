@@ -5345,6 +5345,119 @@ def test_render_refuses_a_green_whose_array_is_not_the_one_its_meta_describes(ga
         f"the stop must name both shapes so the reader knows which hole to rebuild: {msg!r}"
 
 
+def _commit_synth_green(cdir, hole, zfn, n=60, span_deg=0.0004):
+    """The same synthetic surface _synth_green writes, but committed THROUGH surface_io.
+
+    Separate from _synth_green because that helper writes the two files independently -- which is the
+    very thing surface_io exists to stop -- and a test about tearing must start from a pair the
+    producer actually produced.
+    """
+    import numpy as np
+
+    import surface_io
+    os.makedirs(os.path.join(cdir, "dem_hd"), exist_ok=True)
+    lat0, lon0, d = 40.0, -75.0, span_deg
+    meta = dict(hole=hole, approach_bearing=0.0,
+                bbox=[lon0 - d, lat0 - d, lon0 + d, lat0 + d], W=n, H=n,
+                green_id=1, green_center=[lat0, lon0],
+                polygon=[[lat0 - d * 0.6, lon0 - d * 0.6], [lat0 - d * 0.6, lon0 + d * 0.6],
+                         [lat0 + d * 0.6, lon0 + d * 0.6], [lat0 + d * 0.6, lon0 - d * 0.6],
+                         [lat0 - d * 0.6, lon0 - d * 0.6]],
+                source="test surface", insufficient=False)
+    arr = np.fromfunction(lambda r, c: zfn(r, c), (n, n), dtype=float)
+    surface_io.commit_surface(os.path.join(cdir, "dem_hd", f"hole{hole:02d}"), arr, meta)
+    # the meta AS COMMITTED, not the dict handed in: commit_surface adds the array digest, and a tear
+    # test that started from the pre-commit dict would be tearing a pair the producer never wrote
+    with open(os.path.join(cdir, "dem_hd", f"hole{hole:02d}.json"), encoding="utf-8") as fh:
+        return arr, json.load(fh)
+
+
+def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_printed_slope(gate_course):
+    """commit_surface stages both files and renames them, which leaves a two-syscall window -- and the
+    window's outcomes were NOT equally survivable. This closes the half that was silent.
+
+    Split the window by what the interrupted build was writing:
+      * a DIFFERENT shape from the run before -- caught on the read side, which refuses a pair whose
+        array does not match the recorded W,H, and names both shapes. Loud, recoverable.
+      * the SAME shape, a different bbox -- nothing looked at it. The green ring, the polygon and
+        green_center come from the meta while H,W come from the array, so the card rasterised the
+        green against an extent its pixels do not cover and PRINTED A SLOPE for it. No exception, no
+        warning, and permanently wrong on paper.
+
+    That second case is reachable, not theoretical, because the pixel dimensions TRUNCATE:
+    `W = max(48, int(wm/0.5))` in fetch_dem.py and `W = max(40, int(wm/RES))` in fetch_dem_hd.py. A
+    green whose OSM polygon is re-traced, or moves, or changes size by less than one pixel keeps the
+    same W and H while its bbox changes -- so a rebuild interrupted between the two renames lands
+    exactly here. Both truncations are re-derived below rather than asserted from memory.
+
+    Also worth stating because the commit that introduced the staging said otherwise: renaming the
+    .json LAST only helps a FIRST build, where a crash leaves an array with no meta and the reader
+    stops for a missing surface. On a REBUILD, where both names already hold last run's pair, either
+    order tears.
+
+    Fixed on the WRITE side, where the class can actually be stopped: commit_surface stamps a digest
+    of the array it is committing into the meta it commits beside it, and the reader refuses a pair
+    whose array does not hash to what its meta claims. Shape-blind, so it catches the silent case.
+    Asserted in three parts -- the matched pair still renders, the torn pair is refused, and the SAME
+    tear with the digest stripped is measurably wrong -- because a check that refused everything would
+    satisfy the middle assertion alone, and a test that only proved the refusal would not show what
+    was at stake.
+    """
+    import numpy as np
+
+    import render_green
+
+    # WHY the same-shape case is reachable: both producers truncate metres to whole pixels.
+    for mod, expr, res, a, b in (("fetch_dem.py", "W = max(48, int(wm/0.5))", 0.5, 30.0, 30.4),
+                                 ("fetch_dem_hd.py", "W=max(40,int(wm/RES))", 0.4, 30.0, 30.3)):
+        with open(os.path.join(ROOT, mod), encoding="utf-8") as fh:
+            assert expr in fh.read(), (
+                f"{mod} no longer derives W as {expr!r}. This test's reachability argument rests on "
+                f"that truncation; re-derive it before changing the assertion.")
+        assert int(a / res) == int(b / res), (
+            f"{mod}: {a} m and {b} m of green no longer land on the same pixel count, so re-check "
+            f"whether a moved bbox can still keep W,H")
+
+    base = os.path.join(gate_course, "dem_hd", "hole07")
+    tilt = lambda r, c: 100.0 + 0.03 * r
+
+    # Run 1, over a SMALL extent. Its array differs from run 2's only by a millimetre offset, which is
+    # what a re-sampled surface looks like and is enough for the two to hash differently.
+    _arr1, meta1 = _commit_synth_green(gate_course, 7, lambda r, c: tilt(r, c) + 0.001,
+                                       span_deg=0.0002)
+    # Run 2 rebuilds the same green over a LARGER extent at the SAME 60x60. This is the honest pair.
+    arr2, meta2 = _commit_synth_green(gate_course, 7, tilt, span_deg=0.0004)
+    assert (meta1["H"], meta1["W"]) == (meta2["H"], meta2["W"]) == arr2.shape, (
+        "the two runs must record the SAME shape, or the existing W,H check catches the tear and this "
+        "test proves nothing about the silent half of the window")
+    assert meta1["bbox"] != meta2["bbox"], "the two runs must differ in extent; that is the tear"
+
+    svg, s = render_green.render(7)
+    honest = s["tilt_pct"]
+    assert svg and honest > 0, "the matched pair this test tears must render first"
+
+    # THE TEAR, reconstructed exactly: os.replace put run 2's ARRAY in place and the process died
+    # before os.replace put run 2's META in place, so run 1's meta is still on disk beside it.
+    with open(base + ".json", "w", encoding="utf-8") as fh:
+        json.dump(meta1, fh)
+    with pytest.raises(SystemExit) as e:
+        render_green.render(7)
+    assert "do not match" in str(e.value) and "hole07" in str(e.value), (
+        f"a same-shape torn pair was accepted, or the stop does not name the hole to rebuild: "
+        f"{e.value!r}")
+
+    # ...and what that refusal is worth: the SAME tear, with only the digest removed, is accepted and
+    # prints a different slope for the same measured ground -- the state every surface built before
+    # the digest is still in.
+    with open(base + ".json", "w", encoding="utf-8") as fh:
+        json.dump({k: v for k, v in meta1.items() if k != "array_sha256"}, fh)
+    _svg2, s2 = render_green.render(7)
+    assert s2["tilt_pct"] > 1.8 * honest, (
+        f"halving the recorded extent under an unchanged array must roughly double the printed tilt "
+        f"({honest:.2f}% -> {s2['tilt_pct']:.2f}%); if it does not, this fixture no longer "
+        f"demonstrates the defect")
+
+
 def test_no_slope_label_claims_an_unputtable_number(gate_course):
     """merion h2 printed "40" beside "5" on a green card whose legend says "Numbers = slope %
     there". The cell was measured correctly -- it is a bank inside the OSM golf=green polygon,

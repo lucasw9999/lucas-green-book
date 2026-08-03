@@ -31,6 +31,7 @@ break -- that still needs an on-site survey and your own eyes.
 import json, math, os
 import numpy as np
 import config
+import surface_io
 
 DEM = os.path.join(config.COURSE_DIR, "dem_hd")
 R_LAT = 111320.0
@@ -474,7 +475,8 @@ def render(hole, tournament=False):
     # map and label it (see greens_possibly_outdated in generate.py) rather than dropping it.
     if meta.get("insufficient"):
         return _blank_green(meta, tournament)
-    arr = np.load(f"{DEM}/hole{hole:02d}.npy").astype('float64')
+    raw = np.load(f"{DEM}/hole{hole:02d}.npy")
+    arr = raw.astype('float64')
     # THE PAIR MUST AGREE. The array carries no georeference: H,W come from it, but the bbox, the ring
     # and the centre all come from the meta, so an array that is not the one this meta describes is
     # rasterised against ground its pixels do not cover -- and the card then prints a slope for it. That
@@ -483,11 +485,25 @@ def render(hole, tournament=False):
     # cross_flight_check.py re-derive metres-per-pixel from this same meta and inherit the error.
     # surface_io.commit_surface stages both files so an interrupted build cannot tear them apart; this
     # is the read-side half, which also covers a pair torn before that existed or restored by hand.
+    #
+    # TWO checks, because the shape one is shape-blind by construction. commit_surface's two os.replace
+    # calls are not one transaction, and the interesting tear is the one where the shapes MATCH and the
+    # bbox does not -- reachable because W and H truncate metres to whole pixels, so a green whose
+    # polygon moves or resizes by less than one pixel keeps them. That case passed the W,H test and
+    # printed a wrong slope in silence. The digest catches it: it is of the array's CONTENT, so it does
+    # not care that the shapes agree. Surfaces built before the digest existed carry no key and are read
+    # unverified -- there is nothing on disk to compare them with.
+    torn = None
     if (meta.get("H"), meta.get("W")) != arr.shape:
+        torn = (f"  array is {arr.shape[0]}x{arr.shape[1]} but dem_hd/hole{hole:02d}.json records "
+                f"{meta.get('H')}x{meta.get('W')}.")
+    elif meta.get(surface_io.DIGEST_KEY) not in (None, surface_io.array_digest(raw)):
+        torn = (f"  the shapes agree at {arr.shape[0]}x{arr.shape[1]}, but dem_hd/hole{hole:02d}.json\n"
+                f"  was committed beside a DIFFERENT array, so its bbox describes other ground.")
+    if torn:
         raise SystemExit(
             f"hole {hole} of {config.SLUG}: the green surface and its metadata do not match -- the\n"
-            f"  array is {arr.shape[0]}x{arr.shape[1]} but dem_hd/hole{hole:02d}.json records "
-            f"{meta.get('H')}x{meta.get('W')}.\n"
+            f"{torn}\n"
             f"  One of the two is from a different run, so the green ring would be placed on the wrong\n"
             f"  ground. Rebuild that hole:\n"
             f"    COURSE={config.SLUG} ONLY={hole} OVERWRITE=1 python3 fetch_dem_hd.py\n"

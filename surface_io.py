@@ -12,9 +12,30 @@ green_center are what place every pixel. Both producers (fetch_dem_hd.py at 0.4 
 cloud, fetch_dem.py at 1 m from the seamless DEM) write into the same directory, so the rule lives
 here once rather than in each of them.
 """
+import hashlib
 import json, os
 
 import numpy as np
+
+DIGEST_KEY = "array_sha256"
+
+
+def array_digest(arr):
+    """A fingerprint of the array a meta is committed beside, stable across save and load.
+
+    dtype and shape go in with the bytes, and the bytes are taken C-contiguous, because .npy records
+    fortran_order and np.load may hand back a differently-ordered view of identical values -- hashing
+    raw memory would then disagree with itself across a round trip for no real difference.
+
+    Hashed rather than merely counted because the point is to catch a pair whose two halves came from
+    DIFFERENT RUNS, and the only property that reliably distinguishes those is the content. W and H
+    do not: see commit_surface.
+    """
+    a = np.ascontiguousarray(arr)
+    h = hashlib.sha256()
+    h.update(f"{a.dtype.str}|{a.shape}|".encode())
+    h.update(a.tobytes())
+    return h.hexdigest()
 
 
 def commit_surface(base, arr, meta):
@@ -36,12 +57,36 @@ def commit_surface(base, arr, meta):
     globs `hole*.npy` or `dem_hd/hole*.json` -- the corpus sweeps in the test suite, check_scale.py,
     gen_provenance.py, cross_flight_check.py -- can pick a half-written surface up as a real one.
 
-    What remains, stated rather than implied: the two renames are not one transaction, so a process
-    killed between them still leaves a mismatch. That window is two syscalls instead of an entire array
-    write plus a JSON encode, and the shape half of it is caught on the read side (render_green refuses
-    a pair whose array does not match its recorded W,H). The .json is renamed LAST because it is what
-    every consumer gates on -- render_green refuses a hole with no meta, and keeps_existing_surface
-    reads the meta alone -- so it is the closest thing this pair has to a commit marker.
+    WHAT THE TWO RENAMES STILL LEAVE, and why it needed more than a disclosure. os.replace is atomic
+    per file; two of them are not one transaction, so a process killed between them still leaves last
+    run's meta beside this run's array. The outcomes split, and they were not equally survivable:
+
+      * shapes differ -> the read side refuses the pair and names both shapes. Loud, recoverable.
+      * shapes EQUAL, bbox different -> nothing looked at it. Silent, permanent, and a wrong printed
+        slope on a card a junior carries.
+
+    The silent case is REACHABLE, not theoretical, because the pixel dimensions truncate:
+    `W = max(48, int(wm/0.5))` (fetch_dem.py) and `W = max(40, int(wm/RES))` (fetch_dem_hd.py). A green
+    whose polygon is re-traced in OSM, or moves, or changes size by less than one pixel keeps the same
+    W and H while its bbox changes -- so a rebuild interrupted between the two renames lands there.
+
+    Nor does the rename ORDER help. The .json is still renamed last because it is what every consumer
+    gates on (render_green refuses a hole with no meta; keeps_existing_surface reads the meta alone),
+    so on a FIRST build a crash leaves an array nothing will read. On a REBUILD, where both names
+    already hold last run's pair, either order tears.
+
+    So the pair is made SELF-IDENTIFYING instead: the meta carries a digest of the array committed
+    with it, and render_green refuses a pair whose array does not hash to what its meta claims. That is
+    shape-blind, which is exactly what the silent case needs. The residual is now one case -- a tear
+    whose two runs produced BIT-IDENTICAL arrays under different bboxes -- which for a sampled terrain
+    surface means the elevations did not move at all, and a green flat enough for that prints the same
+    slope either way. A staged DIRECTORY rename, or a single .npz holding array and meta together,
+    would be atomic outright; both change the on-disk layout that render_green, check_scale.py,
+    gen_provenance.py, cross_flight_check.py and 198 built greens all glob, so they are a migration
+    plus a full rebuild, not a fix.
+
+    Surfaces built before the digest existed carry no DIGEST_KEY and are read unverified -- there is
+    nothing to compare them against. They gain the check the next time they are rebuilt.
     """
     d, n = os.path.dirname(base), os.path.basename(base)
     t_npy = os.path.join(d, f".{n}.npy.part")
@@ -50,7 +95,9 @@ def commit_surface(base, arr, meta):
     # already ends in it, which would turn the staged name into ".holeNN.npy.part.npy".
     with open(t_npy, "wb") as f:
         np.save(f, arr)
+    # A copy, not a mutation: a producer that reused its meta dict after committing would otherwise
+    # carry one hole's digest onto the next.
     with open(t_json, "w", encoding="utf-8") as f:
-        json.dump(meta, f)
+        json.dump(dict(meta, **{DIGEST_KEY: array_digest(arr)}), f)
     os.replace(t_npy, base + ".npy")
     os.replace(t_json, base + ".json")
