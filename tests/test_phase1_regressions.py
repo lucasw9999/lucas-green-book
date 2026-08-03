@@ -2161,17 +2161,25 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         including parts up to 45 m off the line. Erring short is the right direction.
 
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
-        "Clearing it needs more than N", which is false where the sand is long: the-reserve 8 prints
-        "carry 90" for sand occupying the line from 92 to 201 yd on a 237-yd par 3, so clearing needs
-        201. Sand runs a median 23 yd past the printed number and up to 126. The number is right --
-        it is where the sand starts -- so the sentence was corrected rather than the figure.
+        "Clearing it needs more than N", which is false where the sand is long: philadelphia 1 prints
+        "carry 213" for sand occupying the line out to 308 yd, so clearing it needs 308. Sand runs a
+        median 23 yd past the printed number and up to 95. The number is right -- it is where the sand
+        starts -- so the sentence was corrected rather than the figure.
+
+        THAT WORST CASE USED TO READ 126 yd, on the-reserve 8, and it went stale the moment
+        `render_hole` stopped printing a carry on a par 3 -- the-reserve 8 is a 237-yd par 3 and no
+        longer prints one at all. Two docstrings quoted it, in the two places a reader looks up what
+        "carry N" does not cover, and neither could notice. Both are now MEASURED here rather than
+        written down: the figures below are re-derived from the shipped carries every run, and the
+        prose in both tests is checked against them.
 
     Also holds the stated window: 80-300 yd from the tee, and never within 40 yd of the green, since
     greenside sand is not a tee carry.
     """
     import math
+    import statistics
     IN_LINE_M = 15.0
-    checked, problems = 0, []
+    checked, problems, past = 0, [], []
     seen_courses = collections.Counter()
     for ref in CORPUS:
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
@@ -2181,7 +2189,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             html = fh.read()
         assert "where fairway sand <b>starts</b>" in html and "can run well past N" in html, (
             f"{ref}: the guide no longer says the sand can run past the printed carry -- on "
-            f"the-reserve 8 that is 111 yd of unstated sand")
+            f"philadelphia 1 that is 95 yd of unstated sand")
         cfg, rh = _engine(ref)
         try:
             course, geom = rh.load()
@@ -2217,6 +2225,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             perp = (-uy, ux)
             card = info["card_yd"]
             for near, _far in carries:
+                past.append(_far - near)          # how far the sand runs BEYOND the printed number
                 checked += 1
                 seen_courses[ref] += 1   # past the gates: counts WORK, not intent
                 if not (80 <= near <= 300):
@@ -2245,6 +2254,24 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         seen_courses, "test_a_printed_carry_never_overstates_what_it_clears",
         exempt={"bay-view-golf-club": "prints no carry on any hole -- nothing for this test to check"})
     assert not problems, "a printed carry overstates what it clears:\n  " + "\n  ".join(problems[:8])
+
+    # How far the sand runs PAST the printed number -- the figure that makes the guide's hedge
+    # necessary -- pinned in both tests that quote it. See the docstring: both said 126, from a par 3
+    # that no longer prints a carry.
+    med, worst = statistics.median(past), max(past)
+    for fn in ("test_a_printed_carry_never_overstates_what_it_clears",
+               "test_the_carry_legend_says_sand_because_water_is_not_quantified"):
+        prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
+        nums = [int(x) for x in re.findall(r"(?:up to|worst case in the corpus is|runs)\s+(\d+)"
+                                          r"\s*(?:yd|yards)?", prose)]
+        assert nums, (
+            f"{fn} no longer states how far the sand runs past the printed carry. Measured over "
+            f"{len(past)} shipped carries: median {med:.0f} yd, worst {worst:.0f} yd.")
+        assert worst in nums, (
+            f"{fn} quotes {nums} as the extent of sand beyond a printed carry; measured over "
+            f"{len(past)} shipped carries the worst is {worst:.0f} yd (median {med:.0f}). This went "
+            f"stale once already, when par-3 carries were suppressed and took the old 126 yd case "
+            f"with them.")
 
 
 @needs_corpus
@@ -2514,8 +2541,13 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     the distance from the tee WALKED along the centreline, which is how a scorecard measures. On a
     straight hole those sum to the card; on a bend they cannot, and the gap grows as the tick moves
     into the corner. philadelphia 17 is the extreme: card 472, drawn arc 441, and its 300-yd row
-    reads 300 + 102 = 402. Both numbers are individually true. 50 of 196 cards have a row off by
+    reads 300 + 118 = 418. Both numbers are individually true. 50 of 198 cards have a row off by
     10 yd or more.
+
+    THAT WORKED EXAMPLE READ "300 + 102 = 402" over a card that prints 118, and the count read 196
+    over a corpus of 198. Nothing could see either: the assertions below bound the sum from ABOVE and
+    say nothing about the one row the docstring names. Both figures are now re-derived from the shipped
+    cards and checked against this prose, along with the headroom the upper bound has left.
 
     Neither number may quietly become the other, so this asserts what each IS rather than that they
     agree:
@@ -2528,6 +2560,17 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     """
     checked, problems = 0, []
     seen_courses = collections.Counter()
+    # The docstring's own worked example and counts, re-derived below rather than trusted.
+    doc = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                      "test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are")
+    ex = re.search(r"([a-z][a-z-]*) (\d+) is the extreme: card (\d+), drawn arc (\d+), and its "
+                   r"(\d+)-yd row reads (\d+) \+ (\d+) = (\d+)", doc)
+    assert ex, ("this test's docstring no longer carries the worked example that explains WHY the two "
+                "gutter numbers do not sum. That example is the whole reason the guide card carries a "
+                "sentence about it; re-read the test before removing it.")
+    _hits = [s for s in CORPUS if s.startswith(ex.group(1))]
+    example_card = (_hits[0], int(ex.group(2))) if len(_hits) == 1 else (None, None)
+    example_rows, worst_excess, cards_seen, cards_off = {}, None, 0, 0
     for ref in CORPUS:
         p = os.path.join(ROOT, "courses", ref, "greenbook.html")
         if not os.path.exists(p):
@@ -2558,9 +2601,20 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                         "L" if float(x) < vbw / 2 else "R"] = int(txt)
             card = int(ym.group(1))
             arc = _arc_yd_for(ref, blk) or card
+            hole_no = re.search(r'<div class="hnum">\s*(\d+)', blk)
+            cards_seen += 1
+            if any("R" in v and abs(card - (v["L"] + v["R"])) >= 10
+                   for v in lanes.values() if "L" in v):
+                cards_off += 1
             for v in lanes.values():
                 if "L" not in v:
                     continue
+                if "R" in v:
+                    excess = v["L"] + v["R"] - max(card, arc)
+                    if worst_excess is None or excess > worst_excess[0]:
+                        worst_excess = (excess, ref, hole_no.group(1) if hole_no else "?")
+                    if hole_no and (ref, int(hole_no.group(1))) == example_card:
+                        example_rows[v["L"]] = (v["R"], card, arc)
                 checked += 1
                 seen_courses[ref] += 1   # past the gates: counts WORK, not intent
                 if v["L"] not in (100, 150, 200, 250, 300):
@@ -2571,8 +2625,13 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                 # drawn 444 yd against a 429 card, so every row there exceeds the card by ~12. Bounding
                 # on the ARC failed too, because the from-tee figure is scaled to the CARD, so on a
                 # hole drawn shorter than its card the pair exceeds the arc. Only the larger of the two
-                # is a real ceiling, and against it the whole corpus fits inside +4 yd -- which is the
-                # rounding of two integers, not a measurement fault.
+                # is a real ceiling, and against it the whole corpus fits inside +4 yd.
+                #
+                # THAT BOUND HAS EXACTLY ZERO HEADROOM, measured: callippe 1 realises +4 (100 + 337
+                # against a 433 card and a 424 yd drawn line), which is the bound itself. So the next
+                # row to exceed it fails here, and the right response is to understand WHY -- the two
+                # numbers measure differently (a straight radius against a walked distance scaled to
+                # the card), so a genuine excess is not "rounding" -- rather than to raise the 4.
                 limit = max(card, arc)
                 if "R" in v and v["L"] + v["R"] > limit + 4:
                     problems.append(f"{ref}: a row reads {v['L']} + {v['R']} = {v['L']+v['R']} "
@@ -2584,6 +2643,40 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         f"hole, cards are being skipped")
     assert_no_course_skipped(seen_courses, "test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are")
     assert not problems, "the gutter numbers are not what the card says:\n  " + "\n  ".join(problems[:8])
+
+    # (a) the worked example, against the card it names
+    if example_card[0]:
+        L = int(ex.group(5))
+        assert L in example_rows, (
+            f"the docstring's worked example names a {L}-yd row on {example_card[0]} "
+            f"{example_card[1]}, which prints rows at {sorted(example_rows)}")
+        R, card, arc = example_rows[L]
+        for what, said, got in (("the from-tee figure", int(ex.group(7)), R),
+                                ("their sum", int(ex.group(8)), L + R),
+                                ("the card yardage", int(ex.group(3)), card),
+                                ("the drawn arc", int(ex.group(4)), arc)):
+            assert said == got, (
+                f"the docstring says {what} on {example_card[0]} {example_card[1]}'s {L}-yd row is "
+                f"{said}; the shipped card prints {got}. This example is the only place the test "
+                f"explains what the two numbers ARE, and it went stale once already (it read "
+                f"300 + 102 = 402).")
+        assert int(ex.group(6)) == L, (
+            f"the docstring's worked example adds {ex.group(6)} where it names a {L}-yd row")
+
+    # (b) the headroom on the upper bound, and the count of affected cards
+    said_off = re.search(r"(\d+) of (\d+) cards have a row off by", doc)
+    assert said_off, "this test's docstring no longer says how much of the corpus the mismatch reaches"
+    assert (int(said_off.group(1)), int(said_off.group(2))) == (cards_off, cards_seen), (
+        f"the docstring says {said_off.group(1)} of {said_off.group(2)} cards carry a row off the card "
+        f"yardage by 10 yd or more; measured now it is {cards_off} of {cards_seen}")
+    said_head = re.search(r"the whole corpus fits inside \+(\d+) yd", doc)
+    assert said_head, "the upper bound no longer states what the corpus actually realises against it"
+    assert worst_excess is not None and worst_excess[0] == int(said_head.group(1)), (
+        f"the bound says the corpus fits inside +{said_head.group(1)} yd of max(card, arc); the worst "
+        f"row measured realises "
+        + (f"+{worst_excess[0]} yd ({worst_excess[1]} hole {worst_excess[2]})" if worst_excess
+           else "nothing -- no row carried both numbers")
+        + ". A bound and the figure quoted beside it are two statements of one measurement.")
 
 
 @needs_corpus
@@ -10597,42 +10690,71 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     wording is the load-bearing part, not the computation: it is the difference between an omission and
     an over-claim.
 
-    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 126 yards
-    of it -- so a bare "carry N" would read as the whole obstacle rather than its near edge.
+    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 95 yards
+    of it, philadelphia 1 printing "carry 213" for sand reaching 308 -- so a bare "carry N" would read
+    as the whole obstacle rather than its near edge. (It read 126 until par-3 carries were suppressed,
+    which removed the case it named; the figure is now measured and pinned by
+    test_a_printed_carry_never_overstates_what_it_clears.)
+
+    BOTH EDITIONS, because both print the numbers. This read only `greenbook.html`, so the three
+    ENLARGED books -- merion, monarch-bay and philadelphia, which print 12, 8 and 11 carries and carry
+    their own copy of the legend row -- were outside every check of this wording. That is the same gap
+    that once let the enlarged edition ship a stale legal panel and print "0.0%" for a green the engine
+    had declined to read: the coach book is handed to a person, and its legend is generated by the same
+    function but reached by a different call. Its wording is not byte-identical to the pocket book's
+    ("it can run past N" against "can run well past N"), which is exactly why this is matched on
+    substance rather than on a literal.
     """
     checked, problems, seen = 0, [], collections.Counter()
+    coach_checked = 0
     for ref in BOOKS:
-        p = os.path.join(ROOT, "courses", ref, "greenbook.html")
-        if not os.path.exists(p):
-            continue
-        seen[ref] += 1
-        with open(p, encoding="utf-8") as f:
-            html = f.read()
-        if "carry" not in html:
-            continue
-        legend = [m for m in re.findall(r"<span>(?:(?!</span>).)*carry(?:(?!</span>).)*</span>",
-                                        html, re.S)
-                  if "carry <b>N</b>" in m or "<b>carry N</b>" in m]
-        if not legend:
-            problems.append(f"{ref}: prints carry numbers but no legend row explains what one is")
-            continue
-        checked += 1
-        flat = re.sub(r"<[^>]+>", " ", " ".join(legend)).lower()
-        if "sand" not in flat:
-            problems.append(
-                f"{ref}: the carry legend no longer says SAND. Carries are computed from bunkers only, "
-                f"so a legend that says 'hazard' or just 'carry' claims to cover the water this corpus "
-                f"draws crossing the tee-shot line on four holes without a distance. Either say sand or "
-                f"quantify water -- see the note at CARRY_OFF_M in render_hole.py for why the second is "
-                f"not free.")
-        if not re.search(r"past|beyond|run", flat):
-            problems.append(
-                f"{ref}: the carry legend dropped the hedge that sand can run past N. N is the NEAR "
-                f"edge; the worst window in this corpus runs 40+ yd further, so a bare number reads as "
-                f"the whole obstacle.")
+        for edition in ("greenbook.html", "greenbook_coach.html"):
+            p = os.path.join(ROOT, "courses", ref, edition)
+            if not os.path.exists(p):
+                continue
+            seen[ref] += 1
+            with open(p, encoding="utf-8") as f:
+                html = f.read()
+            if "carry" not in html:
+                continue
+            _check_carry_legend(f"{ref}/{edition}", html, problems)
+            checked += 1
+            if edition == "greenbook_coach.html":
+                coach_checked += 1
+    assert coach_checked >= 1, (
+        "no ENLARGED edition's carry legend was checked. Those books print the same carry numbers and "
+        "are handed to a person; build one with COACH=1 COURSE=<slug> python3 generate.py.")
     assert checked >= 10, f"only {checked} books' carry legends were checked"
     assert_no_course_skipped(seen, "test_the_carry_legend_says_sand_because_water_is_not_quantified")
     assert not problems, "the carry legend over-claims what it covers:\n  " + "\n  ".join(problems)
+
+
+def _check_carry_legend(where, html, problems):
+    """The carry legend must name SAND and hedge its EXTENT. Shared by both editions.
+
+    Split out when this check was extended past the pocket book: the two editions render the row
+    through the same generator but reach it by different calls, and their wording is not identical, so
+    the check has to be one implementation applied twice rather than two copies that can drift.
+    """
+    legend = [m for m in re.findall(r"<span>(?:(?!</span>).)*carry(?:(?!</span>).)*</span>",
+                                    html, re.S)
+              if "carry <b>N</b>" in m or "<b>carry N</b>" in m]
+    if not legend:
+        problems.append(f"{where}: prints carry numbers but no legend row explains what one is")
+        return
+    flat = re.sub(r"<[^>]+>", " ", " ".join(legend)).lower()
+    if "sand" not in flat:
+        problems.append(
+            f"{where}: the carry legend no longer says SAND. Carries are computed from bunkers only, "
+            f"so a legend that says 'hazard' or just 'carry' claims to cover the water this corpus "
+            f"draws crossing the tee-shot line on four holes without a distance. Either say sand or "
+            f"quantify water -- see the note at CARRY_OFF_M in render_hole.py for why the second is "
+            f"not free.")
+    if not re.search(r"past|beyond|run", flat):
+        problems.append(
+            f"{where}: the carry legend dropped the hedge that sand can run past N. N is the NEAR "
+            f"edge; the worst window in this corpus runs 40+ yd further, so a bare number reads as "
+            f"the whole obstacle.")
 
 
 @needs_corpus
@@ -13444,17 +13566,35 @@ def test_the_faint_mark_is_not_published_as_a_survey_noise_floor():
         "(R^2 p05 0.61/median 0.90 clear against 0.02/0.44 faint). Say that instead:\n  "
         + "\n  ".join(f"{where}:\n      {clause}" for where, clause in claims))
 
-    # ...and it must not be fixed by deleting the sentence: the code that prints the mark has to say
+    # ...and it must not be fixed by DELETING the sentence: the code that prints the mark has to say
     # what the mark means, or the next reader reinvents the noise story from the word "faint".
-    for where, fn, path in (("green_honesty", "green_honesty", "generate.py"),
-                            ("_faint_note", "_faint_note", "generate.py")):
-        p = _func_prose(os.path.join(ROOT, path), fn)
-        assert re.search(r"single slope|one plane|one slope|a single tilt|plane[^.]{0,40}"
-                         r"(?:describ|fit|adequa)", p, re.I), (
-            f"{path}:{where} no longer says WHY a green is marked faint. The noise story was removed "
-            f"from it without putting the measured reason -- one plane is a poor description of this "
-            f"green -- in its place, so the only account of the mark left in the printing path is "
-            f"the word itself.")
+    #
+    # THIS GUARD WAS INERT IN BOTH PLACES IT NAMES, proven by doing what it forbids. It searched the
+    # whole function for `single slope|one plane|one slope|a single tilt|plane[^.]{0,40}(?:describ|
+    # fit|adequa)`, and the bare word "fit" did all the work:
+    #   * delete the measured reason from `green_honesty` and it was still satisfied by an unrelated
+    #     pre-existing comment about the NO_CLEAR_FALL sentinel -- "A green whose plane FIT and whose
+    #     own arrows point opposite ways has no fall direction the data supports";
+    #   * delete it from `_faint_note` and it was still satisfied by the legend string that function
+    #     RETURNS -- "no single slope FITS".
+    # Both mutations left the test green, so the anti-deletion half asserted nothing in either place.
+    #
+    # It now needs the two halves of the actual claim in ONE CLAUSE: the one-plane MODEL, and the
+    # VERDICT that one plane describes this green badly. Neither survivor carries the second half, and
+    # a printed legend row cannot stand in for the engineering reason -- (d) below polices that row on
+    # its own terms.
+    MODEL = re.compile(r"single slope|one plane|one slope|single tilt|plane[- ]fit", re.I)
+    VERDICT = re.compile(r"badly|poorly|\bpoor\b|adequa|inadequ|describ|will not carry", re.I)
+    for fn, path in (("green_honesty", "generate.py"), ("_faint_note", "generate.py")):
+        clauses = re.split(r"(?<=[.;:])\s+|\s+--\s+|,\s+",
+                           _func_prose(os.path.join(ROOT, path), fn))
+        assert any(MODEL.search(c) and VERDICT.search(c) for c in clauses), (
+            f"{path}:{fn} no longer says WHY a green is marked faint. The noise story was removed "
+            f"from it without putting the measured reason -- ONE PLANE IS A POOR DESCRIPTION of this "
+            f"green, R^2 p05 0.61/median 0.90 clear against 0.02/0.44 faint -- in its place, so the "
+            f"only account of the mark left in the printing path is the word itself. Naming the "
+            f"one-plane model is not enough on its own: this needs the judgement beside it, in the "
+            f"same clause, or an unrelated mention of a plane fit satisfies it.")
 
     # (c) the arithmetic that makes the story impossible, out of legal/09's own table
     tilt_pp = re.search(r"\|\s*dominant tilt\s*\|\s*\**([\d.]+) percentage points\**\s*\|", pub)
@@ -13935,25 +14075,73 @@ def test_the_engine_names_every_printed_tilt_that_appears_both_marked_and_unmark
 
     So the bound is measured off the SHIPPED BOOKS rather than trusted: every `feeds ... - N.N%`
     footer in every pocket edition, split by whether it carries the mark. A printed percentage in both
-    groups is ambiguous to a reader; the comment must name exactly that set. Measuring the artifact
-    also catches the suppression the engine cannot see on its own -- `green_honesty` drops the mark on
-    a NO_CLEAR_FALL green, so a faint green can print no mark at all.
+    groups is ambiguous to a reader; the comment must name exactly that set, AND the per-green card
+    lists it now spells out.
+
+    TWO BLIND SPOTS OF ITS OWN, both fixed here.
+
+    It matched only `feeds <b>`, so it could not see the ONE footer that prints no feed word at all --
+    micke-grove 2, `no clear fall - 0.5%`. Its own message said "the corpus prints 198" where its
+    regex could reach at most 197, and the claim that measuring the artifact "catches the suppression
+    the engine cannot see on its own" was therefore false: the suppressed green was the one green
+    outside its reach. The sentinel footer is now read too, as its OWN category rather than as an
+    unmarked feed -- lumping it in would have made 0.5% look ambiguous (monarch-bay 12 and
+    philadelphia 16 print `(faint) - 0.5%`) when what the reader actually sees on micke-grove 2 is a
+    stronger and separately explained statement, not a missing mark. One green is suppressed, it IS a
+    faint green, and both facts are asserted rather than assumed.
+
+    And it asserted only the SET of ambiguous percentages while the comment it polices names the CARDS
+    -- "1.2% prints three marked (castlewood-valley 14, ...) against three unmarked (...)". Those
+    lists, and the count words beside them, could go stale silently: the same "two figures for one
+    number" fault the commit that wrote them was fixing. Every name, hole and count word is now
+    checked against the corpus.
     """
     if not BOOKS:
         pytest.skip("no built book to read printed tilt marks from")
     marked, unmarked = collections.defaultdict(set), collections.defaultdict(set)
+    suppressed = {}
     seen = collections.Counter()
-    FOOT = re.compile(r"feeds <b>[^<]+</b>( \(faint\))? &middot; (\d+\.\d+)%")
+    # Per HOLE PANEL, so a footer is attributed to the card it sits on -- the comment under test names
+    # cards, not just percentages.
+    FEED = re.compile(r"feeds <b>[^<]+</b>( \(faint\))? &middot; (\d+\.\d+)%")
+    SENTINEL = re.compile(r"<b>no clear fall</b> &middot; (\d+\.\d+)%")
     for slug in BOOKS:
         p = os.path.join(ROOT, "courses", slug, "greenbook.html")
         with open(p, encoding="utf-8") as fh:
             src = fh.read()
-        for m in FOOT.finditer(src):
-            (marked if m.group(1) else unmarked)[m.group(2)].add(slug)
+        for panel in re.split(r'<div class="hnum">', src)[1:]:
+            hn = re.match(r"\s*(\d+)", panel)
+            if not hn:
+                continue
+            hole = int(hn.group(1))
+            f, s = FEED.search(panel), SENTINEL.search(panel)
+            if f:
+                (marked if f.group(1) else unmarked)[f.group(2)].add((slug, hole))
+            elif s:
+                suppressed[(slug, hole)] = s.group(1)
+            else:
+                continue
             seen[slug] += 1
-    assert sum(seen.values()) >= 180, (
+    assert sum(seen.values()) >= 190, (
         f"only {sum(seen.values())} green footers were read; the corpus prints 198")
     both = sorted(set(marked) & set(unmarked), key=float)
+
+    # The suppression, asserted rather than claimed. `green_honesty` drops the mark on a NO_CLEAR_FALL
+    # green because "no clear fall (faint)" would say the same thing twice -- so a FAINT green can
+    # print no mark at all, and that is only visible if the sentinel footer is read.
+    assert suppressed, (
+        "no green prints the `no clear fall` footer, so this test's claim to catch the mark being "
+        "suppressed by the sentinel is checking nothing. Re-read green_honesty before deleting it.")
+    faint_suppressed = []
+    for slug, hole in sorted(suppressed):
+        _engine(slug)
+        import render_green as rg3
+        _svg, s = rg3.render(hole)
+        if s.get("conf") == "faint":
+            faint_suppressed.append((slug, hole))
+    assert faint_suppressed, (
+        f"the {len(suppressed)} green(s) printing `no clear fall` are none of them faint, so nothing "
+        f"in the corpus exercises the suppression this test says it catches: {sorted(suppressed)}")
 
     with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as fh:
         rg_src = fh.read()
@@ -13970,6 +14158,47 @@ def test_the_engine_names_every_printed_tilt_that_appears_both_marked_and_unmark
         f"render_green says the printed-tilt ambiguity is confined to {said}%; the shipped books "
         f"print {both}% both with and without '(faint)':\n  " + "\n  ".join(
             f"{t}% marked in {sorted(marked[t])}, unmarked in {sorted(unmarked[t])}" for t in both))
+
+    # ...and the CARDS it names, which is the half that could go stale on its own.
+    WORDS = {"no": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+             "eight": 8, "nine": 9, "ten": 10}
+
+    def _cards(where, listed):
+        """{(full slug, hole)} from a comment list like "castlewood-valley 14, the-reserve 5"."""
+        out = set()
+        for item in listed.split(","):
+            m = re.match(r"\s*([a-z][a-z-]*?)\s+(\d+)\s*$", item)
+            assert m, (f"render_green's {where} list does not read as '<course> <hole>' pairs: "
+                       f"{item!r} in {listed!r}")
+            hits = [s for s in BOOKS if s.startswith(m.group(1))]
+            assert len(hits) == 1, (
+                f"render_green names {m.group(1)!r} in its {where} list and that matches "
+                f"{len(hits)} built book(s) ({hits}); it must name exactly one course")
+            out.add((hits[0], int(m.group(2))))
+        return out
+
+    named = {}
+    for m in re.finditer(r"(\d\.\d)% (?:prints )?(\w+) marked \(([^)]*)\) against (\w+) "
+                         r"unmarked \(([^)]*)\)", doc):
+        named[m.group(1)] = (m.group(2), _cards("marked", m.group(3)),
+                             m.group(4), _cards("unmarked", m.group(5)))
+    assert sorted(named, key=float) == both, (
+        f"render_green names the ambiguous cards for {sorted(named, key=float)}% but the shipped "
+        f"books are ambiguous at {both}%. The bound and the card lists are two statements of one "
+        f"fact and both have to be true.")
+    for pct in both:
+        wm, gm, wu, gu = named[pct]
+        for what, said_word, said_set, got in (("marked", wm, gm, marked[pct]),
+                                               ("unmarked", wu, gu, unmarked[pct])):
+            assert said_set == got, (
+                f"render_green says {pct}% is {what} on {sorted(said_set)}; the shipped books print "
+                f"it {what} on {sorted(got)}")
+            n = WORDS.get(said_word.lower(), None)
+            n = int(said_word) if n is None and said_word.isdigit() else n
+            assert n == len(got), (
+                f"render_green says {said_word!r} card(s) print {pct}% {what} and lists "
+                f"{len(said_set)}; the corpus has {len(got)}. The word and the list are two figures "
+                f"for one number.")
 
 
 def test_the_legal_record_and_the_engine_quote_the_same_smoothing_kernel():
