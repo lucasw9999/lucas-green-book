@@ -568,8 +568,10 @@ def write_hole_elev(path, payload):
     exercised by a full LiDAR run over a course with tiles on disk.
 
     THE STAGE IS SWEPT ON THE FAILURE PATH, which is what this write was missing while the project's
-    other two staged writes were being fixed for exactly that. course.json's went through
-    write_lidar_flown and the surface pair's through commit_surface; this was the third and nothing
+    other staged writes were being fixed for exactly that. course.json's went through
+    write_lidar_flown and the surface pair's through commit_surface; this one was found third, and two
+    more (fetch_osm's) were found after it -- eight in all, enumerated in
+    test_no_staged_write_leaves_its_part_file_behind. Nothing
     globs for its leftover -- surface_io.sweep_staged only matches dem_hd's dot-prefixed `.hole*.part`.
     A `.part` is never valid data, because it is only renamed into place after the write returns, so
     anything still wearing the staged name is by construction incomplete. And under courses/ -- the one

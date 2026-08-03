@@ -416,9 +416,18 @@ def fetch(query, out, write=True):
             if write:
                 # write atomically: a crash or a full disk must not leave a half-written cache behind
                 tmp = path + ".part"
-                with open(tmp, "wb") as f:
-                    f.write(data)
-                os.replace(tmp, path)
+                try:
+                    with open(tmp, "wb") as f:
+                        f.write(data)
+                    os.replace(tmp, path)
+                finally:
+                    # A staged file left here is invisible twice over: courses/<slug>/ is the one
+                    # directory nothing sweeps (surface_io.sweep_staged is dem_hd-only by its
+                    # `.hole*.part` pattern, fetch_lidar's is laz/-only), and the `except Exception`
+                    # below SWALLOWS the failure and retries, so nothing reports it either. And it
+                    # would sit beside the only copy of the hand-digitized greens.
+                    if os.path.exists(tmp):     # a no-op once the rename above has happened
+                        os.remove(tmp)
             return j
         except SystemExit:
             raise
@@ -481,9 +490,17 @@ out geom;''', "osm_relations.json")
     # at all -- and _check_response's baseline filter means no later re-fetch can notice.
     cpath = os.path.join(config.COURSE_DIR, "osm_course.json")
     tmp = cpath + ".part"
-    with open(tmp, "w") as f:
-        json.dump(course, f, indent=2)
-    os.replace(tmp, cpath)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(course, f, indent=2)
+        os.replace(tmp, cpath)
+    finally:
+        # json.dump streams, so a value it cannot encode leaves PARTIAL json in the staged file, and
+        # courses/<slug>/ is the one directory nothing sweeps. Same `finally` as the other four
+        # staged writers in this project (tools/lidar_dates.write_lidar_flown,
+        # surface_io.commit_surface, fetch_hole_elev.write_hole_elev, fetch_trees.write_layer).
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
     if flat:
         print(f"  osm_course.json written with {len(flat)} flattened ring(s)")
     c = census(course['elements'])
