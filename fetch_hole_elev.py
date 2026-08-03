@@ -560,6 +560,41 @@ def check_rows(rows, path):
     print("WARNING: ALLOW_ELEV_LOSS set -- hole(s) %s lose the height they had" % detail)
 
 
+def write_hole_elev(path, payload):
+    """Stage `payload` beside hole_elev.json and rename it into place, sweeping the stage either way.
+
+    Extracted from main() so a TEST can drive it -- the same move lidar_dates.write_lidar_flown,
+    fetch_dem.is_flat_fill and fetch_dem_hd.keeps_existing_surface record. Inline it could only be
+    exercised by a full LiDAR run over a course with tiles on disk.
+
+    THE STAGE IS SWEPT ON THE FAILURE PATH, which is what this write was missing while the project's
+    other two staged writes were being fixed for exactly that. course.json's went through
+    write_lidar_flown and the surface pair's through commit_surface; this was the third and nothing
+    globs for its leftover -- surface_io.sweep_staged only matches dem_hd's dot-prefixed `.hole*.part`.
+    A `.part` is never valid data, because it is only renamed into place after the write returns, so
+    anything still wearing the staged name is by construction incomplete. And under courses/ -- the one
+    directory nothing sweeps, holding the only copy of these measurements -- a stray hole_elev.json.part
+    beside hole_elev.json reads as an interrupted rewrite of the heights 114 cards print from.
+
+    Staged rather than written in place for the reason lidar_dates gives about course.json, one notch
+    weaker: this file IS derived and a re-run rebuilds it, but json.dump truncates on open and then
+    streams, so a failure mid-encode leaves a wreck that is not obviously a wreck (measured elsewhere in
+    this project at 327 bytes where 265 were). os.replace makes the old file survive intact instead.
+
+    ENCODING NAMED on the write, as config.py's note on course.json argues for the read: json.dump's
+    ensure_ascii keeps the bytes ASCII whatever the locale, and saying utf-8 costs nothing and removes
+    the locale from the question entirely.
+    """
+    tmp = path + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
+
+
 def main():
     if config.BUILD_MODE == "yardage":
         print(f"{config.SLUG} is a yardage-mode course: no green surfaces, so no elevation change "
@@ -653,13 +688,10 @@ def main():
         # LAST GATE BEFORE THE BYTES LAND, like fetch_trees.check_layer: everything above measures the
         # tiles, and this asks whether the measurement is one the book may be rebuilt on.
         check_rows(rows, p)
-        tmp = p + ".part"
-        with open(tmp, "w") as f:
-            json.dump({"tee_radius_m": TEE_R_M, "min_tee_points": MIN_TEE_PTS,
-                       "source": "USGS 3DEP LiDAR ground returns (class 2) vs the green's own "
-                                 "0.4 m surface",
-                       "holes": rows}, f, indent=2)
-        os.replace(tmp, p)
+        write_hole_elev(p, {"tee_radius_m": TEE_R_M, "min_tee_points": MIN_TEE_PTS,
+                            "source": "USGS 3DEP LiDAR ground returns (class 2) vs the green's own "
+                                      "0.4 m surface",
+                            "holes": rows})
         print(f"  wrote {os.path.relpath(p, config.ROOT)}")
     return 0
 

@@ -7965,7 +7965,7 @@ def test_course_json_is_written_atomically(tmp_path):
 
 
 def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
-    """Both atomic writes in this project stage a `.part` and rename it. Neither swept up after itself.
+    """Staged writes in this project stage a `.part` and rename it. None swept up after itself.
 
     Staging is the right shape -- os.replace is atomic, so an interrupted write cannot be mistaken for
     a finished one -- but the failure path was never finished. An exception between "open the .part"
@@ -7973,6 +7973,13 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
 
       * tools/lidar_dates.py write_lidar_flown -> courses/<slug>/course.json.part
       * surface_io.commit_surface -> courses/<slug>/dem_hd/.holeNN.npy.part and .holeNN.json.part
+
+    THERE WAS A THIRD, and this docstring used to say "both", which is how it stayed unfixed while its
+    two siblings were being repaired for the identical defect: fetch_hole_elev staged
+    courses/<slug>/hole_elev.json.part with no `finally`, and nothing globs for it -- the sweep below is
+    dem_hd-only by its own `.hole*.part` pattern. It is driven in
+    test_the_third_staged_write_sweeps_up_after_a_failure, which needs a course on disk to import its
+    module, so it lives with the other hole_elev tests rather than here.
 
     Nothing removes either. fetch_lidar.py:sweep_stale_parts and fetch_lidar_alameda both do exactly
     this for laz/, with the argument that applies unchanged here -- a .part is never valid data,
@@ -10274,6 +10281,69 @@ def test_hole_elev_refuses_to_drop_a_hole_it_measured_before():
     assert writes, "main() no longer writes hole_elev.json by any spelling this test knows"
     assert body.index("check_rows(rows,") < min(body.index(k) for k in writes), \
         "the loss guard must run BEFORE the bytes land, not after them"
+
+
+@needs_corpus
+def test_the_third_staged_write_sweeps_up_after_a_failure(tmp_path):
+    """hole_elev.json is written through a `.part` too, and THAT one had no `finally`.
+
+    test_no_staged_write_leaves_its_part_file_behind fixed the other two -- course.json and the surface
+    pair -- and said "both staged writes in this project". There were three. fetch_hole_elev staged to
+    hole_elev.json.part, renamed it, and had nothing on the failure path; nor does any sweep glob for
+    it (surface_io.sweep_staged is dem_hd-only, by its own pattern `.hole*.part`).
+
+    The argument is the one that file already makes twice over, unchanged: a `.part` is never valid
+    data, because it is only renamed into place after the write returns -- so anything still wearing
+    the staged name is by construction incomplete. And under courses/, which is the one directory
+    nothing sweeps and the only copy of these measurements, a stray hole_elev.json.part beside
+    hole_elev.json reads as an interrupted rewrite of the heights 114 cards print from.
+
+    Driven against a scratch file, both directions: the litter is gone after a FAILED write and the
+    stored heights are untouched, and the file still lands after a successful one. The unguarded shape
+    is reproduced first on a throwaway copy, so the assertion that matters is measuring the real path
+    rather than trusting that the failure mode was ever real.
+    """
+    _config, _rh = _engine(CORPUS[0])
+    sys.modules.pop("fetch_hole_elev", None)
+    import fetch_hole_elev as fhe
+
+    class Unencodable:
+        pass
+
+    d = tmp_path / "elev"
+    d.mkdir()
+    p = str(d / "hole_elev.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"holes": {"1": {"change_ft": 4.0}}}, f)
+    before = open(p, "rb").read()
+
+    # what an unstaged-cleanup write leaves, on a copy: the .part survives the exception forever
+    loose = str(d / "unguarded.json.part")
+    with pytest.raises(TypeError), open(loose, "w", encoding="utf-8") as fh:
+        json.dump({"holes": Unencodable()}, fh)
+    assert os.path.exists(loose), \
+        "the failure being guarded against is not reproducing -- re-derive it before trusting the rest"
+
+    with pytest.raises(TypeError):
+        fhe.write_hole_elev(p, {"holes": {"1": Unencodable()}})
+    assert not os.path.exists(p + ".part"), (
+        "a failed hole_elev write left hole_elev.json.part under courses/, which is the one directory "
+        "nothing sweeps -- and beside the only copy of the heights, a stray .part reads as an "
+        "interrupted rewrite of them")
+    assert open(p, "rb").read() == before, "a failed write must leave the stored heights exactly as they were"
+
+    fhe.write_hole_elev(p, {"holes": {"1": {"change_ft": 5.0}}, "source": "x"})
+    with open(p, encoding="utf-8") as f:
+        assert json.load(f)["holes"]["1"]["change_ft"] == 5.0, "a successful write must land"
+    assert sorted(os.path.basename(x) for x in glob.glob(os.path.join(str(d), "*"))) == \
+        ["hole_elev.json", "unguarded.json.part"], \
+        "a successful write must leave the file and nothing staged"
+
+    # and the writer must go through it, or the sweep is somewhere nothing runs
+    src = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
+    body = src[src.index("def main("):]
+    assert _in_code("write_hole_elev(", body), \
+        "main() no longer writes through the guarded writer, so the staged file is unswept again"
 
 
 @needs_corpus
