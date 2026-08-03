@@ -997,12 +997,33 @@ def test_the_deletion_guard_covers_the_wrapper_plumbing_not_just_the_predicate(t
         "the approved-subtree counter leaked; every later deletion in this session is unguarded"
     inner = []
     inner_guard = guarded_deleter(lambda path, *a, **k: inner.append(path), "stub.unlink", root)
-    outer = guarded_deleter(lambda path, *a, **k: inner_guard(real, dir_fd=3), "stub.rmtree", root,
-                            opens_subtree=True)
-    outer(scratch)
-    assert inner == [real], (
-        "an approved rmtree must be allowed to walk its own subtree with dir_fd; it is how "
-        "shutil.rmtree is implemented on this platform")
+    # Modelled the way shutil.rmtree actually walks: os.unlink(entry.name, dir_fd=<fd of the
+    # directory it opened>). A RELATIVE name and a REAL descriptor, because the bypass is judged on
+    # what that pair resolves to. This block used to hand it an ABSOLUTE path to a real course with a
+    # made-up dir_fd=3 -- something rmtree never does -- and so pinned as REQUIRED the exact
+    # fail-open that absolute spelling was: see
+    # test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be. It is refused below.
+    scratch_fd = os.open(scratch, os.O_RDONLY)
+    try:
+        outer = guarded_deleter(lambda path, *a, **k: inner_guard("hole01.json", dir_fd=scratch_fd),
+                                "stub.rmtree", root, opens_subtree=True)
+        outer(scratch)
+        assert inner == ["hole01.json"], (
+            "an approved rmtree must be allowed to walk its own subtree with dir_fd; it is how "
+            "shutil.rmtree is implemented on this platform")
+        # ...and the bypass does NOT reach a name that lands outside that subtree, however spelled
+        for label, name in (("an absolute path to a real course", real),
+                            ("a ../ escape into one", os.path.join(os.pardir, "merion-golf-club"))):
+            escape = guarded_deleter(
+                lambda path, *a, _n=name, **k: inner_guard(_n, dir_fd=scratch_fd),
+                "stub.rmtree", root, opens_subtree=True)
+            with pytest.raises(AssertionError, match="course data"):
+                escape(scratch)
+            assert inner == ["hole01.json"], (
+                f"{label}, passed with dir_fd from inside an approved rmtree, walked straight out of "
+                f"the subtree that rmtree was approved for")
+    finally:
+        os.close(scratch_fd)
     assert conftest._approved_subtree_depth == 0, "the bypass outlived the rmtree that opened it"
     with pytest.raises(AssertionError, match="course data"):
         inner_guard(real)
@@ -1088,6 +1109,11 @@ def test_an_rmtree_callback_cannot_delete_a_real_course_from_inside_the_stand_do
     other caller. That is spelling-agnostic on purpose: it closes `onerror`, `onexc` and whatever
     the next release names the same callback, without the guard having to know the parameter list.
 
+    "Provably cannot resolve" was then narrowed again, because it was doing too much work: an
+    absolute name ignores dir_fd outright and a relative one resolves on both platforms that run the
+    fd walk. See test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be, which
+    owns that half. (3) and (4) here model rmtree's walk and the surviving residual accordingly.
+
     Both callback spellings are pinned here. The real `shutil.rmtree` only accepts `onexc` from
     3.12, so that half is driven through a stub whose `real` invokes the callback the way rmtree
     does -- the wrapper is what is under test either way.
@@ -1144,37 +1170,197 @@ def test_an_rmtree_callback_cannot_delete_a_real_course_from_inside_the_stand_do
         assert refused == [True], (
             f"a callback passed as {label} deleted a real course from inside the stand-down")
 
-    # (3) the stand-down still does the one job it exists for, and closes afterwards
+    # (3) the stand-down still does the one job it exists for, and closes afterwards. A RELATIVE name
+    # and a REAL descriptor for the approved subtree, which is precisely what shutil.rmtree's walk
+    # passes; a made-up dir_fd used to stand in for it, and a made-up descriptor resolves to whatever
+    # happens to be open on that number, which is not a thing to assert against.
     assert conftest._approved_subtree_depth == 0, \
         "the stand-down outlived the rmtree that opened it; every later deletion is unguarded"
     walked = []
     inner = guarded_deleter(lambda path, *a, **k: walked.append(path), "stub.unlink", root)
-    outer = guarded_deleter(lambda path, *a, **k: inner("course.json", dir_fd=9), "stub.rmtree",
-                            root, opens_subtree=True)
-    outer(scratch)
-    assert walked == ["course.json"], (
-        "an approved rmtree must still be allowed to walk its own subtree with dir_fd; that is how "
-        "shutil.rmtree is implemented on this platform, and nine fixtures here depend on it")
+    scratch_fd = os.open(scratch, os.O_RDONLY)
+    try:
+        outer = guarded_deleter(lambda path, *a, **k: inner("course.json", dir_fd=scratch_fd),
+                                "stub.rmtree", root, opens_subtree=True)
+        outer(scratch)
+        assert walked == ["course.json"], (
+            "an approved rmtree must still be allowed to walk its own subtree with dir_fd; that is "
+            "how shutil.rmtree is implemented on this platform, and nine fixtures here depend on it")
 
-    # ...and a dir_fd deletion with no rmtree in flight is still refused outright
-    with pytest.raises(AssertionError, match="dir_fd"):
-        inner("course.json", dir_fd=9)
+        # ...and a dir_fd deletion with no rmtree in flight is still refused outright, resolvable or
+        # not: outside an approved walk there is no reason to accept one at all
+        with pytest.raises(AssertionError, match="dir_fd"):
+            inner("course.json", dir_fd=scratch_fd)
+    finally:
+        os.close(scratch_fd)
 
-    # (4) the residual is REAL and must stay disclosed. A callback that deletes with dir_fd= set is
-    # still waived, because a name relative to a descriptor is precisely what the predicate cannot
-    # resolve -- measured here rather than assumed, so the docstring below is describing this tree.
+    # (4) what is LEFT of the residual, modelled rather than supposed. A dir_fd deletion whose
+    # descriptor RESOLVES is now judged like any other caller -- that half of the waiver was open and
+    # destructive, and is pinned closed in
+    # test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be. What still stands
+    # down is a descriptor that resolves to nothing: a POSIX platform answering neither
+    # fcntl(fd, F_GETPATH) nor readlink("/proc/self/fd/N"). This machine answers the first, so the
+    # residual is unreachable here and is reproduced by making the resolver answer as that platform
+    # would -- the alternative is prose nothing checks.
     got_through = []
     fd_holder = guarded_deleter(lambda path, *a, **k: got_through.append(path), "stub.unlink", root)
+    monkeypatch.setattr(conftest, "_dir_fd_dir", lambda fd: None)
     guarded_deleter(lambda path, *a, **k: fd_holder("course.json", dir_fd=11), "stub.rmtree", root,
                     opens_subtree=True)(scratch)
     assert got_through == ["course.json"], (
         "the dir_fd waiver has changed shape; the disclosure checked next no longer matches the code")
     disclosure = inspect.getdoc(conftest._deletion_cannot_reach_a_real_course.__wrapped__)
     assert "dir_fd" in disclosure.split("WHAT IS NOT:", 1)[1], (
-        "the guard still waives a dir_fd deletion during an approved rmtree -- an onerror handler "
-        "calling os.unlink(name, dir_fd=<a real course's fd>) destroys the scorecard -- and its WHAT "
-        "IS NOT list no longer says so. An undisclosed residual in a session-wide interceptor over "
-        "data with no backup is worse than a disclosed one")
+        "the guard still waives a dir_fd deletion during an approved rmtree when the descriptor "
+        "cannot be resolved at all, and its WHAT IS NOT list no longer says so. An undisclosed "
+        "residual in a session-wide interceptor over data with no backup is worse than a disclosed "
+        "one")
+
+
+def test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be(tmp_path, monkeypatch):
+    """The stand-down for rmtree's own dir_fd walk was WIDER than the rationale justifying it.
+
+    The rationale, as conftest.py and the test above both stated it: a name relative to a file
+    descriptor cannot be resolved to a directory portably, so the predicate cannot judge it, so a
+    deletion passing dir_fd= during an already-approved rmtree has to be waived. But the waiver was
+    written as `_approved_subtree_depth and k.get("dir_fd") is not None` -- EVERY dir_fd deletion,
+    judgeable or not. Two spellings inside it are fully judgeable, and both destroyed data:
+
+      * an ABSOLUTE name plus any dir_fd. POSIX says the kernel IGNORES dir_fd when the name is
+        absolute, and the predicate resolves an absolute path perfectly -- so this case was never
+        inside the rationale at all, yet it was waived. Measured against a fake repo before the fix:
+        os.unlink(<absolute path to a fake course.json>, dir_fd=<fd of the approved scratch dir>)
+        from inside an approved rmtree DELETED the fake scorecard, 1 for 1, with no refusal raised.
+      * a RELATIVE name whose descriptor CAN be resolved -- which is both platforms where the fd
+        walk happens at all. conftest's own comment observes that shutil._use_fd_functions is True
+        on macOS and Linux; macOS answers fcntl(fd, F_GETPATH) and Linux answers
+        readlink("/proc/self/fd/N"). So "cannot be resolved portably" was true as stated and false
+        where it mattered. This half covers the `../` escape out of an approved subtree, too.
+
+    Both are closed by resolving the (name, dir_fd) pair to the absolute path it actually names and
+    judging THAT. The cost is measured rather than assumed: (5) rmtree's own relative walk is still
+    waived, because it resolves back inside the subtree it was approved for, and (6) a real, deep
+    shutil.rmtree of a scratch subtree still succeeds with every primitive guarded.
+
+    What remains is a bounded residual and NOT an impossibility: a platform that can answer neither
+    F_GETPATH nor /proc/self/fd still gets the old waiver, because failing closed there would break
+    shutil.rmtree itself and with it the nine fixtures the waiver exists for. (7) pins that the
+    disclosure names it, and pins NEGATIVELY that it no longer claims the waiver "cannot be
+    narrower" -- a false impossibility claim in a guard over data with no backup is worse than a
+    disclosed hole, because it tells the next reader not to look.
+
+    Every attack is aimed at a FAKE repo under tmp_path, and the live half uses the REAL os.unlink,
+    so a win destroys a fake scorecard and nothing else.
+    """
+    import inspect
+    import shutil
+
+    import conftest
+
+    root = _fake_repo_for_deletion_guard(tmp_path)
+    course = os.path.join(root, "courses", "merion-golf-club")
+    victim = os.path.join(course, "course.json")
+    scratch = os.path.join(root, "courses", "_synth_ticks")
+    assert os.path.exists(victim), "the fake scorecard these attacks aim at must exist to be lost"
+    assert conftest._approved_subtree_depth == 0, "a stand-down was already open before the attack"
+
+    live_unlink = guarded_deleter(os.unlink, "os.unlink", root)
+    scratch_fd = os.open(scratch, os.O_RDONLY)
+    course_fd = os.open(course, os.O_RDONLY)
+    try:
+        # (0) the narrowing rests entirely on the descriptor resolving on this platform, so pin THAT
+        #     first. A resolver that silently answers None for every relative name restores the whole
+        #     blanket waiver while every other assertion here still passes -- which is exactly what
+        #     happened once, from a 4096-byte fcntl buffer that raises ValueError above 1024.
+        for label, fd, expected in (("the scratch dir", scratch_fd, scratch),
+                                    ("a real course", course_fd, course)):
+            resolved = conftest._dir_fd_dir(fd)
+            assert resolved is not None and os.path.samefile(resolved, expected), (
+                f"a descriptor for {label} did not resolve back to it ({resolved!r}); every dir_fd "
+                f"deletion during an approved rmtree is waived unjudged when this returns None, and "
+                f"shutil._use_fd_functions is True here, so the fd walk DOES happen")
+
+        # (1)-(4) the four judgeable spellings, each fired from inside an approved rmtree
+        for label, name, fd in (
+                ("an absolute path, whose dir_fd the kernel ignores outright", victim, scratch_fd),
+                ("an absolute path carrying the course's own descriptor", victim, course_fd),
+                ("a relative name resolved through a real course's descriptor", "course.json",
+                 course_fd),
+                ("a relative ../ escape out of the approved subtree",
+                 os.path.join(os.pardir, "merion-golf-club", "course.json"), scratch_fd),
+        ):
+            payload = guarded_deleter(
+                lambda p, *a, _n=name, _f=fd, **k: live_unlink(_n, dir_fd=_f),
+                "stub.rmtree", root, opens_subtree=True)
+            with pytest.raises(AssertionError, match="course data"):
+                payload(scratch)
+            assert os.path.exists(victim), (
+                f"the hand-transcribed scorecard was DESTROYED through {label} from inside the "
+                f"approved-subtree stand-down -- the waiver is wider than the one thing it was "
+                f"justified for")
+
+        # (5) the waiver still does the job it exists for: a relative name that resolves back INSIDE
+        #     the approved subtree, which is exactly what shutil.rmtree's own walk passes
+        walked = []
+        inner = guarded_deleter(lambda p, *a, **k: walked.append(p), "stub.unlink", root)
+        guarded_deleter(lambda p, *a, **k: inner("hole01.json", dir_fd=scratch_fd), "stub.rmtree",
+                        root, opens_subtree=True)(scratch)
+        assert walked == ["hole01.json"], (
+            "an approved rmtree must still be allowed to walk its own subtree with dir_fd; that is "
+            "how shutil.rmtree is implemented on macOS and Linux, and nine fixtures need it")
+    finally:
+        os.close(scratch_fd)
+        os.close(course_fd)
+
+    # (6) and the same thing for real: a DEEP shutil.rmtree of a scratch subtree, with os.unlink and
+    #     os.rmdir both guarded over the fake root, still empties it
+    deep = os.path.join(scratch, "a", "b", "c")
+    os.makedirs(deep, exist_ok=True)
+    for i in range(3):
+        with open(os.path.join(deep, f"hole{i:02d}.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+    monkeypatch.setattr(os, "unlink", guarded_deleter(os.unlink, "os.unlink", root))
+    monkeypatch.setattr(os, "rmdir", guarded_deleter(os.rmdir, "os.rmdir", root))
+    fake_rmtree = guarded_deleter(shutil.rmtree, "shutil.rmtree", root, opens_subtree=True)
+    fake_rmtree(scratch)
+    assert not os.path.exists(scratch), (
+        "the narrowed stand-down broke a legitimate deep scratch rmtree -- the nine fixtures that "
+        "build a directory under courses/ and remove it again all take this path")
+    assert os.path.exists(victim), "a scratch rmtree reached outside the subtree it was approved for"
+    with pytest.raises(AssertionError, match="course data"):
+        fake_rmtree(os.path.join(course, "dem_hd"))
+
+    # (7) the residual that is LEFT has to stay disclosed, and the impossibility claim has to stay
+    #     gone. Both directions, because the campaign this test belongs to keeps finding prose that
+    #     outlived the code it described.
+    disclosure = inspect.getdoc(conftest._deletion_cannot_reach_a_real_course.__wrapped__)
+    not_covered = disclosure.split("WHAT IS NOT:", 1)[1]
+    for token in ("dir_fd", "F_GETPATH", "/proc/self/fd"):
+        assert token in not_covered, (
+            f"the WHAT IS NOT list no longer names {token}. The waiver still stands down for a "
+            f"dir_fd deletion whose descriptor this platform cannot resolve, and an undisclosed "
+            f"residual in a session-wide interceptor over data with no backup is worse than a "
+            f"disclosed one")
+    for false_claim in ("cannot be narrower", "cannot be narrowed"):
+        assert false_claim not in disclosure, (
+            f"the disclosure claims the dir_fd waiver {false_claim!r}. The four attacks above just "
+            f"narrowed it. A false impossibility claim is worse than the hole it describes: it "
+            f"tells the next reader there is nothing to look for")
+
+    # (8) closing the relative half has one measured cost, and _canonical_forms' docstring claimed
+    #     the opposite. A symlink inside a scratch slug pointing at a real course USED to be removed
+    #     by the walk for free, because the walk was waived; the walk now judges that name -- the
+    #     leaf-literal reduction lands on course data -- and refuses the whole slug with it.
+    linked = os.path.join(root, "courses", "_synth_linked")
+    os.makedirs(linked, exist_ok=True)
+    os.symlink(course, os.path.join(linked, "peek"))
+    with pytest.raises(AssertionError, match="course data"):
+        fake_rmtree(linked)
+    assert "nearly free" not in inspect.getdoc(conftest._canonical_forms), (
+        "_canonical_forms still says refusing a symlink-to-a-real-course is 'nearly free today', "
+        "because an rmtree of the scratch slug holding it removes the link by dir_fd. Measured "
+        "immediately above: that rmtree is now REFUSED. The trade is deliberate, but the prose has "
+        "to describe the code that shipped")
 
 
 def test_the_course_template_documents_every_key_the_engine_reads():

@@ -58,13 +58,14 @@ def _canonical_forms(path):
     WHAT THAT COSTS, stated because it is a real refusal and not a theoretical one: the OTHER
     direction fails closed too. A symlink inside a scratch slug that points at a real course, or any
     symlink whose realpath lands in one, is REFUSED -- measured -- even though unlinking it would only
-    drop the link. That is the error direction this guard is built to err in, and it is nearly free
-    today: an rmtree of the scratch slug still removes such a link, because rmtree's walk unlinks it
-    by dir_fd. Only an explicit os.unlink of the link itself is refused. Not narrowed, because telling
-    "delete the link" apart from "delete the target" is the same comparison the third reduction above
-    exists to get right, and that reduction is the one that catches a symlink planted inside a real
-    course. A future fixture that symlinks a real course into scratch will have to unlink it some other
-    way; that is the trade, and it is deliberate.
+    drop the link. That is the error direction this guard is built to err in, and since the dir_fd
+    waiver was narrowed it costs the whole slug: an rmtree of the scratch directory HOLDING such a
+    link is refused too, because the walk's `os.unlink("peek", dir_fd=<the slug's fd>)` now resolves
+    to a judgeable path and this reduction judges it as course data. Measured, not supposed. Not
+    narrowed, because telling "delete the link" apart from "delete the target" is the same comparison
+    this third reduction exists to get right, and that reduction is the one that catches a symlink
+    planted inside a real course. A fixture that symlinks a real course into scratch will have to
+    unlink it some other way; that is the trade, and it is deliberate.
 
     An empty tuple is returned for anything that is not a path at all (an int, an object with no
     __fspath__, a name with an embedded NUL). The caller must read that as "refuse", never as "not
@@ -159,17 +160,77 @@ def rmtree_target_is_scratch(path, root):
 
 # shutil.rmtree walks with os.unlink(name, dir_fd=fd) / os.rmdir(name, dir_fd=fd) on this platform
 # (shutil._use_fd_functions is True on macOS and Linux). Those inner names are relative to a
-# descriptor, so the predicate cannot judge them -- but they are all inside a top-level path that was
-# already judged, so the wrappers stand down FOR THOSE and nothing else. The stand-down is scoped to
-# dir_fd deletions rather than to the whole call because rmtree hands control to caller code during
-# that walk: its onerror (3.11) / onexc (3.12) callback used to inherit a blanket stand-down, and
-# `shutil.rmtree(<scratch>, onerror=lambda *a: os.remove(<course.json>))` deleted the scorecard with
-# no refusal. A callback that deletes by PATH is judged like any other caller now, which closes both
-# callback spellings -- and any future rename of them -- without this file knowing the parameter list.
+# descriptor, so the predicate cannot judge them AS WRITTEN -- but they are all inside a top-level
+# path that was already judged, so the wrappers stand down FOR THOSE and nothing else. The stand-down
+# is scoped to dir_fd deletions rather than to the whole call because rmtree hands control to caller
+# code during that walk: its onerror (3.11) / onexc (3.12) callback used to inherit a blanket
+# stand-down, and `shutil.rmtree(<scratch>, onerror=lambda *a: os.remove(<course.json>))` deleted the
+# scorecard with no refusal. A callback that deletes by PATH is judged like any other caller now,
+# which closes both callback spellings -- and any future rename of them -- without this file knowing
+# the parameter list.
 # Depth-counted, not a bool, because a callback may itself rmtree a scratch directory, and a bool
 # would close the outer stand-down when that inner one returned. Single-threaded assumption stated
 # plainly: a dir_fd deletion on ANOTHER thread while an approved rmtree is in flight is not checked.
 _approved_subtree_depth = 0
+
+
+def _dir_fd_dir(fd):
+    """The directory `fd` names, or None where this platform cannot say.
+
+    The stand-down above was once justified by "a descriptor cannot be turned back into a path
+    portably", and then written to waive EVERY dir_fd deletion during an approved rmtree. Portably is
+    the load-bearing word, and it was doing too much work: the fd walk only happens where
+    shutil._use_fd_functions is True, which is macOS and Linux, and BOTH answer. macOS has
+    fcntl(fd, F_GETPATH); Linux has readlink("/proc/self/fd/N"). So on every platform that can reach
+    this code the descriptor resolves, and the waiver can be narrowed to the names that really are
+    unjudgeable. Neither call consumes or closes the descriptor -- rmtree keeps using it afterwards.
+
+    None is the honest answer elsewhere (a POSIX platform with neither F_GETPATH nor a mounted procfs)
+    and the caller keeps the old waiver for it. Failing closed there would refuse rmtree's own walk
+    and break the nine fixtures the waiver exists for, which trades a bounded, disclosed residual for
+    a suite that cannot run. See the WHAT IS NOT list.
+
+    The buffer is 1024 bytes and not one more: fcntl.fcntl raises ValueError("fcntl string arg too
+    long") above that, and 1024 is also MAXPATHLEN, which is the size F_GETPATH documents it needs.
+    A larger buffer looks harmless and is not -- it made every relative name resolve to None, which
+    read as "unjudgeable" and waived the deletion this helper exists to judge. Measured that way once.
+    """
+    try:
+        import fcntl
+        resolved = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\x00")
+        if resolved:
+            return os.fsdecode(resolved)
+    except (AttributeError, OSError, ValueError, TypeError):
+        pass
+    try:
+        return os.readlink(os.path.join(os.sep, "proc", "self", "fd", str(int(fd))))
+    except (AttributeError, OSError, ValueError, TypeError):
+        return None
+
+
+def _dir_fd_target(path, fd):
+    """The absolute path `(path, dir_fd=fd)` actually names, or None if it cannot be resolved.
+
+    Two spellings inside the old blanket waiver were fully judgeable, and each destroyed a fake
+    course.json 1 for 1 before this existed:
+
+      * an ABSOLUTE `path`. POSIX says the kernel IGNORES dir_fd entirely in that case, and
+        _canonical_forms resolves an absolute path perfectly -- so the case was never inside the
+        "cannot be resolved" rationale at all, yet it was waived.
+      * a RELATIVE `path` whose descriptor resolves, which is every platform that runs the fd walk.
+        This is also how `../` escapes out of the approved subtree.
+
+    `path` is returned unchanged when it cannot even be decoded, so the predicate refuses it as the
+    unreadable argument it is rather than this helper guessing.
+    """
+    try:
+        p = os.fsdecode(path)
+    except (TypeError, ValueError):
+        return path
+    if os.path.isabs(p):
+        return p
+    base = _dir_fd_dir(fd)
+    return None if base is None else os.path.join(base, p)
 
 _REFUSAL_ADVICE = (
     "  courses/ is gitignored -- no copy in history, none on a remote -- and course.json is a\n"
@@ -198,11 +259,20 @@ def guarded_deleter(real, call, root, opens_subtree=False):
     """
     def guarded(path, *a, **k):
         global _approved_subtree_depth
-        # The waiver is exactly as wide as its justification: a name relative to a file descriptor,
-        # inside an rmtree whose top-level path was already judged. Everything else -- including a
-        # deletion by path from an onerror/onexc callback running during that same walk -- is judged.
-        walking_own_subtree = _approved_subtree_depth and k.get("dir_fd") is not None
-        if not walking_own_subtree:
+        # The waiver is exactly as wide as its justification: a name this guard provably cannot judge,
+        # inside an rmtree whose top-level path was already judged. Everything else -- a deletion by
+        # path from an onerror/onexc callback running during that same walk, an ABSOLUTE name whose
+        # dir_fd the kernel ignores anyway, and a relative name whose descriptor this platform can
+        # resolve -- is judged.
+        fd = k.get("dir_fd")
+        if _approved_subtree_depth and fd is not None:
+            resolved = _dir_fd_target(path, fd)
+            if resolved is not None and not rmtree_target_is_scratch(resolved, root):
+                raise AssertionError(
+                    f"REFUSING {call}({path!r}, dir_fd={fd!r}) -> {resolved!r}: that is course data,\n"
+                    f"  not scratch space. An approved rmtree's stand-down covers only a name this\n"
+                    f"  guard cannot resolve; this one resolved.\n" + _REFUSAL_ADVICE)
+        else:
             refuse_unless_deletable(call, path, k, root)
         if not opens_subtree:
             return real(path, *a, **k)
@@ -239,15 +309,21 @@ def _deletion_cannot_reach_a_real_course():
         through the os module -- rasterio and laspy both write through Python, but nothing here
         enforces that.
       * another thread deleting while an approved rmtree is in flight.
-      * a deletion that passes dir_fd= WHILE an approved shutil.rmtree is in flight -- whether from
-        that rmtree's own onerror/onexc callback or from another thread. This is the residual the
-        stand-down still leaves, and it is measured rather than supposed: an onerror handler calling
-        os.unlink("course.json", dir_fd=<a real course's fd>) destroys the scorecard. The waiver
-        cannot be narrower, because a name relative to a descriptor is exactly what the predicate
-        cannot resolve to a directory portably, and nothing tells rmtree's own walk apart from
-        anyone else's. Two things bound it: nothing in this repo passes dir_fd at all, and outside an
-        approved rmtree it is refused outright. A callback deleting by PATH is checked -- that one WAS
-        open, and closed; see guarded_deleter.
+      * a deletion that passes dir_fd= WHILE an approved shutil.rmtree is in flight AND whose
+        descriptor this platform cannot resolve to a directory. That last clause is the whole of what
+        is left, and it is a bounded residual rather than an impossibility. The waiver used to cover
+        every dir_fd deletion during an approved rmtree, and called itself irreducible for it; two
+        spellings inside it were fully judgeable and each destroyed a fake course.json 1 for 1 when
+        it was attacked -- an ABSOLUTE name, whose dir_fd POSIX says the kernel ignores outright, and
+        a RELATIVE name whose descriptor resolves, which covers a `../` escape out of the approved
+        subtree. Both are judged now: see _dir_fd_target. What still stands down is a relative name on
+        a platform answering neither fcntl(fd, F_GETPATH) (macOS) nor readlink("/proc/self/fd/N")
+        (Linux) -- and those are exactly the two platforms where shutil._use_fd_functions is True, so
+        on anything that runs the fd walk at all there is nothing left here. Failing closed on an
+        unresolvable descriptor instead would refuse rmtree's own walk and break the nine fixtures
+        this waiver exists for. Three things bound it further: nothing in this repo passes dir_fd at
+        all, outside an approved rmtree it is refused whether it resolves or not, and a callback
+        deleting by PATH is checked -- that one WAS open, and closed; see guarded_deleter.
 
     Everything not under courses/ is delegated untouched, including pytest's own tmp_path cleanup --
     but on a PROOF that it is elsewhere (see _canonical_forms), not because the check failed to
