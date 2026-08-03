@@ -14890,20 +14890,74 @@ def _dist_to_hole_line(pt, line_em):
     return best
 
 
-def _shipped_footer_sand(slug):
-    """{hole: the N in "NB"} read off the built pocket book, {} when that course has no book."""
-    f = os.path.join(ROOT, "courses", slug, "greenbook.html")
-    if not os.path.exists(f):
-        return {}
-    with open(f, encoding="utf-8") as fh:
-        html = fh.read()
-    out = {}
+# The two editions state the SAME hazard count in different words: the pocket card prints "4B 1W"
+# (generate.hole_panel) and the ENLARGED coach card prints "4 bunkers &middot; 1 water"
+# (generate.coach_map_card). 25 of the 87 hazard footers the edge rule moved in 5eaaab7 are in coach
+# books, so a reader that knows only the pocket wording grades none of them: three whole books, and
+# the one edition actually handed to an adult, could go stale invisibly.
+_FOOTER_FORMS = (
+    ("pocket", "greenbook.html", re.compile(r"(\d+)B (\d+)W")),
+    ("coach", "greenbook_coach.html", re.compile(r"(\d+) bunkers &middot; (\d+) water")),
+)
+
+
+def _hazard_footers(html, pat):
+    """[(hole, bunkers)] for every hole panel in `html` whose footer states a hazard count."""
+    out = []
     for panel in re.findall(r'<div class="panel hole">.*?(?=<div class="panel|\Z)', html, re.S):
         hm = re.search(r'<div class="hnum">(\d+)</div>', panel)
-        bm = re.search(r"(\d+)B (\d+)W", panel)
+        bm = pat.search(panel)
         if hm and bm:
-            out[int(hm.group(1))] = int(bm.group(1))
+            out.append((int(hm.group(1)), int(bm.group(1))))
     return out
+
+
+def _shipped_footer_sand(slug):
+    """{(edition, hole): the N that edition's footer prints} over EVERY book built for `slug`.
+
+    Both editions, because a stale COACH book was invisible here: this read only greenbook.html and
+    matched only the pocket wording, so the enlarged edition's 54 hazard footers -- 25 of which the
+    edge rule moved -- were graded by nothing at all.
+
+    Keyed by (edition, hole) and not by hole, because a hole means two cards in the coach book, and not
+    by card index either: the index of a hole's map card differs between the editions, so it is not a
+    key the two books share, while the hole number is printed on both. The one risk keying on the hole
+    carries is a second card in the SAME book claiming the same hole, which is why that is asserted
+    rather than assumed -- today the coach GREEN card prints "Nyd deep" and no hazard count, so there
+    are exactly 18 hazard footers per coach book and no collision, and if one is ever added there this
+    reader says so instead of silently dropping half of what it was asked to grade.
+    """
+    out = {}
+    for edition, fname, pat in _FOOTER_FORMS:
+        f = os.path.join(ROOT, "courses", slug, fname)
+        if not os.path.exists(f):
+            continue
+        with open(f, encoding="utf-8") as fh:
+            html = fh.read()
+        for hole, bunkers in _hazard_footers(html, pat):
+            key = (edition, hole)
+            assert key not in out, (
+                f"{slug}'s {edition} book states a hazard count for hole {hole} on two cards "
+                f"({out[key]}B and {bunkers}B). This reader keys by (edition, hole), so one of them "
+                f"would be dropped -- give the second card its own edition name before adding it")
+            out[key] = bunkers
+    return out
+
+
+def _shipped_footer_count(slug):
+    """{edition: how many hazard footers that book contains}, counted WITHOUT splitting into panels.
+
+    The independent half of the coverage assertion in the sand test: if panel splitting ever loses a
+    card, the count of raw footer statements in the file still knows how many there were.
+    """
+    got = {}
+    for edition, fname, pat in _FOOTER_FORMS:
+        f = os.path.join(ROOT, "courses", slug, fname)
+        if not os.path.exists(f):
+            continue
+        with open(f, encoding="utf-8") as fh:
+            got[edition] = len(pat.findall(fh.read()))
+    return got
 
 
 @needs_corpus
@@ -14934,12 +14988,18 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
     the direction nothing asserted before: inside the bar means counted and inked. Over-reporting is
     the other test's job -- omitting is this one's.
 
-    Graded against the ENGINE and against the BUILT BOOK, because those are two different claims: the
-    engine's rule can be right while the shipped footer a junior reads is stale.
+    Graded against the ENGINE and against the BUILT BOOKS -- BOTH editions -- because those are three
+    different claims: the engine's rule can be right while the shipped footer a junior reads is stale,
+    and the pocket footer can be fresh while the enlarged one an adult reads is not. The two editions
+    word the same count differently ("4B 1W" against "4 bunkers &middot; 1 water"), and this test read
+    only the first for its whole life, which left 54 shipped footers -- 25 of them moved by the very fix
+    this test was written for -- graded by nothing. The coverage assertion below is what keeps that from
+    coming back quietly: it counts the footers it compared and requires every one present on disk.
     """
     named = {("the-reserve-at-spanos-park", 16): 681278621}
     omitted, stale, holes, reachable, errors = [], [], 0, 0, []
     seen_named, contributed = {}, collections.Counter()
+    graded, on_disk = collections.Counter(), collections.Counter()
     for slug in CORPUS:
         cfg, rh = _engine(slug)
         try:
@@ -14957,6 +15017,7 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
         sand = [g for g in course
                 if (g.get("tags") or {}).get("golf") == "bunker" and (g.get("geometry") or [])]
         shipped = _shipped_footer_sand(slug)
+        on_disk.update(_shipped_footer_count(slug))
         for hn in cfg.HOLE_NUMS:
             hole = lines.get(hn)
             if hole is None:
@@ -14984,14 +15045,18 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
             reachable += len(near)
             contributed[slug] += len(near)
             drawn = svg.count(SAND_FILL)
+            printed = {ed: shipped[(ed, hn)] for ed, _f, _p in _FOOTER_FORMS
+                       if (ed, hn) in shipped}
             if named.get((slug, hn)):
                 seen_named[(slug, hn)] = (named[(slug, hn)], dict(near).get(named[(slug, hn)]),
-                                          info["bunkers"], drawn, shipped.get(hn))
+                                          info["bunkers"], drawn, printed)
             if info["bunkers"] < len(near) or drawn < len(near):
                 omitted.append((slug, hn, sorted(near, key=lambda r: r[1])[:4],
                                 info["bunkers"], drawn))
-            if shipped.get(hn) is not None and shipped[hn] < len(near):
-                stale.append((slug, hn, len(near), shipped[hn], info["bunkers"]))
+            for ed, n in printed.items():
+                graded[ed] += 1
+                if n < len(near):
+                    stale.append((slug, hn, ed, len(near), n, info["bunkers"]))
     assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
     assert holes == expected_holes(), \
         f"examined {holes} holes but {expected_holes()} are present -- holes were skipped"
@@ -15000,6 +15065,23 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
         f"whole corpus -- the witness found nothing to check, so this test proves nothing")
     assert_no_course_skipped(contributed, "test_sand_the_hole_line_reaches_is_never_missing_from_the_card")
 
+    # EVERY FOOTER ON DISK WAS COMPARED. This test read only the pocket wording for its whole life, so
+    # the enlarged edition's footers were outside it and nothing said so. `on_disk` counts the footer
+    # statements in the files without splitting them into panels, so this also catches a card lost to
+    # the panel split rather than to a missing edition.
+    assert graded == on_disk, (
+        f"the built books hold {dict(on_disk)} hazard footers and this test compared {dict(graded)}. "
+        f"Every footer that states a hazard count has to be graded -- an edition this test cannot read "
+        f"is an edition that can ship a stale count")
+    # ...and that both halves above are not blind TOGETHER: they share _FOOTER_FORMS, so the presence
+    # of an enlarged edition is re-derived from the filesystem instead.
+    coach_books = [s for s in CORPUS
+                   if os.path.exists(os.path.join(ROOT, "courses", s, "greenbook_coach.html"))]
+    assert bool(coach_books) == bool(graded["coach"]), (
+        f"{len(coach_books)} enlarged edition(s) are built here ({coach_books}) but this test compared "
+        f"{graded['coach']} of their footers -- the wording _FOOTER_FORMS matches has drifted from the "
+        f"wording generate.coach_map_card prints")
+
     # THE NAMED CARD. Skipped only if that course is not built here, and never silently: its absence
     # must not be indistinguishable from its passing.
     for key, way in named.items():
@@ -15007,7 +15089,7 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
         if slug not in CORPUS:
             continue
         assert key in seen_named, f"{slug} hole {hn} was never examined"
-        got_way, dist, counted, drawn, shipped_n = seen_named[key]
+        got_way, dist, counted, drawn, printed = seen_named[key]
         assert dist is not None, (
             f"{slug} hole {hn}: way {way} is no longer within {SAND_CORRIDOR_M:g} m of the hole line, so "
             f"this card can no longer witness the omission it was chosen for -- re-measure it rather "
@@ -15020,12 +15102,12 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
             f"{slug} hole {hn} counts {counted}B and inks {drawn} bunker(s) while way {way} -- "
             f"{SAND_CASE_AREA_M2:,} m^2 of sand -- comes {dist} m from the hole line. That card "
             f"shipped as 4B with blank ground over it")
-        assert shipped_n is None or shipped_n >= 5, (
-            f"{slug} hole {hn}: the BUILT book still prints {shipped_n}B while the engine counts "
+        assert all(n >= 5 for n in printed.values()), (
+            f"{slug} hole {hn}: a BUILT book still prints {printed} while the engine counts "
             f"{counted}B -- rebuild the books")
     assert not stale, (
         f"{len(stale)} built card(s) print fewer bunkers than the hole line reaches -- (course, hole, "
-        f"reachable, printed B, engine B): {stale[:6]}{' ...' if len(stale) > 6 else ''}")
+        f"edition, reachable, printed B, engine B): {stale[:6]}{' ...' if len(stale) > 6 else ''}")
     assert not omitted, (
         f"{len(omitted)} card(s) omit sand the hole line reaches -- (course, hole, [(way, metres from "
         f"the hole line)], counted B, drawn bunkers): {omitted[:6]}"
