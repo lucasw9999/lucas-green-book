@@ -55,26 +55,53 @@ def _canonical_forms(path):
         a symlink -- unlink removes the link, not its target, so a symlink sitting INSIDE a real
         course is that course's data even though realpath points elsewhere.
 
+    WHAT THAT COSTS, stated because it is a real refusal and not a theoretical one: the OTHER
+    direction fails closed too. A symlink inside a scratch slug that points at a real course, or any
+    symlink whose realpath lands in one, is REFUSED -- measured -- even though unlinking it would only
+    drop the link. That is the error direction this guard is built to err in, and it is nearly free
+    today: an rmtree of the scratch slug still removes such a link, because rmtree's walk unlinks it
+    by dir_fd. Only an explicit os.unlink of the link itself is refused. Not narrowed, because telling
+    "delete the link" apart from "delete the target" is the same comparison the third reduction above
+    exists to get right, and that reduction is the one that catches a symlink planted inside a real
+    course. A future fixture that symlinks a real course into scratch will have to unlink it some other
+    way; that is the trade, and it is deliberate.
+
     An empty tuple is returned for anything that is not a path at all (an int, an object with no
-    __fspath__). The caller must read that as "refuse", never as "not course data".
+    __fspath__, a name with an embedded NUL). The caller must read that as "refuse", never as "not
+    course data".
+
+    The whole normalisation is inside the try, not just the fsdecode: a NUL-byte name decodes fine and
+    then raises ValueError out of os.path.abspath, which escaped the predicate as an exception instead
+    of returning False. It failed CLOSED at the wrapper either way -- an exception through
+    `if not rmtree_target_is_scratch(...)` deletes nothing -- but the docstring below promises one
+    early `return False` for a path that cannot be read at all, and that has to be true of every one
+    of them.
     """
     try:
         p = os.fsdecode(path)          # bytes and os.PathLike both become str; an int raises TypeError
+        if not p:
+            return ()
+        lexical = os.path.abspath(p)   # ValueError on an embedded NUL, hence the wider try
+        forms = [lexical, os.path.realpath(lexical)]
+        head, leaf = os.path.split(lexical)
+        if leaf not in ("", os.curdir, os.pardir):
+            forms.append(os.path.join(os.path.realpath(head), leaf))
+        return tuple(dict.fromkeys(_fold(f) for f in forms))
     except (TypeError, ValueError):
         return ()
-    if not p:
-        return ()
-    lexical = os.path.abspath(p)
-    forms = [lexical, os.path.realpath(lexical)]
-    head, leaf = os.path.split(lexical)
-    if leaf not in ("", os.curdir, os.pardir):
-        forms.append(os.path.join(os.path.realpath(head), leaf))
-    return tuple(dict.fromkeys(_fold(f) for f in forms))
 
 
 def _classify(p, courses):
-    """What is one canonical spelling `p` to one canonical spelling of `courses`?"""
-    if p == courses or courses.startswith(p + os.sep):
+    """What is one canonical spelling `p` to one canonical spelling of `courses`?
+
+    `p.rstrip(os.sep)` before building the ancestor prefix, because this test asked
+    `courses.startswith(p + os.sep)` and for p == "/" that builds "//", which no absolute path starts
+    with -- so the ONE directory that contains every course on the machine was the one ancestor this
+    guard permitted, while /Users, the home directory, the repo root and its parent were all correctly
+    refused. It cannot cost a legitimate scratch path anything: `p` reaches here from
+    os.path.abspath, which strips trailing separators from everything except the root itself.
+    """
+    if p == courses or courses.startswith(p.rstrip(os.sep) + os.sep):
         return _COURSE_DATA            # courses/ itself, or any directory that HOLDS it
     if not p.startswith(courses + os.sep):
         return _OUTSIDE
@@ -103,6 +130,13 @@ def rmtree_target_is_scratch(path, root):
     The shape now is: canonicalise both sides every way they could be read, classify the full cross
     product, and permit only if _COURSE_DATA appears nowhere in it. There is one early `return False`
     (a path that cannot be read at all) and one final return that states what it proved.
+
+    A FIFTH spelling failed open in BOTH the old predicate and this rewrite, so the list above was an
+    under-count until it was measured: the filesystem root. `/`, `//`, `///`, `/../` and `/./` all
+    canonicalise to `/`, and the ancestor test built its prefix as `p + os.sep` -- "//" for the root --
+    which no absolute path starts with. So the one directory containing every course on the machine
+    was permitted while /Users, the home directory, the repo root and its parent were all refused.
+    See _classify.
 
     Two things it is NOT: it does not stop a rewrite in place (that is _courses_are_read_only's job,
     at teardown), and it does not know about deletions that never enter Python -- a subprocess

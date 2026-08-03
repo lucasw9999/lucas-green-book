@@ -817,6 +817,17 @@ DELETION_GUARD_TRUTH_TABLE = [
      lambda r, t: os.path.join(r, "courses"), False),
     ("the repo root, which contains courses/", lambda r, t: r, False),
     ("the parent of the repo root", lambda r, t: str(t), False),
+    # ...and the top of that chain, which the ancestor test got wrong by one separator: it asked
+    # courses.startswith(p + os.sep), and for p == "/" that builds "//", which no absolute path
+    # starts with. So the one directory that contains EVERY course was the one ancestor permitted.
+    ("the filesystem root, which contains courses/ like every other ancestor",
+     lambda r, t: os.sep, False),
+    ("the filesystem root with a doubled separator", lambda r, t: os.sep * 2, False),
+    ("the filesystem root with a tripled separator", lambda r, t: os.sep * 3, False),
+    ("the filesystem root reached through .. from itself",
+     lambda r, t: os.sep + os.pardir + os.sep, False),
+    ("the filesystem root spelled with a curdir component",
+     lambda r, t: os.sep + os.curdir + os.sep, False),
     # the four that FAILED OPEN before this table existed
     ("a real course spelled in a different case (APFS and NTFS fold it to the same directory)",
      lambda r, t: os.path.join(r, "COURSES", "Merion-Golf-Club"), False),
@@ -916,7 +927,13 @@ def test_the_deletion_guard_denies_by_default_over_every_spelling_of_a_real_cour
         "a real course is still a real course when the repo root is reached through a symlink"
 
     # ...and a predicate that cannot read its argument at all must refuse, never fall through to allow
-    for junk in (5, None, object(), b"", ""):
+    # -- and must do it by RETURNING False, which is what its docstring promises. The NUL-byte
+    # spellings escaped as a ValueError out of _canonical_forms' os.path.abspath instead, which is
+    # outside the try that guards os.fsdecode. They failed CLOSED at the wrapper (the assertion above
+    # pins that a raising predicate propagates and deletes nothing), so this is a contract defect
+    # rather than a data-loss one -- but "one early return False" has to be true of every unreadable
+    # path, or the next caller to add a try/except around the predicate reopens it as an ALLOW.
+    for junk in (5, None, object(), b"", "", "a\x00b", b"a\x00b", "\x00"):
         assert not rmtree_target_is_scratch(junk, root), \
             f"{junk!r} is not a path; a guard that cannot read its argument must refuse"
 
@@ -8489,7 +8506,7 @@ def test_course_json_is_written_atomically(tmp_path):
 
 
 def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
-    """Staged writes in this project stage a `.part` and rename it. None swept up after itself.
+    """Staged writes in this project stage a `.part` and rename it. Two of them swept up after themselves.
 
     Staging is the right shape -- os.replace is atomic, so an interrupted write cannot be mistaken for
     a finished one -- but the failure path was never finished. An exception between "open the .part"
@@ -8498,15 +8515,31 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
       * tools/lidar_dates.py write_lidar_flown -> courses/<slug>/course.json.part
       * surface_io.commit_surface -> courses/<slug>/dem_hd/.holeNN.npy.part and .holeNN.json.part
 
-    THERE WAS A THIRD, and this docstring used to say "both", which is how it stayed unfixed while its
-    two siblings were being repaired for the identical defect: fetch_hole_elev staged
-    courses/<slug>/hole_elev.json.part with no `finally`, and nothing globs for it -- the sweep below is
-    dem_hd-only by its own `.hole*.part` pattern. It is driven in
-    test_the_third_staged_write_sweeps_up_after_a_failure, which needs a course on disk to import its
-    module, so it lives with the other hole_elev tests rather than here.
+    THE CENSUS WAS WRONG TWICE, which is how each newly-found one stayed unfixed while its siblings
+    were being repaired for the identical defect. This docstring said "both"; the commit that
+    corrected it said "there were three". Counted mechanically at every `os.replace` of a `.part` in
+    the tree, there are EIGHT staged writers committing NINE renames (commit_surface makes two):
 
-    Nothing removes either. fetch_lidar.py:sweep_stale_parts and fetch_lidar_alameda both do exactly
-    this for laz/, with the argument that applies unchanged here -- a .part is never valid data,
+      under courses/<slug>/ -- the one directory NO sweep reaches:
+        1. tools/lidar_dates.write_lidar_flown   -> course.json
+        2. fetch_hole_elev.write_hole_elev       -> hole_elev.json
+        3. fetch_trees.write_layer               -> trees_lidar.json
+        4. fetch_osm.fetch                       -> osm_geom.json, osm_relations.json
+        5. fetch_osm.main                        -> osm_course.json
+      under courses/<slug>/dem_hd/ -- swept by surface_io.sweep_staged (`.hole*.part`):
+        6. surface_io.commit_surface             -> .holeNN.npy, .holeNN.json
+      under courses/<slug>/laz/ -- swept by fetch_lidar.sweep_stale_parts (`*.part`):
+        7. fetch_lidar
+        8. fetch_lidar_alameda
+
+    All eight carry a failure-path cleanup now. Numbers 2 and 3 are driven elsewhere because they
+    need a course on disk to import their module -- write_hole_elev in
+    test_the_third_staged_write_sweeps_up_after_a_failure, fetch_trees.write_layer with the other tree
+    tests -- and 4 and 5 in test_the_two_osm_cache_writes_sweep_up_after_a_failure, which was the last
+    pair added and the reason the count above is enumerated rather than asserted as a word.
+
+    fetch_lidar.py:sweep_stale_parts and fetch_lidar_alameda both sweep as well as clean up, with the
+    argument that applies unchanged here -- a .part is never valid data,
     because both are only renamed into place after the write returns. There is a real example on disk
     from a killed download, dated the day before this was written.
 
@@ -8876,6 +8909,132 @@ def test_a_failed_relation_pass_cannot_strip_osm_course_of_its_flattened_rings(t
     assert all(e.get("geometry") for e in kept), "a written ring must carry geometry"
     ids = {e["id"] for e in on_disk["elements"]}
     assert {e["id"] for e in fetched} <= ids, "the fetched features must survive the rewrite too"
+
+
+def test_the_two_osm_cache_writes_sweep_up_after_a_failure(tmp_path, monkeypatch):
+    """fetch_osm.py stages a `.part` in TWO places and had a `finally` in neither.
+
+    Every other staged writer in this project grew one -- tools/lidar_dates.write_lidar_flown,
+    surface_io.commit_surface, fetch_hole_elev.write_hole_elev, fetch_trees.write_layer -- and the
+    commit messages that did that work said "both staged writes", then "there were three". Both
+    undercounted: these two were never in the census, so they were never repaired.
+
+    They are the worst two to leave out, for two reasons.
+
+      * WHAT THEY WRITE. osm_geom.json holds the green polygons every card's slope map is rasterised
+        against, and some of those greens are HAND-DIGITIZED from public-domain NAIP because OSM has
+        none -- _digitized_of's docstring says it plainly: courses/ is gitignored, so this file is
+        the only copy, and there is no script that regenerates them. osm_course.json is the file an
+        aborted relation pass already stripped of 18 fairway rings once, silently and permanently.
+      * WHERE THE FIRST ONE SITS. fetch() writes inside a `for attempt in range(4)` retry loop whose
+        `except Exception` PRINTS and retries. So a failure at the write is swallowed: the run keeps
+        going, tries again, and on the fourth failure raises "FAILED to fetch" -- with a
+        `osm_geom.json.part` left beside the only copy of the greens and nothing anywhere reporting
+        it. Nor does any sweep reach it: surface_io.sweep_staged matches dem_hd's dot-prefixed
+        `.hole*.part` only, and fetch_lidar.sweep_stale_parts is laz/-only. courses/<slug>/ itself is
+        the one directory nothing sweeps.
+
+    Both failures are induced between the staged open and the rename, which is the whole window a
+    `finally` exists for:
+      * fetch() -- the stubbed reply hands back str where Overpass hands back bytes, so json.loads
+        and _check_response both pass and `f.write(data)` on the BINARY staging handle raises. Same
+        trick as the Unencodable objects the sibling staged-write tests use: what matters is an
+        exception after the .part exists, not which one.
+      * main() -- _flatten_relations is stubbed to return something json.dump cannot encode, so the
+        text staging handle takes partial content and then raises.
+
+    Never touches courses/: _osm_fetch_harness repoints config.COURSE_DIR at tmp_path, so the real
+    caches are not readable or writable from here.
+    """
+    import time
+
+    ring = [{"lat": 38.20, "lon": -121.30}, {"lat": 38.20, "lon": -121.299},
+            {"lat": 38.201, "lon": -121.299}, {"lat": 38.20, "lon": -121.30}]
+
+    def way(i, tags):
+        return {"type": "way", "id": i, "tags": dict(tags), "geometry": list(ring)}
+
+    greens = {"version": 0.6, "elements": [way(400 + i, {"golf": "green"}) for i in range(18)]}
+
+    # (1) fetch()'s cache write, inside the retry loop that swallows the exception
+    fetch_osm, queries = _osm_fetch_harness(tmp_path, monkeypatch, {'way["golf"="green"]': greens})
+
+    class _StrResp:
+        """Overpass's bytes, handed back as str -- parses fine, then fails the binary write."""
+
+        def read(self):
+            return json.dumps(greens)
+
+    import urllib.parse
+    import urllib.request
+    real_urlopen = urllib.request.urlopen
+
+    def _str_urlopen(req, timeout=None):
+        queries.append(urllib.parse.unquote(getattr(req, "full_url", None) or str(req)))
+        return _StrResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _str_urlopen)
+    # four attempts sleep 5 s each; the retry loop is the subject, not the wall clock
+    monkeypatch.setattr(time, "sleep", lambda *a, **k: None)
+
+    with pytest.raises(SystemExit) as ei:
+        fetch_osm.fetch('way["golf"="green"](0,0,1,1);out geom tags;', "osm_geom.json")
+    assert "FAILED to fetch" in str(ei.value), (
+        f"the write was supposed to fail four times and exhaust the retry loop: {ei.value}")
+    assert len(queries) == 4, f"the retry loop must have run 4 attempts, ran {len(queries)}"
+    left = sorted(os.listdir(str(tmp_path)))
+    assert left == [], (
+        f"a failed osm cache write left staging litter beside the only copy of the green polygons: "
+        f"{left}. The retry loop's `except Exception` swallowed the failure, so nothing reported it "
+        f"either -- and courses/<slug>/ is the one directory no sweep reaches.")
+
+    # ...and the cache itself must not have been created from a write that never completed
+    assert not os.path.exists(os.path.join(str(tmp_path), "osm_geom.json")), \
+        "a failed write must leave no cache at all, not a partial one"
+
+    # (2) main()'s osm_course.json write, which has no retry loop and no `finally` either
+    monkeypatch.setattr(urllib.request, "urlopen", real_urlopen)
+    fetched = ([way(100 + i, {"golf": "tee"}) for i in range(14)]
+               + [way(200 + i, {"golf": "bunker"}) for i in range(12)]
+               + [way(300 + i, {"building": "yes"}) for i in range(6)])
+    rel_ok = {"version": 0.6, "elements":
+              [{"type": "relation", "id": 777, "tags": {"golf": "fairway"},
+                "members": [{"type": "way", "ref": 900, "role": "outer"}]},
+               {"type": "way", "id": 900, "geometry": list(ring)}]}
+    fetch_osm, queries = _osm_fetch_harness(tmp_path, monkeypatch, {
+        'way["golf"="green"]': greens,
+        'relation["golf"]': rel_ok,
+        'way["golf"]': {"version": 0.6, "elements": fetched},
+    })
+
+    class Unencodable:
+        pass
+
+    real_flatten = fetch_osm._flatten_relations
+    monkeypatch.setattr(fetch_osm, "_flatten_relations", lambda els: [Unencodable()])
+    with pytest.raises(TypeError):
+        fetch_osm.main()
+    assert any('relation["golf"]' in q for q in queries), \
+        "the relation pass was never reached, so the osm_course.json write was never attempted"
+    assert not os.path.exists(os.path.join(str(tmp_path), "osm_course.json.part")), (
+        "a failed osm_course.json write left osm_course.json.part under courses/, beside the file an "
+        "aborted relation pass has already stripped of its fairway rings once")
+
+    # (3) and both must still land on the happy path -- "leaves nothing staged" is also satisfied by
+    # never writing at all, which is the defect the relation pass exists to fix
+    monkeypatch.setattr(fetch_osm, "_flatten_relations", real_flatten)
+    fetch_osm.main()
+    for name in ("osm_geom.json", "osm_course.json", "osm_relations.json"):
+        assert os.path.exists(os.path.join(str(tmp_path), name)), \
+            f"a successful run must commit {name}"
+    staged = [n for n in os.listdir(str(tmp_path)) if n.endswith(".part")]
+    assert staged == [], f"a successful run must leave nothing staged: {staged}"
+
+    # the writers must go through a `finally`, or this test is grading one exception shape only
+    src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+    assert src.count("os.remove(tmp)") == 2, (
+        "fetch_osm.py has two staged writers and each needs its own failure-path cleanup; found "
+        f"{src.count('os.remove(tmp)')}")
 
 
 def test_waiving_churn_on_a_volatile_kind_does_not_waive_the_green_check(tmp_path):
@@ -10972,7 +11131,11 @@ def test_the_third_staged_write_sweeps_up_after_a_failure(tmp_path):
     """hole_elev.json is written through a `.part` too, and THAT one had no `finally`.
 
     test_no_staged_write_leaves_its_part_file_behind fixed the other two -- course.json and the surface
-    pair -- and said "both staged writes in this project". There were three. fetch_hole_elev staged to
+    pair -- and said "both staged writes in this project". This test's own name then said "the third".
+    Both counts were low: there are EIGHT staged writers in the tree, enumerated in that test's
+    docstring, and the last two (fetch_osm's) were found only after this one. The name is kept because
+    it is the name in the history; the census lives in one place rather than in each of these
+    docstrings. fetch_hole_elev staged to
     hole_elev.json.part, renamed it, and had nothing on the failure path; nor does any sweep glob for
     it (surface_io.sweep_staged is dem_hd-only, by its own pattern `.hole*.part`).
 
