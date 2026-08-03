@@ -19385,10 +19385,18 @@ def test_no_competitor_brand_name_appears_in_any_book():
 
     Read with PyMuPDF, which requirements.txt already declares OPTIONAL and tools/check_scale.py already
     uses to measure the printed scale bar -- so this needs no new dependency and no new row in
-    legal/10. Guarded, as an optional package must be; without it the HTML half still runs. Proven to
-    read real text rather than silently returning nothing: the scan finds the control string "Lucas
-    Green Book" in 30 of 30 book files, so a zero-hit brand result is a measurement and not an empty
-    reader."""
+    legal/10. Guarded, as an optional package must be; without it the HTML half still runs to a verdict,
+    so a brand name in the HTML is a FAILURE on such a machine and not a skip. Proven to read real text
+    rather than silently returning nothing: the scan finds the control string "Lucas Green Book" in 30 of
+    30 book files, so a zero-hit brand result is a measurement and not an empty reader.
+
+    The two halves each carry a floor -- `n_html` AND `n_pdf` -- and when PyMuPDF is absent the run ends
+    in the house skip naming it. That is the whole point of the last three lines: this test counted
+    `n_pdf` and then never asserted or mentioned it, so on a machine without the optional package it read
+    fifteen HTML files, zero PDFs, and printed the same single dot as a full run. Half of a claim about
+    "all HTML/PDF", reported as all of it. Pinned by
+    test_the_brand_scan_reports_it_when_the_pdf_half_did_not_run, which shadows fitz and requires this to
+    say so."""
     BRANDS = ("StrackaLine", "Stracka Line", "GolfLogix", "Golf Logix", "SwingU", "18Birdies",
               "Arccos", "TheGrint", "Hole19")
     CONTROL = "lucas green book"
@@ -19397,13 +19405,18 @@ def test_no_competitor_brand_name_appears_in_any_book():
              + sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf")))
              if distribution_is_corpus(os.path.basename(os.path.dirname(p)))]
     assert len(books) >= 10, f"only {len(books)} book file(s) found to scan"
+    # Hoisted out of the loop so there is ONE place that knows whether the PDF half can run, and one
+    # place that reports it. Inside the loop this was a per-file `continue`, which is how fifteen
+    # unread PDFs became invisible.
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
     n_html = n_pdf = 0
     for p in books:
         rel = os.path.relpath(p, ROOT)
         if p.endswith(".pdf"):
-            try:
-                import fitz
-            except ImportError:
+            if fitz is None:
                 continue
             with fitz.open(p) as doc:
                 text = "".join(page.get_text() for page in doc)
@@ -19422,6 +19435,66 @@ def test_no_competitor_brand_name_appears_in_any_book():
         "them would prove nothing: " + ", ".join(controls_missed))
     assert not hits, ("legal/00 states that no competitor brand name appears anywhere in any book, "
                       "grep-verified across all HTML/PDF. Found:\n  " + "\n  ".join(hits))
+    # LAST, deliberately: everything the HTML half can say has been said above, so a brand name found in
+    # the HTML is reported as a FAILURE even on a machine that cannot read the PDFs. Only then does the
+    # unmeasured half turn into the house skip, and only then is the PDF floor asserted.
+    if fitz is None:
+        pytest.skip("pymupdf not installed: the HTML half of this scan ran, the PDF half did not, so "
+                    "legal/00's claim across all HTML/PDF is only half measured here")
+    assert n_pdf >= 10, f"only {n_pdf} PDF book(s) scanned"
+
+
+@needs_corpus
+def test_the_brand_scan_reports_it_when_the_pdf_half_did_not_run(tmp_path, monkeypatch):
+    """The scan above backs legal/00's "across all HTML/PDF", and its PDF half could silently not run.
+
+    PyMuPDF is deliberately optional here -- it is AGPL and legal/10 records the decision not to depend
+    on it -- so `import fitz` is guarded, which is correct. What was wrong is what the guard reported: it
+    counted `n_pdf`, never asserted or mentioned it, and the test's only floor was `n_html >= 10`. So on
+    a machine without PyMuPDF -- the normal case for the dependency this project chose not to require --
+    the scan read fifteen HTML files, zero PDFs, and printed the same single dot as a full run. A check
+    that cannot be told apart from one that did not run is the defect this suite exists to catch, and
+    here it sat under a claim about the artifact that actually leaves this machine.
+
+    The experiment, not a source pattern: `fitz` is shadowed by a module that raises ImportError, which
+    is exactly what the absent package looks like to the guard, and the scan is then called. Measured on
+    the tree that had the defect, it reported `1 passed` in 0.43s having opened no PDF at all (2.99s with
+    the real PyMuPDF). It must now say so instead -- SKIPPED, naming pymupdf -- while its HTML half still
+    runs to a verdict, so a brand name in the HTML is still a FAILURE and not a skip on such a machine.
+
+    Shadowed through monkeypatch rather than by hand so the restore cannot be forgotten, and because a
+    hand-rolled `sys.modules.pop` here would add two more sites to the figure README publishes about how
+    much cross-test state this suite carries -- a number that should move when the suite's state handling
+    changes, not when a test borrows the fixture that exists for this.
+    """
+    (tmp_path / "fitz.py").write_text('raise ImportError("simulated", name="fitz")\n',
+                                      encoding="utf-8")
+    monkeypatch.delitem(sys.modules, "fitz", raising=False)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    # The shadow has to bite, or everything below is vacuous: with the real PyMuPDF still reachable the
+    # scan would pass for the honest reason and this test would be reading nothing.
+    with pytest.raises(ImportError):
+        importlib.import_module("fitz")
+
+    outcome = None
+    try:
+        test_no_competitor_brand_name_appears_in_any_book()
+    except pytest.skip.Exception as e:
+        outcome = f"SKIPPED: {e}"
+    except AssertionError as e:
+        outcome = f"FAILED: {str(e).splitlines()[0]}"
+
+    assert outcome is not None, (
+        "with PyMuPDF shadowed by a module that will not import, the brand scan PASSED. It read no PDF "
+        "at all, and reported that as a green run indistinguishable from one that read all fifteen -- "
+        "so legal/00's 'grep-verified across all HTML/PDF' is verified across HTML only on every "
+        "machine that took requirements.txt at its word and did not install the optional AGPL package.")
+    assert "pymupdf" in outcome.lower(), (
+        "the brand scan noticed that its PDF half could not run, but what it said does not name the "
+        "missing package, so a maintainer cannot tell this from a real failure: " + outcome)
+    assert outcome.startswith("SKIPPED"), (
+        "a missing optional dependency must skip, not fail -- PyMuPDF is optional on purpose and a "
+        "fresh clone has to get a clean suite without it: " + outcome)
 
 
 def test_the_template_says_which_of_its_fields_the_engine_never_reads():
