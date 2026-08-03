@@ -8542,9 +8542,26 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
     dem.mkdir()
     base = str(dem / "hole03")
     arr = np.zeros((8, 8))
+
+    # WHY os.listdir and not glob below, pinned rather than commented. The staged names are
+    # DOT-PREFIXED (.hole03.npy.part), and glob does not match a leading dot. All three assertions in
+    # this section were written as glob.glob(dem/"*") and were therefore VACUOUS: they returned []
+    # whether or not the litter was there, so deleting commit_surface's entire `finally` left this
+    # test -- and the whole suite -- green. Measured: after a failed commit, glob saw [] while
+    # os.listdir saw ['.hole03.json.part', '.hole03.npy.part']. That is the second time a dot prefix
+    # has defeated a check in this project, so the reason is asserted, not trusted.
+    probe = dem / os.path.basename(surface_io.staged_names(base)[0])
+    probe.write_text("x", encoding="utf-8")
+    assert glob.glob(os.path.join(str(dem), "*")) == [], (
+        "glob now matches a leading dot, so the three os.listdir calls below could go back to glob -- "
+        "but check that before changing them, because this is what made them vacuous")
+    assert os.listdir(str(dem)) == [probe.name], \
+        "os.listdir must see the dot-prefixed staged file that glob cannot"
+    probe.unlink()
+
     with pytest.raises(TypeError):
         surface_io.commit_surface(base, arr, {"hole": 3, "bbox": Unencodable()})
-    left = sorted(os.path.basename(p) for p in glob.glob(os.path.join(str(dem), "*")))
+    left = sorted(os.listdir(str(dem)))
     assert left == [], (
         f"an interrupted surface commit left staging litter in dem_hd: {left}. The .npy is written "
         f"first, so a meta that fails to encode leaves BOTH a stale array and the marker that is "
@@ -8552,7 +8569,7 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
 
     # ...and a successful commit still leaves exactly the pair, with nothing staged
     surface_io.commit_surface(base, arr, {"hole": 3, "bbox": [0, 0, 1, 1], "W": 8, "H": 8})
-    assert sorted(os.path.basename(p) for p in glob.glob(os.path.join(str(dem), "*"))) == \
+    assert sorted(os.listdir(str(dem))) == \
         ["hole03.json", "hole03.npy"], "a successful commit must leave the pair and nothing else"
 
     # (3) and the sweep that catches what no `finally` can -- a SIGKILL, a laptop asleep, power loss.
@@ -8563,7 +8580,7 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
     assert sorted(os.path.basename(p) for p in swept) == \
         [".hole03.json.part", ".hole03.npy.part", ".hole07.json.part"], \
         f"the sweep did not remove every staged file: {swept}"
-    assert sorted(os.path.basename(p) for p in glob.glob(os.path.join(str(dem), "*"))) == \
+    assert sorted(os.listdir(str(dem))) == \
         ["hole03.json", "hole03.npy"], "the sweep took a real surface with it"
     # and it must be called where a build starts, or it is another guard nobody runs
     for mod in ("fetch_dem.py", "fetch_dem_hd.py"):
@@ -10476,7 +10493,11 @@ def test_a_failed_tree_write_cannot_truncate_the_layer_or_hide_behind_a_bare_exc
         ft.write_layer(p, {"1": [[41.0, -76.0]]})
         with open(p, encoding="utf-8") as f:
             assert json.load(f) == {"1": [[41.0, -76.0]]}, "a successful write must land"
-        assert sorted(os.path.basename(x) for x in glob.glob(os.path.join(td, "*"))) == \
+        # os.listdir, not glob.glob(td/"*"): glob does not match a leading dot, and the identical
+        # assertion over surface_io's DOT-PREFIXED staged names was vacuous for exactly that reason.
+        # This writer stages trees_lidar.json.part, which glob would see -- but the check should not
+        # depend on that, because dot-prefixing a staged name is what this project does elsewhere.
+        assert sorted(os.listdir(td)) == \
             ["trees_lidar.json"], "a successful write must leave nothing staged"
 
     src = open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8").read()
@@ -10998,7 +11019,7 @@ def test_the_third_staged_write_sweeps_up_after_a_failure(tmp_path):
     fhe.write_hole_elev(p, {"holes": {"1": {"change_ft": 5.0}}, "source": "x"})
     with open(p, encoding="utf-8") as f:
         assert json.load(f)["holes"]["1"]["change_ft"] == 5.0, "a successful write must land"
-    assert sorted(os.path.basename(x) for x in glob.glob(os.path.join(str(d), "*"))) == \
+    assert sorted(os.listdir(str(d))) == \
         ["hole_elev.json", "unguarded.json.part"], \
         "a successful write must leave the file and nothing staged"
 
