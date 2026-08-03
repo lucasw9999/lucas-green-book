@@ -46,16 +46,25 @@ R_LAT = 111320.0                    # metres per degree of latitude (mean)
 # to 1.5e-5 yd over all 198 greens, so this is the model's error and not a measurement artifact.
 #
 # NOT CORRECTED, deliberately, and it is not a one-line change. `R_LAT = 111320.0` is re-declared as a
-# literal in eight shipped modules rather than imported from here (fetch_dem.py, fetch_dem_hd.py,
-# fetch_hole_elev.py, fetch_trees.py, render_green.py, render_hole.py, tools/check_scale.py,
-# tools/verify_elevation.py); check_scale.py re-derives it to gate the Rule 4.3 print scale, so a
-# renderer that moved while the gate did not would stop being measured on the metric that sized it;
-# and the suite's own ground truth for green depth is a great circle on THIS sphere. Correcting it for
+# literal in nine shipped modules rather than imported from here (fetch_dem.py, fetch_dem_hd.py,
+# fetch_hole_elev.py, fetch_osm.py, fetch_trees.py, render_green.py, render_hole.py,
+# tools/check_scale.py, tools/verify_elevation.py -- fetch_osm.py's two are INLINE inside a distance
+# calculation and are not named R_LAT, so an audit that greps for the NAME finds eight and only one
+# that greps for the NUMBER finds all nine); check_scale.py re-derives it to gate the Rule 4.3 print
+# scale, so a renderer that moved while the gate did not would stop being measured on the metric that
+# sized it; and the suite's own ground truth for green depth is a great circle on THIS sphere.
+# Correcting it for
 # depth alone would print one green's depth on the ellipsoid while the same card's tilt %, its 5-yd
 # scale bar, its Rule 4.3 sizing, its hole-map tick radii and its carries stayed on the sphere.
 # Measured, the coherent version of that migration moves 4 printed depths, 11 printed tilt
 # percentages, 6 median slopes, 7 greens' slope labels and 26 Rule 4.3-limited <svg> sizes: it wants
 # its own commit, its own rebuild and its own re-reading of check_scale.py.
+#
+# THE FOUR CARDS ARE NOW NAMED WHERE A READER CAN SEE THEM. Everything above is a source comment, and
+# a junior holding one of those four cards cannot read it: the whole disclosure of a printed residual
+# lived in this file and in render_green.screen_m_per_unit, and nothing in legal/ mentioned the
+# HORIZONTAL model at all. legal/11_HORIZONTAL_EARTH_MODEL.md now states the model, the measured
+# offset and the four cards by name, and a test re-measures every figure in it off the corpus.
 
 
 def mlon(lat):

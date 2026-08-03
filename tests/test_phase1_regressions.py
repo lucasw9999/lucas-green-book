@@ -4452,8 +4452,17 @@ def test_short_par3_still_gets_its_gutter_numbers():
 @needs_corpus
 def test_from_tee_labels_are_bounded_and_ordered():
     """Round 2: the from-tee number was card_total - yd while yd had become a straight-line radius,
-    mixing two measures (max +54 yd wrong). It must now be >= 30, <= the hole's card yardage, and
-    increase monotonically as the to-green number does.
+    mixing two measures (max +54 yd wrong). It must now clear the scaled floor, sit at or under the
+    hole's card yardage, and increase monotonically as the to-green number does.
+
+    THIS TEST MADE THE SAME ROUNDED COMPARISON IT IS GRADING. The floor check read `if r < ft_floor`
+    where `r` is the PRINTED INTEGER, so on a 344-yd hole `30 < 30.0` is false and a measurement of
+    29.634 yd that rounds UP onto the floor printed 30 with nothing able to see it -- exactly the
+    engine defect this file has now fixed at three separate publish thresholds (a 3 ft elevation
+    floor, a LiDAR density gate comparing `round(n/area, 1)`, and this one). castlewood-valley h8 was
+    the single corpus instance. A floor is a rule about the MEASUREMENT, so it is graded against the
+    unrounded figure the engine publishes in `info["from_tee_rows"]`; the printed integer keeps a
+    bound of its own (it can legitimately sit up to half a yard under the floor, and no further).
 
     Bounds and ordering are NOT sufficient -- card_total - yd satisfies all three, which is how the
     original bug survived. So the VALUE is also checked against an independently computed
@@ -4485,7 +4494,7 @@ def test_from_tee_labels_are_bounded_and_ordered():
                        if (e.get("tags") or {}).get("golf") == "tee" and e.get("geometry")]
         for hn in config.HOLE_NUMS:
             try:
-                svg, _ = render_hole.render_hole(hn, config.HOLES)
+                svg, info = render_hole.render_hole(hn, config.HOLES)
             except Exception as e:
                 errors.append((slug, hn, repr(e)[:120])); continue
             nholes += 1
@@ -4494,10 +4503,32 @@ def test_from_tee_labels_are_bounded_and_ordered():
             lefts = [int(x) for x in re.findall(r'<text x="9"[^>]*>(\d+)</text>', svg)]
             # Floor is scaled: 30 yd is noise on a 500-yd hole but a fifth of a 128-yd one, where a
             # 28-yd figure is real information. Recomputed here rather than imported so a change to
-            # the engine's floor has to be restated deliberately.
+            # the engine's floor has to be restated deliberately -- then cross-checked against the
+            # engine's own, so the two cannot silently diverge either.
             ft_floor = min(30.0, 0.20 * card)
+            if abs(info["from_tee_floor_yd"] - ft_floor) > 1e-9:
+                bad.append((slug, hn, "engine's from-tee floor is not min(30, 0.20*card)",
+                            info["from_tee_floor_yd"], ft_floor))
+            # THE FLOOR IS A RULE ABOUT THE MEASUREMENT. Graded on the unrounded figure, because the
+            # printed integer cannot express it: a 29.634 yd measurement prints 30, and `30 < 30.0`
+            # is false. Both directions -- a row printed from under the floor, and a row printed with
+            # no measurement behind it at all.
+            for _yd, ft_printed, ft_exact in info["from_tee_rows"]:
+                if ft_printed is None:
+                    continue
+                if ft_exact is None:
+                    bad.append((slug, hn, "from-tee printed with no measurement behind it",
+                                ft_printed, None))
+                elif ft_exact < ft_floor:
+                    bad.append((slug, hn, "from-tee printed from a measurement under the floor",
+                                ft_printed, round(ft_exact, 3), round(ft_floor, 2)))
+                elif int(round(ft_exact)) != ft_printed:
+                    bad.append((slug, hn, "printed from-tee is not its own measurement rounded",
+                                ft_printed, round(ft_exact, 3)))
             for r in rights:
-                if r < ft_floor or r > card:
+                # The printed integer can sit up to half a yard under the floor by rounding and no
+                # further; anything below that is a value fault, not rounding.
+                if r < ft_floor - 0.5 or r > card:
                     bad.append((slug, hn, "out of range", r, card))
             if rights != sorted(rights, reverse=True):
                 bad.append((slug, hn, "from-tee not monotonic", rights, card))
@@ -14019,7 +14050,8 @@ def test_the_depth_conversion_says_what_its_exactness_is_measured_against():
     0.041 yd and FOUR of 198 land on the wrong side of a half yard, two of which the anisotropy fix
     had just moved the other way.
 
-    Not fixed by moving the number: `R_LAT = 111320.0` is a literal in eight shipped modules,
+    Not fixed by moving the number: `R_LAT = 111320.0` is a literal in nine shipped modules besides
+    geo.py itself (two of fetch_osm.py's are inline and not named R_LAT),
     `tools/check_scale.py` re-derives it to gate the Rule 4.3 scale, and this suite's own ground truth
     for depth is a great circle on the same sphere (see the R_SPHERE note above). Correcting it for
     depth alone would print one green's depth on the ellipsoid and its tilt, its 5-yd bar, its Rule
@@ -14115,3 +14147,240 @@ def test_the_depth_conversion_says_what_its_exactness_is_measured_against():
         f"be 0 and the note needs rewriting; if a green was re-traced the count moved on its own. "
         f"Either way the published figure and the corpus have to be made to agree:\n  "
         + "\n  ".join(wrong))
+
+
+def _printed_green_depths(slug):
+    """{hole: the integer green depth the SHIPPED pocket card prints}, read off the book itself.
+
+    Read from greenbook.html rather than by re-rendering, because the number under test is the one a
+    reader holds. Cards are split on `<div class="hnum">`, which opens each hole panel, so the depth
+    is attributed to the hole whose panel it sits in rather than to whatever hole happens to be
+    nearest in the file.
+    """
+    p = os.path.join(ROOT, "courses", slug, "greenbook.html")
+    if not os.path.exists(p):
+        return {}
+    with open(p, encoding="utf-8") as fh:
+        html_src = fh.read()
+    out = {}
+    for panel in re.split(r'<div class="hnum">', html_src)[1:]:
+        hn = re.match(r"\s*(\d+)", panel)
+        dep = re.search(r"(\d+)yd deep", panel)
+        if hn and dep and int(hn.group(1)) not in out:
+            out[int(hn.group(1))] = int(dep.group(1))
+    return out
+
+
+def _depth_yd_both_models(slug, hole, meta, H, W):
+    """(engine, ground) front-to-back length in yards for one green.
+
+    Both are measured along the same line of play with render_green's own frame, so the ONLY
+    difference between them is the earth model: the engine's 111320 m/deg sphere against the true
+    local WGS84 scales of the plate-carree grid the surface was sampled on."""
+    _engine(slug)
+    import render_green as rg2
+    xmin, ymin, xmax, ymax = meta["bbox"]
+    clat = meta["green_center"][0]
+    theta, cx, cy = rg2.approach_frame(dict(meta, W=W, H=H))
+    rp = [rg2.rot(x, y, cx, cy, theta)
+          for x, y in rg2.poly_to_px(meta["polygon"], meta["bbox"], W, H)]
+    fy, by, _midx = rg2.play_line_span(rp)
+    m_lat, m_lon = _wgs84_local_scales(clat)          # metres per degree, the grid's true scales
+    _mxe, mye = rg2.screen_m_per_unit(theta, (xmax - xmin) * rg2.mlon(clat) / W,
+                                      (ymax - ymin) * rg2.R_LAT / H)
+    _mxg, myg = rg2.screen_m_per_unit(theta, (xmax - xmin) * m_lon / W, (ymax - ymin) * m_lat / H)
+    return (fy - by) * mye / 0.9144, (fy - by) * myg / 0.9144
+
+
+def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER():
+    """The whole disclosure of a printed residual lived in source comments. A child cannot read them.
+
+    Every horizontal length this project prints -- green depth, the 5-yd ladder and scale bar, green
+    tilt %, the hole map's yardage ticks and carries, and the Rule 4.3 print scale -- is computed on
+    one local flat-earth model: 111320 m per degree of latitude, 111320*cos(lat) per degree of
+    longitude. That is neither of the WGS84 radii the source data is referenced to, and the gap is
+    MEASURED, not assumed: at 37.8N the true local scales are 110992.70 and 88070.46 m/deg, so the
+    model runs +0.295% long in latitude and -0.125% short in longitude.
+
+    Recomputed on the true scales, the printed green depth is out by a median 0.040 yd and worst
+    0.111, and FOUR of the 198 printed integers land on the wrong side of a half yard -- copper-valley
+    16, micke-grove 13, monarch-bay 1 and the-reserve 7 each print one yard deeper than the ground.
+
+    Leaving the four integers alone is a defensible decision and this test does not reopen it. What is
+    NOT defensible is where the decision was recorded. Before this test, the entire disclosure lived
+    in comments in `geo.py` and `render_green.py`; a grep across all ten `legal/` records found nothing
+    about the HORIZONTAL earth model, only a vertical geoid/ellipsoid note in `09`. The book's own
+    panel offers the generic waiver ("may contain errors"), which names no model, no size and no card.
+    So a reader holding one of those four cards had no way to know theirs was one of them, and the
+    project's own record set -- the folder whose stated purpose is to be handed to someone asking --
+    was silent.
+
+    Hence: the model, the measured offset and the four cards by name must appear in `legal/`, and this
+    test re-measures every one of those claims off the corpus rather than quoting them. It fails in
+    BOTH directions: publish a card that is not on the boundary, or migrate the model and leave a
+    stale list of four, and it goes red.
+    """
+    recs = {}
+    for p in sorted(glob.glob(os.path.join(ROOT, "legal", "*.md"))):
+        with open(p, encoding="utf-8") as fh:
+            txt = fh.read()
+        if "111320" in txt:
+            recs[os.path.basename(p)] = txt
+    assert recs, (
+        "no legal/ record names the horizontal earth model. The engine measures every printed length "
+        "on 111320 m/deg of latitude and 111320*cos(lat) of longitude -- %+.3f%% and %+.3f%% against "
+        "WGS84 at 37.8N -- and that is disclosed only in geo.py and render_green.py comments, which no "
+        "reader of a book can see. legal/ carries a vertical geoid note and nothing horizontal."
+        % (100.0 * (R_LAT / _wgs84_local_scales(37.8)[0] - 1.0),
+           100.0 * (_mlon(37.8) / _wgs84_local_scales(37.8)[1] - 1.0)))
+    doc = "\n\n".join(recs.values())
+    # As a reader reads it: line wrapping gone, markdown emphasis gone, and a typographic minus read
+    # as a minus. A record whose figures are only findable if they are typed in ASCII would push the
+    # next editor to un-typeset a legal document to keep a test green.
+    flat = " ".join(doc.split()).replace("−", "-").replace("*", "")
+
+    # (a) the offset, at a latitude the record names, re-measured on pyproj's WGS84
+    pub = re.search(r"([\d.]+)\s*(?:deg|°)\s*N.{0,400}?true local (?:WGS84 )?scales are "
+                    r"([\d.]+) m per degree of latitude and ([\d.]+) m per degree of longitude, so "
+                    r"th\w+ model runs \+?([\d.-]+)% long in latitude and (-?[\d.]+)% short in "
+                    r"longitude", flat)
+    assert pub, (
+        "the legal record(s) naming the model (%s) do not state the offset against the ellipsoid in a "
+        "form that can be re-measured. Required, at a stated latitude: the two true local scales and "
+        "the two percentages. At 37.8N they are %.2f m/deg of latitude, %.2f m/deg of longitude, "
+        "%+.3f%% and %+.3f%%." % (", ".join(sorted(recs)),
+                                  _wgs84_local_scales(37.8)[0], _wgs84_local_scales(37.8)[1],
+                                  100.0 * (R_LAT / _wgs84_local_scales(37.8)[0] - 1.0),
+                                  100.0 * (_mlon(37.8) / _wgs84_local_scales(37.8)[1] - 1.0)))
+    lat = float(pub.group(1))
+    m_lat, m_lon = _wgs84_local_scales(lat)
+    for what, said, got in (("m/deg of latitude", float(pub.group(2)), m_lat),
+                            ("m/deg of longitude", float(pub.group(3)), m_lon)):
+        assert abs(said - got) <= 0.01, (
+            f"the legal record puts the true local scale at {lat}N at {said} {what}; measured on "
+            f"pyproj's own WGS84 ellipsoid it is {got:.4f}")
+    for what, said, got in (("latitude", float(pub.group(4)), 100.0 * (R_LAT / m_lat - 1.0)),
+                            ("longitude", float(pub.group(5)), 100.0 * (_mlon(lat) / m_lon - 1.0))):
+        assert abs(said - got) <= 0.005, (
+            f"the legal record says the model runs {said:+}% in {what} at {lat}N; measured it is "
+            f"{got:+.4f}%")
+
+    if not CORPUS:
+        return
+
+    # (b) the residual on the one printed LENGTH, and the cards it rounds the other way
+    import statistics
+    resid, wrong, seen, checked = [], [], collections.Counter(), 0
+    printed = {}
+    for slug, hole, meta, H, W in _green_surfaces():
+        if slug not in printed:
+            printed[slug] = _printed_green_depths(slug)
+        pr = printed[slug].get(hole)
+        if pr is None:
+            continue                      # no shipped pocket card for this green
+        engine, ground = _depth_yd_both_models(slug, hole, meta, H, W)
+        checked += 1
+        seen[slug] += 1
+        # The printed integer must be the engine's own figure rounded, or the residual below is being
+        # measured against something the book does not print.
+        assert pr == int(round(engine)), (
+            f"{slug} h{hole}: the card prints {pr}yd deep but the renderer's own depth is "
+            f"{engine:.4f} yd -- this test is no longer measuring the printed number")
+        resid.append(abs(engine - ground))
+        if pr != int(round(ground)):
+            wrong.append((slug, hole, pr, ground))
+    assert checked >= 180, f"only {checked} printed green depths measured; the corpus prints 198"
+    assert_no_course_skipped(
+        seen, "test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER")
+
+    said = re.search(r"median ([\d.]+) yd, p95 ([\d.]+) yd and worst ([\d.]+) yd", flat)
+    assert said, (
+        "the legal record does not publish the SIZE of the residual on the printed depth, so a reader "
+        "is told a model is approximate without being told by how much. Measured over %d printed "
+        "depths: median %.3f yd, p95 %.3f yd and worst %.3f yd."
+        % (checked, statistics.median(resid), sorted(resid)[int(0.95 * len(resid))], max(resid)))
+    for what, val, got in (("median", float(said.group(1)), statistics.median(resid)),
+                           ("p95", float(said.group(2)), sorted(resid)[int(0.95 * len(resid))]),
+                           ("worst", float(said.group(3)), max(resid))):
+        assert abs(val - got) <= 0.002, (
+            f"the legal record puts the {what} residual on the printed depth at {val} yd; measured "
+            f"over {checked} cards it is {got:.4f} yd")
+
+    # Every card the record names, and no card it does not. A list that goes stale silently is the
+    # same defect one level up: it would tell a reader their card is fine when it is not.
+    named = {(m.group(1), int(m.group(2))): float(m.group(4))
+             for m in re.finditer(r"`([a-z0-9-]+)`\s*(?:\||\s)\s*hole\s*(\d+)\s*\|\s*(\d+) yd\s*\|"
+                                  r"\s*([\d.]+) yd", flat)}
+    measured = {(s, h): g for s, h, _p, g in wrong}
+    assert set(named) == set(measured), (
+        "the legal record's list of cards whose printed depth rounds the other way on the ground does "
+        "not match the corpus.\n  record names: %s\n  measured now: %s\n"
+        "  Each row must read: | `<slug>` hole <n> | <printed> yd | <ground> yd |"
+        % (sorted(named) or "none", sorted(measured) or "none"))
+    for key in sorted(measured):
+        assert abs(named[key] - measured[key]) <= 0.002, (
+            f"the legal record puts {key[0]} hole {key[1]}'s ground length at {named[key]} yd; "
+            f"measured it is {measured[key]:.4f} yd")
+
+    # (c) and the record set's own index must point at it, or it is a file nobody is handed
+    with open(os.path.join(ROOT, "legal", "README.md"), encoding="utf-8") as fh:
+        idx = fh.read()
+    assert any(name in idx for name in recs), (
+        "legal/README.md is the index of the folder that gets handed to a reader, and it does not "
+        "list the record that discloses the earth model (%s). An unindexed record reaches nobody."
+        % ", ".join(sorted(recs)))
+
+
+def test_the_earth_models_published_spread_names_every_module_that_carries_it():
+    """geo.py published the blast radius of its own constant and undercounted it by a module.
+
+    The standing decision not to migrate `R_LAT = 111320.0` rests on how far it has spread: the note in
+    `geo.py` argues "it is not a one-line change" and then enumerates the modules that re-declare it.
+    That enumeration is the evidence for the decision, so an incomplete one understates the cost of the
+    fix AND hides a copy from whoever eventually does it.
+
+    It listed eight and there are nine. `fetch_osm.py` carries two INLINE copies inside a distance
+    calculation (`(elo-dlo)*111320.0*math.cos(...)`, `(ela-dla)*111320.0`) rather than a module-level
+    `R_LAT`, so anyone auditing the spread by grepping for the NAME finds eight and anyone grepping for
+    the NUMBER finds nine. The one that matters is the number.
+
+    Counted here off the tree, in CODE only -- `render_green.py` and `geo.py` also discuss the constant
+    in prose, and a note that policed prose mentions would fight its own explanation.
+    """
+    carriers = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "*.py"))
+                    + glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        rel = os.path.relpath(p, ROOT)
+        with open(p, encoding="utf-8") as fh:
+            if "111320" in _code_only(fh.read()):
+                carriers.append(rel)
+    assert "geo.py" in carriers, "geo.py no longer defines the constant this note is about"
+    others = [c for c in carriers if c != "geo.py"]
+    assert len(others) >= 8, (
+        f"only {len(others)} module(s) besides geo.py carry the 111320 literal; this test measures the "
+        f"spread the migration decision is argued from, so re-read it if the constant was centralised")
+
+    with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
+        note = _prose(fh.read())
+    WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+             "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+    # The ENUMERATION, not the whole module. geo.py's own error messages tell a user to "Re-run
+    # fetch_osm.py", so a whole-file substring search for the module names is satisfied by prose that
+    # has nothing to do with the earth constant -- the first draft of this test passed that way while
+    # the list was still one module short.
+    m = re.search(r"(?:a )?literal in (\w+) shipped modules[^(]*\(([^)]*)\)", note)
+    assert m, ("geo.py no longer enumerates the modules that re-declare its earth constant, and that "
+               "list is the evidence for not migrating it. Measured now it is %d: %s"
+               % (len(others), ", ".join(others)))
+    listed = m.group(2)
+    missing = [c for c in others if os.path.basename(c) not in listed]
+    assert not missing, (
+        "geo.py's note enumerates the modules that re-declare its earth constant, and %d of them are "
+        "not in the list: %s. The list is the evidence for not migrating; an incomplete one understates "
+        "the cost and hides a copy from whoever migrates it. All %d: %s"
+        % (len(missing), ", ".join(missing), len(others), ", ".join(others)))
+    key = m.group(1).lower()
+    said = int(key) if key.isdigit() else WORDS.get(key)
+    assert said == len(others), (
+        f"geo.py says the constant is a literal in {m.group(1)} shipped modules; counted off the tree "
+        f"there are {len(others)}: {', '.join(others)}")

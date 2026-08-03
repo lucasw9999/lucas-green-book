@@ -836,6 +836,11 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             prev_pt, prev_d = cur, cur_d
         return None
 
+    # A from-tee figure is worth printing down to 30 yd -- but 30 yd is noise on a 500-yd hole and a
+    # fifth of a 128-yd one, where "28 from the tee" is real information. Scale it, which only loosens
+    # below 150 yd. ONE spelling, hoisted out of the tick loop: it is also published in `info` so a
+    # test can grade the gate, and a second copy there would be the drift this repo keeps fixing.
+    ft_floor = min(30.0, 0.20*total_yd)
     cands=[]
     for yd in (100,150,200,250,300):
         # A tick can never be further from the green than the hole is long. This bound must NOT
@@ -855,10 +860,6 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # along the line the tick actually is -- not by whether its from-tee label is printable,
         # which is what previously discarded perfectly good to-green numbers on holes whose
         # centerline does not span the card.
-        # A from-tee figure is worth printing down to 30 yd -- but 30 yd is noise on a 500-yd hole
-        # and a fifth of a 128-yd one, where "28 from the tee" is real information. Scale it, which
-        # only loosens below 150 yd.
-        ft_floor = min(30.0, 0.20*total_yd)
         if par3_straight:
             # The exact from-tee distance is known here, so ONE threshold governs the row: keep it
             # only if its from-tee number is printable. Judging the row on the drawn line instead
@@ -874,24 +875,36 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         # the card yardage by how far along the drawn line this point is -- only meaningful when the
         # line spans the hole; otherwise print the to-green number alone.
         if par3_straight:
-            ft = round(total_yd - yd)
+            ft_exact = float(total_yd - yd)
         elif tee_ok:
-            ft = round(total_yd * arc_from_tee / arc_m)
+            ft_exact = total_yd * arc_from_tee / arc_m
         elif fwd_tee or past_tee:
             # Complete route from a forward tee, or traced past the back tee: either way the length
             # difference sits at the tee end, so the back-tee distance is the card minus the walk left.
             # Both are walked measures, so this does not mix a straight-line radius into a route
             # length -- the mistake that made (card - to_green) up to 42 yd wrong on a dogleg.
-            ft = round(total_yd - (arc_m - arc_from_tee)/0.9144)
+            ft_exact = total_yd - (arc_m - arc_from_tee)/0.9144
         else:
-            ft = None
-        if ft is not None and ft < ft_floor:
-            ft = None          # keep the row: its to-green number is still true and is the one a
-                               # golfer clubs off -- only the from-tee figure is not worth printing
+            ft_exact = None
+        # ROUND AFTER THE GATE, never before. `round(ft) < ft_floor` let a measurement in
+        # [floor-0.5, floor) round UP onto the floor and print: castlewood-valley h8, a 344-yd par 4
+        # whose 100-to-green tick measures 29.634 yd from the tee, printed "30" against a 30.0 floor
+        # because `30 < 30.0` is false. It was the corpus's only instance, and nothing could see it --
+        # the test grading this floor compared the PRINTED INTEGER too.
+        # This is the third publish threshold in this engine to compare a rounded figure against its
+        # own limit (a 3 ft elevation floor and a LiDAR density gate comparing round(n/area, 1) were
+        # the first two). Suppression keeps the row: its to-green number is still true and is the one a
+        # golfer clubs off -- only the from-tee figure is not worth printing.
+        ft = None if (ft_exact is None or ft_exact < ft_floor) else round(ft_exact)
         sx, sy = proj(la, lo)
-        cands.append((TY(sy), TX(sx), yd, ft))
+        cands.append((TY(sy), TX(sx), yd, ft, ft_exact))
     cands.sort()                              # by screen y (green side first)
     rings=""; lastY=-999
+    # Every row this loop DRAWS, as (to_green_yd, printed_from_tee_or_None, unrounded_from_tee_or_None).
+    # Published so a test can grade the from-tee floor against the MEASUREMENT rather than against the
+    # integer it prints; the floor comparison itself was made on the rounded figure for a long time and
+    # no test could see it -- see the ft_floor note above.
+    ft_rows = []
     # Vertical guard: one printed row needs ~0.998*FSN of baseline separation (0.718 cap height +
     # two 0.14 halo strokes), so 1.35 clears it with margin while not needlessly dropping the
     # radius-spaced ticks.
@@ -911,7 +924,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # So this is a floor kept against geometry the corpus does not yet contain, not a rule shaping the
     # printed ladder -- do not attribute a missing row to it without measuring.
-    for Y0,Xc,yd,ft in cands:
+    for Y0,Xc,yd,ft,ft_exact in cands:
         if Y0-lastY < FSN*1.35:
             continue
         lastY=Y0
@@ -927,6 +940,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         left_end  = 9 + wl + 0.12*FSN
         right_beg = (VBW-9 - wr - 0.12*FSN) if ft is not None else VBW
         show_ft = ft is not None and left_end <= right_beg
+        ft_rows.append((yd, ft if show_ft else None, ft_exact))
         # The tick MARK must not sit under a number either: at 2x the labels reach far enough in
         # that the mark was drawn beneath their halos (67 of 814 rows). Clip it to the clear band,
         # and drop it entirely if nothing legible is left -- the two numbers already mark the row.
@@ -1120,6 +1134,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee, past_tee=past_tee,
               carry_origin_known=origin_known,
               start_at_tee_m=round(start_at_tee_m, 1),
+              from_tee_rows=ft_rows,
+              from_tee_floor_yd=ft_floor,
               carries=carries)
     return svg, info
 
