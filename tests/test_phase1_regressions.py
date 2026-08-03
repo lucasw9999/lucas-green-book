@@ -26,6 +26,7 @@ mutation applied (assert the old string was present) AND that the module you imp
 """
 import collections.abc
 import glob
+import importlib
 import json
 import math
 import os
@@ -346,6 +347,74 @@ def _expected_cards():
             n += len(json.load(fh).get("holes") or {})
     return n
 needs_corpus = pytest.mark.skipif(not CORPUS, reason="per-course data is gitignored; nothing to measure")
+
+
+def first_party_modules():
+    """Every module name this REPO owns -- the ones whose absence is a defect, not an environment."""
+    return ({os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "*.py"))}
+            | {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "tools", "*.py"))}
+            | {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "tests", "*.py"))})
+
+
+# install name -> the name you `import`. Both directions are needed here and in the declaration test.
+DIST_TO_IMPORT = {"pymupdf": "fitz", "pillow": "PIL", "pyyaml": "yaml", "opencv": "cv2"}
+
+
+def declared_dependencies():
+    """The import names requirements.txt declares, INCLUDING the "# OPTIONAL:" ones.
+
+    Read from the file rather than from a list here, and from the file's own machine-readable form, so
+    a dependency that is added, dropped or renamed cannot leave this behind. The OPTIONAL entries count
+    as declared -- that prefix exists to keep pip from installing PyMuPDF while keeping it visible to
+    exactly this kind of check.
+    """
+    out = set()
+    with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as fh:
+        for raw in fh:
+            m = re.match(r"\s*#\s*OPTIONAL:\s*(.+)", raw)
+            line = m.group(1) if m else raw.split("#", 1)[0]
+            name = re.split(r"[<>=!~\[]", line.strip())[0].strip().lower()
+            if name:
+                out.add(DIST_TO_IMPORT.get(name, name))
+    return out
+
+
+def _import_first_party(name):
+    """Import one of this repo's own modules. SKIP only for a missing DECLARED dependency.
+
+    The house pattern at fifteen sites was `try: import fetch_dem / except Exception as e:
+    pytest.skip(f"not importable: {type(e).__name__}")`, and it is too wide by exactly the case that
+    matters: DELETING the module a test is about turned that test into a SKIP. Proven -- moving
+    fetch_dem.py aside made all five tests that name it report "SKIPPED ... not importable:
+    ModuleNotFoundError", and a suite reporting 219 passed with five tests quietly not run looks
+    identical to a green one. Deleting surface_io.py did the same to the pair test written to guard it.
+
+    The guard was not pointless, which is why it survived: these modules pull in rasterio, laspy,
+    pyproj and scipy, so on a machine without those the import genuinely cannot succeed and a skip is
+    the honest answer. That is the distinction the pattern lost, and it is drawn here.
+
+    The test is "is the missing thing a DECLARED dependency?", NOT "is it one of our files?". The
+    obvious spelling -- ask first_party_modules() -- is subtly wrong in the one case that counts: with
+    fetch_dem.py moved aside, `fetch_dem` is no longer among our files on disk, so the module under
+    test would be classified third-party and skipped again. Asking requirements.txt instead is immune,
+    because a file disappearing does not add a line to it.
+
+    Deny by default, like the deletion guard in conftest.py: an ImportError whose `name` cannot be
+    read, or names something nothing declares, falls through to the failure and not to the skip.
+    """
+    try:
+        return importlib.import_module(name)
+    except ImportError as e:
+        missing = (getattr(e, "name", None) or "").split(".")[0]
+        if missing and missing in declared_dependencies():
+            pytest.skip(f"{name} needs {missing!r}, which requirements.txt declares but this machine "
+                        f"does not have installed")
+        raise AssertionError(
+            f"{name} did not import, and the thing it could not find ({missing or 'unknown'!r}) is not "
+            f"a dependency requirements.txt declares: {e!r}\n"
+            f"  So this is a defect in the tree, not a missing optional package. A test whose subject "
+            f"is a module must FAIL when the module is gone -- skipping is how a deleted module leaves "
+            f"a green suite behind it.") from e
 
 
 def _courses_snapshot(root):
@@ -2126,13 +2195,12 @@ def test_every_third_party_import_is_declared():
                 declared.add(re.split(r"[<>=!~\[]", line)[0].strip().lower())
     # install name != import name
     ALIAS = {"fitz": "pymupdf", "PIL": "pillow", "yaml": "pyyaml", "cv2": "opencv"}
-    # the stdlib, plus this repo's own modules, plus test-only helpers
+    # the stdlib, plus this repo's own modules, plus test-only helpers. Asked of first_party_modules()
+    # rather than respelled here: the set had never carried tests/*.py despite the comment claiming
+    # "test-only helpers", so tests/conftest.py read as an undeclared dependency, and _import_first_party
+    # needs the SAME answer to tell a missing dependency from a deleted module of ours.
     optional_used = []
-    local = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "*.py"))}
-    local |= {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "tools", "*.py"))}
-    # tests/*.py too -- the comment above always claimed "test-only helpers" but the set did not carry
-    # them, so tests/conftest.py, which holds the deletion guard, read as an undeclared dependency.
-    local |= {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "tests", "*.py"))}
+    local = first_party_modules()
     missing = []
     for p in sorted(glob.glob(os.path.join(ROOT, "*.py"))
                     + glob.glob(os.path.join(ROOT, "tools", "*.py"))
@@ -2186,6 +2254,149 @@ def test_every_third_party_import_is_declared():
     assert not unguarded, (
         "an OPTIONAL package is imported unguarded, so the code crashes on a machine that followed the "
         "install instructions:\n  " + "\n  ".join(sorted(set(unguarded))))
+
+
+def test_no_test_skips_itself_when_one_of_this_repos_own_modules_is_missing(tmp_path):
+    """A test whose subject is a module must FAIL when that module is gone, not skip.
+
+    The house pattern at fifteen sites was
+
+        try:
+            import fetch_dem as fd
+        except Exception as e:
+            pytest.skip(f"not importable: {type(e).__name__}")
+
+    and `except Exception` is too wide by exactly the case that matters. Moving fetch_dem.py aside made
+    all five tests that name it report `SKIPPED ... not importable: ModuleNotFoundError`, and a run that
+    says "219 passed, 1 skipped" with five tests quietly not run is indistinguishable from a green one.
+    Deleting surface_io.py -- a module introduced in this same branch -- did the same to the pair test
+    written to guard it.
+
+    The guard was not pointless, and that is why the pattern survived: these modules pull in rasterio,
+    laspy and pyproj, so on a machine without those the import genuinely cannot succeed and a skip is
+    honest. What it lost is the distinction, which _import_first_party now draws -- an ImportError
+    naming a package this repo does not own skips; our own module missing, a SyntaxError, or a
+    SystemExit at import time fails.
+
+    Checked three ways, because the first two are the ones that rot:
+      1. no `except Exception` around an import of one of OUR modules survives anywhere in the suite;
+      2. the eleven remaining import skips are all for genuinely optional THIRD-PARTY packages, and
+         requirements.txt has to agree that they are optional -- pymupdf is AGPL and deliberately so;
+      3. the helper itself behaves: a missing third-party dependency skips, a missing first-party
+         module raises.
+    """
+    import ast
+
+    src = open(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), encoding="utf-8").read()
+    tree = ast.parse(src)
+    ours = first_party_modules()
+
+    optional = set()
+    with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as fh:
+        for raw in fh:
+            m = re.match(r"\s*#\s*OPTIONAL:\s*([A-Za-z0-9._-]+)", raw)
+            if m:
+                optional.add(m.group(1).strip().lower())
+    # The only third-party imports a skip may name, each with the reason that package can be absent on
+    # a machine that followed the install instructions. Spelled out so a NEW skip over some new
+    # dependency has to be argued for here rather than added quietly.
+    SKIPPABLE = {
+        "fitz": ("PyMuPDF, which requirements.txt marks '# OPTIONAL:' on purpose -- it is AGPL and "
+                 "this project chose not to depend on it by default"),
+        "playwright": ("declared REQUIRED, but the browser it drives is a separate "
+                       "`python3 -m playwright install chromium` step, and these tests measure a "
+                       "rendered page; each carries a second skip for a missing browser too"),
+    }
+
+    too_wide, undeclared = [], []
+    # _import_first_party's OWN body is the sanctioned implementation of this pattern -- it is the one
+    # place allowed to catch ImportError around a dynamic import and skip, because it is the thing that
+    # decides which failures may skip. Excluded by line range so nobody has to remember to.
+    helper = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_import_first_party")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        if helper.lineno <= node.lineno <= helper.end_lineno:
+            continue
+        skips = [h for h in node.handlers
+                 if any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                        and c.func.attr == "skip" for c in ast.walk(h))]
+        if not skips:
+            continue
+        imported = set()
+        for b in node.body:
+            for x in ast.walk(b):
+                if isinstance(x, ast.Import):
+                    imported |= {a.name.split(".")[0] for a in x.names}
+                elif isinstance(x, ast.ImportFrom) and x.module:
+                    imported.add(x.module.split(".")[0])
+                elif (isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute)
+                      and x.func.attr == "import_module"):
+                    imported.add("<dynamic>")
+        if not imported:
+            continue
+        caught = {ast.unparse(h.type) if h.type else "bare" for h in skips}
+        for mod in sorted(imported):
+            if mod in ours or mod == "<dynamic>":
+                too_wide.append(
+                    f"line {node.lineno}: an import of our own {mod!r} is guarded by "
+                    f"{'/'.join(sorted(caught))} and skips. Use _import_first_party({mod!r}).")
+            elif mod not in SKIPPABLE:
+                undeclared.append(
+                    f"line {node.lineno}: {mod!r} is skipped as though it could legitimately be "
+                    f"absent, but this test's SKIPPABLE table does not say why it can be")
+
+    assert not too_wide, (
+        "a test skips itself when one of THIS REPO's modules is missing, so deleting that module "
+        "leaves a green suite:\n  " + "\n  ".join(too_wide))
+    assert not undeclared, (
+        "an import is skipped as though it were optional, and nothing says it is:\n  "
+        + "\n  ".join(undeclared))
+    assert "pymupdf" in optional, (
+        "requirements.txt no longer marks PyMuPDF '# OPTIONAL:', so the eight fitz skips are now "
+        "skipping over a REQUIRED dependency")
+
+    # ...and there must still BE some legitimate ones, or this test is passing because the pattern it
+    # polices has been deleted rather than fixed.
+    legit = sum(1 for n in ast.walk(tree) if isinstance(n, ast.Try)
+                and any("pymupdf not installed" in ast.unparse(h) or "playwright not installed"
+                        in ast.unparse(h) for h in n.handlers))
+    assert legit >= 10, (
+        f"only {legit} optional-dependency skips left; pymupdf (AGPL, deliberately optional) and "
+        f"playwright are meant to keep theirs, so this test is no longer measuring anything")
+
+    # (3) the helper's own branches, driven from probe modules in tmp_path -- NOT in tests/, which
+    # test_every_third_party_import_is_declared globs, and a probe importing a package on purpose
+    # missing would fail that test depending on which ran first.
+    sys.path.insert(0, str(tmp_path))
+    try:
+        # a DECLARED dependency that is not installed: an environment, so a skip
+        (tmp_path / "_fp_probe_env.py").write_text(
+            'raise ImportError("simulated", name="rasterio")\n', encoding="utf-8")
+        assert "rasterio" in declared_dependencies(), \
+            "this probe needs a declared dependency to stand in for one that is not installed"
+        with pytest.raises(pytest.skip.Exception, match="requirements.txt declares"):
+            _import_first_party("_fp_probe_env")
+
+        # a module NOTHING declares -- which is what one of ours going missing looks like
+        (tmp_path / "_fp_probe_ours.py").write_text(
+            'raise ImportError("simulated missing module", name="surface_io")\n', encoding="utf-8")
+        with pytest.raises(AssertionError, match="not a dependency requirements.txt declares"):
+            _import_first_party("_fp_probe_ours")
+
+        # the module itself absent: exactly the fetch_dem.py case, and it must not be skippable
+        with pytest.raises(AssertionError, match="not a dependency requirements.txt declares"):
+            _import_first_party("_fp_probe_absent")
+
+        # and a module that is present but broken is not an environment either
+        (tmp_path / "_fp_probe_broken.py").write_text("def (\n", encoding="utf-8")
+        with pytest.raises(SyntaxError):
+            _import_first_party("_fp_probe_broken")
+    finally:
+        sys.path.remove(str(tmp_path))
+        for m in ("_fp_probe_env", "_fp_probe_ours", "_fp_probe_broken"):
+            sys.modules.pop(m, None)
 
 
 def test_every_runnable_tool_is_documented():
@@ -6703,10 +6914,7 @@ def test_alameda_tile_names_decode_to_the_right_grid_cell():
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar_alameda"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_lidar_alameda as fla
-    except Exception as e:
-        pytest.skip(f"fetch_lidar_alameda not importable here: {type(e).__name__}")
+    fla = _import_first_party("fetch_lidar_alameda")
 
     # EPSG:6419 must be metres; if this ever flips, M2FT becomes wrong
     from pyproj import CRS
@@ -6947,10 +7155,7 @@ def test_a_mixed_crs_tile_directory_is_refused_not_projected_through_one_guess(t
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_dem_hd"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_dem_hd as fdh
-    except Exception as e:
-        pytest.skip(f"fetch_dem_hd not importable: {type(e).__name__}")
+    fdh = _import_first_party("fetch_dem_hd")
     import laspy
     import numpy as np
     from pyproj import CRS, Transformer
@@ -7190,10 +7395,7 @@ def test_the_density_and_coverage_gate_measures_the_green_itself():
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_dem_hd"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_dem_hd as fdh
-    except Exception as e:
-        pytest.skip(f"fetch_dem_hd not importable: {type(e).__name__}")
+    fdh = _import_first_party("fetch_dem_hd")
 
     # Ring area, against a square whose area is known in closed form. The square must sit at the
     # BOUND course's location: fetch_dem_hd's TR transformer is module-level and fixed to that
@@ -7269,10 +7471,7 @@ def test_the_density_gate_sees_the_measurement_not_the_published_rounding(tmp_pa
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_dem_hd"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_dem_hd as fdh
-    except Exception as e:
-        pytest.skip(f"fetch_dem_hd not importable: {type(e).__name__}")
+    fdh = _import_first_party("fetch_dem_hd")
     import laspy
     import numpy as np
     from pyproj import CRS
@@ -7935,10 +8134,7 @@ def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_dem"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_dem as fd
-    except Exception as e:
-        pytest.skip(f"not importable: {type(e).__name__}")
+    fd = _import_first_party("fetch_dem")
 
     def meta(name, **kw):
         p = tmp_path / name
@@ -7982,7 +8178,6 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
     pass `overwrite` as a Python bool and never exercise the env read at all -- and one of them
     records that its previous grep-based version was satisfied merely by this module-scope line
     existing. So pin the PARSE, not the string."""
-    import importlib
     os.environ["COURSE"] = a_course()
     saved = os.environ.get("OVERWRITE")
     try:
@@ -7993,10 +8188,7 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
             for name in ("fetch_dem", "fetch_dem_hd"):
                 for m in ("config", name):
                     sys.modules.pop(m, None)
-                try:
-                    mod = importlib.import_module(name)
-                except Exception as e:
-                    pytest.skip(f"{name} not importable: {type(e).__name__}")
+                mod = _import_first_party(name)
                 assert mod.OVERWRITE is want, (
                     f"{name}: OVERWRITE={raw!r} parsed to {mod.OVERWRITE}, expected {want} -- an "
                     f"explicit 'off' must not arm a stage that overwrites a working green surface")
@@ -8029,10 +8221,7 @@ def test_a_malformed_only_is_refused_rather_than_silently_meaning_every_hole():
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_dem"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_dem as fd
-    except Exception as e:
-        pytest.skip(f"fetch_dem not importable: {type(e).__name__}")
+    fd = _import_first_party("fetch_dem")
 
     assert fd.only_holes("") == set(), "an unset ONLY means the whole course"
     assert fd.only_holes("14,16") == {14, 16}
@@ -8615,10 +8804,7 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     for m in ("config", "lidar_dates"):
         sys.modules.pop(m, None)
-    try:
-        import lidar_dates as ld
-    except Exception as e:
-        pytest.skip(f"not importable: {type(e).__name__}")
+    ld = _import_first_party("lidar_dates")
 
     lon, lat = -121.35, 38.05
     d = 0.0002
@@ -8693,10 +8879,7 @@ def test_project_choice_is_judged_on_the_greens_not_the_bounding_box(tmp_path):
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_lidar as fl
-    except Exception as e:
-        pytest.skip(f"not importable: {type(e).__name__}")
+    fl = _import_first_party("fetch_lidar")
 
     assert fl.GREEN_COVERAGE_GOOD <= 0.9, \
         (f"the gate is {fl.GREEN_COVERAGE_GOOD}; Monarch Bay's 2021 survey reaches 18 of 20 greens "
@@ -8780,10 +8963,7 @@ def test_sub_project_copies_of_one_tile_get_distinct_files(tmp_path):
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_lidar as fl
-    except Exception as e:
-        pytest.skip(f"not importable: {type(e).__name__}")
+    fl = _import_first_party("fetch_lidar")
 
     base = "USGS_LPC_CA_X_2021_B21_w6168n2055.laz"
     root = "https://x/Projects/CA_X_2021_B21"
@@ -8936,10 +9116,7 @@ def test_an_unresolvable_head_is_never_reported_as_the_edge_of_the_survey():
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar_alameda"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_lidar_alameda as fla
-    except Exception as e:
-        pytest.skip(f"not importable: {type(e).__name__}")
+    fla = _import_first_party("fetch_lidar_alameda")
 
     real = fla.urllib.request.urlopen
     try:
@@ -9020,10 +9197,7 @@ def test_a_network_failure_is_not_mistaken_for_a_missing_lidar_tile():
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar_alameda"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_lidar_alameda as fla
-    except Exception as e:
-        pytest.skip(f"not importable: {type(e).__name__}")
+    fla = _import_first_party("fetch_lidar_alameda")
 
     assert fla.ABSENT != fla.UNKNOWN, "the two outcomes must be distinguishable"
 
@@ -9092,10 +9266,7 @@ def test_a_denied_head_is_never_published_as_the_edge_of_the_survey():
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_lidar_alameda"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_lidar_alameda as fla
-    except Exception as e:
-        pytest.skip(f"not importable: {type(e).__name__}")
+    fla = _import_first_party("fetch_lidar_alameda")
 
     real_open, real_time = fla.urllib.request.urlopen, fla.time
     calls = {"n": 0}
@@ -13793,10 +13964,7 @@ def _seamless_dem_run(tmp_path, monkeypatch, expand, georeferenced=True):
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_dem"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_dem as fd
-    except Exception as e:
-        pytest.skip(f"fetch_dem not importable: {type(e).__name__}")
+    fd = _import_first_party("fetch_dem")
 
     # A 24 m x 20 m green at monarch-bay's own latitude, so the expansion factor under test is the
     # 1.2637 that course really saw.
@@ -13972,10 +14140,7 @@ def test_an_interrupted_build_cannot_leave_a_green_beside_someone_elses_metadata
     os.environ["COURSE"] = a_course()
     for m in ("config", "fetch_dem"):
         sys.modules.pop(m, None)
-    try:
-        import fetch_dem as fd
-    except Exception as e:
-        pytest.skip(f"fetch_dem not importable: {type(e).__name__}")
+    fd = _import_first_party("fetch_dem")
 
     lat0, lon0 = 37.6916, -122.1580
     mlon = 111320.0 * math.cos(math.radians(lat0))
