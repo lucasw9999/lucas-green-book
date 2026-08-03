@@ -379,6 +379,75 @@ def _courses_diff(before, after):
     return vanished, touched
 
 
+def rmtree_target_is_scratch(path, root):
+    """May a test recursively DELETE `path`? True only for scratch space, never for course data.
+
+    _courses_are_read_only below NOTICES a real course being destroyed, at session teardown, which for
+    this directory is worth nothing: courses/ is gitignored, there is no copy in history, on a remote or
+    anywhere else, and course.json is a scorecard a human transcribed from published cards and
+    cross-verified. A report that it is gone is not a recovery. So the guard that MATTERS has to say no
+    before the syscall, not after it.
+
+    What it is for is one editing slip. Nine tests and fixtures here call shutil.rmtree on a
+    HARD-CODED path under courses/ -- `courses/_synth_ticks`, `_synth_gate`, `_synth_trees`,
+    `_synth_notrees`, `_synth_water`, `_synth_bmode`, `_synth_rmguard`, `_testmsg`, `_cold_<ref>` --
+    because config.py resolves courses/ from the repo root and a tmp_path cannot stand in. Every one
+    of them is a copy-paste away from a slug that names a real course, and the mistake would be
+    silent: rmtree(ignore_errors=True), which they all pass, does not even raise.
+
+    Three answers, and the last two are the ones a plain `startswith("_")` test would miss:
+      * courses/<scratch>/... -- yes. That is the whole point; the fixtures must keep working.
+      * courses/<real slug>/... -- no, asked of distribution.is_corpus_slug, this repo's single
+        spelling of "is that a course or somebody's scratch?"
+      * courses/ itself, or ANY directory containing it (root, a parent of root) -- no. Those are not
+        "not a corpus slug", they are worse than one bad slug, and the shape of the check that only
+        looks at the first path segment under courses/ answers them wrongly by default.
+
+    Pure and root-parameterised so it can be truth-tabled against real slugs without a real courses/
+    tree in the way -- the alternative is a predicate testable only by deleting something.
+    """
+    import distribution
+    courses = os.path.abspath(os.path.join(root, "courses"))
+    p = os.path.abspath(str(path))
+    if p == courses or courses.startswith(p + os.sep):
+        return False                       # courses/ itself, or something that holds it
+    rel = os.path.relpath(p, courses)
+    if rel.startswith(os.pardir + os.sep) or rel == os.pardir:
+        return True                        # nowhere near courses/: tmp_path and friends
+    return not distribution.is_corpus_slug(rel.split(os.sep)[0])
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _rmtree_cannot_reach_a_real_course():
+    """Refuse the syscall, not just report it afterwards.
+
+    Wrapping shutil.rmtree rather than offering a helper the fixtures are asked to remember: a helper
+    is exactly the kind of guard this file keeps finding inert, because a new fixture written next
+    month calls shutil.rmtree like the eight before it and nothing notices. There is one choke point
+    and this is it -- every deletion in this suite, and any that production code reached through a
+    test, goes through the same function.
+
+    Everything not under courses/ is delegated untouched, including pytest's own tmp_path cleanup.
+    """
+    import shutil
+    real = shutil.rmtree
+
+    def guarded(path, *a, **k):
+        if not rmtree_target_is_scratch(path, ROOT):
+            raise AssertionError(
+                f"REFUSING shutil.rmtree({path!r}): that is course data, not scratch space.\n"
+                f"  courses/ is gitignored -- no copy in history, none on a remote -- and course.json\n"
+                f"  is a hand-transcribed, cross-verified scorecard. Write fixtures to tmp_path, or to\n"
+                f"  a slug starting with '_' if config.py has to resolve them under courses/.")
+        return real(path, *a, **k)
+
+    shutil.rmtree = guarded
+    try:
+        yield
+    finally:
+        shutil.rmtree = real
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _courses_are_read_only():
     """The suite must not write inside courses/. That data cannot be got back.
@@ -389,12 +458,18 @@ def _courses_are_read_only():
     manual cross-check to produce. Rebuilding a green surface is hours; re-verifying a scorecard against
     club sources is worse.
 
-    Seven tests DO write there today, and that is fine: _synth_ticks, _synth_gate, _synth_trees,
-    _synth_water, _synth_bmode, _testmsg and _cold_<ref> each build a scratch directory under courses/
+    Nine tests and fixtures DO write there today, and that is fine: _synth_ticks, _synth_gate,
+    _synth_trees, _synth_notrees, _synth_water, _synth_bmode, _synth_rmguard, _testmsg and
+    _cold_<ref> each build a scratch directory under courses/
     -- necessary, because config.py resolves courses/ from the repo root and a tmp_path cannot stand in
-    -- and remove it again. All seven are excluded BY NAME, via distribution.is_corpus_slug, so this
+    -- and remove it again. All nine are excluded BY NAME, via distribution.is_corpus_slug, so this
     guard watches real courses only. It used to watch the scratch slugs too and reported their cleanup
     as data loss; see the regression test named in _courses_snapshot.
+
+    It NOTICES; it does not prevent. For a directory with no copy anywhere that is only half a guard,
+    so _rmtree_cannot_reach_a_real_course above refuses the syscall instead -- see
+    rmtree_target_is_scratch. This one stays because deletion is not the only way to lose the data:
+    it also catches a real course.json or book being REWRITTEN in place, which no rmtree guard sees.
 
     What it is for is the accident nobody would remember to prevent: a fixture that builds a course
     under courses/ instead of tmp_path is a natural thing to write, and would look fine until the day it
@@ -522,8 +597,9 @@ def a_course():
 def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_real_ones(tmp_path):
     """The courses/ guard snapshotted SCRATCH directories too, and reported phantom deletions.
 
-    Seven tests in this file build a real directory under courses/ and remove it again: _synth_ticks,
-    _synth_gate, _synth_trees, _synth_water, _synth_bmode, _testmsg and _cold_<ref>. A single clean run
+    Nine tests and fixtures in this file build a real directory under courses/ and remove it again:
+    _synth_ticks, _synth_gate, _synth_trees, _synth_notrees, _synth_water, _synth_bmode,
+    _synth_rmguard, _testmsg and _cold_<ref>. A single clean run
     never notices, because the session snapshot is taken BEFORE any of them exists and a path created
     and removed inside one run never enters `before`. It bites when such a directory is already there at
     session start, which happens two ways: a leftover from a hard-killed run -- distribution.py's
@@ -605,6 +681,65 @@ def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_rea
     assert "is_corpus_slug" in inspect.getsource(_courses_snapshot), (
         "the scratch-slug rule must come from distribution.is_corpus_slug; a local startswith('_') "
         "here is the fourth copy of a rule that already drifted once")
+
+
+def test_rmtree_refuses_a_real_course_before_the_syscall_and_still_allows_scratch(tmp_path):
+    """The guard above reports a destroyed course at session TEARDOWN. For this directory that is
+    worth nothing -- courses/ is gitignored, course.json is a hand-transcribed, cross-verified
+    scorecard, and being told it is gone is not a recovery. So there is a second guard that answers
+    BEFORE the syscall, and this pins both halves of it.
+
+    The predicate is truth-tabled against a fake repo, so a real slug can be tested without a real
+    course anywhere near the call. Three cases beyond "does the name start with an underscore":
+    courses/ itself, a directory that CONTAINS courses/, and a path nowhere near it (tmp_path, which
+    must keep working or pytest's own cleanup breaks).
+
+    Then one live assertion that the wrapper is actually INSTALLED, because a predicate nothing calls
+    is this file's most-repeated defect. It is aimed at courses/sample-golf-club -- corpus-shaped by
+    name, absent by construction -- so a guard that failed open raises FileNotFoundError from the real
+    rmtree rather than deleting anything. Both outcomes are safe; only one is the right exception.
+    """
+    import shutil
+
+    fake = tmp_path / "fake-repo"
+    (fake / "courses" / "merion-golf-club").mkdir(parents=True)
+    (fake / "courses" / "_synth_ticks").mkdir()
+    root = str(fake)
+    ok = lambda p: rmtree_target_is_scratch(str(p), root)
+
+    assert ok(fake / "courses" / "_synth_ticks"), \
+        "a scratch fixture must still be removable, or eight fixtures here stop working"
+    assert ok(fake / "courses" / "_cold_merion-golf-club" / "laz"), \
+        "a path INSIDE a scratch course is scratch too"
+    assert not ok(fake / "courses" / "merion-golf-club"), "a real course must be refused"
+    assert not ok(fake / "courses" / "merion-golf-club" / "dem_hd"), \
+        "a subdirectory of a real course is still that course's data"
+    assert not ok(fake / "courses"), "courses/ itself holds every course"
+    assert not ok(fake), "a directory that CONTAINS courses/ is worse than one bad slug"
+    assert not ok(tmp_path), "...and so is its parent"
+    assert ok(tmp_path / "elsewhere"), \
+        "a path nowhere near courses/ must be delegated untouched (pytest's own tmp cleanup)"
+
+    # the wrapper is live: corpus-shaped name, and nothing on disk to lose either way
+    absent = os.path.join(ROOT, "courses", "sample-golf-club")
+    assert not os.path.exists(absent), "this probe relies on the path NOT existing"
+    with pytest.raises(AssertionError) as e:
+        shutil.rmtree(absent, ignore_errors=True)
+    assert "course data" in str(e.value), (
+        f"shutil.rmtree reached a corpus-shaped path under courses/ without the session guard "
+        f"speaking: {e.value!r}")
+
+    # ...and it does not stand in the way of the scratch directory the fixtures actually remove
+    live = os.path.join(ROOT, "courses", "_synth_rmguard")
+    os.makedirs(live, exist_ok=True)
+    try:
+        shutil.rmtree(live, ignore_errors=True)
+        assert not os.path.exists(live), "the guard blocked a legitimate scratch cleanup"
+    finally:
+        # empty by construction, so this can never leave scratch behind under courses/ -- the leak
+        # distribution.is_corpus_slug records having happened once with _synth_ticks
+        if os.path.isdir(live):
+            os.rmdir(live)
 
 
 def test_the_course_template_documents_every_key_the_engine_reads():
