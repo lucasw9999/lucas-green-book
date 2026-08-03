@@ -36,6 +36,7 @@ import urllib.request, json, math, io, time, os
 import numpy as np, rasterio
 import config
 import geo
+import surface_io
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
@@ -339,16 +340,18 @@ def main():
         if flat:
             print(f"hole {hn}: CONSTANT surface across the green ({relief*100:.1f} cm of relief) -- "
                   f"outside 3DEP coverage, not a flat green; no slope will be printed")
-        np.save(f"{OUT}/hole{hn:02d}.npy", arr)
-        json.dump(dict(hole=hn, approach_bearing=appr, bbox=[xmin, ymin, xmax, ymax], W=W, H=H,
-                       green_id=green['id'], green_center=[clat, clon],
-                       polygon=[[p['lat'], p['lon']] for p in gpoly],
-                       source="USGS 3DEP seamless 1 m @0.5m sampling",
-                       nan_frac=nan_frac, insufficient=insufficient,
-                       # A seamless raster has no point cloud, so there is no measured point
-                       # density. Report None rather than inventing a plausible number.
-                       density=None),
-                  open(f"{OUT}/hole{hn:02d}.json", "w"))
+        # ONE unit: the array carries no georeference, so an array beside a stale bbox is a printed
+        # slope for ground the pixels do not cover. See surface_io.commit_surface.
+        surface_io.commit_surface(
+            f"{OUT}/hole{hn:02d}", arr,
+            dict(hole=hn, approach_bearing=appr, bbox=[xmin, ymin, xmax, ymax], W=W, H=H,
+                 green_id=green['id'], green_center=[clat, clon],
+                 polygon=[[p['lat'], p['lon']] for p in gpoly],
+                 source="USGS 3DEP seamless 1 m @0.5m sampling",
+                 nan_frac=nan_frac, insufficient=insufficient,
+                 # A seamless raster has no point cloud, so there is no measured point
+                 # density. Report None rather than inventing a plausible number.
+                 density=None))
         if insufficient:
             print(f"hole {hn}: INSUFFICIENT -- {nan_frac*100:.0f}% of the green has no elevation; "
                   f"no slope will be printed")

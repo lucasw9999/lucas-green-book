@@ -475,6 +475,23 @@ def render(hole, tournament=False):
     if meta.get("insufficient"):
         return _blank_green(meta, tournament)
     arr = np.load(f"{DEM}/hole{hole:02d}.npy").astype('float64')
+    # THE PAIR MUST AGREE. The array carries no georeference: H,W come from it, but the bbox, the ring
+    # and the centre all come from the meta, so an array that is not the one this meta describes is
+    # rasterised against ground its pixels do not cover -- and the card then prints a slope for it. That
+    # is the shipped monarch-bay defect (mask stretched ~26% past the green, printed tilt inflated 16.6%
+    # to 52.5% on six cards), and nothing downstream can catch it: check_scale.py and
+    # cross_flight_check.py re-derive metres-per-pixel from this same meta and inherit the error.
+    # surface_io.commit_surface stages both files so an interrupted build cannot tear them apart; this
+    # is the read-side half, which also covers a pair torn before that existed or restored by hand.
+    if (meta.get("H"), meta.get("W")) != arr.shape:
+        raise SystemExit(
+            f"hole {hole} of {config.SLUG}: the green surface and its metadata do not match -- the\n"
+            f"  array is {arr.shape[0]}x{arr.shape[1]} but dem_hd/hole{hole:02d}.json records "
+            f"{meta.get('H')}x{meta.get('W')}.\n"
+            f"  One of the two is from a different run, so the green ring would be placed on the wrong\n"
+            f"  ground. Rebuild that hole:\n"
+            f"    COURSE={config.SLUG} ONLY={hole} OVERWRITE=1 python3 fetch_dem_hd.py\n"
+            f"    COURSE={config.SLUG} ONLY={hole} python3 fetch_dem.py")
     # NoData sentinels must die before anything measures this surface. USGS 3DEP ships
     # -3.4028235e38; a single one of those makes the 15 cm contour loop iterate over a 3.4e38
     # range and the process is OOM-killed with no message at all (rc=137, zero output).

@@ -19,6 +19,7 @@ from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 import config
 import geo
+import surface_io
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
@@ -375,7 +376,6 @@ def main():
                   f"{uncovered:.3f}) -- KEEPING the existing surface. "
                   f"OVERWRITE=1 to replace it with a blank green.")
             continue
-        np.save(f"{OUT}/hole{hn:02d}.npy",arr)
         meta=dict(hole=hn,approach_bearing=t['appr'],bbox=t['bbox'],W=t['W'],H=t['H'],
                   green_id=t['green']['id'],green_center=[t['clat'],t['clon']],
                   polygon=[[p['lat'],p['lon']] for p in t['green']['geometry']],
@@ -383,7 +383,9 @@ def main():
                   npts=int(len(pz)), density=dens,
                   nan_frac=round(nan_frac,4), uncovered=round(uncovered,4),
                   insufficient=insufficient)
-        json.dump(meta,open(f"{OUT}/hole{hn:02d}.json","w"))
+        # ONE unit: the array carries no georeference, so an array beside a stale bbox is a printed
+        # slope for ground the pixels do not cover. See surface_io.commit_surface.
+        surface_io.commit_surface(f"{OUT}/hole{hn:02d}", arr, meta)
         flag=("  *** INSUFFICIENT LiDAR: %.1f%% of the green interior was extrapolated, not "
               "measured -- render blank ***" % (100*nan_frac)) if insufficient else ""
         print(f"hole {hn:2d}: {t['W']}x{t['H']} @0.4m  {len(pz):6d} ground pts "

@@ -4966,6 +4966,40 @@ def test_render_survives_the_real_3dep_nodata_sentinel(gate_course):
     assert s["relief_ft"] < 100.0, f"sentinel leaked into the relief: {s['relief_ft']}"
 
 
+def test_render_refuses_a_green_whose_array_is_not_the_one_its_meta_describes(gate_course):
+    """The read-side half of the pair rule. surface_io.commit_surface stops a build from TEARING the
+    .npy/.json pair apart; this stops a pair that is already torn -- an older interruption, a hand
+    restore, one file copied between courses -- from being read as a green.
+
+    The array has no georeference. H,W come from it while the bbox, the ring and green_center come
+    from the meta, so a mismatched pair places the green ring on ground the pixels do not cover and
+    the card prints a slope for it: the shipped monarch-bay fault, 16.6% to 52.5% of inflated tilt on
+    six cards, one feed word and one confidence label moved. A stop is the only honest outcome.
+
+    Asserted in both directions -- a MATCHED pair of the same shape must still render -- because a
+    check that refuses everything would pass the first assertion alone.
+    """
+    import numpy as np
+
+    import render_green
+
+    tilt = lambda r, c: 100.0 + 0.03 * r
+    _synth_green(gate_course, 5, tilt, insufficient=False, n=60)
+    svg, s = render_green.render(5)                      # the matched pair reads
+    assert svg and s["tilt_pct"] > 0, "a matched pair must still be read"
+
+    # ...now the state an interrupted build used to leave: a NEW array beside the OLD meta.
+    p = os.path.join(gate_course, "dem_hd", "hole05.npy")
+    np.save(p, np.fromfunction(tilt, (91, 92), dtype=float))
+    meta = json.load(open(os.path.join(gate_course, "dem_hd", "hole05.json")))
+    assert (meta["H"], meta["W"]) == (60, 60), "the fixture must leave the meta describing 60x60"
+    with pytest.raises(SystemExit) as e:
+        render_green.render(5)
+    msg = str(e.value)
+    assert "91" in msg and "60" in msg, \
+        f"the stop must name both shapes so the reader knows which hole to rebuild: {msg!r}"
+
+
 def test_no_slope_label_claims_an_unputtable_number(gate_course):
     """merion h2 printed "40" beside "5" on a green card whose legend says "Numbers = slope %
     there". The cell was measured correctly -- it is a bank inside the OSM golf=green polygon,
@@ -13366,6 +13400,117 @@ def test_a_seamless_green_records_the_extent_its_array_actually_covers(tmp_path,
         "a reply carrying no GeoTIFF transform was written out anyway, with an extent taken from the "
         "request -- which is a guess. An unplaceable surface must be refused; tools/verify_elevation."
         "_fetch_patch already refuses on transform.is_identity for the same reason.")
+
+
+@needs_corpus
+def test_an_interrupted_build_cannot_leave_a_green_beside_someone_elses_metadata(tmp_path,
+                                                                                monkeypatch):
+    """A green surface is TWO files -- holeNN.npy and holeNN.json -- and both producers wrote them as
+    two independent statements: `np.save(...)` and then `json.dump(...)`. Anything between them (Ctrl-C
+    during a 198-green build, a full disk, an exception while encoding the meta) left the NEW array
+    sitting beside the PREVIOUS run's extent.
+
+    That is not a crash, it is a wrong number. render_green.render takes H,W from the array but the
+    bbox, the green polygon and green_center from the meta, so a mismatched pair rasterises the ring
+    against an extent the pixels do not cover -- exactly the fault that shipped when fetch_dem recorded
+    the bbox it ASKED FOR next to the raster 3DEP RETURNED: the mask stretched ~26% past the green's
+    north and south edges and the printed tilt on all six monarch-bay cards was inflated 16.6% to
+    52.5%, moving one feed word and one confidence label. Nothing downstream can catch it, because
+    check_scale.py and cross_flight_check.py re-derive metres-per-pixel from the same meta and inherit
+    the error, and verify_elevation's absolute gate is blind to a stretched vertical mapping.
+
+    So the pair has to commit as ONE unit. Simulated at the exact seam: the array is written, then the
+    process dies before the meta. The surface already on disk must be the one that was there before --
+    not a new array wearing an old label.
+    """
+    import io
+
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_dem"):
+        sys.modules.pop(m, None)
+    try:
+        import fetch_dem as fd
+    except Exception as e:
+        pytest.skip(f"fetch_dem not importable: {type(e).__name__}")
+
+    lat0, lon0 = 37.6916, -122.1580
+    mlon = 111320.0 * math.cos(math.radians(lat0))
+    cdir = tmp_path / "course"
+    out = cdir / "dem_hd"
+    out.mkdir(parents=True)
+    npy = out / "hole07.npy"
+    jsn = out / "hole07.json"
+
+    def write_geom(half_m):
+        """One green `half_m` metres either side of centre, plus the hole line that binds to it."""
+        dla, dlo = half_m / 111320.0, half_m / mlon
+        ring = [{"lat": lat0 - dla, "lon": lon0 - dlo}, {"lat": lat0 - dla, "lon": lon0 + dlo},
+                {"lat": lat0 + dla, "lon": lon0 + dlo}, {"lat": lat0 + dla, "lon": lon0 - dlo},
+                {"lat": lat0 - dla, "lon": lon0 - dlo}]
+        (cdir / "osm_geom.json").write_text(json.dumps({"elements": [
+            {"type": "way", "id": 11, "tags": {"golf": "hole", "ref": "7"},
+             "geometry": [{"lat": lat0 - dla - 0.0016, "lon": lon0},
+                          {"lat": lat0 - dla * 0.9, "lon": lon0}]},
+            {"type": "way", "id": 22, "tags": {"golf": "green"}, "geometry": ring}]}))
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url
+        xmin, ymin, xmax, ymax = [float(v) for v in
+                                  re.search(r"bbox=([^&]+)", url).group(1).split(",")]
+        w, h = (int(v) for v in re.search(r"size=(\d+),(\d+)", url).groups())
+        arr = np.fromfunction(lambda r, c: 20.0 + 0.0075 * r, (h, w), dtype=float)
+        tif = tmp_path / "reply.tif"
+        with rasterio.open(str(tif), "w", driver="GTiff", height=h, width=w, count=1,
+                           dtype="float32", crs="EPSG:4326",
+                           transform=from_bounds(xmin, ymin, xmax, ymax, w, h)) as ds:
+            ds.write(arr.astype("float32"), 1)
+        return io.BytesIO(tif.read_bytes())
+
+    monkeypatch.setattr(fd.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(fd, "DIR", str(cdir))
+    monkeypatch.setattr(fd, "OUT", str(out))
+    monkeypatch.setattr(fd, "OVERWRITE", True)      # this stage otherwise keeps the surface it has
+    monkeypatch.setattr(fd.time, "sleep", lambda *_a: None)
+    try:
+        # a good pair, from a 10 m green
+        write_geom(10.0)
+        fd.main()
+        assert npy.exists() and jsn.exists(), "the fixture did not produce a surface to protect"
+        first_npy = npy.read_bytes()
+        first_meta = json.loads(jsn.read_text())
+        assert np.load(str(npy)).shape == (first_meta["H"], first_meta["W"]), \
+            "the fixture's own pair is inconsistent before anything was interrupted"
+
+        # ...then a 25 m green -- a bigger raster, so a torn pair is visible in the SHAPE -- and the
+        # process dies the instant the array has landed.
+        write_geom(25.0)
+        real_save = np.save
+
+        def save_then_interrupt(file, arr, *a, **k):
+            real_save(file, arr, *a, **k)
+            raise KeyboardInterrupt("Ctrl-C between the array and its metadata")
+
+        monkeypatch.setattr(np, "save", save_then_interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            fd.main()
+        monkeypatch.undo()
+    finally:
+        for m in ("config", "fetch_dem"):
+            sys.modules.pop(m, None)
+
+    meta = json.loads(jsn.read_text())
+    shape = np.load(str(npy)).shape
+    assert shape == (meta["H"], meta["W"]), (
+        f"the interrupted run left a {shape[0]}x{shape[1]} array beside a meta describing "
+        f"{meta['H']}x{meta['W']}. render_green would rasterise the green ring against an extent the "
+        f"pixels do not cover, and print a slope for it.")
+    assert npy.read_bytes() == first_npy and meta == first_meta, (
+        "the surface on disk is neither the old pair nor a complete new one -- the pair must commit "
+        "as one unit, so an interrupted run leaves the previous surface exactly as it was")
 
 
 # ---------------------------------------------------------------------------

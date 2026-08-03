@@ -513,9 +513,11 @@ def main():
                             "label": label, "tz": tzname, "basis": basis, "tiles": per_tile}
         # Atomic: course.json is HAND-AUTHORED -- the scorecard transcription, the bbox, the tee
         # table -- and nothing can regenerate it. Writing in place means a crash or a full disk
-        # truncates it, in a directory the project documents as unrecoverable. The dem_hd and
-        # trees_lidar metas are written in place deliberately: those are derived from the LAZ and a
-        # re-run rebuilds them.
+        # truncates it, in a directory the project documents as unrecoverable. trees_lidar.json is
+        # written in place deliberately: it is derived from the LAZ, a re-run rebuilds it, and a
+        # truncated one fails loudly at render_hole.py's json.load rather than reading as empty.
+        # (dem_hd used to be in this sentence too; its .npy/.json pair now commits through
+        # surface_io.commit_surface, because a torn pair there is a printed number, not a stop.)
         tmp = p + ".part"
         with open(tmp, "w") as f:
             json.dump(j, f, indent=2)
