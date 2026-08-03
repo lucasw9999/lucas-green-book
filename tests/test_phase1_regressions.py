@@ -9903,6 +9903,94 @@ def test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one(tmp_path)
 
 
 @needs_corpus
+def test_a_failed_tree_write_cannot_truncate_the_layer_or_hide_behind_a_bare_except():
+    """The tree layer's write was the third part of a fix that shipped two of its three.
+
+    The ledger item was "atomic write + shrink guard + make an EMPTY layer as loud as a MISSING one".
+    The shrink guard and the empty-vs-missing distinction landed (check_layer, and the test above);
+    `json.dump(out, open(path, "w"))` did not. That form truncates the file when it opens it and then
+    STREAMS, so a failure mid-encode leaves a wreck LARGER than what it replaced -- measured on
+    course.json elsewhere in this file at 327 bytes where 265 were -- three lines under a comment
+    calling check_layer "the last gate before the bytes land". Tree layers run 126 KB (merion) to
+    245 KB (valley-hi), all of it the only record of the canopy.
+
+    AND THE WRECK WAS INVISIBLE. lidar_dates.write_lidar_flown's docstring justified writing this one
+    file in place by saying a truncated layer "fails loudly at render_hole.py's json.load rather than
+    reading as empty" -- but generate._tree_markers wrapped that call in a bare
+    `except Exception: _TREES = {}`. render_hole._lidar_trees() returns {} for an ABSENT file with no
+    exception, and it raises SystemExit (not an Exception) for the tiles-but-no-layer case, so the only
+    thing that catch could ever absorb was a CORRUPT layer -- the one case that must not be absorbed.
+    Absorbed, it becomes zero markers everywhere, _course_has_trees() then drops the per-card "no tree
+    data" caveat as noise, and the book is a clean-looking, tree-free 18 cards.
+
+    So both halves are asserted here: the write cannot leave a truncated layer or a staged file, and a
+    corrupt layer stops the build by name instead of printing open ground.
+    """
+    _config, _rh = _engine(CORPUS[0])
+    for m in ("fetch_trees", "generate"):
+        sys.modules.pop(m, None)
+    ft = _import_first_party("fetch_trees")
+
+    class Unencodable:
+        pass
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "trees_lidar.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"1": [[40.0, -75.0]], "2": [[40.1, -75.1]]}, f)
+        before = open(p, "rb").read()
+
+        with pytest.raises(TypeError):
+            ft.write_layer(p, {"1": [[40.0, -75.0]], "2": Unencodable()})
+        assert open(p, "rb").read() == before, (
+            "a failed tree write truncated the layer -- json.dump truncates on open and streams, so "
+            "what is left is a partial file that still parses as JSON only by luck")
+        assert not os.path.exists(p + ".part"), \
+            "a failed tree write left trees_lidar.json.part under courses/, which nothing sweeps"
+
+        ft.write_layer(p, {"1": [[41.0, -76.0]]})
+        with open(p, encoding="utf-8") as f:
+            assert json.load(f) == {"1": [[41.0, -76.0]]}, "a successful write must land"
+        assert sorted(os.path.basename(x) for x in glob.glob(os.path.join(td, "*"))) == \
+            ["trees_lidar.json"], "a successful write must leave nothing staged"
+
+    src = open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8").read()
+    body = src[src.index("def main("):]
+    assert _in_code("write_layer(", body), "main() no longer writes through the guarded writer"
+    assert body.index("check_layer(") < body.index("write_layer("), \
+        "the shrink guard must still run before the bytes land"
+    assert 'json.dump(out,open(path,"w"))' not in _code_only(src).replace(" ", ""), \
+        "the truncate-then-stream write is back"
+
+    # ...and the build must not swallow a corrupt layer into "this course has no trees"
+    os.environ["COURSE"] = CORPUS[0]
+    import generate
+    real = generate.render_hole._lidar_trees
+    generate._TREES = None
+    try:
+        def corrupt():
+            raise json.JSONDecodeError("Expecting value", "{tru", 1)
+        generate.render_hole._lidar_trees = corrupt
+        with pytest.raises(SystemExit) as e:
+            generate._tree_markers(1)
+        assert "trees_lidar" in str(e.value) and "fetch_trees" in str(e.value), (
+            f"a corrupt tree layer must stop the build and name its remedy, got: {e.value}")
+    finally:
+        generate.render_hole._lidar_trees = real
+        generate._TREES = None
+    # ...while a course with genuinely NO layer is still the honest [], not a stop: that path returns {}
+    # from _lidar_trees with no exception at all, and tightening the catch must not change it
+    try:
+        generate.render_hole._lidar_trees = lambda: {}
+        assert generate._tree_markers(1) == [], \
+            "a course with no tree layer must still draw none quietly -- only a CORRUPT one is a stop"
+    finally:
+        generate.render_hole._lidar_trees = real
+        generate._TREES = None
+
+
+@needs_corpus
 def test_no_tree_marker_sits_on_a_building():
     """Phase 1's goal: 1107 markers project-wide (53 on Merion's clubhouse roof) were drawn as
     trees. Class-6 filtering alone is not enough -- most tiles are unclassified, so a roof arrives

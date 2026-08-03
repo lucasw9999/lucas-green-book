@@ -226,6 +226,39 @@ def check_layer(out, path):
               % ", ".join(str(h) for h in lost))
 
 
+def write_layer(path, out):
+    """Stage the tree layer beside trees_lidar.json and rename it in, sweeping the stage either way.
+
+    The write this replaces was `json.dump(out, open(path, "w"))`, three lines under a comment calling
+    check_layer "the last gate before the bytes land". json.dump TRUNCATES the file when it opens it
+    and then streams, so a failure part-way through the encode leaves a wreck that is LARGER than the
+    layer it replaced, having got as far as the key it choked on -- measured on course.json at 327 bytes
+    where 265 were. Tree layers run 126 KB (merion) to 245 KB (valley-hi) and are the only record of the
+    canopy; the tiles can rebuild them, but nothing tells the next reader that this file is a wreck
+    rather than a survey.
+
+    Nothing DOWNSTREAM told them either, which is why staging this was worth more than tidiness.
+    lidar_dates.write_lidar_flown's docstring justified leaving this one write in place by saying a
+    truncated layer "fails loudly at render_hole.py's json.load" -- while generate._tree_markers held a
+    bare `except Exception: _TREES = {}` around exactly that call, turning the loud failure into zero
+    markers everywhere, which then suppressed the per-card "no tree data" caveat as noise and produced a
+    clean-looking, tree-free 18-hole book. Both halves are fixed together: the write cannot leave a
+    wreck, and the build no longer swallows one.
+
+    The stage is removed on the failure path, and the handle is closed by the `with` rather than by
+    refcount. Encoding is named because coordinates are ASCII and saying so removes the locale from the
+    question; ensure_ascii keeps it true whatever the machine.
+    """
+    tmp = path + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
+
+
 def on_playing_surface(lon,lat,surfaces):
     """'golf' | 'building' | False -- which kind of surface this marker falls on (counted
     separately, because reporting a building drop as a 'green/fairway/tee/bunker' drop
@@ -365,7 +398,7 @@ def main():
     # LAST GATE BEFORE THE BYTES LAND, like fetch_osm's _check_bindings: everything above is a
     # measurement of the tiles, and this asks whether the measurement is one the book may be built on.
     check_layer(out,path)
-    json.dump(out,open(path,"w"))
+    write_layer(path,out)
     tot=sum(len(v) for v in out.values())
     print(f"wrote trees_lidar.json: {tot} tree markers across {len(out)} holes "
           f"(dropped {dropped_surface} on green/fairway/tee/bunker, {dropped_building} on buildings; "

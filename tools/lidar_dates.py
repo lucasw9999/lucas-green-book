@@ -419,11 +419,14 @@ def write_lidar_flown(path, record):
 
     ATOMIC, because course.json is HAND-AUTHORED -- the scorecard transcription, the bbox, the tee
     table -- and nothing can regenerate it. Writing in place means a crash or a full disk truncates it,
-    in a directory the project documents as unrecoverable. trees_lidar.json is written in place
-    deliberately: it is derived from the LAZ, a re-run rebuilds it, and a truncated one fails loudly at
-    render_hole.py's json.load rather than reading as empty. (dem_hd used to be in this sentence too;
-    its .npy/.json pair now commits through surface_io.commit_surface, because a torn pair there is a
-    printed number, not a stop.)
+    in a directory the project documents as unrecoverable. This paragraph used to add that
+    trees_lidar.json was written in place DELIBERATELY, because a truncated one "fails loudly at
+    render_hole.py's json.load rather than reading as empty". That was not true: generate._tree_markers
+    caught exactly that exception and set _TREES = {}, so a wrecked canopy record printed as a
+    tree-free book. Both were fixed together -- fetch_trees.write_layer stages its write and the build
+    no longer swallows an unreadable layer -- so no write of a derived file under courses/ is left
+    leaning on a loud failure that something else was quietly catching. (dem_hd's pair commits through
+    surface_io.commit_surface, because a torn pair there is a printed number, not a stop.)
 
     ADDITIVE, never a rewrite from a template: the existing file is loaded and one key is set, so no
     field this tool does not know about can be dropped or defaulted. A run that recovered no dates

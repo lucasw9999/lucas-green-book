@@ -154,13 +154,31 @@ def yardage_guide_panel():
 
 
 def _tree_markers(hole):
-    """LiDAR tree markers on one hole, or [] -- cached; see the note at the footer that uses it."""
+    """LiDAR tree markers on one hole, or [] -- cached; see the note at the footer that uses it.
+
+    A layer that is ABSENT is []: render_hole._lidar_trees() returns {} for that with no exception, and
+    a course with no point cloud honestly has no canopy to draw. A layer that is UNREADABLE is a STOP.
+
+    The catch here used to be `except Exception: _TREES = {}`, and it could only ever absorb the second
+    case: the absent-layer path raises nothing, and the tiles-but-no-layer path raises SystemExit, which
+    is not an Exception. So the one thing it caught was a corrupt or truncated trees_lidar.json -- and it
+    turned it into zero markers on every hole, which _course_has_trees() then reads as "this course has
+    no trees" and drops the per-card "no tree data" caveat as noise. A wrecked 126-245 KB canopy record
+    printed as a clean, tree-free 18-hole book with nothing anywhere saying the data was missing. It also
+    falsified the claim tools/lidar_dates.py used to justify writing that file in place -- that a
+    truncated layer "fails loudly at render_hole.py's json.load".
+    """
     global _TREES
     if _TREES is None:
         try:
             _TREES = render_hole._lidar_trees() or {}
-        except Exception:
-            _TREES = {}
+        except Exception as e:
+            raise SystemExit(
+                f"trees_lidar.json for {config.SLUG} could not be read ({type(e).__name__}: {e}).\n"
+                f"  Drawing no trees would be indistinguishable from a course that has none -- every\n"
+                f"  hole prints open ground and the per-card \"no tree data\" caveat is suppressed as\n"
+                f"  noise -- so the book is not built from a layer this project cannot parse. Re-run:\n"
+                f"    COURSE={config.SLUG} python3 fetch_trees.py") from e
     return _TREES.get(str(hole)) or []
 
 
