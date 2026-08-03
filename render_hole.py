@@ -474,7 +474,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         greenside bunker behind the green projects past t=1 and a bunker beside the tee projects before
         t=0, and both are clipped away whole, so any_within(g,40) would DROP 72 bunkers on 83 shipped
         cards -- bay-view 12 would go 1B -> 0B over way 872811004, whose nearest edge is 8.9 m from the
-        line and projects just behind the tee (t=-0.04). Across the corpus 149 bunkers reach within
+        line and projects just behind the tee (t=-0.03). Across the corpus 149 bunkers reach within
         40 m but only through those caps: 78 past the green, 71 behind the tee. That clip is right for
         a river whose only near approach is behind the tee and wrong for the class of hazard a junior
         actually finds beside a green. So the metric here is the one in_corridor already used --
@@ -637,7 +637,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         edge_within), and is still framed WHOLE rather than through this function, because a bunker's
         own extent bounds how far that can pull the frame: moving sand onto the edge rule re-framed 44
         of the 198 cards and the worst of them, philadelphia 7, prints its map at 0.0113 in per metre
-        where it printed 0.0141 -- 20% smaller, against the 52% of its length copper-valley 10 lost to
+        where it printed 0.0142 -- 20% smaller, against the 52% of its length copper-valley 10 lost to
         one lake. Nothing is dropped for the room: no yardage row and no from-tee row moves on any card
         of either edition. AREA WATER is the exception: it is selected when it REACHES the hole (see
         `waters`),

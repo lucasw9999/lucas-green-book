@@ -15367,6 +15367,222 @@ def test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bound
         + "\n  ".join(f"{r}:{ln} publishes {v!r} m^2 in: ...{w}..." for r, ln, v, w in wrong[:6]))
 
 
+# The COUNTERFACTUALS render_hole's two selector docstrings argue from. Both describe a rule the engine
+# does NOT use -- what any_within would drop, and what the centroid rule used to frame -- so neither is
+# checked by anything the engine computes on a normal run, and both went out with a wrong figure.
+TEE_CLIP_CASE = ("bay-view-golf-club", 12, 872811004)   # sand behind the tee: t, and the nearest edge
+FRAME_CASE = ("philadelphia-country-club", 7)           # the worst re-frame of the edge rule
+
+
+@needs_corpus
+def test_the_bunker_behind_the_tee_projects_where_edge_withins_docstring_says_it_does():
+    """`edge_within` argues against clipping to the played length from ONE card. Its figures must hold.
+
+    The argument is sound and the card is the right witness: bay-view 12's way 872811004 lies entirely
+    BEHIND the tee, so any_within -- which drops the stretch of a feature projecting outside t=[0,1] --
+    would take the hole's only bunker away and print 0B over sand 8.9 m off the line. The published t
+    was -0.04. Measured on the closest point of its boundary it is -0.0334, which rounds to -0.03: an
+    unmeasured figure in a docstring, the class 4613a64 closed, and the same kind of slip as the
+    bounding box published as an area two paragraphs above it.
+
+    Everything here is measured with this file's own geometry, not the engine's selectors: the nearest
+    approach by exact segment-to-segment minimum, t by projection onto the first centreline segment
+    (the one _seg_near_played_line clips at t<0, so it is the t the sentence is about), and the
+    CLIPPED distance by applying that clip and re-measuring -- which is what makes "any_within would
+    drop it" a measurement rather than a claim.
+    """
+    slug, hn, way = TEE_CLIP_CASE
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} is not built here")
+    cfg, rh = _engine(slug)
+    course, geom = rh.load()
+    import geo
+    loc = cfg.COURSE.get("location") or {}
+    line = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))[hn]["geometry"]
+    named = [g for g in course if g.get("id") == way and g.get("geometry")]
+    assert named, f"way {way} is gone from {slug}'s osm_course.json; re-measure the case"
+
+    la0 = sum(q["lat"] for q in line) / len(line)
+    lo0 = sum(q["lon"] for q in line) / len(line)
+    ml = _mlon(la0)
+
+    def em(la, lo):
+        return ((lo - lo0) * ml, (la - la0) * R_LAT)
+    L = [em(q["lat"], q["lon"]) for q in line]
+    ring = [em(q["lat"], q["lon"]) for q in named[0]["geometry"]]
+
+    # (1) the nearest approach, unclipped and exact
+    nearest = min(rh.dist_seg_seg(ring[i][0], ring[i][1], ring[i + 1][0], ring[i + 1][1],
+                                  L[j][0], L[j][1], L[j + 1][0], L[j + 1][1])
+                  for i in range(len(ring) - 1) for j in range(len(L) - 1))
+
+    # (2) t on the FIRST centreline segment, at the closest point of the boundary. Sampled along each
+    # ring edge rather than at its vertices, because the closest point is usually mid-edge -- the
+    # nearest VERTEX here is 9.13 m out and its t is -0.037, so a vertex witness would publish a
+    # different number for the same sentence.
+    ax, ay = L[0]
+    dx, dy = L[1][0] - ax, L[1][1] - ay
+    seg0 = dx * dx + dy * dy
+
+    def t_on_seg0(p):
+        return ((p[0] - ax) * dx + (p[1] - ay) * dy) / seg0
+    best = (math.inf, None)
+    N = 4000
+    for i in range(len(ring) - 1):
+        for k in range(N + 1):
+            u = k / N
+            p = (ring[i][0] + u * (ring[i + 1][0] - ring[i][0]),
+                 ring[i][1] + u * (ring[i + 1][1] - ring[i][1]))
+            d = min(rh.dist_pt_seg(p[0], p[1], L[j][0], L[j][1], L[j + 1][0], L[j + 1][1])
+                    for j in range(len(L) - 1))
+            if d < best[0]:
+                best = (d, p)
+    t_close = t_on_seg0(best[1])
+    ts = [t_on_seg0(p) for p in ring]
+
+    # (3) the CLIPPED distance: segment 0 drops what projects before t=0 and the last segment what
+    # projects past t=1, exactly as _seg_near_played_line does, instead of clamping to the endpoint.
+    def clipped(p):
+        out = []
+        n = len(L) - 1
+        for j in range(n):
+            bx, by = L[j]
+            ex, ey = L[j + 1]
+            ddx, ddy = ex - bx, ey - by
+            t = ((p[0] - bx) * ddx + (p[1] - by) * ddy) / (ddx * ddx + ddy * ddy)
+            if (j == 0 and t < 0.0) or (j == n - 1 and t > 1.0):
+                continue
+            out.append(rh.dist_pt_seg(p[0], p[1], bx, by, ex, ey))
+        return min(out) if out else math.inf
+    clipped_near = min(clipped(p) for p in ring)
+
+    prose = _func_prose(os.path.join(ROOT, "render_hole.py"), "edge_within")
+    m = re.search(r"nearest edge is ([\d.]+) m from the line and projects just behind the tee "
+                  r"\(t=(-?[\d.]+)\)", prose)
+    assert m, ("edge_within no longer states this card's nearest edge and t; measured "
+               f"{nearest:.4f} m at t={t_close:.4f}. Re-read the docstring before editing it")
+    said_edge, said_t = float(m.group(1)), float(m.group(2))
+
+    assert max(ts) < 0.0, (
+        f"way {way} no longer lies wholly behind the tee (t from {min(ts):.4f} to {max(ts):.4f} on the "
+        f"first centreline segment), so it no longer witnesses what a played-length clip costs")
+    assert clipped_near >= SAND_CORRIDOR_M, (
+        f"clipped to the played length, way {way} comes {clipped_near:.2f} m from the line -- inside "
+        f"the {SAND_CORRIDOR_M:g} m bar -- so any_within would NOT drop it and the docstring's "
+        f"1B -> 0B claim is stale")
+    _svg, info = rh.render_hole(hn, cfg.HOLES)
+    assert info["bunkers"] == 1, (
+        f"{slug} {hn} draws {info['bunkers']} bunker(s); the docstring's 1B -> 0B needs re-measuring")
+    assert round(nearest, 1) == said_edge, (
+        f"edge_within says way {way}'s nearest edge is {said_edge} m from the line; it is "
+        f"{nearest:.4f} m")
+    assert round(t_close, 2) == round(said_t, 2), (
+        f"edge_within says way {way} projects to t={said_t}; the closest point of its boundary "
+        f"({nearest:.4f} m out) is at t={t_close:.6f}, which rounds to {round(t_close, 2)}. The whole "
+        f"ring spans t {min(ts):.4f} to {max(ts):.4f}")
+
+
+@needs_corpus
+def test_the_worst_reframed_card_prints_the_scale_corridor_pts_says_it_prints():
+    """`corridor_pts` names the card the edge rule cost the most map scale. Both figures must hold.
+
+    It publishes philadelphia 7 at 0.0113 printed inches per metre "where it printed 0.0141 -- 20%
+    smaller". The new figure and the percentage are right. The old one is not: the centroid rule frames
+    that card at 0.014162 in/m, which rounds to 0.0142. Nothing measured it, because it is a
+    counterfactual -- the scale of a rule the engine no longer has -- and the sentence it sits in is the
+    justification for framing sand WHOLE while water is framed to the corridor.
+
+    Measured, both ends, from the SVG the engine actually returns:
+      * inches per view unit is the card's own meet-fit, from the viewBox the engine emitted;
+      * view units per metre from the DRAWN tee-green chord against its own metric length, computed
+        here from the OSM nodes -- so the scale is read off the drawing rather than from the engine's
+        internal `s`.
+    The old frame is produced by taking the one bunker the centroid rule excluded OUT of the input, not
+    by reimplementing the rule: the two selections are compared first, with this file's own centroid and
+    vertex witnesses, and the removal is only accepted when their difference is exactly that one way.
+    """
+    slug, hn = FRAME_CASE
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} is not built here")
+    cfg, rh = _engine(slug)
+    course, geom = rh.load()
+    import geo
+    loc = cfg.COURSE.get("location") or {}
+    line = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))[hn]["geometry"]
+    greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+    _green, gend, tend = rh.match_green(line, greens)
+    la0 = sum(q["lat"] for q in line) / len(line)
+    lo0 = sum(q["lon"] for q in line) / len(line)
+    ml = _mlon(la0)
+
+    def em(la, lo):
+        return ((lo - lo0) * ml, (la - la0) * R_LAT)
+    L = [em(q["lat"], q["lon"]) for q in line]
+    chord_m = math.dist(em(tend["lat"], tend["lon"]), em(gend["lat"], gend["lon"]))
+    assert chord_m > 50, f"{slug} {hn}'s tee-green chord measures {chord_m:.1f} m; that cannot be right"
+
+    # The two column widths mirror render_hole's own (`.lay` / `.cmap` in generate.py). Written out
+    # here so the scale is derived from the CARD, and a change to either shows up as a figure that no
+    # longer matches the docstring rather than as a silent re-scaling.
+    lay_w_in = (cfg.CARD_W_IN - 2 * 0.07) * min(1.0, 1.6 / 4.0)
+    lay_h_in = cfg.CARD_H_IN - 2 * 0.07 - 0.50 - 0.18
+
+    def printed_in_per_m(svg):
+        vb = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
+        assert vb, "the hole map has no viewBox of the expected shape"
+        vbh = float(vb.group(2))
+        fit = min(lay_w_in / 100.0, lay_h_in / vbh)     # CONTENT_W is 100 view units
+        dashed = re.search(r'<polyline points="([\d.,\- ]+)"[^>]*stroke-dasharray', svg)
+        assert dashed, "the tee-green chord is no longer drawn as a dashed polyline"
+        pts = [tuple(float(v) for v in q.split(",")) for q in dashed.group(1).split()]
+        view_len = sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
+        return fit * (view_len / chord_m), vbh
+
+    def d_to_line(pe, pn):
+        return min(rh.dist_pt_seg(pe, pn, L[j][0], L[j][1], L[j + 1][0], L[j + 1][1])
+                   for j in range(len(L) - 1))
+    cands = [g for g in course
+             if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+    by_centroid = {g["id"] for g in cands if d_to_line(*em(*rh.centroid(g))) < SAND_CORRIDOR_M}
+    by_edge = {g["id"] for g in cands
+               if any(d_to_line(*em(q["lat"], q["lon"])) < SAND_CORRIDOR_M for q in g["geometry"])}
+    gained = by_edge - by_centroid
+    assert len(gained) == 1, (
+        f"the edge rule gains {sorted(gained)} on {slug} {hn}; this test reproduces the old frame by "
+        f"removing exactly one way from the input, which is only the same thing when there is one")
+
+    new_scale, new_vbh = printed_in_per_m(rh.render_hole(hn, cfg.HOLES)[0])
+    real_load = rh.load
+    try:
+        rh.load = lambda: ([g for g in course if g["id"] not in gained], geom)
+        old_svg, old_info = rh.render_hole(hn, cfg.HOLES)
+    finally:
+        rh.load = real_load
+    old_scale, old_vbh = printed_in_per_m(old_svg)
+    assert old_info["bunkers"] == len(by_centroid), (
+        f"with {sorted(gained)} removed the card draws {old_info['bunkers']} bunkers, not the "
+        f"{len(by_centroid)} the centroid rule selected -- the old frame was not reproduced")
+    assert old_vbh != new_vbh, (
+        f"both frames come out at viewBox height {new_vbh}, so this card no longer re-frames and "
+        f"corridor_pts should not be naming it as the worst case")
+
+    prose = _func_prose(os.path.join(ROOT, "render_hole.py"), "corridor_pts")
+    m = re.search(r"prints its map at ([\d.]+) in per metre where it printed ([\d.]+) -- (\d+)% "
+                  r"smaller", prose)
+    assert m, (f"corridor_pts no longer publishes this card's scale; measured {new_scale:.6f} in/m "
+               f"now against {old_scale:.6f} before, {(1 - new_scale / old_scale) * 100:.1f}% smaller")
+    said_new, said_old, said_pct = float(m.group(1)), float(m.group(2)), int(m.group(3))
+    assert round(new_scale, 4) == said_new, (
+        f"corridor_pts says {slug} {hn} prints {said_new} in per metre; the card it emits prints "
+        f"{new_scale:.6f}, which rounds to {round(new_scale, 4)}")
+    assert round(old_scale, 4) == said_old, (
+        f"corridor_pts says {slug} {hn} printed {said_old} in per metre under the centroid rule; that "
+        f"frame prints {old_scale:.6f}, which rounds to {round(old_scale, 4)}")
+    measured_pct = (1 - new_scale / old_scale) * 100
+    assert abs(measured_pct - said_pct) < 1.0, (
+        f"corridor_pts says {said_pct}% smaller; measured {measured_pct:.2f}%")
+
+
 @needs_corpus
 def test_the_enlarged_edition_never_drops_a_whole_yardage_row_the_pocket_book_prints():
     """The big-print book may not print FEWER yardage rows than the small one.
