@@ -3393,11 +3393,20 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     the shipped books with the engine's own straightness rule (arc/chord <= 1.02, render_hole's
     PAR3_STRAIGHT_MAX and WANDER_MAX): of the 813 printed pairs on STRAIGHT holes, 639 -- 79% -- do
     not add up, by a median 3 yd, 209 of them by 5 or more and 60 by 10 or more. The worst is 28 yd on
-    philadelphia 12, whose arc/chord is 0.9997 -- the drawn line is a HAIR SHORTER than the tee-green
-    chord it spans, which is as straight as a traced centreline gets: 300 + 252 = 552 against a 580
-    card. (That ratio read 1.0003 here, in the caveat's failure message and in the commit that added
-    both. 1.0003 is chord/arc, 551.181/551 -- the reciprocal, and the direction that would make this
-    hole a faint dogleg, i.e. the very story the sentence exists to refute. It was the one figure in
+    philadelphia 12, whose arc/chord is 0.9997 AS PUBLISHED, and which is as straight as a traced
+    centreline gets: 300 + 252 = 552 against a 580 card.
+
+    THAT 0.9997 IS TWO ROUNDINGS, NOT A SHORTER LINE, and the sentence used to say otherwise. In the
+    geometry that hole's arc measures 504.132769 m against a chord of 504.070919 m -- the drawn line is
+    6.2 cm LONGER than the chord it spans, an unrounded arc/chord of 1.000123. The published ratio is
+    below 1 because the two sides round unequally: arc_yd rounds 551.3263 down to 551, losing a third of
+    a yard, while the chord's 504.070919 m rounds to 504 m and reads back as 551.1811 yd, losing a
+    twelfth. That is the whole of it. Both figures are honest and the assertion below compares the
+    PUBLISHED pair on purpose -- those are the numbers on the card -- but a reader who took the old
+    gloss at face value would believe this centreline is traced short of its own endpoints.
+    (The ratio read 1.0003 here, in the caveat's failure message and in the commit that added
+    both. 1.0003 is chord/arc, 551.181/551 -- the reciprocal of the published figure, and reading a
+    chord/arc as an arc/chord is what turns a straightness measure into a bend. It was the one figure in
     this docstring nothing asserted.) It is not a dogleg phenomenon at all, and the legend now names
     the cause instead: two different measures. (The mismatch is not even one-signed -- 130 of 1047 rows
     sum HIGH, 724 low, 193 exactly. 17 of the 130 high rows sit on holes bent past 1.02, including
@@ -3719,10 +3728,14 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         f"{straight_worst[1]} off by {straight_worst[0]:+d}")
     # THE RATIO ITSELF, which was captured and not asserted -- and was the RECIPROCAL of the truth. The
     # docstring, the caveat assertion's message and the commit body all said 1.0003, which is
-    # chord/arc (551.181/551); this hole's arc/chord is 0.9997. Inverted, it reads as a hole a hair
-    # LONGER than its chord, which is the direction that would make it a faint dogleg -- exactly the
-    # story the sentence exists to refute. The one figure in this docstring that was wrong was the one
-    # nothing checked.
+    # chord/arc (551.181/551); the PUBLISHED arc/chord is 0.9997. Both sides here are published
+    # figures, deliberately: they are the numbers the card carries. In the raw geometry this hole's arc
+    # is 6.2 cm LONGER than its chord (arc/chord 1.000123) and the published ratio falls below 1 only
+    # because arc_yd rounds 551.3263 down to 551 while the chord's 504 m reads back as 551.1811 -- see
+    # test_the_worst_straight_rows_ratio_is_a_rounding_artefact_and_the_docstring_says_so, which
+    # measures both. Reading a chord/arc as an arc/chord is what makes a straightness measure look like
+    # a bend, whichever side of 1 the truth sits on. The one figure in this docstring that was wrong
+    # was the one nothing checked.
     assert straight_worst[2] is not None and \
         abs(float(said_worst.group(4)) - straight_worst[2]) < 0.00005, (
         f"the docstring says the worst straight row's arc/chord is {said_worst.group(4)}; measured it "
@@ -3742,6 +3755,92 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     assert int(said_bent.group(2)) == rows_high, (
         f"the same sentence calls the high rows {said_bent.group(2)} while the split above them counts "
         f"{rows_high} -- one measurement, stated twice, so both must move together")
+
+
+# The hole the gutter docstring names as the worst straight-hole row, and the CAUSE of the 0.9997 it
+# publishes for it. Every figure below is measured; only the SHA-free names are written down.
+GUTTER_RATIO_CASE = ("philadelphia-country-club", 12)
+_LINE_SHORTER_CLAIM = r"HAIR SHORTER than the tee-green chord"
+
+
+@needs_corpus
+def test_the_worst_straight_rows_ratio_is_a_rounding_artefact_and_the_docstring_says_so():
+    """0.9997 is not a shorter line. It is two roundings, and the prose credited the wrong cause.
+
+    4613a64 fixed a real defect -- the docstring, a failure message and a commit body all published
+    1.0003, which is chord/arc, the RECIPROCAL -- and the figure it replaced it with, 0.9997, is right:
+    both sides of that ratio are what the engine PUBLISHES, arc_yd 551 over a length_m of 504 read as
+    551.181 yd. The gloss it added is what is wrong. It says the drawn line is "a hair shorter than the
+    tee-green chord it spans", and in the geometry it is nothing of the kind: philadelphia 12's arc
+    measures 504.132769 m against a 504.070919 m chord, so the drawn line is 6.2 cm LONGER, at an
+    unrounded arc/chord of 1.000123.
+
+    Both facts are true at once and the reason is rounding, not shape: arc_yd rounds 551.3263 down to
+    551, losing 0.33 yd, while the chord's own 504.070919 m rounds to 504 m and reads back as 551.1811
+    yd, losing 0.08. A third of a yard off the numerator and a twelfth off the denominator is the whole
+    of the 0.9997. Nothing was wrong with the assertion -- it compares published values, which is what
+    the card prints and therefore what the test should grade -- and nothing printed on a card moves.
+    What was wrong is that a reader who took the sentence at face value would believe this centreline
+    is traced short of its own endpoints.
+
+    That matters because the sentence is load-bearing: it is the evidence that a hole this straight
+    still fails to add up, which is what the printed legend was corrected to say. A false mechanism
+    under a true conclusion is the kind of thing that gets "fixed" in the wrong direction later.
+    """
+    slug, hn = GUTTER_RATIO_CASE
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} is not built here")
+    cfg, rh = _engine(slug)
+    course, geom = rh.load()
+    import geo
+    loc = cfg.COURSE.get("location") or {}
+    line = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))[hn]["geometry"]
+    greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+    _green, gend, tend = rh.match_green(line, greens)
+    la0 = sum(q["lat"] for q in line) / len(line)
+    lo0 = sum(q["lon"] for q in line) / len(line)
+    ml = _mlon(la0)
+
+    def em(la, lo):
+        return ((lo - lo0) * ml, (la - la0) * R_LAT)
+    P = [em(q["lat"], q["lon"]) for q in line]
+    arc_m = sum(math.dist(P[i], P[i + 1]) for i in range(len(P) - 1))
+    chord_m = math.dist(em(tend["lat"], tend["lon"]), em(gend["lat"], gend["lon"]))
+    _svg, info = rh.render_hole(hn, cfg.HOLES)
+
+    # (1) the geometry: the drawn line is LONGER than the chord it spans, not shorter
+    assert arc_m > chord_m, (
+        f"{slug} {hn}'s arc is {arc_m:.6f} m against a {chord_m:.6f} m chord, so the drawn line no "
+        f"longer runs long and this test's premise has changed")
+    true_ratio = arc_m / chord_m
+
+    # (2) the published ratio, reproduced from the two roundings the card is built on
+    pub_chord_yd = info["length_m"] / 0.9144
+    pub_ratio = info["arc_yd"] / pub_chord_yd
+    assert pub_ratio < 1.0 < true_ratio, (
+        f"the published ratio is {pub_ratio:.6f} and the unrounded one {true_ratio:.6f}; they no "
+        f"longer straddle 1, so rounding is no longer what inverts the sign and the docstring's "
+        f"explanation needs re-reading")
+    assert info["arc_yd"] == round(arc_m / 0.9144) and info["length_m"] == round(chord_m), (
+        f"{slug} {hn} publishes arc_yd={info['arc_yd']} and length_m={info['length_m']} while the "
+        f"geometry gives {arc_m / 0.9144:.4f} yd and {chord_m:.4f} m -- the two roundings this test "
+        f"attributes the ratio to are not the ones the engine did")
+
+    prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                        "test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are")
+    assert not re.search(_LINE_SHORTER_CLAIM, prose), (
+        f"the gutter docstring still says the drawn line is shorter than its chord. {slug} {hn}'s arc "
+        f"is {arc_m:.6f} m against a {chord_m:.6f} m chord -- {(arc_m - chord_m) * 100:.1f} cm LONGER, "
+        f"arc/chord {true_ratio:.6f}. The published {pub_ratio:.4f} is the two roundings, not the shape")
+    for figure, what in ((f"{true_ratio:.6f}", "the unrounded arc/chord"),
+                         (f"{arc_m:.6f}", "the measured arc in metres"),
+                         (f"{chord_m:.6f}", "the measured chord in metres")):
+        assert figure in prose, (
+            f"the gutter docstring does not state {what} ({figure}); without it the 0.9997 it does "
+            f"state reads as a claim about the shape of the hole")
+    assert re.search(r"round", prose, re.I), (
+        "the gutter docstring no longer names ROUNDING as the cause of its 0.9997, which is the only "
+        "thing that makes that figure and the geometry agree")
 
 
 @needs_corpus
