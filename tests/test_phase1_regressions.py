@@ -10392,7 +10392,6 @@ def test_disclaimer_record_matches_what_the_books_print():
 
 
 @needs_corpus
-@needs_corpus
 def test_the_check_gate_reports_how_many_greens_the_pair_digest_actually_covers():
     """The surface pair's integrity check is DORMANT on the whole corpus, and nothing said so.
 
