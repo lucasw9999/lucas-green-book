@@ -113,11 +113,14 @@ def load_playing_surfaces():
         t=e.get('tags',{})
         # WATER belongs here. The filter caught golf surfaces and buildings -- and it catches those
         # perfectly, zero markers land on either across all 11 courses -- but not ponds, so canopy height
-        # measured over open water was drawn as trees. 535 of 68,884 shipped markers sat inside a mapped
-        # water polygon, 151 more than 5 m from the bank and 40 more than 10 m in; the worst is 22.0 m
-        # inside a pond on the-reserve 2, a card that draws that water in its own footer ("5B 2W") with
-        # 339 tree dots on top of it. A tree standing in a pond is the same defect class as the 1,107
-        # markers once drawn on roofs, 53 of them on Merion's clubhouse.
+        # measured over open water was drawn as trees. 535 of the 68,884 markers shipping BEFORE this
+        # filter sat inside a mapped water polygon, 151 more than 5 m from the bank and 40 more than
+        # 10 m in; the worst is 22.0 m inside a pond on the-reserve 2, a card that draws that water in
+        # its own footer ("5B 2W") with 339 tree dots on top of it. A tree standing in a pond is the
+        # same defect class as the 1,107 markers once drawn on roofs, 53 of them on Merion's clubhouse.
+        # (68,884 is the PRE-filter population, quoted so the removals have a denominator. What the
+        # corpus stores today is 68,269 -- the same set less the 615 this filter and its sibling below
+        # take out.)
         is_surface = (t.get('golf') in ('fairway','green','tee','bunker')
                       or t.get('building') not in (None, 'no')
                       or t.get('natural') == 'water'
@@ -261,8 +264,9 @@ def main():
     # were built, and a building, pond or fairway mapped as a relation is invisible to a cache that
     # predates it -- so load_playing_surfaces() above never sees that footprint and its roof or its
     # open water comes back as canopy. That is the identical failure the ALLOW_NO_BUILDINGS gate
-    # exists for (53 markers on Merion's clubhouse; 615 of 68,884 shipped markers inside a mapped
-    # pond, worst 22.0 m in), and there was no equivalent check for it.
+    # exists for (53 markers on Merion's clubhouse; 615 of the 68,884 markers shipping before these two
+    # filters were inside a mapped pond, worst 22.0 m in -- the corpus stores 68,269 today, that set
+    # less exactly those 615), and there was no equivalent check for it.
     #
     # The marker is the FILE, not a count of relations: a cache with zero flattened rings is either a
     # course that genuinely has no multipolygons or a cache that never asked, and those two are not

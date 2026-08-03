@@ -1819,7 +1819,7 @@ def test_no_tree_marker_sits_on_a_playing_surface():
     independently, with a fresh point-in-polygon over osm_course.json rather than by calling the
     function that did the filtering, so a fault in that function cannot vouch for itself.
 
-    68,884 markers across 11 courses, zero on a green, fairway, tee or bunker.
+    68,269 markers across 11 courses, zero on a green, fairway, tee or bunker.
     """
     def inside(px, py, poly):
         c, n = False, len(poly)
@@ -1863,6 +1863,21 @@ def test_no_tree_marker_sits_on_a_playing_surface():
     assert not offenders, ("tree markers are drawn on ground the ball can be played from, which the "
                            f"README says cannot happen ({len(offenders)} of {total}):\n  "
                            + "\n  ".join(offenders[:8]))
+    # The corpus-wide marker count is quoted in two docstrings here and, as a PRE-filter figure, twice
+    # in fetch_trees.py. It had gone stale: both of these quoted the population from BEFORE the water
+    # filter removed 615 markers -- so this test's own docstring claimed a total with "zero on a green"
+    # while 615 of that total were inside a mapped feature. Re-derived from the sweep that just ran,
+    # over the same courses, so the number in the prose is the number on disk. Deliberately written
+    # without any five-digit literal of its own, or this watcher would trip on its own explanation.
+    if len(seen) == 11:
+        for fn in ("test_no_tree_marker_sits_on_a_playing_surface",
+                   "test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one"):
+            prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
+            quoted = {int(x.replace(",", "")) for x in re.findall(r"\b(6[0-9],[0-9]{3})\b", prose)}
+            assert quoted == {total}, (
+                f"{fn} quotes {sorted(quoted)} tree markers; the sweep just counted {total:,} across "
+                f"{len(seen)} courses. Update the prose, or say which population the figure is of -- "
+                f"fetch_trees.py quotes the pre-filter one on purpose and says so.")
 
 
 @needs_corpus
@@ -7674,6 +7689,25 @@ def test_course_json_is_written_atomically(tmp_path):
     class Unencodable:
         pass
 
+    # WHAT AN UNGUARDED WRITE COSTS, re-derived rather than quoted. The commit that added this test
+    # said "112 bytes of truncated JSON where 80 bytes of scorecard were"; neither figure reproduces.
+    # It is 327 where 265 were -- json.dump truncates on open and streams, so the wreck is LARGER than
+    # the file it replaced, having got as far as the key it choked on. Measured here so the number
+    # cannot drift again, and on a throwaway copy so the assertion above still measures the real path.
+    SCORECARD_BYTES, WRECK_BYTES = 265, 327
+    d0 = tmp_path / "unguarded"; d0.mkdir()
+    p0, before0 = fresh(d0)
+    assert len(before0) == SCORECARD_BYTES, (
+        f"this fixture's scorecard is now {len(before0)} bytes, not {SCORECARD_BYTES}; re-derive the "
+        f"figures in this comment before changing them")
+    j0 = json.load(open(p0, encoding="utf-8"))
+    j0["lidar_flown"] = {"label": "2021-06-21", "tiles": Unencodable()}
+    with pytest.raises(TypeError), open(p0, "w", encoding="utf-8") as fh0:
+        json.dump(j0, fh0, indent=2)
+    assert os.path.getsize(p0) == WRECK_BYTES, (
+        f"an in-place write that fails now leaves {os.path.getsize(p0)} bytes, not {WRECK_BYTES}; the "
+        f"figure in the comment above is stale")
+
     with pytest.raises(TypeError):
         ld.write_lidar_flown(p, {"label": "2021-06-21", "tiles": Unencodable()})
     assert open(p, "rb").read() == before, (
@@ -9525,7 +9559,7 @@ def test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one(tmp_path)
     """A tree fetch that comes back with NOTHING overwrote the stored layer and said nothing a book
     could see.
 
-    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 68,884 project-wide.
+    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 68,269 project-wide.
     A re-run can legitimately return zero for reasons that have nothing to do with the trees being
     gone -- a wrong "lidar_crs" projects every point out of its corridor, an osm_geom.json that lost
     its golf=hole ways leaves `hlines` empty, tiles that carry no class-2 return are skipped one by
