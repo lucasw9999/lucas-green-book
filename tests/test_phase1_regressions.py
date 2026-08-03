@@ -3100,7 +3100,16 @@ def test_a_printed_carry_never_overstates_what_it_clears():
     # How far the sand runs PAST the printed number -- the figure that makes the guide's hedge
     # necessary -- pinned in both tests that quote it. See the docstring: both said 126, from a par 3
     # that no longer prints a carry.
+    #
+    # BOTH figures, because the median was CAPTURED here and asserted nowhere: it was computed, printed
+    # in these failure messages, and quoted in the docstring above, where a figure four times the truth
+    # would have passed -- checked by mutation. That is the same unasserted-figure defect 4613a64 closed
+    # on the gutter test, left open by the commit that rewrote this docstring to pin the worst case. The
+    # worst case must appear; the median is checked wherever it is stated, and has to be stated
+    # somewhere. No digit-plus-unit is written in this comment on purpose: the scan below reads this
+    # function's own prose, and the first draft of it matched an example quoted here.
     med, worst = statistics.median(past), max(past)
+    said_median = []
     for fn in ("test_a_printed_carry_never_overstates_what_it_clears",
                "test_the_carry_legend_says_sand_because_water_is_not_quantified"):
         prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
@@ -3114,6 +3123,16 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             f"{len(past)} shipped carries the worst is {worst:.0f} yd (median {med:.0f}). This went "
             f"stale once already, when par-3 carries were suppressed and took the old 126 yd case "
             f"with them.")
+        for stated in re.findall(r"median (\d+) yd", prose):
+            said_median.append((fn, int(stated)))
+            assert int(stated) == round(med), (
+                f"{fn} says the sand runs a median {stated} yd past the printed carry; measured over "
+                f"{len(past)} shipped carries it is {med:.1f} yd (worst {worst:.0f}). A figure quoted "
+                f"in a docstring and checked by nothing is how the old 126 survived")
+    assert said_median, (
+        f"neither carry test states the MEDIAN distance sand runs past a printed carry any more. It is "
+        f"{med:.1f} yd over {len(past)} shipped carries, against a worst case of {worst:.0f}, and it is "
+        f"what says the hedge is about the usual case and not one outlier")
 
 
 @needs_corpus
