@@ -133,6 +133,96 @@ def load_playing_surfaces():
             surfaces.append((min(xs),min(ys),max(xs),max(ys),poly,kind))
     return surfaces
 
+# A hole must have held at least this many markers before losing all of them counts as a LOSS rather
+# than churn. Same floor and same reason as fetch_osm._check_response's `oc[k] < 4` skip: a corridor
+# with one or two markers is a filter edge case, while the failures this has to catch take a hole from
+# tens or hundreds to zero (the smallest per-hole count in this corpus outside monarch-bay's three
+# survey-edge holes is 15).
+TREE_HOLE_FLOOR = 4
+
+
+def _stored_layer(path):
+    """{hole: marker count} for the tree layer already on disk; {} when there is none to compare against.
+
+    An unreadable file is treated as no baseline rather than a hard stop, which is the opposite of
+    fetch_osm._digitized_of's rule and deliberately so: nothing in trees_lidar.json is hand-made, this
+    run is regenerating the whole file from the tiles, and the zero-total guard below still applies. The
+    counts are all that is needed -- the guard asks "did a hole that had canopy lose it", never what the
+    coordinates were.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        j = json.load(open(path))
+    except Exception:
+        return {}
+    if not isinstance(j, dict):
+        return {}
+    return {str(k): len(v) for k, v in j.items() if isinstance(v, list)}
+
+
+def _env_on(name):
+    """An escape hatch is ON only if it is not an explicit off.
+
+    Parsed the way this module's other two hatches are, NOT for truthiness: bool(os.environ.get(..))
+    makes ALLOW_NO_TREES=0 and =false mean YES, and these two waive the guards that stand between a
+    failed survey and a book that draws a tree-lined hole as open ground.
+    """
+    return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
+
+
+def check_layer(out, path):
+    """Refuse to commit a tree layer that has LOST the canopy the stored one recorded.
+
+    Two different questions, so two different waivers -- the distinction fetch_osm._check_response
+    records the hard way, where one flag gated both a churned tree node and the loss of a green:
+
+      * ALLOW_NO_TREES  -- this layer has no markers at all. A re-run returns zero for reasons that
+        have nothing to do with the trees: a wrong "lidar_crs" projects every point out of its
+        corridor, an osm_geom.json that lost its golf=hole ways leaves the corridor list empty, a tile
+        with no class-2 return is skipped. None of those is "this course has no trees", and the
+        difference is invisible downstream -- render_hole._lidar_trees() hard-stops on a MISSING file
+        when the course has tiles, but an EMPTY one parses, generate._course_has_trees() then drops the
+        per-card "no tree data" caveat as noise, and gen_provenance reports bare holes only
+        `if tl and any(tl.values())`. So the one state nothing reports is the one that reports nothing.
+      * ALLOW_TREE_LOSS -- some hole that HAD canopy now has none. Checked per hole because the
+        aggregate cannot see it: a course can keep 96% of its markers while one card goes from
+        tree-lined to open ground, and that card is what a golfer aims over.
+
+    The per-hole test is skipped when the layer is empty outright: every hole has then lost its
+    markers, that is the same fact the first guard already states, and needing two flags to say it once
+    is how a waiver becomes a habit.
+    """
+    tot = sum(len(v) for v in out.values())
+    prev = _stored_layer(path)
+    if tot == 0:
+        if not _env_on("ALLOW_NO_TREES"):
+            raise SystemExit(
+                "REFUSING to write an EMPTY tree layer to %s.\n"
+                "  Zero markers is not the same claim as 'this course has no trees', and nothing\n"
+                "  downstream can tell them apart: the maps draw open ground and no card is marked\n"
+                "  \"no tree data\". Check that \"lidar_crs\" is right, that osm_geom.json still holds\n"
+                "  golf=hole ways, and that the tiles carry class-2 ground returns.\n"
+                "  Set ALLOW_NO_TREES=1 if this course genuinely has none." % path)
+        print("WARNING: ALLOW_NO_TREES set -- writing a tree layer with no markers at all; every "
+              "hole will draw as open ground")
+        return
+    lost = sorted(int(h) for h, n in prev.items()
+                  if n >= TREE_HOLE_FLOOR and not out.get(h))
+    if lost:
+        if not _env_on("ALLOW_TREE_LOSS"):
+            raise SystemExit(
+                "REFUSING to write %s: hole(s) %s had %s markers in the stored layer and this run\n"
+                "  found none. Those cards would print open ground where the survey found canopy,\n"
+                "  and the \"no tree data\" caveat only appears when SOME hole still has markers.\n"
+                "  Set ALLOW_TREE_LOSS=1 if the loss is real (a hole re-routed, or the corridor is\n"
+                "  genuinely outside the point data)."
+                % (path, ", ".join(str(h) for h in lost),
+                   ", ".join(str(prev[str(h)]) for h in lost)))
+        print("WARNING: ALLOW_TREE_LOSS set -- hole(s) %s lose every marker they had"
+              % ", ".join(str(h) for h in lost))
+
+
 def on_playing_surface(lon,lat,surfaces):
     """'golf' | 'building' | False -- which kind of surface this marker falls on (counted
     separately, because reporting a building drop as a 'green/fairway/tee/bunker' drop
@@ -267,7 +357,11 @@ def main():
                 continue
             pts.append([lat,lon])
         out[str(hn)]=pts
-    json.dump(out,open(f"{DIR}/trees_lidar.json","w"))
+    path=f"{DIR}/trees_lidar.json"
+    # LAST GATE BEFORE THE BYTES LAND, like fetch_osm's _check_bindings: everything above is a
+    # measurement of the tiles, and this asks whether the measurement is one the book may be built on.
+    check_layer(out,path)
+    json.dump(out,open(path,"w"))
     tot=sum(len(v) for v in out.values())
     print(f"wrote trees_lidar.json: {tot} tree markers across {len(out)} holes "
           f"(dropped {dropped_surface} on green/fairway/tee/bunker, {dropped_building} on buildings; "

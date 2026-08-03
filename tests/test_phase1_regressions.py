@@ -8629,6 +8629,188 @@ def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
         shutil.rmtree(cdir, ignore_errors=True)
 
 
+def _tree_course_data(ft, where, canopy_on):
+    """Write everything fetch_trees.main() READS -- laz/ plus the three osm caches -- under `where`.
+
+    Two holes, 400 m apart, each a 200 m centreline. Every tile carries a dense class-2 ground
+    lattice over both corridors, so the survey demonstrably REACHED them; `canopy_on` is the set of
+    hole numbers that additionally get returns 8 m above that ground. A hole not in `canopy_on` is
+    therefore a corridor the survey covered and found nothing tall in -- which is exactly what a
+    course whose whole tree fetch comes back empty looks like, one hole at a time.
+    """
+    import laspy
+    import numpy as np
+    from pyproj import CRS
+
+    os.makedirs(os.path.join(where, "laz"), exist_ok=True)
+    loc = ft.config.COURSE["location"]
+    cx, cy = ft.FWD.transform(loc["lon"], loc["lat"])
+
+    def ll(x, y):
+        lo, la = ft.INV.transform(x, y)
+        return {"lat": la, "lon": lo}
+
+    origins = {1: (cx, cy), 2: (cx + 400.0, cy)}
+    geom = [{"type": "way", "id": 10 + hn, "tags": {"golf": "hole", "ref": str(hn)},
+             "geometry": [ll(ox, oy), ll(ox, oy + 200.0)]}
+            for hn, (ox, oy) in origins.items()]
+    with open(os.path.join(where, "osm_geom.json"), "w", encoding="utf-8") as f:
+        json.dump({"elements": geom}, f)
+    # a clubhouse 2 km away: fetch_trees hard-stops on a cache with no building polygons, and this one
+    # must not sit in either corridor or it would drop the markers under test as roof returns
+    bld = [ll(cx + 2000.0, cy + 2000.0), ll(cx + 2020.0, cy + 2000.0),
+           ll(cx + 2020.0, cy + 2020.0), ll(cx + 2000.0, cy + 2020.0),
+           ll(cx + 2000.0, cy + 2000.0)]
+    with open(os.path.join(where, "osm_course.json"), "w", encoding="utf-8") as f:
+        json.dump({"elements": [{"type": "way", "id": 99, "tags": {"building": "yes"},
+                                 "geometry": bld}]}, f)
+    # its presence is the record that the multipolygon pass ran; content is irrelevant here
+    with open(os.path.join(where, "osm_relations.json"), "w", encoding="utf-8") as f:
+        json.dump({"elements": []}, f)
+
+    gx, gy = np.meshgrid(np.arange(cx - 60.0, cx + 480.0, 3.0),
+                        np.arange(cy - 20.0, cy + 220.0, 3.0))
+    xs = [gx.ravel()]
+    ys = [gy.ravel()]
+    zs = [np.zeros(gx.size)]
+    cls = [np.full(gx.size, 2)]
+    for hn in sorted(canopy_on):
+        ox, oy = origins[hn]
+        ty = np.arange(oy + 10.0, oy + 190.0, 5.0)       # ~36 markers after the 5 m thinning grid
+        xs.append(np.full(ty.size, ox + 6.0))
+        ys.append(ty)
+        zs.append(np.full(ty.size, 8.0))                 # 8 m above ground: inside the 2.5-35 m band
+        cls.append(np.full(ty.size, 1))                  # unclassified, like most of this corpus
+    hdr = laspy.LasHeader(version="1.4", point_format=6)
+    hdr.add_crs(CRS.from_user_input(ft.UTM))             # metres, so the vertical scale is 1.0
+    las = laspy.LasData(hdr)
+    las.x = np.concatenate(xs)
+    las.y = np.concatenate(ys)
+    las.z = np.concatenate(zs)
+    las.classification = np.concatenate(cls)
+    las.write(os.path.join(where, "laz", "tile.laz"))
+
+
+def test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one(tmp_path):
+    """A tree fetch that comes back with NOTHING overwrote the stored layer and said nothing a book
+    could see.
+
+    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 68,884 project-wide.
+    A re-run can legitimately return zero for reasons that have nothing to do with the trees being
+    gone -- a wrong "lidar_crs" projects every point out of its corridor, an osm_geom.json that lost
+    its golf=hole ways leaves `hlines` empty, tiles that carry no class-2 return are skipped one by
+    one -- and `json.dump(out, open(...))` wrote the result over the layer regardless.
+
+    What that costs is the SECOND of this project's two rules. render_hole._lidar_trees() hard-stops
+    on a MISSING file when the course has tiles ("25 vs 5086 on Merion"), but an EMPTY one parses
+    fine, so every hole draws open ground; generate._course_has_trees() then sees no markers anywhere
+    and suppresses the per-card "no tree data" caveat as noise; and tools/gen_provenance.py reports
+    the bare holes only `if tl and any(tl.values())`, so a wholly empty layer is the one case its
+    exhibit skips. Three readers, and the layer being empty rather than absent silences all three: a
+    tree-lined corridor prints as open ground with nothing anywhere saying the data is missing.
+
+    Both directions are asserted -- a run that DID find trees must still write -- and the per-hole
+    case separately, because the aggregate cannot see a single card losing its canopy. That is the
+    lesson fetch_osm._check_response records per KIND for the same reason.
+    """
+    slug = "_synth_notrees"
+    cdir = os.path.join(ROOT, "courses", slug)
+    os.makedirs(cdir, exist_ok=True)
+    lat0, lon0 = 40.0, -75.0
+    prev = os.environ.get("COURSE")
+    try:
+        with open(os.path.join(cdir, "course.json"), "w", encoding="utf-8") as f:
+            json.dump(dict(slug=slug, name="SynthNoTrees", address="",
+                           location={"lat": lat0, "lon": lon0}, par=72, green_speed="",
+                           tees=[dict(name="Card", yards=100)],
+                           featured_tee="Card", hole_cols=["par", "mens_hcp", "Card"],
+                           holes={"1": [72, 1, 100], "2": [72, 2, 100]},
+                           osm_bbox=[lat0 - 0.01, lon0 - 0.01, lat0 + 0.01, lon0 + 0.01],
+                           sources={}), f)
+        os.environ["COURSE"] = slug
+        for m in ("config", "fetch_trees"):
+            sys.modules.pop(m, None)
+        import fetch_trees as ft
+
+        def run(where, env=None):
+            """fetch_trees.main() against `where`, returning (SystemExit text or None)."""
+            ft.DIR = str(where)
+            keep = {k: os.environ.get(k) for k in (env or {})}
+            os.environ.update(env or {})
+            try:
+                ft.main()
+                return None
+            except SystemExit as e:
+                return str(e)
+            finally:
+                for k, v in keep.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+        def layer(where):
+            p = os.path.join(str(where), "trees_lidar.json")
+            with open(p, encoding="utf-8") as fh:
+                return json.load(fh)
+
+        # (1) the baseline: a run that DOES find canopy writes a layer. If this fails the fixture is
+        # wrong, not the guard, and the refusals below would prove nothing.
+        good = tmp_path / "found"
+        _tree_course_data(ft, str(good), canopy_on={1, 2})
+        assert run(good) is None, "a run that found trees must write the layer"
+        found = layer(good)
+        n1 = len(found.get("1") or [])
+        n2 = len(found.get("2") or [])
+        assert n1 >= 4 and n2 >= 4, f"fixture must put markers on both holes, got {n1} and {n2}"
+
+        # (2) the loss: the same course re-surveyed with nothing tall in either corridor. The stored
+        # layer must still be there afterwards.
+        blank = tmp_path / "blanked"
+        _tree_course_data(ft, str(blank), canopy_on=set())
+        import shutil as _sh
+        _sh.copy2(os.path.join(str(good), "trees_lidar.json"),
+                  os.path.join(str(blank), "trees_lidar.json"))
+        before = open(os.path.join(str(blank), "trees_lidar.json"), "rb").read()
+        exited = run(blank)
+        kept = sum(len(v) for v in layer(blank).values())
+        assert kept == n1 + n2, (
+            f"a run that found ZERO tall returns replaced a stored layer of {n1 + n2} markers with "
+            f"{kept}. Those trees are gone from every card and no reader can tell an empty layer "
+            f"from a course with no trees.")
+        assert open(os.path.join(str(blank), "trees_lidar.json"), "rb").read() == before, \
+            "the stored layer was rewritten"
+        assert exited and "tree" in exited.lower(), \
+            f"an empty tree layer must be refused out loud, got exit {exited!r}"
+
+        # (3) ...and the waiver has to work, or the guard is a wall rather than a check
+        assert run(blank, {"ALLOW_NO_TREES": "1"}) is None, \
+            "ALLOW_NO_TREES must let a genuinely treeless course through"
+        assert sum(len(v) for v in layer(blank).values()) == 0, \
+            "with the waiver set the empty layer is what gets written"
+
+        # (4) ONE hole losing its canopy: the aggregate is still 36 markers, so only a per-hole test
+        # can see that hole 2's card just went from tree-lined to open ground.
+        half = tmp_path / "half"
+        _tree_course_data(ft, str(half), canopy_on={1})
+        _sh.copy2(os.path.join(str(good), "trees_lidar.json"),
+                  os.path.join(str(half), "trees_lidar.json"))
+        exited = run(half)
+        assert len(layer(half).get("2") or []) == n2, (
+            f"hole 2 lost all {n2} of its markers to a re-run and the layer was written anyway: "
+            f"that card now prints open ground where the survey found canopy")
+        assert exited and "2" in exited, \
+            f"a hole losing its whole canopy must be refused out loud, got exit {exited!r}"
+        assert run(half, {"ALLOW_TREE_LOSS": "1"}) is None, \
+            "ALLOW_TREE_LOSS must accept a deliberate per-hole loss"
+        assert len(layer(half).get("2") or []) == 0 and len(layer(half).get("1") or []) == n1, \
+            "with the waiver set the shrunken layer is what gets written"
+    finally:
+        _restore_course(prev)
+        import shutil
+        shutil.rmtree(cdir, ignore_errors=True)
+
+
 @needs_corpus
 def test_no_tree_marker_sits_on_a_building():
     """Phase 1's goal: 1107 markers project-wide (53 on Merion's clubhouse roof) were drawn as
