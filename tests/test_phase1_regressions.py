@@ -820,6 +820,11 @@ DELETION_GUARD_TRUTH_TABLE = [
     # ...and the top of that chain, which the ancestor test got wrong by one separator: it asked
     # courses.startswith(p + os.sep), and for p == "/" that builds "//", which no absolute path
     # starts with. So the one directory that contains EVERY course was the one ancestor permitted.
+    # The fix records five spellings; the permitted set is a CLASS and not a list, because ANY path
+    # whose lexical form is the root took that branch -- re-measured against the pre-fix predicate,
+    # 16 of 16 spellings tried were permitted, including /any/.., which contains no dot-dot spelling
+    # of the root at all. The rows below cover the shapes; the generated sweep in the test covers the
+    # class.
     ("the filesystem root, which contains courses/ like every other ancestor",
      lambda r, t: os.sep, False),
     ("the filesystem root with a doubled separator", lambda r, t: os.sep * 2, False),
@@ -828,6 +833,14 @@ DELETION_GUARD_TRUTH_TABLE = [
      lambda r, t: os.sep + os.pardir + os.sep, False),
     ("the filesystem root spelled with a curdir component",
      lambda r, t: os.sep + os.curdir + os.sep, False),
+    # the two spellings that were open and that the fix's own table did not watch: same canonical
+    # form, no trailing separator. Re-measured against the pre-fix predicate -- both PERMITTED.
+    ("the filesystem root with a bare curdir leaf", lambda r, t: os.sep + os.curdir, False),
+    ("the filesystem root with a bare pardir leaf", lambda r, t: os.sep + os.pardir, False),
+    # ...and one that shows the permitted set is a class rather than a list: it reaches the root by
+    # ascending out of a named directory, so no list of dot-and-separator spellings can enumerate it.
+    ("the filesystem root reached by ascending out of a named directory",
+     lambda r, t: os.sep + "any" + os.sep + os.pardir, False),
     # the four that FAILED OPEN before this table existed
     ("a real course spelled in a different case (APFS and NTFS fold it to the same directory)",
      lambda r, t: os.path.join(r, "COURSES", "Merion-Golf-Club"), False),
@@ -896,6 +909,10 @@ def test_the_deletion_guard_denies_by_default_over_every_spelling_of_a_real_cour
     normalisation change cannot silently reopen one. Every case is aimed at a FAKE repo under
     tmp_path -- an attack that wins here destroys fake data.
     """
+    import inspect
+
+    import conftest
+
     root = _fake_repo_for_deletion_guard(tmp_path)
     # cwd inside the fake repo, so a relative spelling resolves there rather than into this checkout
     monkeypatch.chdir(root)
@@ -925,6 +942,40 @@ def test_the_deletion_guard_denies_by_default_over_every_spelling_of_a_real_cour
     assert not rmtree_target_is_scratch(
         os.path.realpath(os.path.join(via_link, "courses", "merion-golf-club")), via_link), \
         "a real course is still a real course when the repo root is reached through a symlink"
+
+    # The spellings of the filesystem root are a CLASS, not the list of five the fix recorded. Swept
+    # rather than listed, because a list is what came up short: re-measuring against the pre-fix
+    # predicate, every one of these was PERMITTED -- 16 of 16 tried -- and two of them, `/.` and
+    # `/..`, were not in the table the fix shipped, so a later change to _classify could reopen those
+    # two with nothing pointing at them.
+    root_spellings = [os.sep, os.sep * 2, os.sep * 3, os.sep * 4,
+                      os.sep + os.curdir, os.sep + os.pardir,
+                      os.sep + os.curdir + os.sep, os.sep + os.pardir + os.sep,
+                      os.sep + os.curdir + os.curdir, os.sep + os.pardir + os.sep + os.pardir,
+                      os.sep + "any" + os.sep + os.pardir,
+                      os.sep + "a" + os.sep + "b" + os.sep + os.pardir + os.sep + os.pardir]
+    permitted = [s for s in root_spellings if rmtree_target_is_scratch(s, root)]
+    assert not permitted, (
+        "%d of %d spellings of the filesystem root are PERMITTED: %r. That is the one directory that "
+        "holds every course on the machine." % (len(permitted), len(root_spellings), permitted))
+
+    # ...and the docstring that names them has to name the two that were missed, and has to be right
+    # about the ones it does name. It says `/`, `//`, `///`, `/../` and `/./` "all canonicalise" to
+    # `/`, and that is false for exactly one of the five -- measured immediately below.
+    doc = inspect.getdoc(conftest.rmtree_target_is_scratch)
+    for spelling in ("`/.`", "`/..`"):
+        assert spelling in doc, (
+            f"the docstring listing the root spellings that failed open does not mention {spelling}, "
+            f"which the pre-fix predicate permitted -- re-measured, not assumed. An unlisted spelling "
+            f"is one a future _classify change can reopen with no prose pointing at it")
+    assert os.path.abspath(os.sep * 2) == os.sep * 2, \
+        "posixpath stopped preserving a doubled leading separator; the claim checked next changes"
+    assert "all canonicalise" not in doc, (
+        "the docstring claims `/`, `//`, `///`, `/../` and `/./` 'all canonicalise' to `/`. "
+        "os.path.abspath('//') is '//', asserted on the line above: POSIX leaves a doubled leading "
+        "separator implementation-defined and posixpath preserves it. `//` failed open for the same "
+        "REASON as the rest -- the prefix it built was '///', which no path starts with -- not by the "
+        "same reduction, and a fix built on the stated reduction would have missed it")
 
     # ...and a predicate that cannot read its argument at all must refuse, never fall through to allow
     # -- and must do it by RETURNING False, which is what its docstring promises. The NUL-byte

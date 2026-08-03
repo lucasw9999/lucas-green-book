@@ -132,12 +132,20 @@ def rmtree_target_is_scratch(path, root):
     product, and permit only if _COURSE_DATA appears nowhere in it. There is one early `return False`
     (a path that cannot be read at all) and one final return that states what it proved.
 
-    A FIFTH spelling failed open in BOTH the old predicate and this rewrite, so the list above was an
-    under-count until it was measured: the filesystem root. `/`, `//`, `///`, `/../` and `/./` all
-    canonicalise to `/`, and the ancestor test built its prefix as `p + os.sep` -- "//" for the root --
-    which no absolute path starts with. So the one directory containing every course on the machine
-    was permitted while /Users, the home directory, the repo root and its parent were all refused.
-    See _classify.
+    A FIFTH case failed open in BOTH the old predicate and this rewrite, and it is a CLASS rather than
+    a spelling -- which is why counting it came up short twice: the filesystem root. The ancestor test
+    built its prefix as `p + os.sep`, which is "//" when `p` is the root, and no absolute path starts
+    with that. So the one directory containing every course on the machine was permitted while /Users,
+    the home directory, the repo root and its parent were all refused. EVERY path whose lexical form is
+    the root took that branch: `/`, `///`, `/.`, `/..`, `/./`, `/../`, and also `/any/..`, which
+    contains no dot-and-separator spelling of the root at all. Re-measured against the pre-fix
+    predicate, 16 of 16 spellings tried were permitted; the note that shipped with the fix recorded
+    five, and `/.` and `/..` were two it missed.
+
+    `//` belongs to that class for a different reason, stated separately because a fix reasoning only
+    from canonicalisation would have missed it: os.path.abspath("//") is "//", not "/". POSIX leaves a
+    doubled leading separator implementation-defined and posixpath preserves it, so `//` failed open
+    because the prefix IT built was "///" -- not because it reduced to the root. See _classify.
 
     Two things it is NOT: it does not stop a rewrite in place (that is _courses_are_read_only's job,
     at teardown), and it does not know about deletions that never enter Python -- a subprocess
