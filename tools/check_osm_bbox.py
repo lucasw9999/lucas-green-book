@@ -35,32 +35,54 @@ failure this tool exists to catch, since a feature outside the box is never down
 not draw it, and the footer is counted FROM the map. The number is now derived from render_hole's own
 named set rather than kept here.
 
-FOUR COURSES ARE SHORT, and the earlier live probe NO LONGER COVERS ANY OF THEM. Current measurement,
-at 68 m:
+FOUR COURSES WERE SHORT AT 68 m, AND ALL FOUR ARE NOW WIDENED AND RE-FETCHED (2026-08-04). What they
+read before that, and what it cost:
 
-    castlewood-hill      88 m short (holes 1, 8, 7, 10, 18)            widening costs +27% query area
-    castlewood-valley   103 m short (7, 12, 14, 6, 17 and 3 more)      widening costs +39% query area
-    copper-valley        39 m short (hole 5)                           widening costs +2% query area
-    monarch-bay          41 m short (holes 15, 10, 14)                 widening costs +5% query area
+    castlewood-hill      88 m short (holes 1, 8, 7, 10, 18)            widening cost +24% query area
+    castlewood-valley   103 m short (7, 12, 14, 6, 17 and 3 more)      widening cost +42% query area
+    copper-valley        39 m short (hole 5)                           widening cost +2% query area
+    monarch-bay          41 m short (holes 15, 10, 14)                 widening cost +5% query area
 
-Every figure grew by the 23 m the corridor grew, and two courses gained holes that had been just inside
-the old bar: hill 3 holes -> 5, monarch-bay 1 -> 3. The area costs are unchanged because they are
-properties of the boxes, not of this bar.
+Every figure had grown by the 23 m the corridor grew when this check stopped measuring its own 45 m, and
+two courses gained holes that had been just inside the old bar: hill 3 holes -> 5, monarch-bay 1 -> 3.
 
-An earlier revision of this note recorded a live Overpass probe with a 120 m-widened box finding no
-drawn feature missing, at "28 m short (holes 6, 17, 18, 8, 13)" for hill and "28 m" for valley. Those
-figures never matched, and now none of the four does: at 45 m the shortfalls read 65, 80, 16 and 18, and
-at the corridor actually drawn they read 88, 103, 39 and 41. Whatever that probe checked, it did not
-check this.
+The deferral was real, not squeamishness: a re-fetch also pulls whatever has moved upstream in OSM since
+the cache was made, and an aborted fetch has permanently stripped irreplaceable geometry here before
+(see fetch_osm._check_response). So both halves were MEASURED before anything was written -- the widened
+box fetched into a scratch directory seeded with the live cache, so every fetch_osm guard ran against the
+real baseline -- and the two counts came out:
 
-Treat all four as UNVERIFIED. The reassurance was the dangerous part -- a stale "already investigated"
-is worse than no note, because it stops the next person looking. valley-hi's 46 m turned out to hide two
-bunkers inside a drawn corridor, a green, and a hole line, so a shortfall of 39-103 m is not obviously
-harmless.
+  * UPSTREAM DRIFT: ZERO on all four. 0 vanished ids, 0 changed geometries or tags, 0 new ids inside the
+    OLD box, osm_relations.json identical where one existed. The entire stated cost of re-fetching
+    measured to nothing, which is why this was the cheap moment to do it.
+  * NEWLY REACHABLE DRAWN FEATURES: 4, every one a golf=tee polygon the narrow box cut off --
+    way/692110589 8.5 m off hill 1; way/690850042 and way/690850043 at 2.9 m and 0.5 m off valley 7;
+    way/690831855 2.4 m off valley 14. Valley 7's own back tees were outside its fetched box
+    (start_at_tee_m 75.2 -> 0.0). No printed figure on any card moved: 0 of 1,028 and 0 of 1,054 visible
+    text nodes changed in the two books; the ink moved by +1 and +3 drawn tee polygons and -9 and -3 tree
+    markers.
+  * NO OMITTED HAZARD, measured rather than assumed: the nearest newly fetched hazard-class feature is a
+    stream 83.4 m from valley 17 against a 45 m water corridor, and the 8 new bunkers sit 400-546 m away
+    -- they belong to the Hill course. So the shortfall was NOT hiding what valley-hi's 46 m hid.
+  * WHAT THE NARROW BOX WAS REALLY COSTING THE PRINTED PAGE -- not a hazard, but 12 tree markers drawn
+    on ground no ball can be played from, because fetch_trees' surface/footprint filter cannot exclude a
+    polygon the fetch never asked for. hill: 9 markers standing on two houses OSM maps outside the old
+    box (3 on hole 1's card, 6 on hole 8's). valley: 3 standing on the newly fetched TEES of holes 6 and
+    7 -- caught by test_no_tree_marker_sits_on_a_playing_surface the moment the wider cache landed.
+    Re-deriving each layer on the widened cache removed exactly those and nothing else: hill
+    10,422 -> 10,413, valley 9,238 -> 9,235, 0 added, every other hole untouched. copper-valley 6,305 and
+    monarch-bay 1,439 re-derived BYTE-IDENTICAL, which is the confirmation that their widened boxes
+    changed nothing at all.
 
-Still not widened, and the reason is unchanged: a re-fetch pulls whatever else has moved upstream in OSM
-since the last one, so it would change four books for reasons unrelated to the fix. But that is a
-deferral now, not a clearance.
+An earlier revision of this note recorded a live Overpass probe with a 120 m-widened box finding no drawn
+feature missing, at "28 m short (holes 6, 17, 18, 8, 13)" for hill and "28 m" for valley. Those figures
+never matched any bar this tool has used -- at 45 m the shortfalls read 65, 80, 16 and 18 -- so whatever
+that probe checked, it did not check this. It is kept here as the reason the measurement above names its
+ids, its distances and its date: a stale "already investigated" is worse than no note, because it stops
+the next person looking.
+
+test_every_cached_osm_bbox_covers_the_corridor_its_cards_draw now fails on any course whose box stops
+short of DRAW_CORRIDOR_M, so this cannot silently return.
 
 Exit codes:  0 every corridor is inside the box
              1 at least one hole draws from outside it -- widen osm_bbox and re-fetch

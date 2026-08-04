@@ -117,8 +117,11 @@ def load_playing_surfaces():
         # its own footer ("5B 2W") with 339 tree dots on top of it. A tree standing in a pond is the
         # same defect class as the 1,107 markers once drawn on roofs, 53 of them on Merion's clubhouse.
         # (68,884 is the PRE-filter population, quoted so the removals have a denominator. What the
-        # corpus stores today is 68,269 -- the same set less the 615 this filter and its sibling below
-        # take out.)
+        # corpus stores today is 68,257 -- the same set less the 615 this filter and its sibling below
+        # take out, and less 12 more that only became visible when castlewood-hill's and
+        # castlewood-valley's osm_bbox were widened to cover the drawing corridor on 2026-08-04: this
+        # filter cannot exclude a house or a tee the OSM fetch never asked for. See
+        # tools/check_osm_bbox.py.)
         is_surface = (t.get('golf') in ('fairway','green','tee','bunker')
                       or t.get('building') not in (None, 'no')
                       or t.get('natural') == 'water'
@@ -296,21 +299,23 @@ def main():
     # predates it -- so load_playing_surfaces() above never sees that footprint and its roof or its
     # open water comes back as canopy. That is the identical failure the ALLOW_NO_BUILDINGS gate
     # exists for (53 markers on Merion's clubhouse; 615 of the 68,884 markers shipping before these two
-    # filters were inside a mapped pond, worst 22.0 m in -- the corpus stores 68,269 today, that set
-    # less exactly those 615), and there was no equivalent check for it.
+    # filters were inside a mapped pond, worst 22.0 m in -- the corpus stores 68,257 today, that set
+    # less exactly those 615 and the 12 a too-narrow osm_bbox hid), and there was no equivalent check
+    # for it.
     #
     # The marker is the FILE, not a count of relations: a cache with zero flattened rings is either a
     # course that genuinely has no multipolygons or a cache that never asked, and those two are not
     # the same claim. osm_relations.json exists exactly when the pass ran, so its presence records
     # "we asked" and a reply of zero relations is then a positive answer.
     #
-    # Measured over this corpus: castlewood-hill and castlewood-valley are the only two caches with
-    # no osm_relations.json, and they are also the only two with zero `_from_relation` elements; the
-    # other nine carry 1 to 36 flattened rings (monarch-bay 36 fairways, micke-grove 19,
-    # the-reserve 19, valley-hi 18). Re-queried live on 2026-08-01, both Castlewood bboxes return
-    # ZERO golf / natural=water / building relations, so nothing is in fact missing from those two
-    # books -- but that could not be known without asking, which is the whole point. Re-running
-    # fetch_osm.py records the zero and clears this.
+    # Measured over this corpus: castlewood-hill and castlewood-valley WERE the only two caches with no
+    # osm_relations.json, and also the only two with zero `_from_relation` elements; the other nine carry
+    # 1 to 36 flattened rings (monarch-bay 36 fairways, micke-grove 19, the-reserve 19, valley-hi 18).
+    # Both were re-fetched on 2026-08-04 when their osm_bbox was widened to cover the drawing corridor
+    # (see tools/check_osm_bbox.py), and both replies hold ZERO golf / natural=water / building relations
+    # -- so nothing was in fact missing from those two books, and now the FILE says so instead of a
+    # comment. All eleven caches with geometry carry osm_relations.json today; this gate is what keeps a
+    # twelfth from arriving without one.
     _rel = f"{DIR}/osm_relations.json"
     _allow_rel = os.environ.get("ALLOW_NO_RELATIONS", "").lower() not in ("", "0", "false", "no")
     if not os.path.exists(_rel) and not _allow_rel:

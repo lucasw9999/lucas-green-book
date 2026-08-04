@@ -2582,7 +2582,7 @@ def test_no_tree_marker_sits_on_a_playing_surface():
     independently, with a fresh point-in-polygon over osm_course.json rather than by calling the
     function that did the filtering, so a fault in that function cannot vouch for itself.
 
-    68,269 markers across 11 courses, zero on a green, fairway, tee or bunker.
+    68,257 markers across 11 courses, zero on a green, fairway, tee or bunker.
     """
     def inside(px, py, poly):
         c, n = False, len(poly)
@@ -11806,7 +11806,7 @@ def test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one(tmp_path)
     """A tree fetch that comes back with NOTHING overwrote the stored layer and said nothing a book
     could see.
 
-    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 68,269 project-wide.
+    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 68,257 project-wide.
     A re-run can legitimately return zero for reasons that have nothing to do with the trees being
     gone -- a wrong "lidar_crs" projects every point out of its corridor, an osm_geom.json that lost
     its golf=hole ways leaves `hlines` empty, tiles that carry no class-2 return are skipped one by
@@ -19833,6 +19833,85 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
         + "\n  Every half-width belongs in CORRIDOR_M, because DRAW_CORRIDOR_M is the max of that set "
           "and tools/check_osm_bbox.py sizes the fetch box from it. A literal here is a corridor the "
           "pre-flight cannot see.")
+
+
+@needs_corpus
+def test_every_cached_osm_bbox_covers_the_corridor_its_cards_draw():
+    """Every fetched box now contains the whole drawing corridor. It did not, and here is the cost.
+
+    tools/check_osm_bbox.py exited 1 on FOUR courses once it measured the corridor the engine really
+    draws (render_hole.DRAW_CORRIDOR_M, 68 m) instead of the 45 m it used to carry: castlewood-hill
+    88 m short, castlewood-valley 103, copper-valley 39, monarch-bay 41. The deferral was not laziness
+    -- a re-fetch also pulls whatever upstream mappers have changed since the cache was made, and this
+    project has had an aborted OSM fetch permanently strip irreplaceable geometry -- so the question was
+    settled by MEASURING both halves before writing anything, on 2026-08-04:
+
+      * the widened box was fetched for all four courses into a scratch directory, seeded with the live
+        cache so fetch_osm's own guards (_check_response's remark / per-kind shrink / golf collapse,
+        _check_bindings' rebind test) ran against the real baseline. All four passed.
+      * UPSTREAM DRIFT, the whole reason for the deferral, measured ZERO on all four: 0 vanished ids,
+        0 changed geometries or tags, 0 new ids inside the OLD box, and osm_relations.json identical
+        where one existed. Nothing rode along.
+      * NEWLY REACHABLE DRAWN FEATURES: 4, every one a `golf=tee` polygon the narrow box had cut off --
+        way/692110589 8.5 m off castlewood-hill 1, way/690850042 and way/690850043 at 2.9 m and 0.5 m
+        off castlewood-valley 7, way/690831855 2.4 m off castlewood-valley 14. Valley 7's own back tees
+        were outside its fetched box: start_at_tee_m 75.2 -> 0.0.
+      * NO omitted HAZARD, and this is the number that matters under the second governing rule: the
+        nearest newly fetched hazard-class feature is a stream 83.4 m from castlewood-valley 17, against
+        a 45 m water corridor, and the 8 new bunkers are 400-546 m away (they are the Hill course's).
+      * what the narrow box WAS costing the printed page: 12 tree markers drawn on ground no ball can be
+        played from, because fetch_trees cannot exclude a polygon the fetch never asked for. 9 on
+        castlewood-hill standing on two houses outside the old box (3 on hole 1's card, 6 on hole 8's),
+        and 3 on castlewood-valley standing on the newly fetched tees of holes 6 and 7 -- those three were
+        caught by test_no_tree_marker_sits_on_a_playing_surface as soon as the wider cache landed.
+        Re-deriving each layer removed exactly those and nothing else (hill 10,422 -> 10,413, valley
+        9,238 -> 9,235, 0 added); copper-valley 6,305 and monarch-bay 1,439 came back byte-identical.
+
+    So the shortfall figure alone should not be read as harmless OR as an omitted hazard, and the point
+    of this test is that neither reading is needed again: the boxes now cover the corridor, and any
+    course whose box stops short of it fails here rather than waiting for someone to re-litigate the
+    metres. Measured the way check_osm_bbox measures -- how far outside the box a centreline vertex is,
+    plus the corridor every vertex draws around itself -- but written here so the assertion does not
+    lean on the tool it is checking. DRAW_CORRIDOR_M itself is imported, because a second copy of that
+    number is the defect that produced all of this.
+    """
+    import geo
+    checked, short = [], []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        bbox = cfg.COURSE.get("osm_bbox")
+        gp = os.path.join(cfg.COURSE_DIR, "osm_geom.json")
+        if not bbox or not os.path.isfile(gp):
+            continue
+        S, W, N, E = bbox
+        with open(gp, encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        checked.append(slug)
+        for hn, w in sorted(lines.items()):
+            worst = 0.0
+            for p in w["geometry"]:
+                la, lo = p["lat"], p["lon"]
+                out = math.hypot(max(W - lo, lo - E, 0.0) * geo.mlon(la),
+                                 max(S - la, la - N, 0.0) * geo.mlat(la))
+                edge = min((la - S) * geo.mlat(la), (N - la) * geo.mlat(la),
+                           (lo - W) * geo.mlon(la), (E - lo) * geo.mlon(la))
+                need = (max(0.0, rh.DRAW_CORRIDOR_M - edge) if out == 0
+                        else out + rh.DRAW_CORRIDOR_M)
+                worst = max(worst, need)
+            if worst > 0.0:
+                short.append(f"{slug} hole {hn}: needs {worst:.0f} m more box")
+    assert checked, "no course in the corpus has both an osm_bbox and osm_geom.json"
+    assert not short, (
+        f"{len(short)} hole(s) draw a corridor from ground the OSM fetch never requested:\n  "
+        + "\n  ".join(short[:12])
+        + f"\n  A feature outside the box is never downloaded, so the card does not draw it and the\n"
+          f"  footer -- counted FROM the map -- agrees with the map. Widen osm_bbox to cover\n"
+          f"  render_hole.DRAW_CORRIDOR_M ({_engine(CORPUS[0])[1].DRAW_CORRIDOR_M:g} m) and re-fetch.")
 
 
 def _smallest_corpus_tile():
