@@ -1006,6 +1006,84 @@ def test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable()
             f"are all measured above, and the payload is recorded with its method")
 
 
+def test_the_printed_qr_module_is_smaller_than_its_css_width_implies_and_the_record_says_so():
+    """`.dqr img { width: 0.92in }` sizes the WHOLE asset, and the asset is not just the symbol.
+
+    The master is 560x643 px: a 41-module symbol occupying 448 px of the width -- exactly 0.800 of it --
+    with a baked-in "LUCASWU.GOLF" caption band underneath. So at a CSS width of 0.92 in the SYMBOL
+    prints 0.736 in, and each module is 0.0180 in = 0.456 mm -- not the 0.0224 in = 0.570 mm that 0.92/41
+    implies. Measured on the shipped PDF at 600 dpi the symbol's ink spans 0.7433 in (0.0181 in per
+    module), the difference being antialiased edge pixels.
+
+    WAS 0.92 in MEANT FOR THE SYMBOL OR THE ASSET? Nothing in this tree says. The declaration arrived
+    with the initial engine commit among a screen of other CSS, with no comment; no README, PIPELINE or
+    legal record states a target size for this code or a minimum module pitch; and the one later comment
+    beside it discusses the logo baked into the image without mentioning either the caption band or the
+    size. A CSS width on an `<img>` sizes the asset, and this one always has. So the printed size is NOT
+    recorded here as a defect -- inventing an intent in order to move printed output on twelve books is
+    the same move as inventing a figure.
+
+    What IS a defect is that none of it was written down, because it is the other half of the error
+    budget. The logo leaves ONE codeword of headroom in the worst RS block
+    (test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable), and at 0.456 mm per
+    module a crease or a biro line is a whole module wide. Those two facts multiply, and they were
+    published nowhere.
+
+    So this pins the three numbers that decide the printed module: the CSS width, the symbol's fraction
+    of the asset, and the mm that come out. A change to either the stylesheet or the master that shrinks
+    the printed module fails here, and PIPELINE.md has to carry the same figures.
+
+    Also pinned: the quiet zone the master carries -- 5.12 modules left and right, 5.39 above, and 3.56
+    BELOW, where the caption band starts. ISO/IEC 18004 asks for 4, so the bottom margin is marginally
+    short in the asset itself. Measured, recorded, and not silently rounded up to 4."""
+    master = os.path.join(ROOT, UNTRACKED_MASTERS[0])
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        gen = fh.read()
+    css = re.search(r"\.dqr img \{\{[^}]*?width:\s*([\d.]+)in", gen)
+    assert css, (
+        "generate.py no longer sizes the QR asset with `.dqr img { width: <N>in }`. That declaration is "
+        "what decides the printed module pitch, which is half the argument about how much damage this "
+        "code can survive -- see PIPELINE.md's note on the error budget.")
+    css_in = float(css.group(1))
+    with open(os.path.join(ROOT, "PIPELINE.md"), encoding="utf-8") as fh:
+        flat = " ".join(fh.read().replace("*", "").replace("`", "").split())
+    for phrase in (f"width: {css.group(1)}in",
+                   "sizes the WHOLE asset",
+                   "0.456 mm per module",
+                   "3.56 modules below"):
+        assert phrase in flat, (
+            f"PIPELINE.md does not record {phrase!r}. The printed module pitch is the other half of the "
+            f"error budget recorded beside it, and it lived nowhere for two audits.")
+    if not os.path.exists(master):
+        pytest.skip("the QR master is gitignored and not present in this checkout")
+    read = _qr_module_grid(master)
+    assert read, "the QR master no longer reads as a square QR"
+    N, _grid = read
+    band = _qr_symbol_band(master)
+    ink, r0, r1, c0, c1 = band
+    height, width = ink.shape
+    frac = (c1 - c0 + 1) / width
+    assert abs(frac - 0.8) <= 0.005, (
+        f"the symbol is {c1 - c0 + 1} px of the master's {width}-px width ({frac:.4f}), not the 0.800 "
+        f"PIPELINE.md's printed-size figures are computed from")
+    mm = css_in * frac / N * 25.4
+    assert abs(mm - 0.456) <= 0.002, (
+        f"each printed module is {mm:.4f} mm at a CSS width of {css_in} in, not the 0.456 mm PIPELINE.md "
+        f"publishes. With one codeword of Reed-Solomon headroom left by the logo, the physical module "
+        f"size is the whole margin against a crease.")
+    pr, pc = (r1 - r0 + 1) / N, (c1 - c0 + 1) / N
+    present = ink.any(axis=1)
+    below = [i for i in range(r1 + 1, height) if present[i]]
+    quiet = {"left": c0 / pc, "right": (width - 1 - c1) / pc, "top": r0 / pr,
+             "bottom": ((below[0] - r1 - 1) / pr if below else (height - 1 - r1) / pr)}
+    want = {"left": 5.12, "right": 5.12, "top": 5.39, "bottom": 3.56}
+    off = {k: round(quiet[k], 2) for k in want if abs(quiet[k] - want[k]) > 0.02}
+    assert not off, (
+        f"the master's quiet zone has moved: {off} against the recorded {want} (modules). The bottom one "
+        f"is the interesting one -- the caption band starts 3.56 modules under the symbol, where "
+        f"ISO/IEC 18004 asks for 4, and that is recorded rather than rounded up.")
+
+
 def _courses_diff(before, after):
     """(vanished, touched) between two snapshots."""
     vanished = sorted(set(before) - set(after))

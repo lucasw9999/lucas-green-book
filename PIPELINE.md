@@ -99,6 +99,21 @@ matters as much as the figure:
   capacity. The other 12 differences are the rounded finder corners the brand rendering draws, which
   carry no data. That corroboration needs the `qrcode` encoder, which this project does not declare, so
   the suite does not run it — it is recorded here as a method, with its figures, for the next reader.
+- **Printed size, which is the other half of that budget.** `.dqr img { width: 0.92in }` in `generate.py`
+  **sizes the WHOLE asset**, and the asset is 560x643 px: the 41-module symbol occupies 448 px of the
+  width — exactly 0.800 of it — with a baked-in "LUCASWU.GOLF" caption band underneath. So the SYMBOL
+  prints **0.736 in** and each module is **0.0180 in = 0.456 mm per module**, not the 0.0224 in that
+  0.92/41 would imply. Measured on a shipped PDF at 600 dpi the symbol's ink spans 0.7433 in (0.0181 in
+  per module), the difference being antialiased edge pixels. With one codeword of Reed-Solomon headroom,
+  a 0.456 mm module is the thin part: a crease or a biro line is a whole module wide. Whether 0.92 in was
+  meant for the symbol or the asset is **not recorded anywhere** — the declaration arrived with the
+  initial engine commit among a screen of other CSS, no document states a target size or a minimum module
+  pitch, and a CSS width on an `<img>` sizes the asset, which is what this one has always done. It is
+  left as it is on that basis, and the figures are pinned instead
+  (`test_the_printed_qr_module_is_smaller_than_its_css_width_implies_and_the_record_says_so`).
+- **Quiet zone**, in the master itself: 5.12 modules left and right, 5.39 above, and **3.56 modules
+  below**, where the caption band starts. ISO/IEC 18004 asks for 4, so the bottom margin is marginally
+  short — measured and recorded rather than rounded up.
 
 Treat it as source, not output: it is watched by the suite's read-only guard (see `UNTRACKED_MASTERS`),
 and if it is lost, the books can still be built — they will simply be different books.
