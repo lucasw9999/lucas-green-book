@@ -30,7 +30,9 @@ greenbook/
       aerial_reference_PERSONAL.pdf    #   printed from it by hand, NOT by tools/export_pdf.py
 ```
 
-## The one artifact nothing here can rebuild
+## The two artifacts nothing here can rebuild
+
+### The Poppy Ridge aerial sheet
 
 `courses/poppy-ridge-golf-course/aerial_reference_PERSONAL.html` is a **master**, and **no code in this
 repo produces it**. It is ~260 kB with a public-domain USDA NAIP raster embedded as base64, hand-built
@@ -49,6 +51,35 @@ Treat it as source, not output:
   cannot bring it back.
 - If it ever needs remaking, that is a NAIP fetch plus a hand layout plus a hand print, and the result
   will not be the same sheet.
+
+### The branded QR master
+
+`lucaswu.golf_qr_small.png` sits at the repo root, is **untracked and gitignored**
+(`.gitignore`: `lucaswu.golf_qr*.png`), and `generate.py` embeds it base64 into **every** book
+(`IG_QR`). So it is required for the byte-for-byte rebuild that
+`test_cold_build_reproduces_every_book_byte_for_byte` asserts, and a fresh clone does not have it —
+`generate._data_uri` prints a note and omits it, which is honest but means a clone's books differ from
+these. **No code in this repo produces it and nothing here decodes it**; it came out of a branded-QR
+generator, so it cannot be regenerated identically even knowing what it points at.
+
+What is actually verified about it, and what is not — the honest answer is half:
+
+- **Measured, and re-derived on every suite run** (`test_the_branded_qr_master_is_recorded_as_unreproducible`):
+  it is **41x41 modules**, which makes it QR **version 6** and **172 codewords**, and both timing
+  patterns alternate over their whole length, which is what makes that a measurement rather than a guess.
+- **Not verified.** (a) The **payload** — presumably the Instagram profile the caption reads, but nothing
+  here reads it back. (b) The **error-correction level**: the two copies of the 15-bit format information
+  disagree under pixel sampling by more than the 3 bits BCH(15,5) can correct, and decode to different
+  levels, so no level is published rather than one invented. (c) The **centre logo's module footprint**,
+  and therefore the remaining Reed-Solomon budget. The logo is drawn over the symbol, so the payload
+  survives only through error correction, and the obvious way to measure the damage does not work:
+  adjacent dark dots merge and fill their cells as completely as the glyph's strokes do.
+- **What would settle all three:** one decode with a real decoder — `zbarimg lucaswu.golf_qr_small.png`,
+  or `pyzbar`. Neither is installed here and neither is a dependency this project otherwise needs, which
+  is why this is recorded as a known gap instead of closed.
+
+Treat it as source, not output: it is watched by the suite's read-only guard (see `UNTRACKED_MASTERS`),
+and if it is lost, the books can still be built — they will simply be different books.
 
 ## Build an existing course
 ```

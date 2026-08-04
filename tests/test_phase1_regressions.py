@@ -446,6 +446,13 @@ def _import_first_party(name):
             f"a green suite behind it.") from e
 
 
+# Unreproducible masters that do NOT live under courses/. Gitignored just as thoroughly, required for a
+# byte-identical book just as much, and -- until this entry existed -- watched by nothing, because the
+# read-only guard's boundary was the courses/ directory rather than "anything irreplaceable". See
+# test_the_branded_qr_master_is_recorded_as_unreproducible and PIPELINE.md.
+UNTRACKED_MASTERS = ("lucaswu.golf_qr_small.png", "lucaswu.golf_qr.png")
+
+
 def _courses_snapshot(root):
     """path -> mtime for every FILE a REAL course holds, plus its green surfaces, under root/courses.
 
@@ -467,6 +474,11 @@ def _courses_snapshot(root):
     than the glob reached. laz/ is deliberately not walked: it is the one thing under courses/ that is
     re-downloadable, and it is ~10 GB of it.
 
+    AND IT COVERED courses/ ONLY, which was the wrong boundary rather than the wrong glob. The extension
+    above was reasoned as "every file a course holds", so a master that is equally gitignored, equally
+    unreproducible and equally required for a byte-identical book, but sits at the REPO ROOT, stayed
+    watched by nothing: see UNTRACKED_MASTERS.
+
     Module-level and root-parameterised so the guard's own logic is testable without a real courses/
     tree -- the alternative is a closure nothing can reach, which is how the hole above survived."""
     import distribution
@@ -483,7 +495,209 @@ def _courses_snapshot(root):
                 out[os.path.relpath(p, root)] = os.path.getmtime(p)
             except OSError:
                 pass
+    for name in UNTRACKED_MASTERS:
+        p = os.path.join(root, name)
+        if os.path.isfile(p):
+            try:
+                out[name] = os.path.getmtime(p)
+            except OSError:
+                pass
     return out
+
+
+def _qr_module_grid(path):
+    """(N, grid) for a rasterised square QR image, or None if it cannot be read as one.
+
+    Read with rasterio, which is already a declared core dependency, so this adds nothing to install --
+    and no decoder is installed here (cv2, pyzbar and zbarimg are all absent; the tree carries only the
+    `qrcode` ENCODER, and not as a declared dependency either). So this measures the module GEOMETRY,
+    which is what fixes the symbol's version and codeword count, and deliberately does not claim to read
+    the payload.
+
+    The grid is validated by the two timing patterns -- row 6 and column 6 must alternate over their
+    whole length between the finders -- because that is the property a misaligned or wrongly-sized grid
+    cannot fake, and it is what makes the returned N a measurement rather than a guess. Modules are
+    sampled over the centre 40% of each cell, since the brand rendering draws round dots with gaps
+    rather than filled squares.
+
+    WHAT THIS CANNOT DO, measured rather than assumed: isolate the centre logo. The obvious rule -- a
+    cell far more filled than a round dot is a glyph stroke -- does not separate them, because adjacent
+    dark dots merge and fill their own cells completely too: over this master's 746 ordinary dark cells
+    the coverage runs to 1.00, the same as the glyph's strokes. So no footprint figure is published for
+    the logo, on the principle that an unmeasured figure in a record is worse than a stated gap.
+    """
+    import warnings
+
+    import numpy as np
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")     # a PNG has no geotransform; rasterio says so every time
+        import rasterio
+        with rasterio.open(path) as ds:
+            a = ds.read().astype(int)
+    ink = a.min(axis=0) < 240
+    rows = np.where(ink.any(axis=1))[0]
+    cols = np.where(ink.any(axis=0))[0]
+    if not len(rows) or not len(cols):
+        return None
+    # The brand sheet puts a caption under the code, so the QR is the FIRST row band whose width is
+    # about its height. Bands are separated by fully white rows.
+    bands, start = [], None
+    present = ink.any(axis=1)
+    for i, v in enumerate(list(present) + [False]):
+        if v and start is None:
+            start = i
+        elif not v and start is not None:
+            bands.append((start, i - 1))
+            start = None
+    if not bands:
+        return None
+    r0, r1 = bands[0][0], bands[-2][1] if len(bands) > 1 else bands[0][1]
+    # merge every band except a trailing caption: the caption is narrower than the code
+    keep = [b for b in bands
+            if (lambda cs: len(cs) and (cs.max() - cs.min() + 1) > 0.9 * (cols.max() - cols.min() + 1))
+            (np.where(ink[b[0]:b[1] + 1].any(axis=0))[0])]
+    if not keep:
+        return None
+    r0, r1 = keep[0][0], keep[-1][1]
+    sub = ink[r0:r1 + 1]
+    cs = np.where(sub.any(axis=0))[0]
+    c0, c1 = int(cs.min()), int(cs.max())
+    for N in (21, 25, 29, 33, 37, 41, 45, 49, 53, 57):
+        pr, pc = (r1 - r0 + 1) / N, (c1 - c0 + 1) / N
+        if not 6.0 <= pr <= 40.0:
+            continue
+
+        def cover(i, j, lo, hi):
+            y0, y1 = r0 + (i + lo) * pr, r0 + (i + hi) * pr
+            x0, x1 = c0 + (j + lo) * pc, c0 + (j + hi) * pc
+            s = ink[int(round(y0)):int(round(y1)) + 1, int(round(x0)):int(round(x1)) + 1]
+            return float(s.mean()) if s.size else 0.0
+        grid = np.array([[cover(i, j, 0.30, 0.70) > 0.5 for j in range(N)] for i in range(N)]).astype(int)
+        want = [(k + 1) % 2 for k in range(N - 16)]      # between the finders, starting dark at col 8
+        if (list(grid[6][8:N - 8]) != want) or (list(grid[:, 6][8:N - 8]) != want):
+            continue
+        return N, grid
+    return None
+
+
+# Version 6 is 41x41 with a single alignment pattern centred at (32,32) and 172 total codewords. Only
+# the version this master actually is, because a table of all forty would be a table nothing checks.
+_QR_V6_MODULES = 41
+_QR_V6_CODEWORDS = 172
+
+
+def test_the_branded_qr_master_is_recorded_as_unreproducible():
+    """A second master nothing can rebuild, undisclosed and -- until now -- watched by nothing.
+
+    `lucaswu.golf_qr_small.png` is embedded base64 into every book (`generate.IG_QR`), so it is required
+    for the byte-identical rebuild `test_cold_build_reproduces_every_book_byte_for_byte` asserts. It is
+    untracked and gitignored (`.gitignore`: `lucaswu.golf_qr*.png`), so a fresh clone does not have it --
+    `_data_uri` says so and omits it, which is honest but means the two builds differ.
+
+    It had NONE of the three things the other master has. The aerial sheet is named in PIPELINE.md as the
+    artifact nothing here can rebuild, is asserted to be unproduced by any code, and is inside the
+    read-only guard. This one was disclosed nowhere, and the guard's extension that caught the aerial
+    sheet was reasoned as "every file a COURSE holds" -- so a master at the repo root fell outside the
+    boundary rather than outside the glob. See UNTRACKED_MASTERS.
+
+    WHAT IS AND IS NOT VERIFIED ABOUT THE CODE ITSELF, stated because the honest answer is "half".
+    It is a branded QR whose centre logo is drawn OVER the symbol, so the payload survives only through
+    Reed-Solomon correction -- and nothing in this repo decodes it. No decoder is installed here either
+    (cv2, pyzbar and zbarimg are all absent; only the `qrcode` encoder, and that is not declared). So:
+
+      * MEASURED here from the pixels and re-derived on every run: the symbol is 41x41 modules, which
+        is version 6 and 172 codewords, and BOTH timing patterns alternate over their whole length --
+        that last part is what makes the module count a measurement rather than a guess, because a
+        misaligned or wrongly-sized grid cannot produce it.
+      * NOT VERIFIED, recorded rather than papered over. (a) The PAYLOAD. It is presumably the Instagram
+        profile the caption reads, but nothing here reads it back. (b) The error-correction LEVEL, and
+        the reason is itself measured: the two copies of the 15-bit format information disagree under
+        pixel sampling by more than the 3 bits BCH(15,5) can correct, and they decode to different
+        levels (Q and H), so publishing either would be inventing a number. (c) The exact module
+        footprint of the centre logo, and therefore the remaining error budget. The obvious rule for
+        isolating it -- a cell fuller than a round dot is a glyph stroke -- does not work, because
+        adjacent dark dots merge and fill their cells completely too: over this master's 746 ordinary
+        dark cells the coverage runs to 1.00, the same as the glyph. What would settle all three is one
+        decode with a real decoder -- `zbarimg lucaswu.golf_qr_small.png`, or pyzbar -- which is a
+        dependency this project has no other reason to take on.
+
+    So this test does the three things the aerial master gets, and pins the one geometric fact it can
+    prove: nothing produces it, PIPELINE.md says so where a maintainer will read it, the read-only guard
+    watches it, and the module count is re-derived against validated timing patterns.
+    """
+    master = os.path.join(ROOT, UNTRACKED_MASTERS[0])
+
+    # (1) it is REQUIRED for the byte-identical build, and it is untracked. Both halves, because either
+    # one alone is unremarkable: a tracked asset needs no note, and an unused one needs no protection.
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        gen = fh.read()
+    assert os.path.basename(master) in gen, (
+        f"generate.py no longer reads {os.path.basename(master)}. If the book has stopped embedding it, "
+        f"drop it from UNTRACKED_MASTERS and from PIPELINE.md rather than leaving a note about an asset "
+        f"nothing uses.")
+    try:
+        import subprocess
+        tracked = subprocess.run(["git", "ls-files", "-z", "--", os.path.basename(master)],
+                                 cwd=ROOT, capture_output=True, text=True, timeout=60)
+        if tracked.returncode == 0:
+            assert not tracked.stdout.strip("\0").strip(), (
+                f"{os.path.basename(master)} is TRACKED now. That is a better world than this test "
+                f"describes -- it means a clone rebuilds the books byte for byte -- so update "
+                f"PIPELINE.md and this test rather than leaving a stale warning.")
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    # (2) nothing in the tree produces it, which is what makes it a master rather than an output
+    producers = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "*.py")) + glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        with open(p, encoding="utf-8") as fh:
+            code = _code_only(fh.read())
+        if re.search(r"\bqrcode\b|\bsegno\b|make_qr", code):
+            producers.append(os.path.relpath(p, ROOT))
+    assert not producers, (
+        f"{producers} builds a QR in code, so this master may be reproducible after all -- re-read "
+        f"PIPELINE.md's note about it before trusting that section")
+
+    # (3) the doc a maintainer opens says so, in the section that already exists for the other master
+    with open(os.path.join(ROOT, "PIPELINE.md"), encoding="utf-8") as fh:
+        pipeline = fh.read()
+    flat = " ".join(pipeline.replace("*", "").replace("`", "").split())
+    assert os.path.basename(master) in pipeline, (
+        f"PIPELINE.md does not mention {os.path.basename(master)}. It is embedded in every book and "
+        f"cannot be rebuilt here, and it went two audits with nothing recording either fact.")
+    assert "nothing here decodes it" in flat, (
+        "PIPELINE.md names the QR master but does not record that nothing in this repo reads its "
+        "payload back. That is the half of it that is NOT verified, and a record that states only the "
+        "measured half reads as if the whole thing were checked.")
+
+    # (4) the read-only guard watches it -- the boundary this file had wrong
+    snap = _courses_snapshot(ROOT)
+    if os.path.exists(master):
+        assert os.path.basename(master) in snap, (
+            f"{os.path.basename(master)} is outside the read-only guard, so losing or rewriting it is "
+            f"silent -- and it is gitignored, so there is no copy in history to restore it from")
+
+    if not os.path.exists(master):
+        pytest.skip("the QR master is gitignored and not present in this checkout")
+
+    # (5) the one geometric fact that can be proved from the pixels: the module count, validated by the
+    # timing patterns. That fixes the version and therefore the codeword count the record quotes.
+    read = _qr_module_grid(master)
+    assert read, (
+        f"{os.path.basename(master)} no longer reads as a square QR whose timing patterns alternate. "
+        f"Either the file was replaced or the sampling needs re-deriving -- and the module count is the "
+        f"only checked fact about this master, so losing it leaves nothing verified at all.")
+    N, _grid = read
+    assert N == _QR_V6_MODULES, (
+        f"the QR master is now {N}x{N} modules, not {_QR_V6_MODULES} (version 6, {_QR_V6_CODEWORDS} "
+        f"codewords). PIPELINE.md quotes both figures; re-measure its note as well.")
+    said = re.search(r"(\d+)x\1 modules[^.]*?version 6[^.]*?(\d+) codewords", flat)
+    assert said and (int(said.group(1)), int(said.group(2))) == (N, _QR_V6_CODEWORDS), (
+        "PIPELINE.md must record the symbol's measured size and codeword count -- '<N>x<N> modules ... "
+        "version 6 ... <T> codewords' -- because they are the only facts about this master anything "
+        "checks, and a record that omits them reads as if nothing about it were verified. Measured: "
+        f"{N}x{N} modules, {_QR_V6_CODEWORDS} codewords; the record says "
+        f"{said.groups() if said else 'nothing'}.")
 
 
 def _courses_diff(before, after):
@@ -21357,6 +21571,142 @@ def test_the_data_sources_record_matches_the_sources_the_books_actually_credit()
 def distribution_is_corpus(slug):
     import distribution
     return distribution.is_corpus_slug(slug)
+
+
+def test_the_security_record_still_describes_this_repository():
+    """SECURITY.md was the only tracked file in this repo with zero references anywhere.
+
+    Measured: no test, no tool and no other document names it. That is the shape already fixed twice --
+    legal/10 had nothing tied to it and had drifted, legal/01 had nothing tied to it -- and SECURITY.md
+    is the one of the three that makes BEHAVIOURAL promises rather than recording licences. It is also
+    the file a security researcher reads first, and it publishes a contact address people are told to
+    use instead of opening a public issue.
+
+    Its claims are true today; the point is that nothing would notice if they stopped being. Each is
+    checkable against the tree, so each is checked:
+
+      (a) "ships no servers, no accounts, and no network services". Measured over every tracked module:
+          nothing binds or listens on a socket, and nothing imports a web framework or an HTTP server.
+          The engine makes outbound GETs to Overpass, TNM and 3DEP -- that is a client, not a service --
+          so the check is specifically for a LISTENER.
+      (b) "collects no user data". Nothing sends a request body and no analytics or telemetry package is
+          imported or declared. A build that started POSTing anywhere would falsify the sentence a
+          reader is relying on, and the promise is exactly the kind that rots quietly.
+      (c) the contact address. There must be ONE across the repo -- SECURITY.md, README.md, the
+          generated disclaimer record and the book itself -- because a researcher who mails the stale
+          one gets no answer and reasonably concludes nobody is listening.
+      (d) the scope statement names `legal/`, which has to exist for the sentence to mean anything.
+      (e) the data sources it names are the ones legal/01 documents. This file is the short public
+          summary of that record, and two summaries of one fact are how one goes stale.
+    """
+    import ast
+    p = os.path.join(ROOT, "SECURITY.md")
+    assert os.path.exists(p), (
+        "SECURITY.md is gone. It publishes the contact address people are told to use INSTEAD of "
+        "opening a public issue, so removing it silently redirects reports nowhere.")
+    with open(p, encoding="utf-8") as fh:
+        doc = fh.read()
+    flat = " ".join(doc.replace("*", "").replace("`", "").split())
+
+    modules = sorted(glob.glob(os.path.join(ROOT, "*.py"))
+                     + glob.glob(os.path.join(ROOT, "tools", "*.py"))
+                     + glob.glob(os.path.join(ROOT, "tests", "*.py")))
+    assert len(modules) >= 12, f"only {len(modules)} modules found to scan; the glob has stopped working"
+
+    # (a) no listener, and (b) no request body or telemetry. Both read CODE, not prose -- this repo
+    # discusses its own network calls at length and a whole-file grep would match the explanations.
+    SERVERS = ("flask", "fastapi", "uvicorn", "aiohttp", "socketserver", "http.server",
+               "wsgiref", "tornado", "bottle", "django", "gunicorn", "waitress")
+    TELEMETRY = ("sentry_sdk", "posthog", "mixpanel", "segment", "analytics", "opentelemetry",
+                 "statsd", "datadog")
+    listeners, senders, telemetry = [], [], []
+    for mp in modules:
+        rel = os.path.relpath(mp, ROOT)
+        with open(mp, encoding="utf-8") as fh:
+            src = fh.read()
+        code = _code_only(src)
+        for name in SERVERS:
+            if re.search(r"\b%s\b" % re.escape(name.split(".")[0]), code):
+                listeners.append(f"{rel}: imports or names {name}")
+        for name in TELEMETRY:
+            if re.search(r"\b%s\b" % re.escape(name), code):
+                telemetry.append(f"{rel}: imports or names {name}")
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            attr = fn.attr if isinstance(fn, ast.Attribute) else (fn.id if isinstance(fn, ast.Name) else "")
+            if attr in ("listen", "bind") and isinstance(fn, ast.Attribute):
+                listeners.append(f"{rel}: calls .{attr}() on a socket")
+            if attr == "post":
+                senders.append(f"{rel}: calls .post()")
+            if attr == "urlopen" and any(k.arg == "data" for k in node.keywords):
+                senders.append(f"{rel}: urlopen(..., data=...) sends a request body")
+    assert not listeners, (
+        "SECURITY.md promises this project 'ships no servers, no accounts, and no network services', "
+        "and something in the tree now listens:\n  " + "\n  ".join(sorted(set(listeners)))
+        + "\n  Either that is wrong, or SECURITY.md is -- and it is the first file a security "
+          "researcher reads.")
+    assert not senders and not telemetry, (
+        "SECURITY.md promises this project 'collects no user data', and something now sends:\n  "
+        + "\n  ".join(sorted(set(senders + telemetry)))
+        + "\n  The engine's outbound GETs to Overpass/TNM/3DEP are a client and are fine; a request "
+          "BODY or a telemetry package is not, and falsifies a promise a reader is relying on.")
+    for claim in ("no servers", "collects", "no user data"):
+        assert claim in flat, (
+            f"SECURITY.md no longer states {claim!r}. The checks above are graded against its wording, "
+            f"so dropping the promise silently drops the guard with it.")
+
+    # (c) one contact address across the repo. Trailing punctuation is stripped: legal/05 ends a
+    # sentence with the address, and "...org." is the same mailbox as "...org".
+    def addrs(text):
+        return {a.rstrip(".,;:)") for a in re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)}
+    here = addrs(doc)
+    assert len(here) == 1, (
+        f"SECURITY.md publishes {len(here)} contact addresses ({sorted(here)}); it must publish exactly "
+        f"one, or a reporter has to guess which is read.")
+    addr = here.pop()
+    elsewhere = {}
+    for other in ("README.md", os.path.join("legal", "05_DISCLAIMER_TEXT.md"), "generate.py"):
+        op = os.path.join(ROOT, other)
+        if not os.path.exists(op):
+            continue
+        with open(op, encoding="utf-8") as fh:
+            found = addrs(fh.read())
+        # pytest decorators and the like are not email addresses; require a dot-tld and no leading @
+        found = {f for f in found if not f.startswith("@") and "pytest" not in f}
+        if found:
+            elsewhere[other] = found
+    assert elsewhere, (
+        f"SECURITY.md publishes {addr} and no other tracked file carries a contact address at all, so "
+        f"there is nothing to cross-check it against -- the books print one and legal/05 records it")
+    disagree = {k: sorted(v) for k, v in elsewhere.items() if v != {addr}}
+    assert not disagree, (
+        f"SECURITY.md publishes {addr} and other files publish something else: {disagree}. A researcher "
+        f"who mails the stale one gets no answer and concludes nobody is listening.")
+
+    # (d) the scope statement points at something that exists
+    assert "legal/" in doc and os.path.isdir(os.path.join(ROOT, "legal")), (
+        "SECURITY.md's scope statement names the legal/ records as in scope, and either the sentence or "
+        "the directory is gone")
+
+    # (e) it is a SUMMARY of legal/01, so the sources it names must be the ones that record documents --
+    # in BOTH directions. Naming a source legal/01 does not document is a public claim with no
+    # compliance argument behind it; DROPPING one the books credit makes the summary read as though the
+    # project used less data than it does, which is the same defect pointing the other way.
+    with open(os.path.join(ROOT, "legal", "01_DATA_SOURCES_AND_LICENSES.md"), encoding="utf-8") as fh:
+        sources = fh.read()
+    for token in [t for t in ("OpenStreetMap", "ODbL", "3DEP", "NAIP", "USGS") if t in doc]:
+        assert token in sources, (
+            f"SECURITY.md tells the public this project's data includes {token!r} and "
+            f"legal/01_DATA_SOURCES_AND_LICENSES.md -- the record that argues why the data may be used "
+            f"at all -- does not mention it. The short public summary and the compliance argument have "
+            f"to name the same sources.")
+    for token in ("OpenStreetMap", "ODbL", "USGS"):
+        assert token in doc, (
+            f"SECURITY.md's data note no longer names {token!r}, which every distributed book credits "
+            f"and legal/01 documents. This file is the short public summary of that record, and a "
+            f"summary that omits a source reads as though the project did not use it.")
 
 
 def test_the_readme_print_instruction_matches_what_every_sheet_says():
