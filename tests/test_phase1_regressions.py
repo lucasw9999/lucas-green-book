@@ -20794,6 +20794,300 @@ def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER(
 
 
 _TICK_ERRORS = {}
+_TICK_BANDS = {}
+
+# The corpus's southernmost hole-line centroid, which sets the ceiling on the retired pair's relative
+# offset and therefore decides which retired-model figures are arithmetically possible. Pinned HERE as
+# well as in legal/11 because `courses/` is gitignored: on a clone the record's own latitude is the only
+# input to that ceiling, so a record stating "20.0000 deg N" would compute a 0.5562% ceiling and wave
+# through the whole impossible retired column it exists to refuse. Re-derived off the corpus below
+# whenever the corpus is present, so this literal cannot drift from the ground either.
+_TICK_SOUTHMOST_LAT = 37.4529
+
+
+def _agrees_to_last_digit(text, measured, least=4):
+    """Does the decimal string `text` state `measured` to its own last digit, at `least` decimals?
+
+    A tolerance COARSER than the last published digit lets every cell be wrong by a full last-digit step
+    and still pass: `1e-4` against four-decimal cells graded them to about one significant figure, and
+    0.0013 -> 0.0014 passed in both records at once. Rounding to the published precision has no slack at
+    all, and `least` stops a record from buying slack back by publishing fewer digits."""
+    if "." not in text:
+        return False
+    dp = len(text.split(".")[1])
+    return dp >= least and round(measured, dp) == float(text)
+
+
+def _tick_band_worsts(retired_lat_scale):
+    """Worst retired-model error per 50-yd band, in the three populations the OLD table's figures were
+    hunted in. {"green_end"|"centroid"|"segment": {band_lo: worst_yd, ..., "global": worst_yd}}.
+
+    The record used to assert the retired figures "reproduce as the worst error anywhere in the 50-yard
+    band above each tick". That is true of three of the four and false of one, and no single population
+    yields all four -- so the record now states which population each came from, and this is what grades
+    that statement. The three:
+      * "centroid": vertex error against the geodesic from the GREEN CENTROID, binned by true distance.
+      * "green_end": the same against the green END, which is the frame that reproduces three of four.
+      * "segment": the error in the length of each CONSECUTIVE-VERTEX SEGMENT, binned by its length.
+    """
+    key = round(retired_lat_scale, 6)
+    if key in _TICK_BANDS:
+        return _TICK_BANDS[key]
+    import geo
+    out = {k: collections.defaultdict(float) for k in ("centroid", "green_end", "segment")}
+    for slug in sorted(geometry_courses()):
+        d = os.path.join(ROOT, "courses", slug)
+        with open(os.path.join(d, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        with open(os.path.join(d, "course.json"), encoding="utf-8") as fh:
+            loc = json.load(fh).get("location") or {}
+        greens = [e for e in els
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        lines = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        for hn in sorted(lines):
+            line = lines[hn]["geometry"]
+            green, gend, _tee = geo.match_green(line, greens)
+            lat0 = sum(p["lat"] for p in line) / len(line)
+            lon0 = sum(p["lon"] for p in line) / len(line)
+            m_lat = retired_lat_scale
+            m_lon = retired_lat_scale * math.cos(math.radians(lat0))
+            gcla = sum(p["lat"] for p in green["geometry"]) / len(green["geometry"])
+            gclo = sum(p["lon"] for p in green["geometry"]) / len(green["geometry"])
+            anchors = [("centroid", gcla, gclo)]
+            if isinstance(gend, dict):
+                anchors.append(("green_end", gend["lat"], gend["lon"]))
+            for name, ala, alo in anchors:
+                for p in line:
+                    true_m = _ground_m(ala, alo, p["lat"], p["lon"])
+                    if true_m <= 0:
+                        continue
+                    err = abs(math.hypot((p["lon"] - alo) * m_lon, (p["lat"] - ala) * m_lat)
+                              - true_m) / 0.9144
+                    band = int((true_m / 0.9144) // 50) * 50
+                    out[name][band] = max(out[name][band], err)
+                    out[name]["global"] = max(out[name]["global"], err)
+            for a, b in zip(line, line[1:]):
+                true_m = _ground_m(a["lat"], a["lon"], b["lat"], b["lon"])
+                if true_m <= 0:
+                    continue
+                err = abs(math.hypot((b["lon"] - a["lon"]) * m_lon, (b["lat"] - a["lat"]) * m_lat)
+                          - true_m) / 0.9144
+                band = int((true_m / 0.9144) // 50) * 50
+                out["segment"][band] = max(out["segment"][band], err)
+                out["segment"]["global"] = max(out["segment"]["global"], err)
+    _TICK_BANDS[key] = {k: dict(v) for k, v in out.items()}
+    return _TICK_BANDS[key]
+
+
+def _grade_tick_error_table(rec, note, measured):
+    """Every check the published tick-error table has to pass, as a callable rather than a test body.
+
+    `rec` is legal/11 whitespace-collapsed, `note` is geo.py's prose, `measured` is
+    (per_tick, vertex, counts, bands) or None for a clone with no corpus. Raises AssertionError naming
+    the defect; returns silently when both records are sound.
+
+    A CALLABLE because the grading itself has to be tested. Four of these checks were absent or too loose
+    and the gaps were only findable by doctoring the records and watching them pass:
+    test_the_tick_error_tables_grader_refuses_the_four_edits_it_used_to_wave_through does exactly that,
+    which is not possible against assertions welded into a test that reads its inputs off disk.
+    """
+    radii = _tick_radii()
+    # "yd tick" in the first cell, not a bare "<n> yd": the same record carries a four-card depth
+    # table whose rows are `| 37 yd | 36 yd | 36.489 yd |`, and an unanchored row pattern matches
+    # those first and grades the wrong table.
+    published = {int(m.group(1)): (m.group(2), m.group(3))
+                 for m in re.finditer(r"\|\s*(\d+) yd tick\s*\|\s*([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|",
+                                      rec)}
+    assert set(published) == set(radii), (
+        "legal/11_HORIZONTAL_EARTH_MODEL.md must carry one row per tick radius the hole map prints "
+        "(%s), each row reading `| <R> yd tick | <retired worst> yd | <live worst> yd |`. Found rows "
+        "for %s. That table is what a reader is told his yardage ticks were worth."
+        % (radii, sorted(published) or "none"))
+    far = re.search(r"\|\s*any centreline vertex[^|]*?\|\s*([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|", rec)
+    assert far, (
+        "legal/11_HORIZONTAL_EARTH_MODEL.md no longer closes the tick table with the worst over ALL "
+        "centreline vertices. Its row must read `| any centreline vertex, out to <R> yd | <retired> yd "
+        "| <live> yd |` -- the ticks stop at %d yd and the map draws the whole line." % max(radii))
+
+    # (a) geo.py has to quote the same numbers. It states them as prose because it is a source note,
+    # so the shape is fixed and parsed rather than left free.
+    said_retired = {int(r): v
+                    for v, r in re.findall(r"([\d.]+)(?: yd)? at the (\d+) yd tick", note)}
+    live_clause = re.search(r"the worst at those same \w+ radii is ([\d.,\s]+?and [\d.]+) yd", note)
+    assert said_retired and live_clause, (
+        "geo.py's note no longer publishes what the two earth models cost the hole map's ticks, in a "
+        "form that can be re-derived. It must read '... out by up to <E> yd at the <R> yd tick, <E> at "
+        "the <R> yd tick, ... ; on these scales the worst at those same <n> radii is <E>, <E> ... and "
+        "<E> yd'. The scales live in this module; so does the record of what the last pair cost.")
+    said_live = dict(zip(sorted(said_retired), re.findall(r"[\d.]+", live_clause.group(1))))
+    assert set(said_retired) == set(published) and len(said_live) == len(published), (
+        "geo.py's note and legal/11 do not cover the same tick radii (%s vs %s). One of the two is "
+        "going stale unread." % (sorted(said_retired), sorted(published)))
+    for R in sorted(published):
+        assert (said_retired[R], said_live[R]) == published[R], (
+            f"geo.py quotes {said_retired[R]}/{said_live[R]} yd at the {R} yd tick and legal/11 quotes "
+            f"{published[R][0]}/{published[R][1]}. The reader gets the record, the next editor gets the "
+            f"note, and they have to be the same measurement.")
+
+    # (b) the arithmetic bound. No corpus needed: it follows from the retired constant and the
+    # southernmost latitude, and the latitude is pinned here as well as in the record -- taken on the
+    # record's word alone, a clone would compute whatever ceiling the record wanted.
+    pub = re.search(r"retired model used ([\d.]+) m per degree of latitude", rec)
+    assert pub, ("legal/11 no longer names the retired metres-per-degree constant, so the retired "
+                 "column cannot be bounded or re-derived. See "
+                 "test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER.")
+    retired_lat_scale = float(pub.group(1))
+    south = re.search(r"at most \+?([\d.]+)% at the corpus's southernmost hole \(([\d.]+) ?(?:deg|"
+                      r"\u00b0) ?N\)", rec)
+    assert south, (
+        "legal/11 must state the ceiling on the retired pair's relative offset AND the latitude that "
+        "sets it -- 'at most +<P>% at the corpus's southernmost hole (<LAT> deg N)'. That pair is the "
+        "whole argument for why the old column was impossible, and stated without the latitude it "
+        "cannot be recomputed by a reader or by this test on a clone with no course data.")
+    lat_s = float(south.group(2))
+    assert abs(lat_s - _TICK_SOUTHMOST_LAT) <= 0.001, (
+        f"legal/11 puts the corpus's southernmost hole at {lat_s} deg N; it is {_TICK_SOUTHMOST_LAT}. "
+        f"The ceiling below is computed AT that latitude, so a southern one buys a wider ceiling and "
+        f"admits exactly the impossible retired figures the ceiling exists to refuse -- at 20 deg N it "
+        f"would be 0.5562%, enough to wave 0.43/0.73/0.99 through on a clone with no courses/.")
+    import geo as _geo_live
+    # Recomputed from the constant and the stated latitude rather than taken on trust: the widest a pair
+    # that scales BOTH axes off one number can be wrong per unit length there. The record's own
+    # percentage must equal it, so the ceiling used below cannot be inflated to admit a bad figure.
+    ceiling = max(abs(retired_lat_scale / _geo_live.mlat(lat_s) - 1.0),
+                  abs(retired_lat_scale * math.cos(math.radians(lat_s)) / _geo_live.mlon(lat_s) - 1.0))
+    assert abs(float(south.group(1)) - 100.0 * ceiling) <= 0.001, (
+        f"legal/11 puts the ceiling on the retired pair's relative offset at {south.group(1)}%; "
+        f"recomputed from the {retired_lat_scale} m/deg constant it names, at the {lat_s}N it names, it "
+        f"is {100 * ceiling:.4f}%. An inflated ceiling would admit exactly the figures it exists to "
+        f"refuse.")
+    impossible = [f"{R} yd tick: {published[R][0]} yd is {float(published[R][0]) / R * 100:.4f}% of the "
+                  f"radius, over the {100 * ceiling:.4f}% the retired pair can be wrong by"
+                  for R in sorted(published) if float(published[R][0]) > ceiling * R]
+    assert not impossible, (
+        "a retired-model figure in legal/11's tick table cannot happen. The retired pair was "
+        f"{retired_lat_scale} m/deg of latitude and {retired_lat_scale}*cos(lat) per degree of "
+        f"longitude, so a length is out by a fraction lying between its two axis errors -- at most "
+        f"{100 * ceiling:.4f}% -- and the error AT radius R is bounded by that fraction of R:\n  "
+        + "\n  ".join(impossible)
+        + "\n  A figure above this bound is a 'worst anywhere beyond this tick' figure printed in a "
+          "column headed by the tick, which is what the reader takes it for. Measure at the tick.")
+
+    if measured is None:
+        return
+
+    # (c) every cell, re-derived, and graded to its own last published digit
+    per_tick, vertex, counts, bands = measured
+    assert counts["holes"] >= 180 and counts["crossings"] >= 600, (
+        f"only {counts['holes']} holes and {counts['crossings']} radius crossings measured; the corpus "
+        f"draws 198 centrelines")
+    bad = []
+    for R in sorted(published):
+        for col, model in ((0, "retired"), (1, "live")):
+            got, slug, hn = per_tick[R][model]
+            if not _agrees_to_last_digit(published[R][col], got):
+                bad.append(f"{R} yd tick, {model} model: published {published[R][col]} yd, measured "
+                           f"{got:.6f} yd (worst {slug} h{hn})")
+    for col, model in ((0, "retired"), (1, "live")):
+        got, slug, hn, at_yd = vertex[model]
+        if not _agrees_to_last_digit(far.group(col + 1), got):
+            bad.append(f"any centreline vertex, {model} model: published {far.group(col + 1)} yd, "
+                       f"measured {got:.6f} yd (worst {slug} h{hn} at {at_yd:.1f} yd)")
+    assert not bad, (
+        "legal/11's tick-error table does not match the corpus to its own last published digit. Each "
+        "cell is the worst difference between the radius a tick is PRINTED at and the true WGS84 "
+        "geodesic from the green centroid to the point render_hole places that tick -- not the worst "
+        "error among the vertices beyond it:\n  "
+        + "\n  ".join(bad)
+        + f"\n  Measured over {counts['crossings']} crossings and {counts['vertices']} vertices on "
+          f"{counts['holes']} holes. Update legal/11 AND geo.py's note together.")
+
+    # ...and the furthest-vertex row has to say how far that is, and the population has to be one the
+    # code can justify. "the same 391 vertices" named a set nothing in this tree produces -- and that
+    # same class of defect then sat unread in legal/11's own crossing, centreline and vertex counts,
+    # which nothing graded at all. BOTH records state them, so both are graded.
+    reach = re.search(r"any centreline vertex, out to ([\d.]+) yd", rec)
+    assert reach and abs(float(reach.group(1)) - counts["furthest_vertex_yd"]) <= 0.1, (
+        "legal/11's last table row must say how far the drawn centrelines reach from their green -- "
+        "'any centreline vertex, out to <R> yd' -- and the figure is %.1f yd, not %s."
+        % (counts["furthest_vertex_yd"], reach.group(1) if reach else "absent"))
+    for label, text, pats in (("legal/11", rec, (r"(\d+) radius crossings the (\d+) drawn centrelines",
+                                                 r"over all (\d+) centreline vertices")),
+                              ("geo.py's note", note, (r"(\d+) radius crossings the (\d+) drawn "
+                                                       r"centrelines",))):
+        m = re.search(pats[0], text)
+        assert m and (int(m.group(1)), int(m.group(2))) == (counts["crossings"], counts["holes"]), (
+            "%s states the population its tick figures are measured over as %s; the corpus has %d "
+            "radius crossings on %d drawn centrelines. An ungraded population is exactly what the "
+            "unreproducible '391' was." % (label, m.groups() if m else "nothing",
+                                           counts["crossings"], counts["holes"]))
+        if len(pats) > 1:
+            m2 = re.search(pats[1], text)
+            assert m2 and int(m2.group(1)) == counts["vertices"], (
+                "%s states %s centreline vertices for the last table row; the corpus has %d."
+                % (label, m2.group(1) if m2 else "nothing", counts["vertices"]))
+    pop = re.search(r"(\d+) (?:deduplicated )?hole-line vertices(?:[^.]*?(\d+) counting)?", note)
+    assert pop and int(pop.group(1)) == counts["vertices"], (
+        "geo.py's note must state the population its tick figures are measured over, and it must be "
+        "one the tree produces: %d deduplicated hole-line vertices, %d counting the duplicate refs "
+        "geo.hole_lines resolves, over %d holes on %d courses. It said %s."
+        % (counts["vertices"], counts["vertices_with_duplicate_refs"], counts["holes"],
+           counts["courses"], pop.group(1) if pop else "nothing"))
+    assert pop.group(2) and int(pop.group(2)) == counts["vertices_with_duplicate_refs"], (
+        "geo.py's note gives the deduplicated vertex count without the raw one. The gap between them "
+        "(%d vs %d) is exactly what geo.hole_lines exists to resolve, and a bare count leaves the next "
+        "reader unable to tell which was meant -- which is how '391' survived."
+        % (counts["vertices"], counts["vertices_with_duplicate_refs"]))
+    # and the two relative offsets the bound in (b) rests on, so the argument is measured not asserted
+    for what, want, pat in (
+            ("worst measured", counts["worst_retired_rel_pct"],
+             r"worst relative offset[^.]*?\+?([\d.]+)%"),
+            ("southernmost-hole latitude", counts["southmost_lat"],
+             r"southernmost hole \(([\d.]+) ?(?:deg|°) ?N\)")):
+        m = re.search(pat, rec)
+        tol = 0.001 if what.startswith("worst") else 0.01
+        assert m and abs(float(m.group(1)) - want) <= tol, (
+            "legal/11 states the retired pair's %s as %s; measured over the corpus it is %.4f. That "
+            "figure is the whole argument for why the old column was impossible."
+            % (what, m.group(1) if m else "nothing", want))
+    assert abs(_TICK_SOUTHMOST_LAT - counts["southmost_lat"]) <= 0.001, (
+        "the southernmost latitude pinned in this file (%.4f) is not the corpus's (%.4f). That literal "
+        "is what grades the record on a clone with no courses/, so it has to be the ground."
+        % (_TICK_SOUTHMOST_LAT, counts["southmost_lat"]))
+    assert abs(100.0 * ceiling - counts["retired_rel_bound_pct"]) <= 0.001, (
+        "the ceiling legal/11 publishes (%.4f%%, at the latitude it names) is not the widest the retired "
+        "pair is actually wrong by anywhere in this corpus (%.4f%%). The bound has to bound the corpus, "
+        "or the impossibility argument above it does not apply to these books."
+        % (100.0 * ceiling, counts["retired_rel_bound_pct"]))
+
+    # (d) WHERE THE OLD FIGURES CAME FROM. Both records asserted all four "reproduce as the worst error
+    # anywhere in the 50-yard band above each tick". Measured, three do and one does not, and no single
+    # population yields all four -- so the record now names a population per figure and every one of
+    # those figures is graded here.
+    forensic = [(r"([\d.]+) yd in \[100,150\)", bands["green_end"][100], "green-end band [100,150)"),
+                (r"([\d.]+) in \[300,350\)", bands["green_end"][300], "green-end band [300,350)"),
+                (r"([\d.]+) over every vertex", bands["green_end"]["global"], "green-end global"),
+                (r"its worst in \[200,250\) is ([\d.]+)", bands["green_end"][200],
+                 "green-end band [200,250), the one the 200 yd row does NOT reproduce in"),
+                (r"segment lengths in \[200,250\), ([\d.]+)", bands["segment"][200],
+                 "segment-length band [200,250), the only population 0.7268 reproduces in"),
+                (r"population's own global worst is ([\d.]+)", bands["segment"]["global"],
+                 "segment-length global, which is not the 1.55 the same row published")]
+    wrong = []
+    for pat, want, what in forensic:
+        m = re.search(pat, rec)
+        if not (m and _agrees_to_last_digit(m.group(1), want)):
+            wrong.append(f"{what}: record says {m.group(1) if m else 'nothing'}, measured {want:.5f}")
+    assert not wrong, (
+        "legal/11's account of where the four retired figures came from is not the measurement. It "
+        "asserted all four 'reproduce as the worst error anywhere in the 50-yard band above each tick'; "
+        "0.43 and 1.55 do, 0.73 and 0.99 do not, and NO single population reproduces all four -- which "
+        "is a forensic claim about a reader-facing record, so it is derived or it is not made:\n  "
+        + "\n  ".join(wrong))
+    assert "No single population reproduces all four" in rec, (
+        "legal/11 no longer states that no single population reproduces all four retired figures. That "
+        "is the finding: the earlier one-population explanation was wrong for the 200 yd row, and a "
+        "record that offers a single tidy origin for all four is offering one that was measured false.")
 
 
 def _tick_radii():
@@ -20975,10 +21269,11 @@ def test_the_hole_map_tick_error_table_is_measured_at_the_ticks_it_is_printed_ag
     latitude and longitude errors -- measured over this corpus, at most +0.2975%, and bounded above by
     `<C>/geo.mlat` at the southernmost hole (+0.3008%). A distance of 100 yd therefore could not be out
     by more than 0.30 yd, nor 200 by more than 0.60, nor 300 by more than 0.90. The published
-    0.43/0.73/0.99 exceed every one of those. They reproduce as the worst error anywhere in the 50-yard
-    BAND above each tick -- "between this tick and the next", printed in a column headed "Tick radius"
-    -- so a reader of `legal/11` holding a card with a 100 yd tick was told his was out by up to 0.43 yd
-    when the true worst at that tick is 0.2962.
+    0.43/0.73/0.99 exceed every one of those, so none of them can be the error a reader felt AT the tick
+    they were printed against -- a reader of `legal/11` holding a card with a 100 yd tick was told his was
+    out by up to 0.43 yd when the true worst at that tick is 0.2962. WHERE they came from was itself
+    published wrong: both records said all four "reproduce as the worst error anywhere in the 50-yard BAND
+    above each tick", and measured, three do and one does not. See `_tick_band_worsts`.
 
     THE LIVE COLUMN WAS MEASURED IN A FRAME THE ENGINE DOES NOT USE. 0.0003/0.0013/0.0027/0.0077 grows
     quadratically in the radius, which a residual measured in render_hole's frame does not: the engine
@@ -20994,163 +21289,146 @@ def test_the_hole_map_tick_error_table_is_measured_at_the_ticks_it_is_printed_ag
     198 holes on 11 courses. No slicing yields 391, so the sentence could not be checked at all.
 
     So the table is now DERIVED, cell by cell, from the measurement it claims to be: the printed radius
-    against the true WGS84 geodesic to the point render_hole actually places that tick at. Three things
-    are asserted, and the first two need no course data:
+    against the true WGS84 geodesic to the point render_hole actually places that tick at. The checks
+    live in `_grade_tick_error_table` so that the GRADING can itself be mutation tested -- four of them
+    were absent or too loose, and only doctoring the records showed it:
+    test_the_tick_error_tables_grader_refuses_the_four_edits_it_used_to_wave_through.
 
-      (a) `legal/11`'s table and `geo.py`'s note quote the SAME figures. Two records disagreeing about
-          the same measurement is how one of them goes stale unread.
-      (b) every retired-model figure obeys the relative-offset bound at its own radius. This is the
-          check that catches a band figure being published as a tick figure, and it is arithmetic --
-          it holds whatever the corpus is.
-      (c) every cell equals the re-derivation, retired column included, computed off the retired
-          constant the record itself names rather than one written down here.
+      (a) `legal/11`'s table and `geo.py`'s note quote the SAME figures, digit for digit. Two records
+          disagreeing about the same measurement is how one of them goes stale unread.
+      (b) every retired-model figure obeys the relative-offset bound at its own radius, computed at a
+          latitude pinned in this file as well as stated in the record. This is the check that catches a
+          band figure being published as a tick figure, and it is arithmetic -- it holds whatever the
+          corpus is, which is the point: on a clone it is all there is.
+      (c) every cell equals the re-derivation to its own LAST PUBLISHED DIGIT, retired column included,
+          computed off the retired constant the record itself names rather than one written down here.
+      (d) every population figure either record states -- crossings, centrelines, vertices -- and every
+          figure in the account of where the old numbers came from.
     """
     with open(os.path.join(ROOT, "legal", "11_HORIZONTAL_EARTH_MODEL.md"), encoding="utf-8") as fh:
         rec = " ".join(fh.read().split()).replace("\u2212", "-").replace("*", "")
     with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
         note = _prose(fh.read())
+    measured = None
+    if CORPUS:
+        pub = re.search(r"retired model used ([\d.]+) m per degree of latitude", rec)
+        assert pub, "legal/11 no longer names the retired metres-per-degree constant"
+        per_tick, vertex, counts = _tick_radius_errors(float(pub.group(1)))
+        measured = (per_tick, vertex, counts, _tick_band_worsts(float(pub.group(1))))
+    _grade_tick_error_table(rec, note, measured)
 
-    radii = _tick_radii()
-    # "yd tick" in the first cell, not a bare "<n> yd": the same record carries a four-card depth
-    # table whose rows are `| 37 yd | 36 yd | 36.489 yd |`, and an unanchored row pattern matches
-    # those first and grades the wrong table.
-    published = {int(m.group(1)): (float(m.group(2)), float(m.group(3)))
-                 for m in re.finditer(r"\|\s*(\d+) yd tick\s*\|\s*([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|",
-                                      rec)}
-    assert set(published) == set(radii), (
-        "legal/11_HORIZONTAL_EARTH_MODEL.md must carry one row per tick radius the hole map prints "
-        "(%s), each row reading `| <R> yd tick | <retired worst> yd | <live worst> yd |`. Found rows "
-        "for %s. That table is what a reader is told his yardage ticks were worth."
-        % (radii, sorted(published) or "none"))
-    far = re.search(r"\|\s*any centreline vertex[^|]*?\|\s*([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|", rec)
-    assert far, (
-        "legal/11_HORIZONTAL_EARTH_MODEL.md no longer closes the tick table with the worst over ALL "
-        "centreline vertices. Its row must read `| any centreline vertex, out to <R> yd | <retired> yd "
-        "| <live> yd |` -- the ticks stop at %d yd and the map draws the whole line." % max(radii))
 
-    # (a) geo.py has to quote the same numbers. It states them as prose because it is a source note,
-    # so the shape is fixed and parsed rather than left free.
-    said_retired = {int(r): float(v)
-                    for v, r in re.findall(r"([\d.]+)(?: yd)? at the (\d+) yd tick", note)}
-    live_clause = re.search(r"the worst at those same \w+ radii is ([\d.,\s]+?and [\d.]+) yd", note)
-    assert said_retired and live_clause, (
-        "geo.py's note no longer publishes what the two earth models cost the hole map's ticks, in a "
-        "form that can be re-derived. It must read '... out by up to <E> yd at the <R> yd tick, <E> at "
-        "the <R> yd tick, ... ; on these scales the worst at those same <n> radii is <E>, <E> ... and "
-        "<E> yd'. The scales live in this module; so does the record of what the last pair cost.")
-    said_live = dict(zip(sorted(said_retired), [float(v)
-                                                for v in re.findall(r"[\d.]+", live_clause.group(1))]))
-    assert set(said_retired) == set(published) and len(said_live) == len(published), (
-        "geo.py's note and legal/11 do not cover the same tick radii (%s vs %s). One of the two is "
-        "going stale unread." % (sorted(said_retired), sorted(published)))
-    for R in sorted(published):
-        assert (round(said_retired[R], 4), round(said_live[R], 4)) == published[R], (
-            f"geo.py quotes {said_retired[R]}/{said_live[R]} yd at the {R} yd tick and legal/11 quotes "
-            f"{published[R][0]}/{published[R][1]}. The reader gets the record, the next editor gets the "
-            f"note, and they have to be the same measurement.")
+def test_the_tick_error_tables_grader_refuses_the_four_edits_it_used_to_wave_through():
+    """The tick table was corrected; the GRADER that keeps it correct had four holes, and this is them.
 
-    # (b) the arithmetic bound. No corpus needed: it follows from the retired constant and the
-    # southernmost latitude the record itself names, both of which (c) re-derives off the corpus.
-    pub = re.search(r"retired model used ([\d.]+) m per degree of latitude", rec)
-    assert pub, ("legal/11 no longer names the retired metres-per-degree constant, so the retired "
-                 "column cannot be bounded or re-derived. See "
-                 "test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER.")
-    retired_lat_scale = float(pub.group(1))
-    south = re.search(r"at most \+?([\d.]+)% at the corpus's southernmost hole \(([\d.]+) ?(?:deg|"
-                      r"\u00b0) ?N\)", rec)
-    assert south, (
-        "legal/11 must state the ceiling on the retired pair's relative offset AND the latitude that "
-        "sets it -- 'at most +<P>% at the corpus's southernmost hole (<LAT> deg N)'. That pair is the "
-        "whole argument for why the old column was impossible, and stated without the latitude it "
-        "cannot be recomputed by a reader or by this test on a clone with no course data.")
-    import geo as _geo_live
-    # Recomputed from the constant and the stated latitude rather than taken on trust: the widest a pair
-    # that scales BOTH axes off one number can be wrong per unit length there. The record's own
-    # percentage must equal it, so the ceiling used below cannot be inflated to admit a bad figure.
-    lat_s = float(south.group(2))
-    ceiling = max(abs(retired_lat_scale / _geo_live.mlat(lat_s) - 1.0),
-                  abs(retired_lat_scale * math.cos(math.radians(lat_s)) / _geo_live.mlon(lat_s) - 1.0))
-    assert abs(float(south.group(1)) - 100.0 * ceiling) <= 0.001, (
-        f"legal/11 puts the ceiling on the retired pair's relative offset at {south.group(1)}%; "
-        f"recomputed from the {retired_lat_scale} m/deg constant it names, at the {lat_s}N it names, it "
-        f"is {100 * ceiling:.4f}%. An inflated ceiling would admit exactly the figures it exists to "
-        f"refuse.")
-    impossible = [f"{R} yd tick: {published[R][0]} yd is {published[R][0] / R * 100:.4f}% of the "
-                  f"radius, over the {100 * ceiling:.4f}% the retired pair can be wrong by"
-                  for R in sorted(published) if published[R][0] > ceiling * R]
-    assert not impossible, (
-        "a retired-model figure in legal/11's tick table cannot happen. The retired pair was "
-        f"{retired_lat_scale} m/deg of latitude and {retired_lat_scale}*cos(lat) per degree of "
-        f"longitude, so a length is out by a fraction lying between its two axis errors -- at most "
-        f"{100 * ceiling:.4f}% -- and the error AT radius R is bounded by that fraction of R:\n  "
-        + "\n  ".join(impossible)
-        + "\n  A figure above this bound is a 'worst anywhere beyond this tick' figure printed in a "
-          "column headed by the tick, which is what the reader takes it for. Measure at the tick.")
+    Every mutation below was applied to the real records and passed the suite. They are the same class of
+    defect as the table they guard: a check that reads as if it verified a figure and does not.
 
-    if not CORPUS:
-        return
+      (a) THE TOLERANCE WAS COARSER THAN THE LAST PUBLISHED DIGIT. Cells were compared with `1e-4`
+          against four-decimal figures, so every one of them could be wrong by a full last-digit step and
+          still pass -- 0.0013 -> 0.0014, 0.0019 -> 0.0020, 0.0023 -> 0.0024, 0.2962 -> 0.2963, each
+          changed in BOTH records so the cross-record check was satisfied too. The live column was
+          effectively graded to one significant figure. Now every cell must equal the measurement rounded
+          to its own last digit, and must carry at least four decimals so precision cannot be traded for
+          slack.
+      (b) ON A CLONE WITH NO `courses/`, THE BOUND'S LATITUDE WAS UNGRADED. The ceiling that makes the
+          old retired column impossible is computed AT the latitude the record states, so a record
+          claiming "at most +0.5562% at the corpus's southernmost hole (20.0000 deg N)" restored the
+          whole impossible 0.43/0.73/0.99 column self-consistently and passed every clone-runnable
+          check. The latitude is now pinned in this file too, and re-derived off the corpus when there
+          is one.
+      (c) `legal/11`'s OWN POPULATION FIGURES WERE UNGRADED -- 861 crossings, 198 centrelines, 589
+          vertices, and geo.py's "Over the 861 radius crossings". 1234 / 400 / 777 / 999 all passed.
+          That is exactly the defect the unreproducible "391" was, relocated into the reader-facing
+          record.
+      (d) THE FORENSIC SENTENCE WAS FALSE FOR ONE CELL AND UNGRADED FOR ALL FOUR. Both records asserted
+          the old figures "reproduce as the worst error anywhere in the 50-yard band above each tick".
+          Measured in the green-centroid frame those bands are 0.4301 / 0.5464 / 0.6799 / 0.8309 /
+          0.9759 with a global 1.5502, so 0.43 and 1.55 hold and 0.68-vs-0.73 and 0.976-vs-0.99 do not.
+          A green-END reference gives 0.4334 / 0.6804 / 0.9855 / 1.5535 -- three of four. 0.7268 IS
+          reproducible, as the worst consecutive-vertex SEGMENT length in [200,250) (0.72683), but that
+          population's global worst is 0.9714, not 1.55. No single population reproduces all four, the
+          record now says so, and every figure in that account is graded.
 
-    # (c) every cell, re-derived
-    per_tick, vertex, counts = _tick_radius_errors(retired_lat_scale)
-    assert counts["holes"] >= 180 and counts["crossings"] >= 600, (
-        f"only {counts['holes']} holes and {counts['crossings']} radius crossings measured; the corpus "
-        f"draws 198 centrelines")
-    bad = []
-    for R in sorted(published):
-        for col, model in ((0, "retired"), (1, "live")):
-            got, slug, hn = per_tick[R][model]
-            if abs(published[R][col] - got) > 1e-4:
-                bad.append(f"{R} yd tick, {model} model: published {published[R][col]} yd, measured "
-                           f"{got:.4f} yd (worst {slug} h{hn})")
-    for col, model in ((0, "retired"), (1, "live")):
-        got, slug, hn, at_yd = vertex[model]
-        if abs(float(far.group(col + 1)) - got) > 1e-4:
-            bad.append(f"any centreline vertex, {model} model: published {far.group(col + 1)} yd, "
-                       f"measured {got:.4f} yd (worst {slug} h{hn} at {at_yd:.1f} yd)")
-    assert not bad, (
-        "legal/11's tick-error table does not match the corpus. Each cell is the worst difference "
-        "between the radius a tick is PRINTED at and the true WGS84 geodesic from the green centroid to "
-        "the point render_hole places that tick -- not the worst error among the vertices beyond it:\n  "
-        + "\n  ".join(bad)
-        + f"\n  Measured over {counts['crossings']} crossings and {counts['vertices']} vertices on "
-          f"{counts['holes']} holes. Update legal/11 AND geo.py's note together.")
+    Driven through `_grade_tick_error_table` on doctored copies of the record text -- the files on disk
+    are never written, so a failure here cannot leave a legal record mutated."""
+    with open(os.path.join(ROOT, "legal", "11_HORIZONTAL_EARTH_MODEL.md"), encoding="utf-8") as fh:
+        rec = " ".join(fh.read().split()).replace("\u2212", "-").replace("*", "")
+    with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
+        note = _prose(fh.read())
+    measured = None
+    if CORPUS:
+        # off the record's own constant, never a literal here: the earth model has exactly one copy and
+        # test_no_module_re_declares_the_horizontal_earth_model scans this file for it too.
+        pub = re.search(r"retired model used ([\d.]+) m per degree of latitude", rec)
+        assert pub, "legal/11 no longer names the retired metres-per-degree constant"
+        per_tick, vertex, counts = _tick_radius_errors(float(pub.group(1)))
+        measured = (per_tick, vertex, counts, _tick_band_worsts(float(pub.group(1))))
+    _grade_tick_error_table(rec, note, measured)      # the real records pass, or nothing below means much
 
-    # ...and the furthest-vertex row has to say how far that is, and the population has to be one the
-    # code can justify. "the same 391 vertices" named a set nothing in this tree produces.
-    reach = re.search(r"any centreline vertex, out to ([\d.]+) yd", rec)
-    assert reach and abs(float(reach.group(1)) - counts["furthest_vertex_yd"]) <= 0.1, (
-        "legal/11's last table row must say how far the drawn centrelines reach from their green -- "
-        "'any centreline vertex, out to <R> yd' -- and the figure is %.1f yd, not %s."
-        % (counts["furthest_vertex_yd"], reach.group(1) if reach else "absent"))
-    pop = re.search(r"(\d+) (?:deduplicated )?hole-line vertices(?:[^.]*?(\d+) counting)?", note)
-    assert pop and int(pop.group(1)) == counts["vertices"], (
-        "geo.py's note must state the population its tick figures are measured over, and it must be "
-        "one the tree produces: %d deduplicated hole-line vertices, %d counting the duplicate refs "
-        "geo.hole_lines resolves, over %d holes on %d courses. It said %s."
-        % (counts["vertices"], counts["vertices_with_duplicate_refs"], counts["holes"],
-           counts["courses"], pop.group(1) if pop else "nothing"))
-    assert pop.group(2) and int(pop.group(2)) == counts["vertices_with_duplicate_refs"], (
-        "geo.py's note gives the deduplicated vertex count without the raw one. The gap between them "
-        "(%d vs %d) is exactly what geo.hole_lines exists to resolve, and a bare count leaves the next "
-        "reader unable to tell which was meant -- which is how '391' survived."
-        % (counts["vertices"], counts["vertices_with_duplicate_refs"]))
-    # and the two relative offsets the bound in (b) rests on, so the argument is measured not asserted
-    for what, want, pat in (
-            ("worst measured", counts["worst_retired_rel_pct"],
-             r"worst relative offset[^.]*?\+?([\d.]+)%"),
-            ("southernmost-hole latitude", counts["southmost_lat"],
-             r"southernmost hole \(([\d.]+) ?(?:deg|°) ?N\)")):
-        m = re.search(pat, rec)
-        tol = 0.001 if what.startswith("worst") else 0.01
-        assert m and abs(float(m.group(1)) - want) <= tol, (
-            "legal/11 states the retired pair's %s as %s; measured over the corpus it is %.4f. That "
-            "figure is the whole argument for why the old column was impossible."
-            % (what, m.group(1) if m else "nothing", want))
-    assert abs(100.0 * ceiling - counts["retired_rel_bound_pct"]) <= 0.001, (
-        "the ceiling legal/11 publishes (%.4f%%, at the latitude it names) is not the widest the retired "
-        "pair is actually wrong by anywhere in this corpus (%.4f%%). The bound has to bound the corpus, "
-        "or the impossibility argument above it does not apply to these books."
-        % (100.0 * ceiling, counts["retired_rel_bound_pct"]))
+    # (a) a last-digit step in both records at once
+    last_digit = [("0.0013", "0.0014"), ("0.0019", "0.0020"), ("0.0023", "0.0024"),
+                  ("0.2962", "0.2963")]
+    # (b) the impossible retired column restored with a latitude that admits it
+    southern = [("at most +0.3008% at the corpus's southernmost hole (37.4529 deg N)",
+                 "at most +0.5562% at the corpus's southernmost hole (20.0000 deg N)"),
+                ("| 100 yd tick | 0.2962 yd", "| 100 yd tick | 0.43 yd"),
+                ("| 200 yd tick | 0.5931 yd", "| 200 yd tick | 0.73 yd"),
+                ("| 300 yd tick | 0.8891 yd", "| 300 yd tick | 0.99 yd")]
+    # (c) populations, and (d) the forensic figures
+    populations = [("861 radius crossings", "1234 radius crossings"),
+                   ("198 drawn centrelines", "400 drawn centrelines"),
+                   ("over all 589 centreline vertices", "over all 777 centreline vertices")]
+    # Each case carries whether it needs the corpus to be refused. (b) does NOT -- being refusable on a
+    # clone is the whole point of it, since a clone is where the ungraded latitude let the impossible
+    # column back in. The other three are refused by the re-derivation, so on a clone they are skipped
+    # rather than counted as waved: this test measures the grader, not the checkout.
+    cases = ([(f"a last-digit step {a} -> {b} in both records", [(a, b)], [(a, b)], True)
+              for a, b in last_digit]
+             + [("the impossible retired column with a southern latitude to admit it",
+                 southern, [], False)]
+             + [(f"a mutated population figure {a!r} -> {b!r} in legal/11", [(a, b)], [], True)
+                for a, b in populations]
+             + [("a mutated population figure in geo.py's note", [], [("861 radius crossings",
+                                                                       "999 radius crossings")], True)]
+             + [("a forensic figure that is not the measurement", [("0.4334 yd in [100,150)",
+                                                                    "0.5000 yd in [100,150)")], [], True),
+                ("the old one-population explanation restored",
+                 [("No single population reproduces all four", "One population reproduces all four")],
+                 [], True)])
+    waved, ran = [], 0
+    for what, rec_edits, note_edits, needs_corpus in cases:
+        r, n = rec, note
+        applied = True
+        for old, new in rec_edits:
+            if old not in r:
+                applied = False
+            r = r.replace(old, new)
+        for old, new in note_edits:
+            if old not in n:
+                applied = False
+            n = n.replace(old, new)
+        assert applied, (
+            f"the mutation for {what!r} no longer applies -- the record's wording moved, so this case is "
+            f"measuring nothing. Re-read legal/11 and geo.py and re-anchor it.")
+        if needs_corpus and measured is None:
+            continue
+        ran += 1
+        if (r, n) == (rec, note):
+            waved.append(f"{what}: the mutation changed nothing")
+            continue
+        try:
+            _grade_tick_error_table(r, n, measured)
+        except AssertionError:
+            continue
+        waved.append(what)
+    assert not waved, (
+        "the tick-error table's grader accepts a doctored record. Each of these was applied to the real "
+        "legal/11 or geo.py and passed:\n  " + "\n  ".join(waved)
+        + "\n  A reader-facing legal record graded by a check with this much slack is graded by nothing.")
+    assert ran >= (len(cases) if measured is not None else 1), (
+        f"only {ran} of {len(cases)} mutations were exercised, so this test is passing on the ones it "
+        f"skipped. Every mutation runs with a corpus; on a clone, the latitude case must still run.")
 
 
 def test_the_earth_models_published_spread_names_every_module_that_carries_it():

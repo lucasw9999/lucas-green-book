@@ -99,10 +99,19 @@ longitude by one constant and its cosine, any length it measured was out by a fr
 two axis errors: the retired pair's **worst relative offset over these 589 vertices is +0.2975%**, and
 it is **at most +0.3008% at the corpus's southernmost hole (37.4529 deg N)** — that ceiling is
 `111320 / geo.mlat`. A 100 yd radius therefore cannot be out by more than 0.30 yd, 200 by more than
-0.60, or 300 by more than 0.90 — and 0.43, 0.73 and 0.99 each exceed the bound for their row. Those
-figures reproduce as the worst error anywhere in the 50-yard **band above** each tick, i.e. "between
-this tick and the next", printed in a column headed *Tick radius*. A reader holding a card with a 100 yd
-tick was told his was out by up to 0.43 yd; the true worst at that tick was 0.2962 yd.
+0.60, or 300 by more than 0.90 — and 0.43, 0.73 and 0.99 each exceed the bound for their row. None of
+them can be the error a reader felt **at** the tick they were printed against. A reader holding a card
+with a 100 yd tick was told his was out by up to 0.43 yd; the true worst at that tick was 0.2962 yd.
+
+**Where those four figures came from is only partly recoverable, and this record no longer claims more
+than it can derive.** Until 2026-08-04 both records asserted that all four "reproduce as the worst error
+anywhere in the 50-yard **band above** each tick". Three of them do, measured to the green **end** rather
+than the green centroid: **0.4334** yd in [100,150), **0.9855** in [300,350) and **1.5535** over every
+vertex — the 0.43, 0.99 and 1.55 rows. The 200 yd row's **0.73 is not in that population at all** (its
+worst in [200,250) is 0.6804); it reproduces only as the worst error over consecutive-vertex **segment
+lengths** in [200,250), 0.72683 — and that population's own global worst is 0.9714, not the 1.55 the same
+old table published. **No single population reproduces all four.** What holds for all four without any
+population at all is the arithmetic in the paragraph above.
 
 The "now" column was measured in a frame the engine does not use. Its published values grow
 quadratically in the radius, which a residual measured in `render_hole`'s frame does not — the engine

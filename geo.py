@@ -78,13 +78,19 @@ import math
 # recorded because nothing re-derived them. It said 0.43 yd at 100, 0.73 at 200, 0.99 at 300, and
 # "the same 391 vertices" out by 0.0003/0.0013/0.0027/0.0077. The retired figures were impossible: this
 # pair scaled both axes off one constant, so any length it measured was out by a fraction between its two
-# axis errors -- at worst +0.2975% over these vertices -- and 0.43 yd at a 100 yd radius needs 0.43%.
-# They were the worst error anywhere in the 50-yard BAND above each tick, printed as the error AT it. The
-# new figures were measured with the scales anchored at the GREEN rather than at the line centroid where
-# render_hole takes them, which is why they grew quadratically. And "391" named a population nothing in
-# this tree produces. The approximation that was documented here as "deliberate and quantified" is still
-# two orders of magnitude smaller than the integers it feeds -- but it is now a figure a reader of
-# legal/11_HORIZONTAL_EARTH_MODEL.md can check, and a test re-derives every cell of that table.
+# axis errors -- at worst +0.2975% over these vertices -- and 0.43 yd at a 100 yd radius needs 0.43%. So
+# none of the four was an error AT its tick. WHERE they came from was published wrong too: this note said
+# they were "the worst error anywhere in the 50-yard BAND above each tick", and three of the four are --
+# measured to the green END, 0.4334 in [100,150), 0.9855 in [300,350) and 1.5535 over every vertex. The
+# 200 yd row's 0.73 is in no band of that population (0.6804 there); it reproduces only as the worst
+# consecutive-vertex SEGMENT length in [200,250), 0.72683, whose own global worst is 0.9714 rather than
+# 1.55. No single population reproduces all four, and legal/11_HORIZONTAL_EARTH_MODEL.md carries the
+# derivation. The new figures were measured with the scales anchored at the GREEN rather than at the line
+# centroid where render_hole takes them, which is why they grew quadratically. And "391" named a
+# population nothing in this tree produces. The approximation that was documented here as "deliberate and
+# quantified" is still two orders of magnitude smaller than the integers it feeds -- but it is now a
+# figure a reader of legal/11_HORIZONTAL_EARTH_MODEL.md can check, and a test re-derives every cell of
+# that table.
 
 
 def _wgs84():
