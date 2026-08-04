@@ -493,13 +493,25 @@ def render(hole, tournament=False):
     # bbox does not -- reachable because W and H truncate metres to whole pixels, so a green whose
     # polygon moves or resizes by less than one pixel keeps them. That case passed the W,H test and
     # printed a wrong slope in silence. The digest catches it: it is of the array's CONTENT, so it does
-    # not care that the shapes agree. Surfaces built before the digest existed carry no key and are read
-    # unverified -- there is nothing on disk to compare them with.
+    # not care that the shapes agree.
+    #
+    # A MISSING digest is an error too, and it used to be a silent pass. The test read
+    # `meta.get(DIGEST_KEY) not in (None, array_digest(raw))`, so `None` was accepted -- correct while
+    # every shipped sidecar predated the digest, and it meant the guard covered 0 of 198 greens.
+    # gen_provenance --check disclosed that, which is not the same as protecting it. The 198 sidecars
+    # were then stamped from the arrays already beside them (surface_io.stamp_digest), so a meta with no
+    # digest can no longer be an old surface -- it was hand-written, restored from an older tree, or
+    # truncated, which is the state this guard is for.
     torn = None
     if (meta.get("H"), meta.get("W")) != arr.shape:
         torn = (f"  array is {arr.shape[0]}x{arr.shape[1]} but dem_hd/hole{hole:02d}.json records "
                 f"{meta.get('H')}x{meta.get('W')}.")
-    elif meta.get(surface_io.DIGEST_KEY) not in (None, surface_io.array_digest(raw)):
+    elif meta.get(surface_io.DIGEST_KEY) is None:
+        torn = (f"  dem_hd/hole{hole:02d}.json records no {surface_io.DIGEST_KEY}, so there is nothing\n"
+                f"  to check the array against. Every built sidecar carries one; a missing key means\n"
+                f"  this file was hand-written or restored from an older tree. Stamp the corpus with\n"
+                f"  `python3 surface_io.py --stamp`, or rebuild this hole.")
+    elif meta.get(surface_io.DIGEST_KEY) != surface_io.array_digest(raw):
         torn = (f"  the shapes agree at {arr.shape[0]}x{arr.shape[1]}, but dem_hd/hole{hole:02d}.json\n"
                 f"  was committed beside a DIFFERENT array, so its bbox describes other ground.")
     if torn:

@@ -6735,8 +6735,19 @@ def test_the_dedication_is_always_the_last_card_and_upright():
 
 def _synth_green(cdir, hole, zfn, insufficient=None, n=60, span_deg=0.0004):
     """Write a synthetic dem_hd surface (npy + json) so the honesty gate can be tested with no
-    LiDAR, no network and no course data."""
+    LiDAR, no network and no course data.
+
+    Writes the two files INDEPENDENTLY on purpose -- that is what distinguishes it from
+    _commit_synth_green, which goes through the producer's own staged commit. But it stamps the pair
+    digest, because a pair carrying none is now refused on read (render_green: a missing array_sha256
+    means a hand-written or restored sidecar, not an old surface). A fixture that could not produce a
+    readable pair would be exercising that guard instead of the honesty gates these tests are about.
+
+    A caller that replaces the ARRAY afterwards has to re-stamp -- see _restamp_synth_green.
+    """
     import numpy as np
+
+    import surface_io
     os.makedirs(os.path.join(cdir, "dem_hd"), exist_ok=True)
     arr = np.fromfunction(lambda r, c: zfn(r, c), (n, n), dtype=float)
     np.save(os.path.join(cdir, "dem_hd", f"hole{hole:02d}.npy"), arr)
@@ -6751,7 +6762,26 @@ def _synth_green(cdir, hole, zfn, insufficient=None, n=60, span_deg=0.0004):
                 source="test surface")
     if insufficient is not None:
         meta["insufficient"] = insufficient
+    meta[surface_io.DIGEST_KEY] = surface_io.array_digest(arr)
     json.dump(meta, open(os.path.join(cdir, "dem_hd", f"hole{hole:02d}.json"), "w"))
+
+
+def _restamp_synth_green(cdir, hole):
+    """Re-record the pair digest after a test has replaced the ARRAY under an existing meta.
+
+    Two tests build their plane by hand -- they need the meta's own bbox and green_center to work out
+    metres per pixel before they can write the array -- so they np.save over what _synth_green left.
+    That is a deliberate array replacement, not a tear, and the sidecar has to say so.
+    """
+    import numpy as np
+
+    import surface_io
+    base = os.path.join(cdir, "dem_hd", f"hole{hole:02d}")
+    with open(base + ".json", encoding="utf-8") as fh:
+        meta = json.load(fh)
+    meta[surface_io.DIGEST_KEY] = surface_io.array_digest(np.load(base + ".npy"))
+    with open(base + ".json", "w", encoding="utf-8") as fh:
+        json.dump(meta, fh)
 
 
 @pytest.fixture
@@ -7017,11 +7047,26 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
         f"a same-shape torn pair was accepted, or the stop does not name the hole to rebuild: "
         f"{e.value!r}")
 
-    # ...and what that refusal is worth: the SAME tear, with only the digest removed, is accepted and
-    # prints a different slope for the same measured ground -- the state every surface built before
-    # the digest is still in.
+    # A MISSING digest used to be accepted, and that was the whole of the guard's coverage problem: it
+    # made the check inert on every surface built before it existed, which was all 198. It is an error
+    # now (the corpus was stamped instead -- see
+    # test_every_built_green_surface_carries_the_digest_that_guards_it), so the same tear with the key
+    # deleted is refused rather than trusted.
     with open(base + ".json", "w", encoding="utf-8") as fh:
         json.dump({k: v for k, v in meta1.items() if k != "array_sha256"}, fh)
+    with pytest.raises(SystemExit) as e_missing:
+        render_green.render(7)
+    assert "array_sha256" in str(e_missing.value) and "hole07" in str(e_missing.value), (
+        f"a torn pair carrying NO digest was accepted, which is the state the whole corpus used to be "
+        f"in: {e_missing.value!r}")
+
+    # ...and what the refusal is worth, which is the magnitude nothing else measures. The unguarded
+    # state is no longer reachable through render_green, so it is reproduced through the residual case
+    # the design comment in surface_io.commit_surface already names: a tear the digest CANNOT see,
+    # because the meta records the digest of the array actually on disk while its bbox describes other
+    # ground. Same wrong extent, same unchanged array, digest satisfied -- and the printed tilt doubles.
+    with open(base + ".json", "w", encoding="utf-8") as fh:
+        json.dump(dict(meta1, array_sha256=meta2["array_sha256"]), fh)
     _svg2, s2 = render_green.render(7)
     assert s2["tilt_pct"] > 1.8 * honest, (
         f"halving the recorded extent under an unchanged array must roughly double the printed tilt "
@@ -7073,6 +7118,94 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
     assert "1.8 * honest" in src, (
         "the > 1.8 * honest floor is gone, so the docstring's account of what replaced what needs "
         "re-reading before this pin is removed")
+
+
+def test_a_green_surface_read_without_its_digest_is_refused_rather_than_trusted(gate_course):
+    """A MISSING pair digest used to read as unverified-but-accepted, which is not a guard.
+
+    render_green's check was `meta.get(DIGEST_KEY) not in (None, array_digest(raw))`. The `None` arm
+    was correct while the corpus predated the digest -- there was nothing on disk to compare with -- and
+    it made the check inert on every one of the 198 shipped greens. gen_provenance --check disclosed
+    that ("0 of 198 green surfaces carry array_sha256"), and disclosure is not protection: the tear the
+    digest exists to catch is the SAME-SHAPE, different-bbox one, which passes the W,H test and prints a
+    wrong slope in silence (proven at 2.0% -> 4.1% by the test above).
+
+    So the 198 sidecars were backfilled from the arrays already beside them, and a missing digest is now
+    an error. It can only mean the sidecar was hand-written, restored from an older tree, or truncated --
+    each of which is exactly the state the guard is for.
+
+    Both directions: a well-formed pair still reads, and the same pair with only the digest deleted is
+    refused with a message that names the hole to rebuild.
+    """
+    import surface_io
+
+    import render_green
+
+    tilt = lambda r, c: 100.0 + 0.03 * r
+    _arr, meta = _commit_synth_green(gate_course, 13, tilt)
+    assert surface_io.DIGEST_KEY in meta, "_commit_synth_green must produce a digested pair"
+    svg, s = render_green.render(13)
+    assert svg and s["tilt_pct"] > 0, "a well-formed pair must still be read"
+
+    mp = os.path.join(gate_course, "dem_hd", "hole13.json")
+    with open(mp, "w", encoding="utf-8") as fh:
+        json.dump({k: v for k, v in meta.items() if k != surface_io.DIGEST_KEY}, fh)
+    with pytest.raises(SystemExit) as e:
+        render_green.render(13)
+    msg = str(e.value)
+    assert "hole13" in msg and surface_io.DIGEST_KEY in msg, (
+        f"a meta with no pair digest was accepted, or the stop does not say which key is missing or "
+        f"which hole to rebuild: {msg!r}")
+
+
+@needs_corpus
+def test_every_built_green_surface_carries_the_digest_that_guards_it():
+    """The guard is worth nothing on a surface that carries no digest, and it once covered 0 of 198.
+
+    7b2d097 added array_sha256 to each surface's sidecar and a read-side refusal in render_green -- the
+    only way to catch a same-shape/different-bbox tear, which is the tear that inflated a printed tilt
+    2.00% -> 4.00% while a shape check returned normally. But every shipped meta predated that commit,
+    and a missing digest read as accepted, so the check protected NONE of the corpus. A counter was
+    added and enforcement was declined, on the grounds that it would refuse every built green.
+
+    Enforcement was the wrong half to skip; the backfill was the missing one. Every sidecar is stamped
+    from the array already beside it (surface_io.stamp_digest, staged and renamed, never touching a
+    .npy), and a missing digest is now an error.
+
+    Asserted over what is on disk, so it holds for someone who has built two courses rather than twelve.
+    A pair whose array does not hash to its own recorded digest is a separate and worse failure and is
+    named separately.
+    """
+    import numpy as np
+
+    import surface_io
+    metas = [p for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json")))
+             if not os.path.basename(os.path.dirname(os.path.dirname(p))).startswith("_")]
+    if not metas:
+        pytest.skip("no green surfaces built here")
+    missing, wrong = [], []
+    for p in metas:
+        rel = os.path.relpath(p, ROOT)
+        with open(p, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        have = meta.get(surface_io.DIGEST_KEY)
+        if have is None:
+            missing.append(rel)
+            continue
+        npy = p[:-5] + ".npy"
+        if not os.path.exists(npy):
+            wrong.append(f"{rel}: no array beside it")
+            continue
+        if have != surface_io.array_digest(np.load(npy)):
+            wrong.append(f"{rel}: the array does not hash to the recorded {surface_io.DIGEST_KEY}")
+    assert not wrong, ("a built green surface disagrees with its own recorded digest -- that pair is "
+                       "TORN and its card prints a slope for ground the pixels do not cover:\n  "
+                       + "\n  ".join(wrong[:8]))
+    assert not missing, (
+        f"{len(missing)} of {len(metas)} green surfaces carry no {surface_io.DIGEST_KEY}, so "
+        f"render_green has nothing to verify them against and the same-shape tear is silent on them. "
+        f"Stamp them from the arrays already on disk: python3 surface_io.py --stamp\n  "
+        + "\n  ".join(missing[:8]))
 
 
 def test_no_slope_label_claims_an_unputtable_number(gate_course):
@@ -8202,6 +8335,7 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
             lambda r, c: 100.0 - k * math.sin(th) * px_x * c + k * math.cos(th) * px_y * r,
             (H, W), dtype=float)
         np.save(os.path.join(gate_course, "dem_hd", f"hole{hole:02d}.npy"), z)
+        _restamp_synth_green(gate_course, hole)       # the array was replaced on purpose
 
         _svg, summ = render_green.render(hole)
         assert summ["feeds"] == want, (
@@ -8240,6 +8374,7 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
             lambda r, c: 100.0 - k * math.sin(th) * px_x * c + k * math.cos(th) * px_y * r,
             (H, W), dtype=float)
         np.save(os.path.join(gate_course, "dem_hd", f"hole{hole:02d}.npy"), z)
+        _restamp_synth_green(gate_course, hole)       # the array was replaced on purpose
         _svg, summ = render_green.render(hole)
         assert summ["feeds"] == want, (
             f"fall bearing {bearing} deg with approach {appr} deg must read {want!r}, got "
@@ -9156,7 +9291,7 @@ def test_course_json_is_written_atomically(tmp_path):
         "as an interrupted rewrite of the hand-transcribed card.")
 
 
-def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
+def test_no_staged_write_leaves_its_part_file_behind(tmp_path, monkeypatch):
     """Staged writes in this project stage a `.part` and rename it. Two of them swept up after themselves.
 
     Staging is the right shape -- os.replace is atomic, so an interrupted write cannot be mistaken for
@@ -9169,7 +9304,7 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
     THE CENSUS WAS WRONG TWICE, which is how each newly-found one stayed unfixed while its siblings
     were being repaired for the identical defect. This docstring said "both"; the commit that
     corrected it said "there were three". Counted mechanically at every `os.replace` of a `.part` in
-    the tree, there are EIGHT staged writers committing NINE renames (commit_surface makes two):
+    the tree, there are EIGHT staged writers committing TEN renames (surface_io makes three):
 
       under courses/<slug>/ -- the one directory NO sweep reaches:
         1. tools/lidar_dates.write_lidar_flown   -> course.json
@@ -9179,6 +9314,7 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
         5. fetch_osm.main                        -> osm_course.json
       under courses/<slug>/dem_hd/ -- swept by surface_io.sweep_staged (`.hole*.part`):
         6. surface_io.commit_surface             -> .holeNN.npy, .holeNN.json
+           surface_io.stamp_digest               -> .holeNN.json   (the digest backfill; sidecar only)
       under courses/<slug>/laz/ -- swept by fetch_lidar.sweep_stale_parts (`*.part`):
         7. fetch_lidar
         8. fetch_lidar_alameda
@@ -9255,6 +9391,32 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path):
     surface_io.commit_surface(base, arr, {"hole": 3, "bbox": [0, 0, 1, 1], "W": 8, "H": 8})
     assert sorted(os.listdir(str(dem))) == \
         ["hole03.json", "hole03.npy"], "a successful commit must leave the pair and nothing else"
+
+    # (2b) the digest backfill stages through the SAME name, so it needs the same failure path. Made to
+    # fail at the encode: the sidecar is rewritten WITHOUT its digest, so read_pair succeeds and there
+    # is a write to interrupt, and json.dump is made to raise on the dict carrying the new key.
+    with open(base + ".json", encoding="utf-8") as fh:
+        ok_meta = json.load(fh)
+    with open(base + ".json", "w", encoding="utf-8") as fh:
+        json.dump({k: v for k, v in ok_meta.items() if k != surface_io.DIGEST_KEY}, fh)
+    real_dump = json.dump
+
+    def _boom(obj, fp, *a, **k):
+        if surface_io.DIGEST_KEY in obj:
+            raise TypeError("cannot encode")
+        return real_dump(obj, fp, *a, **k)
+
+    monkeypatch.setattr(surface_io.json, "dump", _boom)
+    with pytest.raises(TypeError):
+        surface_io.stamp_digest(base)
+    monkeypatch.undo()
+    left = sorted(os.listdir(str(dem)))
+    assert left == ["hole03.json", "hole03.npy"], (
+        f"a failed digest stamp left staging litter in dem_hd: {left}. That .part is the only on-disk "
+        f"trace of the pair's rename window, so evidence a failed run also leaves is worth nothing")
+    assert surface_io.stamp_digest(base) is True, "the stamp must land on the retry"
+    assert json.load(open(base + ".json"))[surface_io.DIGEST_KEY] == surface_io.array_digest(arr)
+    assert surface_io.stamp_digest(base) is False, "a second stamp must be a no-op, not a rewrite"
 
     # (3) and the sweep that catches what no `finally` can -- a SIGKILL, a laptop asleep, power loss.
     # Same house pattern and same argument as fetch_lidar.py's laz/ sweep.
@@ -11572,19 +11734,22 @@ def test_the_check_gate_reports_how_many_greens_the_pair_digest_actually_covers(
     """The surface pair's integrity check is DORMANT on the whole corpus, and nothing said so.
 
     surface_io.commit_surface writes array_sha256 into each meta and render_green refuses a pair whose
-    array does not hash to it. That check reads `meta.get(DIGEST_KEY) not in (None, digest)`, so a
-    MISSING digest is accepted -- correctly, because a surface built before the digest existed has
-    nothing on disk to compare against. The consequence is that the guard is inert on every green it
-    has not been re-run over, and all 198 shipped metas predate it: coverage is 0%, with no reader of
+    array does not hash to it. That check used to read `meta.get(DIGEST_KEY) not in (None, digest)`, so a
+    MISSING digest was accepted -- defensibly, because a surface built before the digest existed had
+    nothing on disk to compare against. The consequence is that the guard was inert on every green it
+    had not been re-run over, and all 198 shipped metas predated it: coverage was 0%, with no reader of
     any artifact able to tell that from full coverage.
 
-    Making a missing digest an ERROR is the wrong fix -- it would refuse all 198 built greens and stop
-    every book until a full rebuild. What was missing is DISCLOSURE, so `gen_provenance --check` now
-    counts it. That gate already runs before a merge, it already reads every dem_hd meta for the
-    density range, and it is where the other coverage figures about the corpus are printed.
+    Refusing a missing digest looked like the wrong fix, on the grounds that it would refuse all 198
+    built greens and stop every book until a full rebuild. The BACKFILL is what was missing: the 198
+    sidecars were stamped from the arrays already beside them (surface_io.stamp_digest), which moves no
+    printed number because the digest lives only in the sidecar, and a missing digest is an error now.
+    What this test guards is the DISCLOSURE half, which is still worth having -- `gen_provenance --check`
+    already runs before a merge, already reads every dem_hd meta for the density range, and is where the
+    other coverage figures about the corpus are printed.
 
-    Deliberately not an exit code: an old surface is not a defect, and turning the front-door gate red
-    for it is the same mistake as failing a fresh clone for having no courses.
+    Still deliberately not an exit code here: the enforcement lives on the read side, where the pair is
+    used, so turning the document generator red would be reporting someone else's gate.
     """
     import subprocess
     import surface_io

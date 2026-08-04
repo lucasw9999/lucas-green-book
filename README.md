@@ -130,6 +130,19 @@ python3 tools/check_osm_bbox.py --all # every printed hole's 45 m corridor lies 
 COURSE=<slug> python3 tools/lidar_dates.py   # decodes the flight date from the LiDAR point records
 python3 tools/cross_flight_check.py --all    # do two surveys of the same green print the same read?
 ```
+
+A green surface is two files that only mean anything together — `dem_hd/holeNN.npy` carries no
+georeference, so the sidecar's bbox is what places every pixel. Each sidecar records a SHA-256 of the
+array committed beside it, and `render_green` refuses a pair that disagrees; a surface built before
+that digest existed carries none, and is stamped from the array already on disk rather than left
+unverifiable:
+```bash
+python3 surface_io.py            # how many built surfaces carry a pair digest
+python3 surface_io.py --stamp    # stamp the ones that do not (writes sidecars only, never a .npy)
+```
+It reads every pair first and writes nothing at all if any one of them fails to load or disagrees with
+its own metadata — a pair that is already torn has to be rebuilt, because stamping it would certify the
+tear. Re-running it on a stamped tree is a no-op.
 `check_osm_bbox.py` catches a fetch box so tight that features beside the hole were never downloaded —
 the map then agrees with the footer because both count only what arrived. `lidar_dates.py` is where
 the flight dates in the provenance table come from; a USGS *project name* is not a flight date, and

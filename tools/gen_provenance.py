@@ -495,15 +495,21 @@ def _digest_coverage():
 
     A COVERAGE figure for a guard that is silent when it does nothing. surface_io.commit_surface writes
     array_sha256 beside each array and render_green refuses a pair whose array does not hash to it --
-    but that test reads `meta.get(DIGEST_KEY) not in (None, digest)`, so a MISSING key is accepted.
-    That is the right call (a surface built before the digest existed has nothing to compare against)
-    and it means the check is INERT on every surface not rebuilt since. When this was written that was
-    all 198 of them: 0% coverage, and no artifact anywhere said so.
+    and that test used to read `meta.get(DIGEST_KEY) not in (None, digest)`, so a MISSING key was
+    accepted. That looked like the right call (a surface built before the digest existed has nothing to
+    compare against) and it meant the check was INERT on every surface not rebuilt since. When this was
+    written that was all 198 of them: 0% coverage, and no artifact anywhere said so.
 
-    Printed by --check rather than enforced. An old surface is not a defect, and turning the gate that
-    runs before every merge red over one would be the same mistake as failing a fresh clone for having
-    no courses. Not written into legal/03 either: the document records what each BOOK was built from,
-    and this is a fact about how thoroughly this repo can re-verify its own intermediate files.
+    Disclosure was the wrong half to add on its own -- it is a figure, not a guard. The 198 sidecars
+    were stamped from the arrays already beside them (surface_io.stamp_digest, `python3 surface_io.py
+    --stamp`), which moved no printed number because the digest lives only in the sidecar, and a missing
+    digest is an error now. So this counter should read n of n on any tree whose surfaces were built or
+    stamped by this code, and anything less is a sidecar someone replaced by hand.
+
+    Still printed rather than enforced HERE: the enforcement lives on the read side, where the pair is
+    actually used, and turning the document generator red would be reporting someone else's gate.
+    Not written into legal/03 either: the document records what each BOOK was built from, and this is a
+    fact about how thoroughly this repo can re-verify its own intermediate files.
     """
     with_digest = total = 0
     for slug in distribution.course_slugs(ROOT):
@@ -543,9 +549,9 @@ def main():
             print(f"pair digests: {digested} of {metas} green surfaces carry "
                   f"{surface_io.DIGEST_KEY}"
                   + ("" if digested == metas else
-                     f"; the other {metas - digested} are read UNVERIFIED -- render_green accepts a "
-                     f"missing digest because there is nothing on disk to compare with, so those pairs "
-                     f"gain the check only when they are rebuilt"))
+                     f"; the other {metas - digested} are read UNVERIFIED -- render_green now REFUSES "
+                     f"a pair whose meta carries no digest, so those holes will not render. Stamp them "
+                     f"from the arrays already on disk: python3 surface_io.py --stamp"))
         cur = open(OUT).read() if os.path.exists(OUT) else ""
         if cur != text:
             print("STALE: legal/03_PROVENANCE_BY_COURSE.md does not match the build artifacts.\n"

@@ -15,6 +15,7 @@ here once rather than in each of them.
 import glob
 import hashlib
 import json, os
+import sys
 
 import numpy as np
 
@@ -118,8 +119,10 @@ def commit_surface(base, arr, meta):
     gen_provenance.py, cross_flight_check.py and 198 built greens all glob, so they are a migration
     plus a full rebuild, not a fix.
 
-    Surfaces built before the digest existed carry no DIGEST_KEY and are read unverified -- there is
-    nothing to compare them against. They gain the check the next time they are rebuilt.
+    Surfaces built before the digest existed carried no DIGEST_KEY and were read UNVERIFIED, because
+    there was nothing on disk to compare them against -- which was all 198 of them, so the read-side
+    check protected none of the corpus. They were stamped from the arrays already beside them rather
+    than left to gain it on a rebuild: see stamp_digest and main(). A missing key is now an error.
 
     Both staged files are removed if anything goes wrong before the renames. A .part left behind is not
     just untidy: dem_hd/.holeNN.json.part is the one on-disk trace of the rename window above, so it is
@@ -143,3 +146,144 @@ def commit_surface(base, arr, meta):
             # after a successful pair of renames neither exists, so this is a no-op on the happy path
             if os.path.exists(t):
                 os.remove(t)
+
+
+def read_pair(base):
+    """(arr, meta, digest) for a pair ALREADY on disk, refusing one whose two halves disagree.
+
+    The read half of this module, and the shared definition of "a pair I am willing to touch". The
+    digest backfill below needs it twice -- once to check every pair before writing anything, once
+    while writing -- and two copies of that judgement would be the drift this module exists to remove.
+
+    Raises ValueError naming the disagreement. NEVER writes, and never opens the .npy for anything but
+    a read: the array is the measurement, the sidecar is the description of it, and a migration of the
+    description must not be able to touch the thing described.
+    """
+    with open(base + ".json", encoding="utf-8") as f:
+        meta = json.load(f)
+    arr = np.load(base + ".npy")
+    if (meta.get("H"), meta.get("W")) != arr.shape:
+        raise ValueError(f"{os.path.basename(base)}: array is {arr.shape[0]}x{arr.shape[1]} but its "
+                         f"meta records {meta.get('H')}x{meta.get('W')} -- this pair is already torn")
+    d = array_digest(arr)
+    have = meta.get(DIGEST_KEY)
+    if have is not None and have != d:
+        raise ValueError(f"{os.path.basename(base)}: the array does not hash to the {DIGEST_KEY} its "
+                         f"meta already records -- this pair is already torn")
+    return arr, meta, d
+
+
+def stamp_digest(base):
+    """Record DIGEST_KEY in an existing pair's meta, computed from the array already beside it.
+
+    THE BACKFILL. 7b2d097 added the digest to the write path and a refusal to the read path, but every
+    surface already on disk predated it and a missing digest read as accepted, so the guard covered none
+    of the corpus. Disclosing that (gen_provenance --check counts it) is not protecting it. Stamping the
+    existing sidecars from the arrays already beside them is, and it moves no printed number: the digest
+    lives only in the sidecar, and every figure a card prints comes from the array and the bbox.
+
+    Returns True if it wrote, False if the meta already recorded this exact digest -- so a second run
+    over a stamped tree is a no-op rather than 198 rewrites.
+
+    Staged and renamed through the same `.holeNN.json.part` name commit_surface uses, so sweep_staged
+    already covers a process that does not come back, and nothing that globs `hole*.json` can pick the
+    staged file up. Only the .json is written; `base + ".npy"` is opened read-only by read_pair and
+    never rewritten, because this is a migration of the DESCRIPTION and the measurement must not move.
+    """
+    _arr, meta, d = read_pair(base)
+    if meta.get(DIGEST_KEY) == d:
+        return False
+    _t_npy, t_json = staged_names(base)
+    try:
+        with open(t_json, "w", encoding="utf-8") as f:
+            json.dump(dict(meta, **{DIGEST_KEY: d}), f)
+        os.replace(t_json, base + ".json")
+    finally:
+        if os.path.exists(t_json):
+            os.remove(t_json)
+    return True
+
+
+def _sidecars(root):
+    """Every real course's surface sidecar bases under root/courses, sorted. Scratch dirs excluded."""
+    import distribution
+    out = []
+    for slug in distribution.course_slugs(root):
+        for p in sorted(glob.glob(os.path.join(root, "courses", slug, "dem_hd", "hole*.json"))):
+            out.append(p[:-len(".json")])
+    return out
+
+
+def _fingerprint(path):
+    """(size, sha256) of a file on disk, or None when it is not there. For the before/after report."""
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return os.path.getsize(path), hashlib.sha256(f.read()).hexdigest()
+
+
+def main(argv=None):
+    """Report or backfill the pair digest across every built green surface.
+
+        python3 surface_io.py            # report coverage, write nothing
+        python3 surface_io.py --stamp    # stamp the sidecars that carry no digest
+
+    ALL OR NOTHING. Every pair is read and checked first; if any one fails to load or disagrees with
+    its meta, nothing is written at all and the offenders are named. courses/ is the only copy of these
+    surfaces, so a half-applied migration over it is not an acceptable intermediate state -- and a pair
+    that is ALREADY torn must be rebuilt, not stamped, because stamping it would certify the tear.
+
+    Prints each sidecar's size and sha256 before and after, so the diff of a run that writes into the
+    only copy of the data is on the record rather than taken on trust.
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    root = os.path.dirname(os.path.abspath(__file__))
+    write = "--stamp" in argv
+    bases = _sidecars(root)
+    if not bases:
+        print("no green surfaces built here (courses/ is gitignored) -- nothing to stamp.")
+        return 2
+
+    broken, without = [], []
+    for b in bases:
+        try:
+            _arr, meta, _d = read_pair(b)
+        except (ValueError, OSError) as e:
+            broken.append(f"{os.path.relpath(b, root)}: {e}")
+            continue
+        if meta.get(DIGEST_KEY) is None:
+            without.append(b)
+    if broken:
+        print(f"REFUSING to write: {len(broken)} of {len(bases)} pairs do not read as a pair. Rebuild "
+              f"these rather than stamping them -- a digest written over a torn pair certifies the tear:")
+        for b in broken:
+            print(f"  {b}")
+        return 1
+
+    print(f"pair digests: {len(bases) - len(without)} of {len(bases)} green surfaces carry {DIGEST_KEY}")
+    if not without:
+        print("  nothing to do.")
+        return 0
+    if not write:
+        print(f"  {len(without)} carry none and are read UNVERIFIED. Stamp them from the arrays "
+              f"already on disk: python3 {os.path.basename(__file__)} --stamp")
+        return 1
+
+    wrote = 0
+    for b in without:
+        before = _fingerprint(b + ".json")
+        npy_before = _fingerprint(b + ".npy")
+        changed = stamp_digest(b)
+        after = _fingerprint(b + ".json")
+        npy_after = _fingerprint(b + ".npy")
+        assert npy_before == npy_after, f"{b}.npy changed during a sidecar-only migration"
+        wrote += bool(changed)
+        print(f"  {os.path.relpath(b + '.json', root)}: {before[0]}B {before[1][:12]} -> "
+              f"{after[0]}B {after[1][:12]}")
+    print(f"stamped {wrote} sidecar(s); {len(bases)} of {len(bases)} now carry {DIGEST_KEY}. "
+          f"No .npy was written.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
