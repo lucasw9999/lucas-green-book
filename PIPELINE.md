@@ -62,21 +62,43 @@ Treat it as source, not output:
 these. **No code in this repo produces it and nothing here decodes it**; it came out of a branded-QR
 generator, so it cannot be regenerated identically even knowing what it points at.
 
-What is actually verified about it, and what is not — the honest answer is half:
+What is verified about it, and what measured each line — no decoder is installed here, so the method
+matters as much as the figure:
 
-- **Measured, and re-derived on every suite run** (`test_the_branded_qr_master_is_recorded_as_unreproducible`):
-  it is **41x41 modules**, which makes it QR **version 6** and **172 codewords**, and both timing
-  patterns alternate over their whole length, which is what makes that a measurement rather than a guess.
-- **Not verified.** (a) The **payload** — presumably the Instagram profile the caption reads, but nothing
-  here reads it back. (b) The **error-correction level**: the two copies of the 15-bit format information
-  disagree under pixel sampling by more than the 3 bits BCH(15,5) can correct, and decode to different
-  levels, so no level is published rather than one invented. (c) The **centre logo's module footprint**,
-  and therefore the remaining Reed-Solomon budget. The logo is drawn over the symbol, so the payload
-  survives only through error correction, and the obvious way to measure the damage does not work:
-  adjacent dark dots merge and fill their cells as completely as the glyph's strokes do.
-- **What would settle all three:** one decode with a real decoder — `zbarimg lucaswu.golf_qr_small.png`,
-  or `pyzbar`. Neither is installed here and neither is a dependency this project otherwise needs, which
-  is why this is recorded as a known gap instead of closed.
+- **Geometry, re-derived on every suite run** (`test_the_branded_qr_master_is_recorded_as_unreproducible`):
+  it is **41x41 modules**, which makes it QR **version 6** and **172 codewords**, both timing
+  patterns alternate over their whole length, and the one alignment pattern reads as a textbook 5x5 ring
+  at **(34,34)** — the version-6 row of ISO/IEC 18004's alignment table. Those checks are what make the
+  size a measurement rather than a guess: a misaligned or wrongly sized grid produces none of them.
+- **Error-correction level M, mask pattern 2**, and **the master is stored mirrored across its main
+  diagonal** (`test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable`). Read
+  `grid[col][row]`, both copies of the 15-bit format information are `0x5E7C` — an exact BCH(15,5)
+  codeword for M/mask 2, Hamming distance **0**, the two copies XOR to zero. An earlier round recorded
+  the level as unknowable, "disagreeing by more than the 3 bits BCH(15,5) can correct" and decoding to
+  "Q and H". That was the mirror: read as stored with the canonical coordinate table the copies come out
+  `0x1F3D` (Q, distance 3) and `0x1FBD` (H, distance 4), which is where "Q and H" came from. Both
+  readings are pinned, so the misreading cannot be mistaken for a measurement again.
+- **The centre logo covers 13x13 = 169 modules**, rows and columns 14–26, exactly centred in the symbol.
+  Measured from the fully blank scan lines that bracket it — no ink anywhere along them — which land on
+  module boundaries **14.00 and 27.00**. (Per-cell ink coverage cannot do this: adjacent dark dots merge
+  and fill their cells completely, so 31 of the 755 dark cells outside the logo also reach coverage 1.00.)
+- **The Reed-Solomon budget is 88% spent, with one codeword of headroom.** Version 6 at level M is 4
+  blocks of 27 data + 16 EC codewords (4 x 43 = 172), correcting **t = 8 codeword errors per block**. The
+  169 logo modules fall inside **28 of the 172 codewords — 7 in every one of the four blocks**, so 7 of 8
+  in the worst (and every) block. Consequence, measured: of the 164 one-module-wide straight lines across
+  this symbol (41 rows, 41 columns, 41 diagonals, 41 anti-diagonals), **162 push at least one block past
+  t = 8** and make it undecodable. The two that do not are the timing row and column, which carry no
+  codeword. A single crease or pen line through the code, in almost any orientation, kills the scan.
+- **Payload `https://www.instagram.com/lucaswu.golf?utm_source=qr`**, which is what the printed caption
+  "Instagram @lucaswu.golf" claims. Established OUTSIDE this project environment, since nothing here
+  decodes it: **zxing-cpp and pyzbar independently**, both first try, logo in place, no preprocessing.
+  (OpenCV's `QRCodeDetector` failed on the same image, so not every decoder manages it.) Corroborated
+  here without a decoder: re-encoding that exact URL at version 6 / level M / mask 2 reproduces the
+  mirrored master in **1589 of 1681 modules**, and all **80** differing data modules lie inside the 13x13
+  logo footprint — 25 corrupted codewords, at most 7 in any block against t = 8, i.e. inside correction
+  capacity. The other 12 differences are the rounded finder corners the brand rendering draws, which
+  carry no data. That corroboration needs the `qrcode` encoder, which this project does not declare, so
+  the suite does not run it — it is recorded here as a method, with its figures, for the next reader.
 
 Treat it as source, not output: it is watched by the suite's read-only guard (see `UNTRACKED_MASTERS`),
 and if it is lost, the books can still be built — they will simply be different books.

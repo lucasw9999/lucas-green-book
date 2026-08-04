@@ -505,27 +505,13 @@ def _courses_snapshot(root):
     return out
 
 
-def _qr_module_grid(path):
-    """(N, grid) for a rasterised square QR image, or None if it cannot be read as one.
+def _qr_symbol_band(path):
+    """(ink, r0, r1, c0, c1) for the QR symbol inside a brand sheet, or None.
 
-    Read with rasterio, which is already a declared core dependency, so this adds nothing to install --
-    and no decoder is installed here (cv2, pyzbar and zbarimg are all absent; the tree carries only the
-    `qrcode` ENCODER, and not as a declared dependency either). So this measures the module GEOMETRY,
-    which is what fixes the symbol's version and codeword count, and deliberately does not claim to read
-    the payload.
-
-    The grid is validated by the two timing patterns -- row 6 and column 6 must alternate over their
-    whole length between the finders -- because that is the property a misaligned or wrongly-sized grid
-    cannot fake, and it is what makes the returned N a measurement rather than a guess. Modules are
-    sampled over the centre 40% of each cell, since the brand rendering draws round dots with gaps
-    rather than filled squares.
-
-    WHAT THIS CANNOT DO, measured rather than assumed: isolate the centre logo. The obvious rule -- a
-    cell far more filled than a round dot is a glyph stroke -- does not separate them, because adjacent
-    dark dots merge and fill their own cells completely too: over this master's 746 ordinary dark cells
-    the coverage runs to 1.00, the same as the glyph's strokes. So no footprint figure is published for
-    the logo, on the principle that an unmeasured figure in a record is worse than a stated gap.
-    """
+    `ink` is the whole image as a boolean array; the four bounds are the symbol's own extent, with the
+    caption band under the code excluded. Split out from `_qr_module_grid` because the logo footprint is
+    measured from the raw scan lines in that same band, and two copies of this band-finding would be two
+    chances to measure the symbol against different edges."""
     import warnings
 
     import numpy as np
@@ -551,7 +537,6 @@ def _qr_module_grid(path):
             start = None
     if not bands:
         return None
-    r0, r1 = bands[0][0], bands[-2][1] if len(bands) > 1 else bands[0][1]
     # merge every band except a trailing caption: the caption is narrower than the code
     keep = [b for b in bands
             if (lambda cs: len(cs) and (cs.max() - cs.min() + 1) > 0.9 * (cols.max() - cols.min() + 1))
@@ -561,7 +546,38 @@ def _qr_module_grid(path):
     r0, r1 = keep[0][0], keep[-1][1]
     sub = ink[r0:r1 + 1]
     cs = np.where(sub.any(axis=0))[0]
-    c0, c1 = int(cs.min()), int(cs.max())
+    return ink, int(r0), int(r1), int(cs.min()), int(cs.max())
+
+
+def _qr_module_grid(path):
+    """(N, grid) for a rasterised square QR image, or None if it cannot be read as one.
+
+    Read with rasterio, which is already a declared core dependency, so this adds nothing to install --
+    and no decoder is installed here (cv2, pyzbar and zbarimg are all absent; the tree carries only the
+    `qrcode` ENCODER, and not as a declared dependency either). So this measures the module GEOMETRY,
+    which is what fixes the symbol's version and codeword count, and deliberately does not claim to read
+    the payload.
+
+    The grid is validated by the two timing patterns -- row 6 and column 6 must alternate over their
+    whole length between the finders -- because that is the property a misaligned or wrongly-sized grid
+    cannot fake, and it is what makes the returned N a measurement rather than a guess. Modules are
+    sampled over the centre 40% of each cell, since the brand rendering draws round dots with gaps
+    rather than filled squares.
+
+    ROW/COLUMN AS STORED. `grid[i][j]` is image row i, image column j, and this master is stored MIRRORED
+    across its main diagonal -- see `_qr_format_copies`, which is where that costs something. Callers that
+    need the canonical orientation read `grid[j][i]`.
+
+    Per-cell INK COVERAGE cannot isolate the centre logo, which is why the footprint is measured from
+    blank scan lines instead (`_qr_logo_footprint`). Adjacent dark dots merge and fill their own cells
+    completely: of the 755 dark cells outside the logo footprint, 31 reach a full-cell coverage of 1.00,
+    so "fuller than a round dot" does not separate a glyph stroke from two touching dots.
+    """
+    import numpy as np
+    band = _qr_symbol_band(path)
+    if not band:
+        return None
+    ink, r0, r1, c0, c1 = band
     for N in (21, 25, 29, 33, 37, 41, 45, 49, 53, 57):
         pr, pc = (r1 - r0 + 1) / N, (c1 - c0 + 1) / N
         if not 6.0 <= pr <= 40.0:
@@ -580,10 +596,159 @@ def _qr_module_grid(path):
     return None
 
 
-# Version 6 is 41x41 with a single alignment pattern centred at (32,32) and 172 total codewords. Only
-# the version this master actually is, because a table of all forty would be a table nothing checks.
+# Version 6 is 41x41 with a single alignment pattern centred at (34,34) -- the version-6 row of ISO/IEC
+# 18004's alignment table is {6, 34}, and the master shows the textbook 5x5 ring there and noise at
+# (32,32), which an earlier comment here published instead. 172 total codewords. Only the version this
+# master actually is, because a table of all forty would be a table nothing checks.
 _QR_V6_MODULES = 41
 _QR_V6_CODEWORDS = 172
+_QR_V6_ALIGN_CENTRE = 34
+_QR_V6_REMAINDER_BITS = 7           # 172 x 8 + 7 == the version-6 encoding region, and that is a check
+# Version 6 at level M: 4 Reed-Solomon blocks, each 27 data + 16 EC codewords. 4 x (27 + 16) == 172, and
+# 16 EC codewords correct t = 8 codeword errors in their own block -- 32 across the symbol, but the
+# budget that binds is PER BLOCK.
+_QR_6M_BLOCKS, _QR_6M_DATA_CW, _QR_6M_EC_CW = 4, 27, 16
+# The centre logo, measured in _qr_logo_footprint: a 13x13 block of modules at rows/cols 14..26, exactly
+# centred in the 41x41 symbol.
+_QR_LOGO_LO, _QR_LOGO_HI = 14, 26
+# The 15-bit format information. Read in the canonical orientation BOTH copies are this value, which is
+# an exact BCH(15,5) codeword for level M, mask 2. Read off the stored (mirrored) matrix with the same
+# table they come out as the pair below, which is the misreading that once published "Q and H".
+_QR_FORMAT_CANONICAL = 0x5E7C
+_QR_FORMAT_AS_STORED = (0x1F3D, 0x1FBD)
+_QR_FORMAT_BCH_MASK = 0x5412        # ISO/IEC 18004 format-information XOR mask
+_QR_FORMAT_BCH_GEN = 0x537          # BCH(15,5) generator, corrects 3 bits
+
+
+def _qr_bch15_decode(v):
+    """(hamming distance, ECC level, mask pattern) for a 15-bit format-information value.
+
+    The 32 valid format strings are generated here rather than tabulated, so the table cannot be
+    mistyped: data (2 bits level, 3 bits mask) -> BCH(15,5) -> XOR 0x5412. The level bits are ISO's,
+    which are NOT in level order: 00 M, 01 L, 10 H, 11 Q."""
+    best = None
+    for data in range(32):
+        rem = data << 10
+        while rem.bit_length() - 1 >= 10:
+            rem ^= _QR_FORMAT_BCH_GEN << (rem.bit_length() - 11)
+        code = ((data << 10) | rem) ^ _QR_FORMAT_BCH_MASK
+        dist = bin(code ^ v).count("1")
+        if best is None or dist < best[0]:
+            best = (dist, {0: "M", 1: "L", 2: "H", 3: "Q"}[data >> 3], data & 7)
+    return best
+
+
+def _qr_format_copies(grid, n, mirror):
+    """The two 15-bit format-information copies of an n-module QR, LSB first.
+
+    Placement is ISO/IEC 18004's, and it was CALIBRATED rather than remembered: encoding all 32
+    level/mask combinations with a reference encoder and requiring this reader to recover every one of
+    them at BCH distance 0. Two conventions pass 32/32 on copy one alone -- its position list is its own
+    transpose reversed, so a transposed table and a reversed bit order are indistinguishable there. Copy
+    two breaks the tie (the same tie that made an earlier round publish "Q and H" off this master).
+
+    `mirror` reads `grid[c][r]`, which is what this master needs: it is stored mirrored across its main
+    diagonal."""
+    p1 = [(i, 8) for i in range(6)] + [(7, 8), (8, 8), (8, 7)] + [(8, j) for j in (5, 4, 3, 2, 1, 0)]
+    p2 = [(8, j) for j in range(n - 1, n - 9, -1)] + [(i, 8) for i in range(n - 7, n)]
+    out = []
+    for pos in (p1, p2):
+        v = 0
+        for r, c in reversed(pos):
+            v = (v << 1) | int(grid[c][r] if mirror else grid[r][c])
+        out.append(v)
+    return tuple(out)
+
+
+def _qr_v6_function_modules():
+    """The set of version-6 modules that carry no codeword bit.
+
+    Finders with their separators, both timing patterns, the single alignment pattern, both format
+    information regions and the dark module. Self-checking: version 6's encoding region is 1383 modules,
+    so 41*41 minus this set must be 172*8 + 7, and a mis-sized alignment pattern or a missed separator
+    would not land on that number."""
+    n = _QR_V6_MODULES
+    fn = set()
+    for r0, c0 in ((0, 0), (0, n - 7), (n - 7, 0)):          # finder + separator + its format region
+        for r in range(max(0, r0 - 1), min(n, r0 + 8)):
+            for c in range(max(0, c0 - 1), min(n, c0 + 8)):
+                fn.add((r, c))
+    for k in range(n):
+        fn.add((6, k))
+        fn.add((k, 6))
+    for r in range(9):                                        # format information, both copies
+        fn.add((r, 8))
+        fn.add((8, r))
+    for k in range(n - 8, n):
+        fn.add((8, k))
+        fn.add((k, 8))
+    a = _QR_V6_ALIGN_CENTRE
+    for r in range(a - 2, a + 3):
+        for c in range(a - 2, a + 3):
+            fn.add((r, c))
+    return fn
+
+
+def _qr_v6_codeword_map():
+    """{(row, col): codeword index} for version 6, plus the per-codeword RS block index.
+
+    The placement walk is ISO/IEC 18004's: two-module-wide columns from the right, alternating upward and
+    downward, right module of each pair first, skipping the vertical timing column and every function
+    module. Codewords are interleaved across the four blocks -- data codeword k belongs to block k % 4,
+    and so does EC codeword k.
+
+    VALIDATED OUT OF TREE against a reference encoding of a known payload at 6-M mask 2: reading the
+    codewords back through this map and de-interleaving them gave all-zero Reed-Solomon syndromes on all
+    four blocks, which a wrong walk or a wrong interleaving does not do. The 1383-module self-check below
+    is what remains inside the suite, since the reference encoder is not a dependency here."""
+    n, fn = _QR_V6_MODULES, _qr_v6_function_modules()
+    order, up, col = [], True, n - 1
+    while col > 0:
+        if col == 6:
+            col -= 1
+        for r in (range(n - 1, -1, -1) if up else range(n)):
+            for c in (col, col - 1):
+                if (r, c) not in fn:
+                    order.append((r, c))
+        up = not up
+        col -= 2
+    assert len(order) == _QR_V6_CODEWORDS * 8 + _QR_V6_REMAINDER_BITS, (
+        f"the version-6 encoding region walked to {len(order)} modules, not "
+        f"{_QR_V6_CODEWORDS * 8 + _QR_V6_REMAINDER_BITS}; the function-pattern set or the walk is wrong")
+    cw = {cell: k // 8 for k, cell in enumerate(order[:_QR_V6_CODEWORDS * 8])}
+
+    def block(k):
+        d = _QR_6M_BLOCKS * _QR_6M_DATA_CW
+        return k % _QR_6M_BLOCKS if k < d else (k - d) % _QR_6M_BLOCKS
+    return cw, block
+
+
+def _qr_logo_footprint(path, n):
+    """(lo, hi) module rows/cols the centre logo covers, from fully blank scan lines. None if unclear.
+
+    The logo is drawn over the symbol with a white halo around it, so the scan lines that bracket it are
+    blank across the WHOLE symbol -- no dot anywhere on the line. Converting those pixel rows to module
+    coordinates gives boundaries that land on whole modules, which is the check that this is the logo's
+    edge and not an artefact of the round-dot rendering: a gap between two rows of dots does not sit on a
+    module boundary to a hundredth of a module.
+
+    Only the pair that BRACKETS the symbol centre is used. Blank lines also occur elsewhere (this master
+    has them at module boundaries 12.00 and 13.00), because the brand rendering leaves gaps between
+    adjacent dots."""
+    import numpy as np
+    band = _qr_symbol_band(path)
+    if not band:
+        return None
+    ink, r0, r1, c0, c1 = band
+    pr = (r1 - r0 + 1) / n
+    blank = [i for i in range(r0, r1 + 1) if not ink[i, c0:c1 + 1].any()]
+    edges = sorted({round((i - r0) / pr, 2) for i in blank} | {round((i + 1 - r0) / pr, 2) for i in blank})
+    whole = [e for e in edges if abs(e - round(e)) <= 0.06]
+    lo = [int(round(e)) for e in whole if round(e) <= n // 2]
+    hi = [int(round(e)) for e in whole if round(e) > n // 2]
+    if not lo or not hi:
+        return None
+    return max(lo), min(hi) - 1
 
 
 def test_the_branded_qr_master_is_recorded_as_unreproducible():
@@ -600,26 +765,22 @@ def test_the_branded_qr_master_is_recorded_as_unreproducible():
     sheet was reasoned as "every file a COURSE holds" -- so a master at the repo root fell outside the
     boundary rather than outside the glob. See UNTRACKED_MASTERS.
 
-    WHAT IS AND IS NOT VERIFIED ABOUT THE CODE ITSELF, stated because the honest answer is "half".
-    It is a branded QR whose centre logo is drawn OVER the symbol, so the payload survives only through
-    Reed-Solomon correction -- and nothing in this repo decodes it. No decoder is installed here either
-    (cv2, pyzbar and zbarimg are all absent; only the `qrcode` encoder, and that is not declared). So:
+    WHAT IS AND IS NOT VERIFIED ABOUT THE CODE ITSELF. It is a branded QR whose centre logo is drawn
+    OVER the symbol, so the payload survives only through Reed-Solomon correction -- and nothing in this
+    repo decodes it. No decoder is installed here either (cv2, pyzbar and zbarimg are all absent; only
+    the `qrcode` encoder, and that is not declared). So:
 
       * MEASURED here from the pixels and re-derived on every run: the symbol is 41x41 modules, which
         is version 6 and 172 codewords, and BOTH timing patterns alternate over their whole length --
         that last part is what makes the module count a measurement rather than a guess, because a
-        misaligned or wrongly-sized grid cannot produce it.
-      * NOT VERIFIED, recorded rather than papered over. (a) The PAYLOAD. It is presumably the Instagram
-        profile the caption reads, but nothing here reads it back. (b) The error-correction LEVEL, and
-        the reason is itself measured: the two copies of the 15-bit format information disagree under
-        pixel sampling by more than the 3 bits BCH(15,5) can correct, and they decode to different
-        levels (Q and H), so publishing either would be inventing a number. (c) The exact module
-        footprint of the centre logo, and therefore the remaining error budget. The obvious rule for
-        isolating it -- a cell fuller than a round dot is a glyph stroke -- does not work, because
-        adjacent dark dots merge and fill their cells completely too: over this master's 746 ordinary
-        dark cells the coverage runs to 1.00, the same as the glyph. What would settle all three is one
-        decode with a real decoder -- `zbarimg lucaswu.golf_qr_small.png`, or pyzbar -- which is a
-        dependency this project has no other reason to take on.
+        misaligned or wrongly-sized grid cannot produce it. The error-correction level, the mask, the
+        logo's footprint and the remaining error budget are measured too, in
+        test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable; this test predates
+        them and pins only the geometry.
+      * NOT VERIFIED HERE: the PAYLOAD. It is the Instagram profile the caption reads, established by
+        zxing-cpp and pyzbar outside this environment and recorded in PIPELINE.md with that method
+        named, but nothing in this suite reads it back -- a decoder is a dependency this project has no
+        other reason to take on.
 
     So this test does the three things the aerial master gets, and pins the one geometric fact it can
     prove: nothing produces it, PIPELINE.md says so where a maintainer will read it, the read-only guard
@@ -694,10 +855,155 @@ def test_the_branded_qr_master_is_recorded_as_unreproducible():
     said = re.search(r"(\d+)x\1 modules[^.]*?version 6[^.]*?(\d+) codewords", flat)
     assert said and (int(said.group(1)), int(said.group(2))) == (N, _QR_V6_CODEWORDS), (
         "PIPELINE.md must record the symbol's measured size and codeword count -- '<N>x<N> modules ... "
-        "version 6 ... <T> codewords' -- because they are the only facts about this master anything "
-        "checks, and a record that omits them reads as if nothing about it were verified. Measured: "
+        "version 6 ... <T> codewords' -- because they are the geometry this test proves from the pixels, "
+        "and a record that omits them reads as if nothing about it were verified. Measured: "
         f"{N}x{N} modules, {_QR_V6_CODEWORDS} codewords; the record says "
         f"{said.groups() if said else 'nothing'}.")
+
+
+def test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable():
+    """PIPELINE.md and this suite recorded three facts about the QR master as unknowable. All three are
+    measurable without a decoder, and the reason the first looked unknowable was a reading error.
+
+    THE RECORD SAID: "the two copies of the 15-bit format information disagree under pixel sampling by
+    more than the 3 bits BCH(15,5) can correct, and they decode to different levels (Q and H), so
+    publishing either would be inventing a number", the logo's footprint could not be isolated, and the
+    remaining error budget therefore could not be stated.
+
+    MEASURED HERE:
+      * The master is stored MIRRORED across its main diagonal. Read `grid[col][row]`, both format
+        copies are 0x5E7C -- an exact BCH(15,5) codeword, Hamming distance 0, the two copies XOR to
+        zero -- and it says level M, mask 2. Read as stored with the same table they are 0x1F3D (Q,
+        distance 3) and 0x1FBD (H, distance 4), which is exactly the "Q and H" the record published. So
+        the two copies never disagreed by more than BCH can correct; one orientation was read with a
+        table for the other. BOTH readings are pinned below, because the wrong one is what a future
+        reader will reproduce first.
+      * The logo covers a 13x13 block of modules at rows and columns 14..26 -- 169 modules, exactly
+        centred. The fully blank scan lines that bracket it land on module boundaries 14.00 and 27.00.
+      * Version 6 at level M is 4 Reed-Solomon blocks of 27 data + 16 EC codewords, correcting t = 8
+        codeword errors per block. Those 169 modules fall inside 28 of the 172 codewords, 7 in every one
+        of the four blocks: 7 of 8, 88% of capacity, ONE codeword of headroom. Which is why 162 of the
+        164 one-module-wide straight lines across this symbol (41 rows, 41 columns, 41 diagonals, 41
+        anti-diagonals) push a block past t = 8 -- a single crease or pen line in almost any orientation
+        makes it undecodable. The two exceptions are the timing row and column, which carry no codeword.
+
+    WHAT IS STILL NOT CHECKED HERE is the payload. It is
+    https://www.instagram.com/lucaswu.golf?utm_source=qr, established outside this environment by
+    zxing-cpp and pyzbar independently and recorded in PIPELINE.md with the method named; no decoder is
+    installed here and adding one is a dependency this project has no other reason to take. What the
+    suite pins is everything a decoder is NOT needed for: the grid, the version, the codeword
+    arithmetic, both format-information readings and their BCH decode, the footprint, and the budget.
+
+    The placement walk behind the budget was validated out of tree against a reference encoding at 6-M
+    mask 2, whose four Reed-Solomon blocks then had all-zero syndromes; the 1383-module self-check in
+    `_qr_v6_codeword_map` is the part of that validation that can run here."""
+    master = os.path.join(ROOT, UNTRACKED_MASTERS[0])
+    if not os.path.exists(master):
+        pytest.skip("the QR master is gitignored and not present in this checkout")
+    read = _qr_module_grid(master)
+    assert read, f"{os.path.basename(master)} no longer reads as a square QR with valid timing patterns"
+    N, grid = read
+    assert N == _QR_V6_MODULES
+
+    # (1) THE FORMAT INFORMATION. Both orientations, because the wrong one is the trap.
+    stored = _qr_format_copies(grid, N, mirror=False)
+    canon = _qr_format_copies(grid, N, mirror=True)
+    assert canon == (_QR_FORMAT_CANONICAL, _QR_FORMAT_CANONICAL), (
+        f"the two format-information copies read {tuple(hex(v) for v in canon)} in the canonical "
+        f"orientation, not two copies of {hex(_QR_FORMAT_CANONICAL)}. They agree exactly on this "
+        f"master, and that agreement is what makes the level a measurement")
+    for v in canon:
+        assert _qr_bch15_decode(v) == (0, "M", 2), (
+            f"{hex(v)} decodes to {_qr_bch15_decode(v)}, not (0, 'M', 2). PIPELINE.md publishes level M "
+            f"mask 2 at BCH distance 0 off exactly this value")
+    assert stored == _QR_FORMAT_AS_STORED, (
+        f"read as stored the copies are {tuple(hex(v) for v in stored)}, not "
+        f"{tuple(hex(v) for v in _QR_FORMAT_AS_STORED)}. That pair is pinned because it is the MISreading "
+        f"-- it decodes to Q and H, which is what the record used to publish as 'no level is knowable'")
+    assert (_qr_bch15_decode(stored[0])[1], _qr_bch15_decode(stored[1])[1]) == ("Q", "H"), (
+        "the as-stored reading no longer produces the Q/H pair the old record quoted, so the note "
+        "explaining where that pair came from has lost its evidence")
+
+    # (2) THE ALIGNMENT PATTERN, at the version-6 centre and not where an earlier comment put it. Read
+    # in the canonical orientation, which for a symmetric ring is the same either way -- the point is
+    # that it is a 5x5 ring at all, which validates the grid a second way.
+    a = _QR_V6_ALIGN_CENTRE
+    ring = [[int(grid[c][r]) for c in range(a - 2, a + 3)] for r in range(a - 2, a + 3)]
+    assert ring == [[1, 1, 1, 1, 1], [1, 0, 0, 0, 1], [1, 0, 1, 0, 1], [1, 0, 0, 0, 1], [1, 1, 1, 1, 1]], (
+        f"no alignment pattern at ({a},{a}); read {ring}. Version 6's alignment table row is (6, 34), so "
+        f"this is where it must be -- an earlier comment here published (32,32), where the modules are "
+        f"ordinary data")
+
+    # (3) THE LOGO FOOTPRINT, from blank scan lines rather than per-cell coverage
+    fp = _qr_logo_footprint(master, N)
+    assert fp == (_QR_LOGO_LO, _QR_LOGO_HI), (
+        f"the blank scan lines bracketing the symbol centre give module rows {fp}, not "
+        f"({_QR_LOGO_LO}, {_QR_LOGO_HI}). PIPELINE.md publishes a 13x13 footprint off this measurement")
+    side = _QR_LOGO_HI - _QR_LOGO_LO + 1
+    assert (side, side * side) == (13, 169), f"the footprint is {side}x{side}, not 13x13"
+    assert _QR_LOGO_LO == (N - side) // 2, (
+        f"the footprint starts at module {_QR_LOGO_LO}, which is not centred in a {N}-module symbol")
+
+    # (4) THE CODEWORD ARITHMETIC, then the budget the logo spends of it
+    assert _QR_6M_BLOCKS * (_QR_6M_DATA_CW + _QR_6M_EC_CW) == _QR_V6_CODEWORDS, (
+        f"{_QR_6M_BLOCKS} x ({_QR_6M_DATA_CW} + {_QR_6M_EC_CW}) is not {_QR_V6_CODEWORDS}; the 6-M block "
+        f"structure and the codeword total in PIPELINE.md disagree")
+    t = _QR_6M_EC_CW // 2
+    cwof, block = _qr_v6_codeword_map()
+    logo = [(r, c) for r in range(_QR_LOGO_LO, _QR_LOGO_HI + 1)
+            for c in range(_QR_LOGO_LO, _QR_LOGO_HI + 1)]
+    assert all(cell in cwof for cell in logo), (
+        "part of the logo footprint falls outside the encoding region, so it would cost no error budget "
+        "-- check the function-pattern set before trusting the figure below")
+    hit = {cwof[cell] for cell in logo}
+    per = collections.Counter(block(k) for k in hit)
+    assert len(hit) == 28, (
+        f"the 169 logo modules land in {len(hit)} codewords, not 28. That figure is the error budget "
+        f"PIPELINE.md publishes and the reason a crease in this code is fatal")
+    assert sorted(per.values()) == [7, 7, 7, 7], (
+        f"the corrupted codewords fall {dict(per)} across the four RS blocks, not 7 in each. The budget "
+        f"that binds is per block, not the 32-codeword aggregate")
+    assert max(per.values()) == t - 1, (
+        f"the worst block spends {max(per.values())} of t = {t}, leaving {t - max(per.values())} "
+        f"codeword(s) of headroom; PIPELINE.md publishes one")
+
+    # (5) WHAT THAT COSTS: a one-module line in almost any orientation is fatal
+    lines = ([[(r, c) for c in range(N)] for r in range(N)]
+             + [[(r, c) for r in range(N)] for c in range(N)]
+             + [[(r, (r + k) % N) for r in range(N)] for k in range(N)]
+             + [[(r, (k - r) % N) for r in range(N)] for k in range(N)])
+    fatal = 0
+    for cells in lines:
+        spent = collections.Counter(block(k) for k in hit | {cwof[x] for x in cells if x in cwof})
+        if max(spent.values()) > t:
+            fatal += 1
+    assert (len(lines), fatal) == (164, 162), (
+        f"{fatal} of {len(lines)} one-module-wide straight lines exceed t = {t} with the logo already "
+        f"spent; PIPELINE.md publishes 162 of 164, the two survivors being the timing row and column")
+
+    # (6) and the record a maintainer reads says all of it
+    with open(os.path.join(ROOT, "PIPELINE.md"), encoding="utf-8") as fh:
+        flat = " ".join(fh.read().replace("*", "").replace("`", "").split())
+    for phrase in ("level M, mask pattern 2",
+                   "mirrored across its main diagonal",
+                   "0x5E7C",
+                   "0x1F3D",
+                   "13x13 = 169 modules",
+                   "28 of the 172 codewords",
+                   "one codeword of headroom",
+                   "162 push at least one block past t = 8",
+                   "https://www.instagram.com/lucaswu.golf?utm_source=qr",
+                   "zxing-cpp and pyzbar independently"):
+        assert phrase in flat, (
+            f"PIPELINE.md does not record {phrase!r}. Every figure in this test is published there, and "
+            f"a measurement that lives only in a test is not a record a maintainer will read")
+    for gone in ("no level is published",
+                 "decode to different levels",
+                 "the honest answer is half",
+                 "Not verified. (a) The payload"):
+        assert gone not in flat, (
+            f"PIPELINE.md still says {gone!r}, which is false: the level, the footprint and the budget "
+            f"are all measured above, and the payload is recorded with its method")
 
 
 def _courses_diff(before, after):
