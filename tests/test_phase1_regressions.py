@@ -7717,6 +7717,165 @@ def test_every_built_green_surface_carries_the_digest_that_guards_it():
         + "\n  ".join(missing[:8]))
 
 
+def _fake_surface_tree(root, pairs):
+    """A repo-shaped tree under `root` holding `pairs` = {slug: {hole: (array, meta_extra)}}.
+
+    tmp_path, never courses/. This exercises the code that rewrote 198 irreplaceable sidecars in the
+    only copy that exists, so it has to run somewhere a mistake costs nothing -- and `_sidecars` takes
+    its root as an argument precisely so it can be pointed here.
+    """
+    import numpy as np
+    bases = {}
+    for slug, holes in pairs.items():
+        d = os.path.join(root, "courses", slug, "dem_hd")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(root, "courses", slug, "course.json"), "w", encoding="utf-8") as fh:
+            json.dump({"name": slug, "holes": []}, fh)
+        for hole, (arr, extra) in holes.items():
+            base = os.path.join(d, f"hole{hole}")
+            with open(base + ".npy", "wb") as fh:
+                np.save(fh, arr)
+            meta = {"H": arr.shape[0], "W": arr.shape[1], "bbox": [0.0, 0.0, 1.0, 1.0]}
+            meta.update(extra)
+            with open(base + ".json", "w", encoding="utf-8") as fh:
+                json.dump(meta, fh)
+            bases[(slug, hole)] = base
+    return bases
+
+
+def test_the_sidecar_backfill_writes_nothing_unless_every_pair_reads_and_the_arrays_never_move(
+        tmp_path, monkeypatch):
+    """The code that rewrote 198 irreplaceable sidecars had no test at all.
+
+    `surface_io.main` is the migration that stamped `array_sha256` into every built green's meta,
+    because the read-side digest guard was added after all 198 surfaces already existed and a missing
+    digest read as accepted -- so the guard protected none of the corpus. It ran once, over
+    `courses/`, which is gitignored: no copy in history, none on a remote, and only `laz/` refetchable.
+
+    Its two safeties had ONE CALLER EACH and no test named either of them, nor `main`, nor `--stamp`:
+
+      * `_sidecars(root)` -- what the migration will touch. If it reaches a scratch slug it rewrites a
+        fixture's meta; if it silently enumerates nothing, `main` reports "nothing to stamp" and the
+        corpus stays unprotected while the run looks clean.
+      * `_fingerprint(path)` -- the before/after record, and the thing the `npy_before == npy_after`
+        assertion is built from. This is a migration of the DESCRIPTION; the measurement must not move.
+        A size-only fingerprint would satisfy that assertion while an array was rewritten to the same
+        length, which for a fixed-shape float raster is what a concurrent rebuild produces.
+
+    Four properties, all on a tmp_path tree so nothing here can reach the real corpus:
+
+      (a) `_fingerprint` distinguishes a SAME-SIZE change. That is the whole reason it hashes.
+      (b) ALL OR NOTHING: one unreadable pair and the run writes nothing, names the offender, and
+          leaves every other sidecar byte-identical. A half-applied migration over the only copy of
+          the data is not an acceptable intermediate state, and a pair that is already torn must be
+          rebuilt rather than stamped -- stamping it would certify the tear.
+      (c) a report run (`no --stamp`) writes nothing at all.
+      (d) if the array moves between the read and the write, the run STOPS. Injected by making
+          `stamp_digest` rewrite the array to the same length, which is exactly the case (a) exists
+          for; a size-only fingerprint passes this and it must not.
+    """
+    import numpy as np
+
+    import surface_io
+
+    # (a) the fingerprint's load-bearing property, before anything is built on it
+    p = tmp_path / "f.bin"
+    assert surface_io._fingerprint(str(p)) is None, (
+        "_fingerprint must answer None for a file that is not there -- main() calls it before and "
+        "after each write and would otherwise raise on a first stamp")
+    p.write_bytes(b"\x00" * 64)
+    first = surface_io._fingerprint(str(p))
+    p.write_bytes(b"\x01" * 64)
+    second = surface_io._fingerprint(str(p))
+    assert first[0] == second[0] == 64, "the size half of the fingerprint is wrong"
+    assert first[1] != second[1], (
+        "_fingerprint reports the same fingerprint for two different 64-byte files, so the "
+        "npy_before == npy_after assertion in main() cannot see an array rewritten to the same "
+        "length -- which is what a rebuild of a fixed-shape raster produces")
+
+    arr = np.arange(12, dtype="float32").reshape(3, 4)
+    bases = _fake_surface_tree(str(tmp_path), {
+        "alpha-golf-club": {1: (arr, {}), 2: (arr + 1, {})},
+        "beta-golf-club": {1: (arr + 2, {})},
+        # scratch: _sidecars must not enumerate it, so the migration cannot rewrite a fixture
+        "_scratch-course": {1: (arr, {})},
+    })
+    found = surface_io._sidecars(str(tmp_path))
+    assert sorted(found) == sorted(bases[k] for k in bases if not k[0].startswith("_")), (
+        f"_sidecars enumerated {found}. It must find every real course's surface sidecars and no "
+        f"scratch slug's -- it is the list of files the migration will rewrite in place.")
+
+    # Point main() at the fake tree. main() derives its root from __file__, so the enumerator is the
+    # seam; _sidecars itself is asserted above, on its own root argument.
+    monkeypatch.setattr(surface_io, "_sidecars", lambda _root: found)
+
+    def snapshot():
+        return {b: (surface_io._fingerprint(b + ".json"), surface_io._fingerprint(b + ".npy"))
+                for b in found}
+
+    # (c) a report run writes nothing and says the corpus is unverified
+    before = snapshot()
+    rc = surface_io.main([])
+    assert rc == 1, f"a report run over three unstamped pairs returned {rc}, not 1"
+    assert snapshot() == before, "a run WITHOUT --stamp wrote to disk"
+
+    # (b) all or nothing. Tear one pair's meta (H/W disagreeing with its array) and stamp.
+    torn = found[1]
+    with open(torn + ".json", encoding="utf-8") as fh:
+        bad = json.load(fh)
+    bad["H"] = bad["H"] + 1
+    with open(torn + ".json", "w", encoding="utf-8") as fh:
+        json.dump(bad, fh)
+    before = snapshot()
+    rc = surface_io.main(["--stamp"])
+    assert rc == 1, (
+        f"--stamp returned {rc} with one pair unreadable. It must refuse: courses/ is the only copy of "
+        f"these surfaces, so a half-applied migration is not an acceptable intermediate state.")
+    assert snapshot() == before, (
+        "--stamp wrote to disk although one of the three pairs does not read as a pair. ALL OR "
+        "NOTHING is the property that made this migration safe over 198 irreplaceable sidecars:\n  "
+        + "\n  ".join(f"{os.path.basename(b)}: {before[b]} -> {snapshot()[b]}"
+                      for b in found if before[b] != snapshot()[b]))
+    with open(torn + ".json", "w", encoding="utf-8") as fh:
+        json.dump(dict(bad, H=bad["H"] - 1), fh)
+
+    # ...and with every pair readable it does stamp, writing only the .json
+    before = snapshot()
+    rc = surface_io.main(["--stamp"])
+    assert rc == 0, f"--stamp over three readable unstamped pairs returned {rc}"
+    after = snapshot()
+    for b in found:
+        assert after[b][1] == before[b][1], f"{os.path.basename(b)}.npy was rewritten by a "\
+                                            f"sidecar-only migration"
+        assert after[b][0] != before[b][0], f"{os.path.basename(b)}.json was not stamped"
+        with open(b + ".json", encoding="utf-8") as fh:
+            assert json.load(fh)[surface_io.DIGEST_KEY] == surface_io.array_digest(np.load(b + ".npy"))
+    # a second run is a no-op, not three more rewrites of the only copy
+    steady = snapshot()
+    assert surface_io.main(["--stamp"]) == 0 and snapshot() == steady, (
+        "a second --stamp over an already-stamped tree rewrote the sidecars again")
+
+    # (d) THE ARRAY MOVING BETWEEN THE READ AND THE WRITE. Simulates a rebuild landing mid-migration:
+    # same shape, same byte length, different measurements. The run must stop rather than record a
+    # digest for an array it did not read.
+    bases2 = _fake_surface_tree(str(tmp_path / "second"), {"gamma-golf-club": {1: (arr, {})}})
+    fresh = [bases2[("gamma-golf-club", 1)]]
+    monkeypatch.setattr(surface_io, "_sidecars", lambda _root: fresh)
+    real_stamp = surface_io.stamp_digest
+
+    def stamp_then_move(base):
+        out = real_stamp(base)
+        with open(base + ".npy", "wb") as fh:      # same shape and length, different values
+            np.save(fh, np.arange(12, dtype="float32").reshape(3, 4) * 7.0)
+        return out
+    monkeypatch.setattr(surface_io, "stamp_digest", stamp_then_move)
+    with pytest.raises(AssertionError) as e:
+        surface_io.main(["--stamp"])
+    assert ".npy" in str(e.value), (
+        f"the array was rewritten to the same length during a sidecar-only migration and the run did "
+        f"not stop; it must, or the stamped digest describes an array nobody read: {e.value!r}")
+
+
 def test_no_slope_label_claims_an_unputtable_number(gate_course):
     """merion h2 printed "40" beside "5" on a green card whose legend says "Numbers = slope %
     there". The cell was measured correctly -- it is a bank inside the OSM golf=green polygon,
