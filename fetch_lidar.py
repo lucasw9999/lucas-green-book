@@ -114,6 +114,13 @@ def tnm_items(tries=8):
     0`, a listing 200 products short of a stated 500 was accepted in silence. The two defects masked each
     other, which is why the refusal looked over-eager and was in fact mostly dead.
 
+    WHAT ENDS THE WALK is an empty page, a `total` that has been met, or the stall detector -- NOT a page
+    that came back under `max`. `max` is a ceiling, not a quota, and an HTTP API may under-fill any page
+    and keep serving on the next. Treating a sub-cap page as the end regardless refused a healthy service:
+    a stated 500 served as 200 + 150 + 150 stopped at 350 rows and reported that the producer "ran out",
+    naming an offset the walk had never requested. A short page still ends the walk when NO total was
+    stated, which is the ordinary case on this corpus -- 4 to 14 tiles in one reply.
+
     Getting nothing at all is the old outage path and still returns [], which main() turns into its own
     "re-run later" stop.
     """
@@ -146,12 +153,19 @@ def tnm_items(tries=8):
         offset += len(items)
         stalled = stalled + 1 if new == 0 else 0
         stalls_seen += 1 if new == 0 else 0
-        if len(items) < TNM_PAGE_MAX:
-            walked_to_end = True    # a page under the request cap is the last page, whatever else is said
-            break
         if stalled >= TNM_STALL_PAGES:
             break                   # not honouring `offset`; the accounting below says what that cost
-        if total is None:
+        if len(items) < TNM_PAGE_MAX:
+            # A SUB-CAP PAGE IS THE END ONLY WHEN NOTHING SAYS OTHERWISE. `max` is a ceiling, not a
+            # quota: an HTTP API may under-fill any page and keep serving on the next. Reading a short
+            # page as the end WHILE A STATED `total` IS STILL UNMET refused a healthy service --
+            # 500 served as 200 + 150 + 150 stopped at 350 and blamed the producer for "running out"
+            # at an offset that had never been requested. With a `total` in hand, keep paging; the
+            # empty page, the stall detector, or `total` itself ends the walk.
+            if total is None:
+                walked_to_end = True
+                break
+        elif total is None:
             raise SystemExit(
                 f"USGS TNM returned exactly {TNM_PAGE_MAX} products -- this request's cap -- and no\n"
                 f"  `total`, so a complete listing and a truncated one look identical. Refusing to\n"

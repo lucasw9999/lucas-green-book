@@ -6165,6 +6165,135 @@ def test_the_lidar_listing_tells_an_unstable_order_apart_from_a_truncated_survey
         f"200 products short of 500 was accepted in silence: {str(e.value)!r}")
 
 
+def test_a_page_under_the_request_cap_does_not_end_a_listing_a_total_says_is_longer(monkeypatch):
+    """A HEALTHY service that under-fills a page mid-listing was hard-refused, and that is a REGRESSION.
+
+    The paging carried `if len(items) < TNM_PAGE_MAX: walked_to_end = True; break` -- "a page under the
+    request cap is the last page, whatever else is said". Nothing in HTTP promises that. `max` is a
+    ceiling, not a quota: a service is free to hand back fewer rows than asked for on any page and keep
+    serving on the next, and USGS TNM has never promised otherwise. The parent of that commit had the
+    same short-page rule but only INSIDE `if total is None:`, so a stated `total` kept it paging; hoisting
+    it out of that branch is what broke.
+
+    Measured against the parent (c402c07) with the same stubs, so this is a difference in behaviour and
+    not a difference of opinion:
+      * `total: 500` served as 200 + 150 + 150 -- parent returned all 500 products in 3 requests; the
+        child stopped after 2 and raised SystemExit.
+      * an under-filled FIRST page, 150 of a stated 500 -- the child raised after ONE request, having
+        asked for 150 of the 500 rows it was told existed.
+
+    And the refusal MISATTRIBUTED the cause: "ran out after serving 350 rows ... That is a TRUNCATED
+    listing, not a reordered one: a service whose order merely shifted would still have handed over 500
+    rows." The listing did not run out. The walk stopped by its own choice at a page boundary it had
+    decided was the end, having never asked for offset 350. Refusing a service that is working is the
+    same class of defect as the ordering hard-stop the same commit was written to fix.
+
+    The three refusals that commit added are NOT relaxed, and each is re-checked below:
+      * a page exactly at the cap with NO total -- a complete list and a truncated one look identical;
+      * a service that ignores `offset` and re-serves rows already listed;
+      * a listing that TRULY ran out -- the rows stop arriving before the stated `total` is met.
+    That last one is why the under-filled-first-page case still ends in SystemExit: with 300 rows
+    delivered against a stated 500 the listing really is short. What changes is that it now pages to the
+    actual end of the listing first (3 requests, not 1) and refuses for the reason that is true.
+
+    Stubbed throughout -- urlopen is monkeypatched, the live producer is never contacted."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    import fetch_lidar
+    monkeypatch.setattr(fetch_lidar.time, "sleep", lambda *_a, **_k: None)
+
+    asked = []
+
+    def serve(pages):
+        def _open(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            asked.append(int(re.search(r"[&?]offset=(\d+)", url).group(1)))
+            body = json.dumps(pages.get(asked[-1], {"total": 0, "items": []})).encode()
+
+            class _R:
+                def read(self_inner):
+                    return body
+            return _R()
+        monkeypatch.setattr(fetch_lidar.urllib.request, "urlopen", _open)
+
+    CAP = fetch_lidar.TNM_PAGE_MAX
+
+    def item(i):
+        return {"sourceId": f"id{i}", "title": f"t{i}.laz",
+                "downloadURL": f"https://x/Projects/CA_Test_2021_B21/LAZ/{i}.laz"}
+    every = [item(i) for i in range(3 * CAP + 200)]
+
+    # (1) A SUB-CAP PAGE MID-LISTING. 500 stated, served 200 + 150 + 150, every row distinct. The
+    # service is healthy and complete; the walk must follow it to the end and hand back all 500.
+    serve({0: {"total": 500, "items": every[:200]},
+           200: {"total": 500, "items": every[200:350]},
+           350: {"total": 500, "items": every[350:500]}})
+    asked.clear()
+    got = fetch_lidar.tnm_items()
+    assert len(got) == 500, (
+        f"a complete 500-product listing served as 200 + 150 + 150 came back as {len(got)} products or "
+        f"raised. `max` is a ceiling, not a quota -- a page under it is not proof of the end, and the "
+        f"stated total says outright that it is not. Requests made: {asked}")
+    assert asked == [0, 200, 350], (
+        f"the walk stopped at a sub-cap page instead of paging past it; offsets requested: {asked}")
+
+    # (2) AN UNDER-FILLED FIRST PAGE. 150 of a stated 500 on page one, 150 more waiting behind it. The
+    # listing IS short -- 300 of 500 -- so this still refuses, but only after asking for the rows it was
+    # told existed. Refusing on request one, having never asked for offset 150, blames the service for a
+    # decision this loop made.
+    serve({0: {"total": 500, "items": every[:150]},
+           150: {"total": 500, "items": every[150:300]}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert asked[:3] == [0, 150, 300], (
+        f"the walk gave up at the first under-filled page: offsets requested {asked}. 350 of the 500 "
+        f"rows the service said it holds were never asked for")
+    assert "300 rows" in str(e.value), (
+        f"the refusal must account for the rows actually delivered once the listing was walked to its "
+        f"end -- 300 of a stated 500: {str(e.value)!r}")
+
+    # (3) A SUB-CAP PAGE WITH NO TOTAL still ends the walk. This is the ordinary case on this corpus --
+    # 4 to 14 tiles, one request, no `total` field -- and it must not turn into a second request.
+    serve({0: {"items": every[:12]}})
+    asked.clear()
+    got = fetch_lidar.tnm_items()
+    assert len(got) == 12 and asked == [0], (
+        f"a short page with nothing stated against it is the end of the listing; got {len(got)} "
+        f"products over requests {asked}")
+
+    # (4) THE CAP-SIZED PAGE WITH NO TOTAL refusal is unchanged: that is the one state where a complete
+    # listing and a truncated one are indistinguishable.
+    serve({0: {"items": every[:CAP]}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert str(CAP) in str(e.value), f"the refusal must name the cap it hit: {str(e.value)!r}"
+
+    # (5) A SERVICE THAT IGNORES `offset` while under-filling every page must still be caught, and
+    # bounded. Without the sub-cap break there is nothing but the stall detector between this and an
+    # unbounded walk, because the stated total is never met.
+    serve({off: {"total": 500, "items": every[:50]} for off in range(0, 20 * CAP, 50)})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "offset" in str(e.value), (
+        f"a service re-serving the same 50 rows at every offset was not called out as a paging "
+        f"failure: {str(e.value)!r}")
+    assert len(asked) <= 6, f"it kept asking a stalled service that under-fills its pages: {len(asked)}"
+
+    # (6) A LISTING THAT TRULY RAN OUT: the rows stop before the stated total and the end is reached.
+    serve({0: {"total": 500, "items": every[:CAP]},
+           CAP: {"total": 500, "items": every[CAP:CAP + 100]}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "500" in str(e.value) and "300" in str(e.value), (
+        f"a genuinely truncated listing must still refuse, naming what it was promised and what it "
+        f"got: {str(e.value)!r}")
+
+
 def test_lidar_project_grouping_has_no_title_fallback():
     """PR #14 fixed grouping by title: TNM titles carry the per-tile ID, so every tile became its
     own 'project', coverage collapsed to one tile and most greens went unfed. The fallback that
@@ -21769,8 +21898,10 @@ def test_the_suite_reports_its_own_module_drop_count_correctly():
     `README.md:100` warns that the suite rebinds COURSE and "drops modules from `sys.modules` at 69
     sites", which is the argument for running it in a shuffled order -- a real IndexError in
     render_hole hid behind exactly that for its whole life. Measured off the token stream with comments
-    and string literals stripped, so every hit is executable: 87. It was 83 before this campaign added
-    four.
+    and string literals stripped, so every hit is executable: 83 when this test was written, and it has
+    moved with every later round that added a drop site (91 before this round's TNM sub-cap paging
+    regression test, 92 after). This test recomputes it rather than quoting it, so README is the pin and
+    no figure in this docstring can silently become the live one.
 
     The figure is the evidence for the advice. Understating it by 27% understates how much cross-test
     state this suite carries, which is the one thing that warning exists to convey."""
