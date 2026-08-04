@@ -41,7 +41,14 @@ sys.path.insert(0, ROOT)
 
 LIMIT_IN_PER_5YD = 0.375        # USGA Clarification 4.3a/1 scale cap: 3/8 in : 5 yd == 1:480
 DIGIT_EM = 0.556                # Helvetica/Arial Bold digit advance
-R_LAT = 111320.0
+
+# THE PROJECT'S ONE FIGURE OF THE EARTH, imported rather than re-declared. These tests both mirror the
+# engine's own arithmetic and author synthetic fixtures in degrees, so a second copy of the ground
+# scales here would put the suite and the code under test on different earths: a fixture authored "10 m
+# north" would be 10.03 m north to the engine, which is larger than several tolerances below. This file
+# carried `R_LAT = 111320.0` and its own `_mlon` until the model was migrated to the true per-axis WGS84
+# scales; see the note in geo.py.
+from geo import mlat as _mlat, mlon as _mlon
 
 
 def _courses():
@@ -132,10 +139,6 @@ def _engine(slug):
     import config
     import render_hole
     return config, render_hole
-
-
-def _mlon(lat):
-    return 111320.0 * math.cos(math.radians(lat))
 
 
 def _dist_to_poly(pt, poly, em):
@@ -1572,7 +1575,6 @@ def test_the_course_location_decides_hole_lines_by_a_wide_margin():
     matters is the margin, not the offset.
     """
     import math
-    R = 111320.0
     checked, tight, shared = 0, [], {}
     for ref in CORPUS:
         p = os.path.join(ROOT, "courses", ref, "osm_geom.json")
@@ -1585,7 +1587,7 @@ def test_the_course_location_decides_hole_lines_by_a_wide_margin():
         loc = cfg.COURSE.get("location") or {}
         if not loc.get("lat"):
             continue
-        mlon = R * math.cos(math.radians(loc["lat"]))
+        mlon, mla = _mlon(loc["lat"]), _mlat(loc["lat"])
         by_ref = {}
         for e in els:
             t = e.get("tags") or {}
@@ -1599,7 +1601,7 @@ def test_the_course_location_decides_hole_lines_by_a_wide_margin():
                 n = len(g["geometry"])
                 la = sum(q["lat"] for q in g["geometry"]) / n
                 lo = sum(q["lon"] for q in g["geometry"]) / n
-                ds.append(math.hypot((la - loc["lat"]) * R, (lo - loc["lon"]) * mlon))
+                ds.append(math.hypot((la - loc["lat"]) * mla, (lo - loc["lon"]) * mlon))
             ds.sort()
             checked += 1
             margin = ds[1] - ds[0]
@@ -2535,7 +2537,7 @@ def test_only_the_conforming_edition_claims_to_conform():
     The pocket book is measured at 0.36 in : 5 yd, ~4% under the 3/8 in cap, and wears a
     "DESIGNED TO CONFORM - RULE 4.3" badge. The enlarged edition breaks the cap on purpose so the
     greens read at arm's length: measured off its own LAYOUT under print media it prints
-    0.368-0.599 in : 5 yd (1:489 to 1:301) across all 54 of its greens, from 1.9% UNDER the cap to 60%
+    0.368-0.599 in : 5 yd (1:489 to 1:301) across all 54 of its greens, from 1.8% UNDER the cap to 60%
     over, with 53 of the 54 over it -- monarch-bay hole 14 is the one green that lands inside. That is a
     design decision, and the only thing that keeps it honest is the sentence on its guide card saying so
     plus the absence of the badge.
@@ -3544,12 +3546,12 @@ def test_a_printed_carry_never_overstates_what_it_clears():
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
         "Clearing it needs more than N", which is false where the sand is long: philadelphia 1 prints
         "carry 213" for sand occupying the line out to 308 yd, so clearing it needs 308. Sand runs a
-        median 23 yd past the printed number and up to 146. The number is right -- it is where the sand
+        median 23 yd past the printed number and up to 145. The number is right -- it is where the sand
         starts -- so the sentence was corrected rather than the figure.
 
-        THE 146 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
-        (see render_hole.edge_within) gave the-reserve 16 the 3,568 m^2 waste bunker it had been
-        printing blank ground over, and that card now prints "carry 177" for sand running to 323 -- 146
+        THE 145 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
+        (see render_hole.edge_within) gave the-reserve 16 the 3,562 m^2 waste bunker it had been
+        printing blank ground over, and that card now prints "carry 177" for sand running to 322 -- 145
         yd of it. The old worst was philadelphia 1's 95. A card that draws more of the sand it always
         had needs the hedge MORE, not less.
 
@@ -3605,7 +3607,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             la0 = sum(q["lat"] for q in line) / len(line)
             lo0 = sum(q["lon"] for q in line) / len(line)
             def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.R_LAT)
+                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
             tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
             L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
             ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
@@ -3949,31 +3951,31 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     Left is the STRAIGHT distance to the green centre -- the shot you actually have to hit. Right is
     the distance from the tee WALKED along the centreline, which is how a scorecard measures. Two
     different measures, so their sum is not the card. philadelphia 17 is the extreme: card 472, drawn
-    arc 441, and its 300-yd row reads 300 + 118 = 418. Both numbers are individually true. 64 of 252
+    arc 441, and its 300-yd row reads 300 + 118 = 418. Both numbers are individually true. 65 of 252
     cards have a row off by 10 yd or more.
 
     THE PRINTED LEGEND BLAMED THE DOGLEG, AND THE DATA SAYS OTHERWISE. It read "on a dogleg they do
     not add up", which tells a reader on a straight hole that their card should add up. Measured over
     the shipped books with the engine's own straightness rule (arc/chord <= 1.02, render_hole's
-    PAR3_STRAIGHT_MAX and WANDER_MAX): of the 813 printed pairs on STRAIGHT holes, 639 -- 79% -- do
-    not add up, by a median 3 yd, 209 of them by 5 or more and 60 by 10 or more. The worst is 28 yd on
-    philadelphia 12, whose arc/chord is 0.9997 AS PUBLISHED, and which is as straight as a traced
+    PAR3_STRAIGHT_MAX and WANDER_MAX): of the 809 printed pairs on STRAIGHT holes, 653 -- 81% -- do
+    not add up, by a median 3 yd, 214 of them by 5 or more and 62 by 10 or more. The worst is 28 yd on
+    philadelphia 12, whose arc/chord is 1.0015 AS PUBLISHED, and which is as straight as a traced
     centreline gets: 300 + 252 = 552 against a 580 card.
 
-    THAT 0.9997 IS TWO ROUNDINGS, NOT A SHORTER LINE, and the sentence used to say otherwise. In the
-    geometry that hole's arc measures 504.132769 m against a chord of 504.070919 m -- the drawn line is
-    6.2 cm LONGER than the chord it spans, an unrounded arc/chord of 1.000123. The published ratio is
-    below 1 because the two sides round unequally: arc_yd rounds 551.3263 down to 551, losing a third of
-    a yard, while the chord's 504.070919 m rounds to 504 m and reads back as 551.1811 yd, losing a
-    twelfth. That is the whole of it. Both figures are honest and the assertion below compares the
+    THAT 1.0015 IS TWO ROUNDINGS, NOT A SHAPE, and the sentence used to say the line was shorter than
+    its chord. In the geometry that hole's arc measures 504.436936 m against a chord of 504.375340 m --
+    the drawn line is 6.2 cm LONGER than the chord it spans, an unrounded arc/chord of 1.000122. The
+    published ratio sits 12x further from 1 than that because the two sides round unequally: arc_yd
+    rounds 551.6589 UP to 552, gaining a third of a yard, while the chord's 504.375340 m rounds DOWN to
+    504 m and reads back as 551.1811 yd, losing four tenths. That is the whole of it. Both figures are honest and the assertion below compares the
     PUBLISHED pair on purpose -- those are the numbers on the card -- but a reader who took the old
     gloss at face value would believe this centreline is traced short of its own endpoints.
     (The ratio read 1.0003 here, in the caveat's failure message and in the commit that added
     both. 1.0003 is chord/arc, 551.181/551 -- the reciprocal of the published figure, and reading a
     chord/arc as an arc/chord is what turns a straightness measure into a bend. It was the one figure in
     this docstring nothing asserted.) It is not a dogleg phenomenon at all, and the legend now names
-    the cause instead: two different measures. (The mismatch is not even one-signed -- 130 of 1047 rows
-    sum HIGH, 724 low, 193 exactly. 17 of the 130 high rows sit on holes bent past 1.02, including
+    the cause instead: two different measures. (The mismatch is not even one-signed -- 125 of 1046 rows
+    sum HIGH, 750 low, 171 exactly. 18 of the 125 high rows sit on holes bent past 1.02, including
     philadelphia 17 above, so "straight holes overshoot" is false too.)
 
     THE WORKED EXAMPLE READ "300 + 102 = 402" over a card that prints 118, and the count read 196
@@ -4153,12 +4155,12 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                 #
                 # with +1 for the two roundings (round(ft_exact) and round(arc_yd), <=0.5 each).
                 # Measured over all 1047 pairs in both editions it holds everywhere, tightest slack
-                # 1.46 yd (valley-hi 2, where g is only 0.46). g is a median 2.17 yd, mean 2.93, max
-                # 12.18; at callippe 1 it is 6.62, so the derived allowance there is +7.76 against a
+                # 1.06 yd (copper-valley 11, where g is 4.06). g is a median 2.17 yd, mean 2.93, max
+                # 12.18; at callippe 1 it is 6.62, so the derived allowance there is +7.78 against a
                 # realised +4. The tripwire below still pins that realised maximum exactly -- that is
                 # the part which actually discriminates, and it is now separate from the bound.
                 #
-                # THE NAMED CASE AND THE TIGHTEST SLACK ARE BOTH RE-DERIVED BELOW. That +7.76 read
+                # THE NAMED CASE AND THE TIGHTEST SLACK ARE BOTH RE-DERIVED BELOW. That +7.78 read
                 # +7.62 -- g + 1, dropping the max(1, C/A) factor this paragraph exists to derive --
                 # while the 440.76 the same allowance implies at callippe 1 was right, so the prose
                 # contradicted its own arithmetic in a comment nothing graded.
@@ -4234,8 +4236,10 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         f"the bound says g at {keys[0]} is {said_g.group(3)} and the allowance +{said_g.group(4)}; measured "
         f"they are {got_g:.2f} and +{got_allow:.4f}. g + 1 is not the allowance -- the max(1, C/A) "
         f"factor is the whole point of the derivation above.")
-    said_tight = re.search(r"tightest slack\s+([\d.]+) yd \(([a-z][a-z-]*) (\d+), where g is only "
-                           r"([\d.]+)\)", doc)
+    # "only" is optional: the tightest pair is not always the one with the smallest g, and it stopped
+    # being so when the earth model moved. The numbers are still all asserted below.
+    said_tight = re.search(r"tightest slack\s+([\d.]+) yd \(([a-z][a-z-]*) (\d+), where g is "
+                           r"(?:only )?([\d.]+)\)", doc)
     assert said_tight, "the bound no longer says how little room the tightest real pair has"
     assert tightest is not None and abs(tightest[0] - float(said_tight.group(1))) < 0.005 and \
         tightest[1].startswith(said_tight.group(2)) and tightest[2] == said_tight.group(3) and \
@@ -4292,10 +4296,11 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         f"{straight_worst[1]} off by {straight_worst[0]:+d}")
     # THE RATIO ITSELF, which was captured and not asserted -- and was the RECIPROCAL of the truth. The
     # docstring, the caveat assertion's message and the commit body all said 1.0003, which is
-    # chord/arc (551.181/551); the PUBLISHED arc/chord is 0.9997. Both sides here are published
+    # chord/arc; the PUBLISHED arc/chord is 1.0015. Both sides here are published
     # figures, deliberately: they are the numbers the card carries. In the raw geometry this hole's arc
-    # is 6.2 cm LONGER than its chord (arc/chord 1.000123) and the published ratio falls below 1 only
-    # because arc_yd rounds 551.3263 down to 551 while the chord's 504 m reads back as 551.1811 -- see
+    # is 6.2 cm LONGER than its chord (arc/chord 1.000122) and the published ratio stands 12x further
+    # from 1 only because arc_yd rounds 551.6589 up to 552 while the chord's 504 m reads back as
+    # 551.1811 -- see
     # test_the_worst_straight_rows_ratio_is_a_rounding_artefact_and_the_docstring_says_so, which
     # measures both. Reading a chord/arc as an arc/chord is what makes a straightness measure look like
     # a bend, whichever side of 1 the truth sits on. The one figure in this docstring that was wrong
@@ -4329,23 +4334,33 @@ _LINE_SHORTER_CLAIM = r"HAIR SHORTER than the tee-green chord"
 
 @needs_corpus
 def test_the_worst_straight_rows_ratio_is_a_rounding_artefact_and_the_docstring_says_so():
-    """0.9997 is not a shorter line. It is two roundings, and the prose credited the wrong cause.
+    """The published arc/chord is not a shape. It is two roundings, and the prose credited the shape.
 
     4613a64 fixed a real defect -- the docstring, a failure message and a commit body all published
-    1.0003, which is chord/arc, the RECIPROCAL -- and the figure it replaced it with, 0.9997, is right:
-    both sides of that ratio are what the engine PUBLISHES, arc_yd 551 over a length_m of 504 read as
-    551.181 yd. The gloss it added is what is wrong. It says the drawn line is "a hair shorter than the
-    tee-green chord it spans", and in the geometry it is nothing of the kind: philadelphia 12's arc
-    measures 504.132769 m against a 504.070919 m chord, so the drawn line is 6.2 cm LONGER, at an
-    unrounded arc/chord of 1.000123.
+    1.0003, which is chord/arc, the RECIPROCAL -- and the figure it replaced it with was right in kind:
+    both sides of that ratio are what the engine PUBLISHES, arc_yd over a length_m read back as yards.
+    The gloss it added is what was wrong. It said the drawn line is "a hair shorter than the tee-green
+    chord it spans", and in the geometry it is nothing of the kind: philadelphia 12's arc measures
+    504.436936 m against a 504.375340 m chord, so the drawn line is 6.2 cm LONGER, at an unrounded
+    arc/chord of 1.000122.
 
-    Both facts are true at once and the reason is rounding, not shape: arc_yd rounds 551.3263 down to
-    551, losing 0.33 yd, while the chord's own 504.070919 m rounds to 504 m and reads back as 551.1811
-    yd, losing 0.08. A third of a yard off the numerator and a twelfth off the denominator is the whole
-    of the 0.9997. Nothing was wrong with the assertion -- it compares published values, which is what
-    the card prints and therefore what the test should grade -- and nothing printed on a card moves.
-    What was wrong is that a reader who took the sentence at face value would believe this centreline
-    is traced short of its own endpoints.
+    Both facts are true at once and the reason is rounding, not shape: arc_yd rounds 551.6589 UP to 552,
+    gaining 0.34 yd, while the chord's own 504.375340 m rounds DOWN to 504 m and reads back as 551.1811
+    yd, losing 0.41. A third of a yard on the numerator against four tenths off the denominator is the
+    whole of the published 1.0015. Nothing is wrong with the assertion -- it compares published values,
+    which is what the card prints and therefore what the test should grade -- and nothing printed on a
+    card is affected. What was wrong is that a reader who took the sentence at face value would believe
+    this centreline is traced short of its own endpoints.
+
+    THE SIGN OF THE ROUNDING IS NOT THE INVARIANT, AND THIS TEST USED TO ASSERT THAT IT WAS. It required
+    `pub_ratio < 1.0 < true_ratio` -- the published figure landing on the opposite side of 1 from the
+    truth -- which held only because arc_yd happened to round DOWN on this hole. When the horizontal
+    earth model was migrated to the true per-axis WGS84 scales, this arc moved from 551.3263 to 551.6589
+    yd and the same rounding went the other way: both ratios now sit above 1. The mechanism did not
+    change at all, only which side of a half-yard the arc fell on, so the test now asserts the mechanism
+    -- that the published ratio's distance from 1 is DOMINATED by the two roundings rather than by the
+    shape -- which is the claim the docstring actually makes and is what would break if the ratio ever
+    became a real measure of bend.
 
     That matters because the sentence is load-bearing: it is the evidence that a hole this straight
     still fails to add up, which is what the printed legend was corrected to say. A false mechanism
@@ -4363,10 +4378,10 @@ def test_the_worst_straight_rows_ratio_is_a_rounding_artefact_and_the_docstring_
     _green, gend, tend = rh.match_green(line, greens)
     la0 = sum(q["lat"] for q in line) / len(line)
     lo0 = sum(q["lon"] for q in line) / len(line)
-    ml = _mlon(la0)
+    ml, mla = _mlon(la0), _mlat(la0)
 
     def em(la, lo):
-        return ((lo - lo0) * ml, (la - la0) * R_LAT)
+        return ((lo - lo0) * ml, (la - la0) * mla)
     P = [em(q["lat"], q["lon"]) for q in line]
     arc_m = sum(math.dist(P[i], P[i + 1]) for i in range(len(P) - 1))
     chord_m = math.dist(em(tend["lat"], tend["lon"]), em(gend["lat"], gend["lon"]))
@@ -4381,10 +4396,18 @@ def test_the_worst_straight_rows_ratio_is_a_rounding_artefact_and_the_docstring_
     # (2) the published ratio, reproduced from the two roundings the card is built on
     pub_chord_yd = info["length_m"] / 0.9144
     pub_ratio = info["arc_yd"] / pub_chord_yd
-    assert pub_ratio < 1.0 < true_ratio, (
-        f"the published ratio is {pub_ratio:.6f} and the unrounded one {true_ratio:.6f}; they no "
-        f"longer straddle 1, so rounding is no longer what inverts the sign and the docstring's "
-        f"explanation needs re-reading")
+    # ROUNDING must dominate. Measured here: |pub-1| = 0.001486 against |true-1| = 0.000122, i.e. 12x.
+    # 5x is a floor with room, and it is the claim the docstring makes -- not the SIGN of the offset,
+    # which is an accident of which side of a half-yard this particular arc falls on.
+    ROUNDING_DOMINANCE_MIN = 5.0
+    assert abs(true_ratio - 1.0) > 0, f"{slug} {hn}'s arc and chord are now exactly equal"
+    dominance = abs(pub_ratio - 1.0) / abs(true_ratio - 1.0)
+    assert dominance >= ROUNDING_DOMINANCE_MIN, (
+        f"the published ratio is {pub_ratio:.6f} and the unrounded one {true_ratio:.6f}: the published "
+        f"figure sits only {dominance:.1f}x further from 1 than the shape does, under the "
+        f"{ROUNDING_DOMINANCE_MIN:.0f}x this test asserts. Rounding is no longer what dominates the "
+        f"published ratio, so the docstring's explanation -- that 1.0015 is two roundings and not a "
+        f"bend -- needs re-reading before this bound is touched.")
     assert info["arc_yd"] == round(arc_m / 0.9144) and info["length_m"] == round(chord_m), (
         f"{slug} {hn} publishes arc_yd={info['arc_yd']} and length_m={info['length_m']} while the "
         f"geometry gives {arc_m / 0.9144:.4f} yd and {chord_m:.4f} m -- the two roundings this test "
@@ -5413,7 +5436,7 @@ def synth_engine(tmp_path_factory):
     cdir = os.path.join(ROOT, "courses", slug)
     os.makedirs(cdir, exist_ok=True)
     lat0, lon0 = 40.0, -75.0
-    dl = lambda m: m / R_LAT                    # metres -> degrees of latitude (due north)
+    dl = lambda m: m / _mlat(lat0)              # metres -> degrees of latitude (due north)
     dg = lambda m: m / _mlon(lat0)
     els, holes, hole_cols = [], {}, ["par", "mens_hcp", "Card"]
     for hn, spec in SYNTH.items():
@@ -6393,7 +6416,7 @@ def test_from_tee_labels_are_bounded_and_ordered():
             glo = sum(p["lon"] for p in g["geometry"]) / len(g["geometry"])
             la0 = sum(p["lat"] for p in line) / len(line)
             lo0 = sum(p["lon"] for p in line) / len(line)
-            em = lambda la, lo: ((lo - lo0) * _mlon(la0), (la - la0) * R_LAT)
+            em = lambda la, lo: ((lo - lo0) * _mlon(la0), (la - la0) * _mlat(la0))
             same = (abs(line[0]["lat"] - tend["lat"]) < 1e-9 and abs(line[0]["lon"] - tend["lon"]) < 1e-9)
             ordered = line if same else list(reversed(line))
             pts = [em(p["lat"], p["lon"]) for p in ordered]
@@ -6533,7 +6556,7 @@ def test_to_green_label_is_a_true_straight_line_distance():
             glo = sum(p["lon"] for p in g["geometry"]) / len(g["geometry"])
             la0 = sum(p["lat"] for p in line) / len(line)
             lo0 = sum(p["lon"] for p in line) / len(line)
-            em = lambda la, lo: ((lo - lo0) * _mlon(la0), (la - la0) * R_LAT)
+            em = lambda la, lo: ((lo - lo0) * _mlon(la0), (la - la0) * _mlat(la0))
             gc = em(gla, glo)
             lem = [em(p["lat"], p["lon"]) for p in line]
             try:
@@ -6805,8 +6828,8 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
     WHAT THE DIGEST-STRIPPED TEAR PRINTS, and at what precision the claim is actually good for.
     The engine reports one decimal place -- s["tilt_pct"] is round(tilt_pct, 1) at
     render_green.py:909 -- so what a card would show is 2.0% -> 4.0%. The physical values behind
-    those, re-measured off the unrounded tilt green_summary computes: 2.0212001437% ->
-    4.0424002875%, ratio 2.0000000000000657, i.e. 2 to within 7e-14.
+    those, re-measured off the unrounded tilt green_summary computes: 2.0263947813% ->
+    4.0527895627%, ratio 2.0000000000003673, i.e. 2 to within 4e-13.
 
     That ratio is the part the exact plane earns. The surface is 100.0 + 0.03*r, so halving the
     recorded ground extent under an unchanged 60x60 array doubles rise-over-run exactly, and the
@@ -6904,15 +6927,15 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
     honest_raw, torn_raw = raw_tilts[0], raw_tilts[-1]
 
     def pinned(h, t):
-        return abs(h - 2.0212001437) < 1e-6 and abs(t / h - 2.0) < 1e-9
+        return abs(h - 2.0263947813) < 1e-6 and abs(t / h - 2.0) < 1e-9
 
-    assert (honest, s2["tilt_pct"]) == (2.0, 4.0), (
-        f"the DISPLAYED tilts moved off 2.0% -> 4.0%: {honest} -> {s2['tilt_pct']}. Those two are "
+    assert (honest, s2["tilt_pct"]) == (2.0, 4.1), (
+        f"the DISPLAYED tilts moved off 2.0% -> 4.1%: {honest} -> {s2['tilt_pct']}. Those two are "
         f"the only tilt figures the engine reports anywhere; the physical values behind them are "
         f"checked next")
     assert pinned(honest_raw, torn_raw), (
-        f"the raw tilts moved off the measured 2.0212001437% -> 4.0424002875%, ratio "
-        f"2.0000000000000657: {honest_raw:.10f}% -> {torn_raw:.10f}%, ratio "
+        f"the raw tilts moved off the measured 2.0263947813% -> 4.0527895627%, ratio "
+        f"2.0000000000003673: {honest_raw:.10f}% -> {torn_raw:.10f}%, ratio "
         f"{torn_raw / honest_raw:.16f} -- re-measure this docstring before changing the bound")
     assert not pinned(2.03, 4.05), (
         "the bound ACCEPTS 2.03 -> 4.05, the pair this test was written to retire. Re-measured on "
@@ -6929,7 +6952,7 @@ def test_a_surface_pair_torn_at_the_SAME_shape_is_loud_rather_than_a_wrong_print
     assert "2.0000000000%" not in doc, (
         "the docstring still publishes 2.0000000000% -> 4.0000000000%. Ten decimal places for a "
         "value render_green.py:909 reports as round(tilt_pct, 1): the zeros are the ROUNDING, not a "
-        "measurement. The raw values are 2.0212001437% -> 4.0424002875%, so the exact-plane argument "
+        "measurement. The raw values are 2.0263947813% -> 4.0527895627%, so the exact-plane argument "
         "explains the RATIO and not the VALUE")
     assert "rather than left as a" not in doc, (
         "the docstring says the ratio is pinned 'rather than left as a > 1.8 floor'. That floor is "
@@ -8063,7 +8086,7 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
         W, H = meta["W"], meta["H"]
         clat = meta["green_center"][0]
         px_x = (xmax - xmin) * _mlon(clat) / W
-        px_y = (ymax - ymin) * R_LAT / H
+        px_y = (ymax - ymin) * _mlat(clat) / H
         k = 0.03                                     # a 3% plane: fall unambiguously "clear"
         z = np.fromfunction(
             lambda r, c: 100.0 - k * math.sin(th) * px_x * c + k * math.cos(th) * px_y * r,
@@ -8101,7 +8124,7 @@ def test_feeds_label_is_right_in_all_eight_directions(gate_course):
         xmin, ymin, xmax, ymax = meta["bbox"]
         W, H = meta["W"], meta["H"]
         px_x = (xmax - xmin) * _mlon(meta["green_center"][0]) / W
-        px_y = (ymax - ymin) * R_LAT / H
+        px_y = (ymax - ymin) * _mlat(meta["green_center"][0]) / H
         k = 0.03
         z = np.fromfunction(
             lambda r, c: 100.0 - k * math.sin(th) * px_x * c + k * math.cos(th) * px_y * r,
@@ -8383,7 +8406,7 @@ def test_a_hole_never_binds_to_a_distant_green():
     assert g is near_green and gend["lat"] == lat0 and tend["lat"] == lat0 + 0.002
 
     # ...and a green 60 m away -- further than the 40 m cap -- must be REFUSED, not used
-    far = green(lat0 + 60.0 / geo.R_LAT, lon0)
+    far = green(lat0 + 60.0 / geo.mlat(lat0), lon0)
     with pytest.raises(SystemExit) as e:
         geo.match_green(line[:1] + [{"lat": lat0 - 0.001, "lon": lon0}], [far], label="hole 9")
     assert "bind limit" in str(e.value) or "wrong putting surface" in str(e.value).lower()
@@ -8686,7 +8709,7 @@ def test_the_density_and_coverage_gate_measures_the_green_itself():
     import config as _cfg
     lat0 = _cfg.COURSE["location"]["lat"]; lon0 = _cfg.COURSE["location"]["lon"]
     side_m = 30.0
-    dlat = side_m / R_LAT
+    dlat = side_m / _mlat(lat0)
     dlon = side_m / _mlon(lat0)
     ring = [{"lat": lat0, "lon": lon0}, {"lat": lat0, "lon": lon0 + dlon},
             {"lat": lat0 + dlat, "lon": lon0 + dlon}, {"lat": lat0 + dlat, "lon": lon0},
@@ -10028,13 +10051,13 @@ def test_green_binding_wins_by_a_wide_margin_not_a_hair():
                 bound, gend, _tend = geo.match_green(w["geometry"], greens)
             except Exception:
                 continue
-            mlon = 111320.0 * math.cos(math.radians(gend["lat"]))
+            mlon, mla = _mlon(gend["lat"]), _mlat(gend["lat"])
             ds = []
             for g in greens:
                 n = len(g["geometry"])
                 la = sum(q["lat"] for q in g["geometry"]) / n
                 lo = sum(q["lon"] for q in g["geometry"]) / n
-                ds.append((math.hypot((gend["lat"] - la) * 111320.0,
+                ds.append((math.hypot((gend["lat"] - la) * mla,
                                       (gend["lon"] - lo) * mlon), g.get("id")))
             ds.sort()
             checked += 1
@@ -12646,7 +12669,7 @@ def test_tee_anchor_locates_the_back_tee_or_refuses():
         g = _match_green_for(hn)
         gla_ = sum(p["lat"] for p in g["geometry"]) / len(g["geometry"])
         glo_ = sum(p["lon"] for p in g["geometry"]) / len(g["geometry"])
-        return math.hypot((lo_ - glo_) * _mlon(gla_), (la_ - gla_) * R_LAT) / 0.9144
+        return math.hypot((lo_ - glo_) * _mlon(gla_), (la_ - gla_) * _mlat(gla_)) / 0.9144
 
     # hole 7 spans its card -> anchored on the line's own tee end
     la, lo, basis = anchor(7, holes[7]["geometry"])
@@ -12665,7 +12688,7 @@ def test_tee_anchor_locates_the_back_tee_or_refuses():
     glo = sum(p["lon"] for p in g9["geometry"]) / len(g9["geometry"])
 
     def yd_from_green(la_, lo_):
-        return math.hypot((lo_ - glo) * _mlon(gla), (la_ - gla) * R_LAT) / 0.9144
+        return math.hypot((lo_ - glo) * _mlon(gla), (la_ - gla) * _mlat(gla)) / 0.9144
 
     la9, lo9, b9 = anchor(9, holes[9]["geometry"])
     assert la9 is not None and "extrapolated" in b9, b9
@@ -12681,7 +12704,7 @@ def test_tee_anchor_locates_the_back_tee_or_refuses():
     # meant to close, not roughly twice the hole.
     gap9 = card9 - yd_from_green(tend9["lat"], tend9["lon"])
     off9 = math.hypot((lo9 - tend9["lon"]) * _mlon(tend9["lat"]),
-                      (la9 - tend9["lat"]) * R_LAT) / 0.9144
+                      (la9 - tend9["lat"]) * _mlat(tend9["lat"])) / 0.9144
     assert abs(off9 - gap9) < 5.0, \
         f"recovered tee sits {off9:.1f} yd from the line's tee end but the gap is {gap9:.1f} yd"
 
@@ -13012,7 +13035,7 @@ def test_the_printed_read_is_fitted_to_putting_surface_only():
         for m in ("config", "geo", "render_green"):
             sys.modules.pop(m, None)
         import render_green as rg
-        from geo import R_LAT, mlon
+        from geo import mlat, mlon
         with open(book, encoding="utf-8") as fh:
             html = fh.read()
         printed = {}
@@ -13044,7 +13067,7 @@ def test_the_printed_read_is_fitted_to_putting_surface_only():
             H, W = arr.shape
             x0, y0, x1, y1 = meta["bbox"]
             px_x = (x1-x0)*mlon(meta["green_center"][0])/W
-            px_y = (y1-y0)*R_LAT/H
+            px_y = (y1-y0)*mlat(meta["green_center"][0])/H
             poly = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
             X, Y = np.meshgrid(np.arange(W)+0.5, np.arange(H)+0.5)
             mask = np.zeros((H, W), bool)
@@ -13163,7 +13186,7 @@ def test_a_mapped_green_is_mostly_puttable_ground():
         for m in ("config", "geo", "render_green"):
             sys.modules.pop(m, None)
         import render_green as rg
-        from geo import R_LAT, mlon
+        from geo import mlat, mlon
         for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
             with open(p, encoding="utf-8") as f:
                 meta = json.load(f)
@@ -13173,7 +13196,7 @@ def test_a_mapped_green_is_mostly_puttable_ground():
             H, W = arr.shape
             x0, y0, x1, y1 = meta["bbox"]
             px_x = (x1-x0)*mlon(meta["green_center"][0])/W
-            px_y = (y1-y0)*R_LAT/H
+            px_y = (y1-y0)*mlat(meta["green_center"][0])/H
             mask = mask_of(rg.poly_to_px(meta["polygon"], meta["bbox"], W, H), W, H)
             if mask.sum() < 50:
                 continue
@@ -13292,8 +13315,8 @@ def test_the_geometry_counts_the_comments_quote_are_still_true():
                 continue
             total += 1
             clat = sum(p[0] for p in pts)/len(pts)
-            ml = 111320.0*math.cos(math.radians(clat))
-            arc = sum(math.hypot((pts[i+1][1]-pts[i][1])*ml, (pts[i+1][0]-pts[i][0])*111320.0)
+            ml, mla = _mlon(clat), _mlat(clat)
+            arc = sum(math.hypot((pts[i+1][1]-pts[i][1])*ml, (pts[i+1][0]-pts[i][0])*mla)
                       for i in range(len(pts)-1))/0.9144
             tol = max(15.0, 0.05*card)          # render_hole.py's own tee_ok tolerance
             if arc < card - tol:
@@ -14074,8 +14097,8 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     wording is the load-bearing part, not the computation: it is the difference between an omission and
     an over-claim.
 
-    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 146 yards
-    of it, the-reserve 16 printing "carry 177" for sand reaching 323 -- so a bare "carry N" would read
+    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 145 yards
+    of it, the-reserve 16 printing "carry 177" for sand reaching 322 -- so a bare "carry N" would read
     as the whole obstacle rather than its near edge. (It read 126 until par-3 carries were suppressed,
     which removed the case it named, then 95 until the bunker selector was moved from a feature's
     centroid to its nearest edge and that waste bunker appeared on the card at all; the figure is
@@ -15397,8 +15420,8 @@ def test_the_dem_patch_is_read_on_the_extent_the_service_returned():
     LAT, LON = 37.720, -122.150
     GH_M, GW_M = 30.0, 15.0                  # a 30 m by 15 m green: taller than it is wide, so the
     CREST_M, FALL_M = 20.0, 8.0              # service expands the LON axis, as it did on monarch-bay 3
-    mlon = _mlon(LAT)
-    lat0, lat1 = LAT - GH_M / 2 / R_LAT, LAT + GH_M / 2 / R_LAT
+    mlon, mla = _mlon(LAT), _mlat(LAT)
+    lat0, lat1 = LAT - GH_M / 2 / mla, LAT + GH_M / 2 / mla
     lon0, lon1 = LON - GW_M / 2 / mlon, LON + GW_M / 2 / mlon
     ring = (np.array([lat0, lat0, lat1, lat1]), np.array([lon0, lon1, lon1, lon0]))
     served = {}
@@ -15706,14 +15729,14 @@ def test_the_blank_card_draws_the_green_in_the_frame_its_own_numbers_use(gate_co
     base = _json.load(open(mp))
     base["polygon"] = [[lat0 + a * d, lon0 + b * d] for a, b in wedge]
 
-    mlon = R_LAT * _math.cos(_math.radians(lat0))
-    metres = [((lon0 + b * d - lon0) * mlon, (lat0 + a * d - lat0) * R_LAT) for a, b in wedge]
+    mlon, mla = _mlon(lat0), _mlat(lat0)
+    metres = [((lon0 + b * d - lon0) * mlon, (lat0 + a * d - lat0) * mla) for a, b in wedge]
     xmin, ymin, xmax, ymax = base["bbox"]
     W, H = base["W"], base["H"]
     # per AXIS. _synth_green's bbox is square in DEGREES, so its pixels are 1.14 m east against
     # 1.48 m north -- and a scalar mean of two axes that far apart mis-scales the depth by 13%, which
     # is what this bridge used to do. See render_green.screen_m_per_unit.
-    px_x, px_y = (xmax - xmin) * mlon / W, (ymax - ymin) * R_LAT / H
+    px_x, px_y = (xmax - xmin) * mlon / W, (ymax - ymin) * mla / H
 
     drawn, problems = {}, []
     for appr in (0.0, 90.0, 180.0, 243.19):
@@ -15914,7 +15937,7 @@ def water_engine():
     os.makedirs(cdir, exist_ok=True)
     lat0, lon0 = 40.0, -75.0
     L = 300.0 * YD
-    dl = lambda m: m / R_LAT                    # metres -> degrees of latitude (due north)
+    dl = lambda m: m / _mlat(lat0)              # metres -> degrees of latitude (due north)
     dg = lambda m: m / _mlon(lat0)
     geom_els, course_els, holes = [], [], {}
     for hn, spec in WATER_SYNTH.items():
@@ -16003,8 +16026,8 @@ def test_water_beyond_either_end_of_the_played_line_is_not_on_the_hole(water_eng
     course, _geom = rh.load()
     for hn in (2, 3):
         way = [e for e in course if e.get("id") == 3000 + hn][0]
-        end_lat = lat0 + (L / R_LAT if hn == 2 else 0.0)     # tee vertex (h2) or green vertex (h3)
-        near = min(abs(p["lat"] - end_lat) * R_LAT for p in way["geometry"])
+        end_lat = lat0 + (L / _mlat(lat0) if hn == 2 else 0.0)   # tee vertex (h2) or green (h3)
+        near = min(abs(p["lat"] - end_lat) * _mlat(lat0) for p in way["geometry"])
         assert abs(near - WATER_GAP_M) < 0.5, (
             f"hole {hn}'s stream starts {near:.1f} m past the end vertex, not the "
             f"{WATER_GAP_M:g} m this test authored")
@@ -16290,10 +16313,13 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
             holes += 1
             la0 = sum(q["lat"] for q in line) / len(line)
             lo0 = sum(q["lon"] for q in line) / len(line)
-            mlon = _mlon(la0)
+            mlon, mla = _mlon(la0), _mlat(la0)
 
-            def em(la, lo, _mlon=mlon, _la0=la0, _lo0=lo0):
-                return ((lo - _lo0) * _mlon, (la - _la0) * R_LAT)
+            # bound as defaults so each loop iteration keeps its own scales. Named _mo/_mla, not
+            # _mlon: the module-level `_mlon` is an IMPORT of geo.mlon now, and shadowing it here
+            # reads as a re-declaration of the very thing there is meant to be one copy of.
+            def em(la, lo, _mo=mlon, _mla=mla, _la0=la0, _lo0=lo0):
+                return ((lo - _lo0) * _mo, (la - _la0) * _mla)
             line_em = [em(q["lat"], q["lon"]) for q in line]
             near = []
             for g in areas:
@@ -16348,9 +16374,9 @@ SAND_FILL = 'fill="#efe3b8"'  # one drawn bunker
 # written for. Its shape figures are published in four docstrings and one live assertion string, so
 # they are constants here and MEASURED below rather than written down in five places.
 SAND_CASE = ("the-reserve-at-spanos-park", 16, 681278621)
-SAND_CASE_AREA_M2 = 3568     # shoelace on its closed 75-node ring -- see the test below
-SAND_CASE_BBOX_M2 = 8050     # the bounding box of that ring: 2.26x the sand, and NOT its area
-SAND_CASE_BBOX_M = (61.9, 130.1)  # that box, to 0.1 m, as the docstrings quote it
+SAND_CASE_AREA_M2 = 3562     # shoelace on its closed 75-node ring -- see the test below
+SAND_CASE_BBOX_M2 = 8037     # the bounding box of that ring: 2.26x the sand, and NOT its area
+SAND_CASE_BBOX_M = (61.9, 129.8)  # that box, to 0.1 m, as the docstrings quote it
 SAND_CASE_NODES = 75
 
 
@@ -16466,7 +16492,7 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
     approximation gets.
 
     THE SHIPPED CARD IT COST: the-reserve 16, a 530 yd par 5, printed "4B 1W" with blank ground over
-    OSM way 681278621 -- tagged golf=bunker, 75 nodes, 3,568 m^2 of waste bunker by shoelace on its own
+    OSM way 681278621 -- tagged golf=bunker, 75 nodes, 3,562 m^2 of waste bunker by shoelace on its own
     ring, whose nearest edge is 6.9 m from the played line 214 m along a 477 m line, roughly 234 yd off
     the tee and squarely in the landing zone. Its centroid sits 40.5 m out, so a 40 m bar on the
     centroid excluded it: not counted, not drawn, and not eligible for a carry window. It appeared on NO
@@ -16527,10 +16553,11 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
             holes += 1
             la0 = sum(q["lat"] for q in line) / len(line)
             lo0 = sum(q["lon"] for q in line) / len(line)
-            mlon = _mlon(la0)
+            mlon, mla = _mlon(la0), _mlat(la0)
 
-            def em(la, lo, _mlon=mlon, _la0=la0, _lo0=lo0):
-                return ((lo - _lo0) * _mlon, (la - _la0) * R_LAT)
+            # _mo/_mla rather than _mlon/_mlat -- see the note on the same lambda above.
+            def em(la, lo, _mo=mlon, _mla=mla, _la0=la0, _lo0=lo0):
+                return ((lo - _lo0) * _mo, (la - _la0) * _mla)
             line_em = [em(q["lat"], q["lon"]) for q in line]
             near = []
             for g in sand:
@@ -16647,7 +16674,7 @@ def test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bound
 
     THE DEFECT: way 681278621 -- the bunker the edge rule (render_hole.edge_within) exists for -- was
     published with the area of its BOUNDING BOX, in four docstrings and in the failure text of a live
-    assertion in this file. Shoelace on its own closed 75-node ring gives 3,568 m^2 of sand; the box
+    assertion in this file. Shoelace on its own closed 75-node ring gives 3,562 m^2 of sand; the box
     around that ring is 2.26x larger, so every one of those five sentences over-stated the sand by that
     factor. Nothing printed on a card depended on it, which is exactly why nothing caught it: it is an
     unmeasured figure inside shipped assertion text, the class 4613a64 was written to close,
@@ -16660,7 +16687,7 @@ def test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bound
     quietly put the box back under an area's wording, and cannot let either figure drift.
 
     Measured two independent ways so the answer cannot be an artefact of the projection: the shoelace
-    in the hole's own local east/north frame -- the frame the 61.9 x 130.1 m box is quoted in, and the
+    in the hole's own local east/north frame -- the frame the 61.9 x 129.8 m box is quoted in, and the
     frame render_hole itself reasons in -- cross-checked against pyproj's ellipsoidal geodesic area,
     which has no projection at all. They agree to 0.17%.
     """
@@ -16682,8 +16709,8 @@ def test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bound
     # the same code that selects the bunker
     la0 = sum(q["lat"] for q in line) / len(line)
     lo0 = sum(q["lon"] for q in line) / len(line)
-    ml = _mlon(la0)
-    pts = [((q["lon"] - lo0) * ml, (q["lat"] - la0) * R_LAT) for q in ring]
+    ml, mla = _mlon(la0), _mlat(la0)
+    pts = [((q["lon"] - lo0) * ml, (q["lat"] - la0) * mla) for q in ring]
     assert pts[0] == pts[-1], f"way {way} is not a closed ring ({len(pts)} points); shoelace needs one"
     closed = pts[:-1]
     shoelace = abs(sum(closed[i][0] * closed[(i + 1) % len(closed)][1]
@@ -16780,10 +16807,10 @@ def test_the_bunker_behind_the_tee_projects_where_edge_withins_docstring_says_it
 
     la0 = sum(q["lat"] for q in line) / len(line)
     lo0 = sum(q["lon"] for q in line) / len(line)
-    ml = _mlon(la0)
+    ml, mla = _mlon(la0), _mlat(la0)
 
     def em(la, lo):
-        return ((lo - lo0) * ml, (la - la0) * R_LAT)
+        return ((lo - lo0) * ml, (la - la0) * mla)
     L = [em(q["lat"], q["lon"]) for q in line]
     ring = [em(q["lat"], q["lon"]) for q in named[0]["geometry"]]
 
@@ -16889,10 +16916,10 @@ def test_the_worst_reframed_card_prints_the_scale_corridor_pts_says_it_prints():
     _green, gend, tend = rh.match_green(line, greens)
     la0 = sum(q["lat"] for q in line) / len(line)
     lo0 = sum(q["lon"] for q in line) / len(line)
-    ml = _mlon(la0)
+    ml, mla = _mlon(la0), _mlat(la0)
 
     def em(la, lo):
-        return ((lo - lo0) * ml, (la - la0) * R_LAT)
+        return ((lo - lo0) * ml, (la - la0) * mla)
     L = [em(q["lat"], q["lon"]) for q in line]
     chord_m = math.dist(em(tend["lat"], tend["lon"]), em(gend["lat"], gend["lon"]))
     assert chord_m > 50, f"{slug} {hn}'s tee-green chord measures {chord_m:.1f} m; that cannot be right"
@@ -17045,8 +17072,8 @@ def _seamless_dem_run(tmp_path, monkeypatch, expand, georeferenced=True):
     # A 24 m x 20 m green at monarch-bay's own latitude, so the expansion factor under test is the
     # 1.2637 that course really saw.
     lat0, lon0 = 37.6916, -122.1580
-    mlon = 111320.0 * math.cos(math.radians(lat0))
-    dla, dlo = 10.0 / 111320.0, 12.0 / mlon
+    mlon = _mlon(lat0)
+    dla, dlo = 10.0 / _mlat(lat0), 12.0 / mlon
     ring = [{"lat": lat0 - dla, "lon": lon0 - dlo}, {"lat": lat0 - dla, "lon": lon0 + dlo},
             {"lat": lat0 + dla, "lon": lon0 + dlo}, {"lat": lat0 + dla, "lon": lon0 - dlo},
             {"lat": lat0 - dla, "lon": lon0 - dlo}]
@@ -17109,8 +17136,8 @@ def test_a_seamless_green_records_the_extent_its_array_actually_covers(tmp_path,
     so the georeference was dropped before anything could compare the two.
 
     Measured by re-issuing all six shipped monarch-bay URLs and reading `ds.bounds`: latitude expanded
-    1.2542x to 1.2675x against 1/cos(37.6916 deg) = 1.2637 (the residual is int() truncation of W and
-    H), each north and south edge out by 5.5 to 7.7 m, every returned array byte-identical to the .npy
+    1.2542x to 1.2675x against the mlat/mlon those requests were built with, 1/cos(37.6916 deg) =
+    1.2637 on the retired constants (the residual is int() truncation of W and H), each north and south edge out by 5.5 to 7.7 m, every returned array byte-identical to the .npy
     on disk. render_green takes H,W from the array but px_y and the polygon mask from the meta, so the
     mask stretched ~26% past the green's north and south edges, pulled in collar 1.3x to 2.5x steeper
     than the putting surface, and inflated the printed tilt on all six cards by 16.6% to 52.5% --
@@ -17158,9 +17185,8 @@ def test_a_seamless_green_records_the_extent_its_array_actually_covers(tmp_path,
         f"{meta['bbox']} vs {requested}. The printed green depth, the 5-yard ladder and the pin ring "
         f"are measured from the polygon through THIS bbox, and they are already correct.")
     H, W = meta["_shape"]
-    px_x = (meta["bbox"][2] - meta["bbox"][0]) * 111320.0 * math.cos(
-        math.radians(meta["green_center"][0])) / W
-    px_y = (meta["bbox"][3] - meta["bbox"][1]) * 111320.0 / H
+    px_x = (meta["bbox"][2] - meta["bbox"][0]) * _mlon(meta["green_center"][0]) / W
+    px_y = (meta["bbox"][3] - meta["bbox"][1]) * _mlat(meta["green_center"][0]) / H
     assert abs(px_x - 0.5) < 0.01 and abs(px_y - 0.5) < 0.01, (
         f"the grid is not the 0.5 m the source string claims: {px_x:.4f} m x {px_y:.4f} m")
 
@@ -17219,7 +17245,7 @@ def test_an_interrupted_build_cannot_leave_a_green_beside_someone_elses_metadata
     fd = _import_first_party("fetch_dem")
 
     lat0, lon0 = 37.6916, -122.1580
-    mlon = 111320.0 * math.cos(math.radians(lat0))
+    mlon = _mlon(lat0)
     cdir = tmp_path / "course"
     out = cdir / "dem_hd"
     out.mkdir(parents=True)
@@ -17228,7 +17254,7 @@ def test_an_interrupted_build_cannot_leave_a_green_beside_someone_elses_metadata
 
     def write_geom(half_m):
         """One green `half_m` metres either side of centre, plus the hole line that binds to it."""
-        dla, dlo = half_m / 111320.0, half_m / mlon
+        dla, dlo = half_m / _mlat(lat0), half_m / mlon
         ring = [{"lat": lat0 - dla, "lon": lon0 - dlo}, {"lat": lat0 - dla, "lon": lon0 + dlo},
                 {"lat": lat0 + dla, "lon": lon0 + dlo}, {"lat": lat0 + dla, "lon": lon0 - dlo},
                 {"lat": lat0 - dla, "lon": lon0 - dlo}]
@@ -17298,18 +17324,33 @@ def test_an_interrupted_build_cannot_leave_a_green_beside_someone_elses_metadata
 # The green card's own arithmetic: the compass sectors, the confidence gate, the
 # view-unit-to-yard conversion, and the figures the module quotes about its own kernels
 # ---------------------------------------------------------------------------
-# The sphere the whole engine measures on -- 111320 m per degree of latitude, i.e. R = 6378166 m.
-# (That read 6378138 m, which is WGS84's equatorial 6378137 with a digit slipped, and is 28.18 m
-# short of the sphere 111320 m/deg actually implies. Nothing computed off it -- R_SPHERE is derived
-# below -- so it moved no number; it was a stated figure of the Earth that was not this one, in the
-# note whose whole job is to say which sphere these tests measure on. Pinned now by
-# test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER.)
-# Every ground length below is computed on THIS sphere deliberately. A geodesic taken on some other
-# figure of the Earth differs from the pipeline's by up to ~0.3%, which is LARGER than the pixel
-# anisotropy these tests exist to measure, so it would report an earth-model difference as a
-# conversion defect. Two earlier attempts at this measurement did exactly that, produced "corrected"
-# depths that moved greens whose grid is already square in metres, and agreed with each other.
-R_SPHERE = R_LAT * 180.0 / math.pi
+# THE EARTH EVERY GROUND LENGTH BELOW IS MEASURED ON: the WGS84 ellipsoid, via pyproj's geodesic.
+# This is the reference the source data is actually published against, so it is the ground, and that is
+# the point -- the tests below check what the book prints against the world, not against the book's own
+# assumption.
+#
+# It used to be a great circle on the engine's own `R_LAT = 111320.0`, i.e. a sphere of R = 6378166 m,
+# on the reasoning that a geodesic on any other figure of the Earth "differs from the pipeline's by up
+# to ~0.3%, which is LARGER than the pixel anisotropy these tests exist to measure". That reasoning was
+# sound about the anisotropy and wrong about the datum: it made the suite's ground truth the very
+# assumption under test, so a depth test asserting 198 printed integers could not see that four of them
+# were on the wrong side of a half yard. The 0.3% was real -- it was the datum error, not a measurement
+# artifact -- and the engine has since been migrated to the true per-axis WGS84 local scales (geo.mlat /
+# geo.mlon), which reproduce this geodesic to a worst 1.5e-5 yd over all 198 greens. The two errors are
+# still separate things and both are still measured: the anisotropy is the RATIO of a green's two pixel
+# axes, the datum was their absolute SIZE.
+_GEOD = None
+
+
+def _geod():
+    """pyproj's WGS84 Geod, built once. Asked of pyproj rather than hand-rolled: a closed-form geodesic
+    written out here would be a second figure of the Earth in the file whose job is to have one."""
+    global _GEOD
+    if _GEOD is None:
+        from pyproj import Geod
+        _GEOD = Geod(ellps="WGS84")
+    return _GEOD
+
 
 
 def _prose(src):
@@ -17376,12 +17417,10 @@ def _noise_floor_claims(where_and_prose):
 
 
 def _ground_m(lat1, lon1, lat2, lon2):
-    """Great-circle metres between two points on the engine's own sphere. No projection, no bbox, no
-    raster -- so it owes nothing to the metres-per-pixel arithmetic under test."""
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp, dl = p2 - p1, math.radians(lon2 - lon1)
-    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2.0 * R_SPHERE * math.asin(min(1.0, math.sqrt(h)))
+    """TRUE ground metres between two points: the WGS84 geodesic. No projection, no bbox, no raster,
+    and -- since the migration -- no shared assumption with the code under test either, so this owes
+    nothing to the metres-per-pixel arithmetic OR to the earth model being checked."""
+    return _geod().inv(lon1, lat1, lon2, lat2)[2]
 
 
 def _green_surfaces():
@@ -17554,7 +17593,7 @@ def test_the_confidence_gate_tests_a_fall_the_green_actually_has():
         xmin, ymin, xmax, ymax = meta["bbox"]
         clat = meta["green_center"][0]
         px_x = (xmax - xmin) * rg2.mlon(clat) / W
-        px_y = (ymax - ymin) * R_LAT / H
+        px_y = (ymax - ymin) * rg2.mlat(clat) / H
         arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy")).astype(
             "float64")
         arr[~np.isfinite(arr)] = np.nan
@@ -17756,7 +17795,7 @@ def test_the_faint_mark_is_not_published_as_a_survey_noise_floor():
         import render_green as rg2
         xmin, ymin, xmax, ymax = meta["bbox"]
         px_x = (xmax - xmin) * rg2.mlon(meta["green_center"][0]) / W
-        px_y = (ymax - ymin) * R_LAT / H
+        px_y = (ymax - ymin) * rg2.mlat(meta["green_center"][0]) / H
         arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy")).astype(
             "float64")
         arr[~np.isfinite(arr)] = np.nan
@@ -17814,40 +17853,55 @@ def test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measure
     computed and never reaches a card), and they are asserted here because the arithmetic is the same
     one and the number is one card away from being printed.
 
-    THE SIX SEAMLESS GREENS ARE NOT AMONG THE MOVERS AND MUST NOT BE. Their recorded bbox is
-    metre-consistent -- 0.5 m in both axes to within 0.08% -- so their conversion was already right,
-    and two earlier attempts at this fix "corrected" them by measuring ground truth on a different
-    figure of the Earth (see the note on R_SPHERE above). Ground truth here is a great-circle length
-    on the engine's own sphere between the two endpoints of the chord the card measured, taken from
-    the polygon's own lat/lon: it isolates the anisotropy and nothing else.
+    THE SIX SEAMLESS GREENS ARE NOT AMONG THE ANISOTROPY'S MOVERS AND MUST NOT BE. Their recorded bbox
+    is metre-consistent -- 0.5 m in both axes to within 0.08% -- so their per-axis conversion was already
+    right, and two earlier attempts at that fix "corrected" them by measuring ground truth on a
+    different figure of the Earth.
+
+    GROUND TRUTH HERE IS NOW THE TRUE WGS84 GEODESIC between the two endpoints of the chord the card
+    measured, taken from the polygon's own lat/lon (see the note above `_geod`). It used to be a great
+    circle on the engine's own 111320 m/deg sphere, which made the reference the assumption: on that
+    sphere all 198 printed integers agreed, while four of them were in fact a yard deeper than the
+    ground -- copper-valley 16, micke-grove 13, monarch-bay 1 and the-reserve 7. The engine has since
+    been migrated to the true per-axis local scales, so the assertion below is against the world.
+
+    It is also STRICTER than integer agreement now. Rounding to a whole yard hides up to half a yard of
+    error, which is how the datum fault survived this test in the first place, so the raw residual is
+    bounded too: over all 198 greens the per-axis conversion reproduces the geodesic to a median 6e-07
+    yd and a worst 1.5e-5 yd, and DEPTH_RESID_MAX_YD holds it there.
 
     Depth is load-bearing beyond the footer: it is the 5-yd ladder's zero, the pin ring's position and
     the input to `scale_max_in = 0.075 * depth_yd`, the Rule 4.3 headroom.
     """
     import render_green as rg
 
+    # A whole yard of slack would let the datum drift back in under the rounding, which is exactly what
+    # happened. 1e-4 yd is 7x the worst measured residual and 5000x tighter than the half yard the
+    # integer comparison allows -- tight enough that any change of earth model shows up here first.
+    DEPTH_RESID_MAX_YD = 1e-4
+
     # --- a green whose grid is deliberately anisotropic, so this runs on a bare clone -------------
     lat0, lon0 = 40.0, -75.0
-    mlon = R_LAT * math.cos(math.radians(lat0))
+    mlon, mla = _mlon(lat0), _mlat(lat0)       # the engine's own scales: the fixture must be ON its grid
     PX_Y, PX_X = 0.400, 0.4019                 # ratio 1.00475: inside the corpus's own 1.00813
     n = 100
     DEPTH_M, WIDTH_M = 30.607, 20.0            # 33.474 yd deep: the scalar mean prints 34
     meta = dict(hole=1, approach_bearing=0.0, W=n, H=n,
-                bbox=[lon0 - n * PX_X / 2 / mlon, lat0 - n * PX_Y / 2 / R_LAT,
-                      lon0 + n * PX_X / 2 / mlon, lat0 + n * PX_Y / 2 / R_LAT],
+                bbox=[lon0 - n * PX_X / 2 / mlon, lat0 - n * PX_Y / 2 / mla,
+                      lon0 + n * PX_X / 2 / mlon, lat0 + n * PX_Y / 2 / mla],
                 green_id=1, green_center=[lat0, lon0], source="test surface",
-                polygon=[[lat0 - DEPTH_M / 2 / R_LAT, lon0 - WIDTH_M / 2 / mlon],
-                         [lat0 - DEPTH_M / 2 / R_LAT, lon0 + WIDTH_M / 2 / mlon],
-                         [lat0 + DEPTH_M / 2 / R_LAT, lon0 + WIDTH_M / 2 / mlon],
-                         [lat0 + DEPTH_M / 2 / R_LAT, lon0 - WIDTH_M / 2 / mlon],
-                         [lat0 - DEPTH_M / 2 / R_LAT, lon0 - WIDTH_M / 2 / mlon]])
+                polygon=[[lat0 - DEPTH_M / 2 / mla, lon0 - WIDTH_M / 2 / mlon],
+                         [lat0 - DEPTH_M / 2 / mla, lon0 + WIDTH_M / 2 / mlon],
+                         [lat0 + DEPTH_M / 2 / mla, lon0 + WIDTH_M / 2 / mlon],
+                         [lat0 + DEPTH_M / 2 / mla, lon0 - WIDTH_M / 2 / mlon],
+                         [lat0 - DEPTH_M / 2 / mla, lon0 - WIDTH_M / 2 / mlon]])
     d_yd, w_yd = rg.depth_width_yd(meta)
-    assert abs(d_yd - DEPTH_M / 0.9144) < 0.01, (
+    assert abs(d_yd - DEPTH_M / 0.9144) < 0.001, (
         f"a green whose corners are {DEPTH_M} m apart down the line of play measures {d_yd:.4f} yd "
         f"({d_yd * 0.9144:.4f} m). The grid is {PX_X:.4f} m east against {PX_Y:.4f} m north and the "
         f"chord runs north-south, so a mean of the two axes mis-scales it by "
         f"{((PX_X + PX_Y) / 2 / PX_Y - 1) * 100:.3f}%.")
-    assert abs(w_yd - WIDTH_M / 0.9144) < 0.01, (
+    assert abs(w_yd - WIDTH_M / 0.9144) < 0.001, (
         f"width measures {w_yd:.4f} yd where the green is {WIDTH_M / 0.9144:.4f} yd across")
     assert int(round(d_yd)) == 33, f"this card would print {int(round(d_yd))}yd deep, not 33"
 
@@ -17855,6 +17909,7 @@ def test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measure
     if not CORPUS:
         return
     seen, problems, checked = collections.Counter(), [], 0
+    resid = []
     for slug, hole, meta, H, W in _green_surfaces():
         _engine(slug)
         import render_green as rg2
@@ -17881,6 +17936,10 @@ def test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measure
         truth_w = ground_yd((min(rxs), ymid), (max(rxs), ymid))
         checked += 1
         seen[slug] += 1
+        # The RAW residual, before rounding. The integer comparison below tolerates half a yard, and
+        # half a yard is where a whole earth-model error can hide -- it hid one.
+        engine_d, engine_w = rg2.depth_width_yd(dict(meta, W=W, H=H))
+        resid.append((abs(engine_d - truth_d), slug, hole, engine_d, truth_d))
         if s["depth_yd"] != int(round(truth_d)):
             problems.append(f"{slug} h{hole}: the card prints {s['depth_yd']}yd deep; the line it "
                             f"measured is {truth_d:.4f} yd on the ground -> {int(round(truth_d))}")
@@ -17892,6 +17951,13 @@ def test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measure
         seen, "test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measured")
     assert not problems, ("printed green sizes are not the ground lengths of the lines they were "
                           "measured on:\n  " + "\n  ".join(problems[:8]))
+    worst, wslug, whole, weng, wtru = max(resid)
+    assert worst <= DEPTH_RESID_MAX_YD, (
+        f"the renderer's own depth for {wslug} h{whole} is {weng:.6f} yd against a WGS84 geodesic of "
+        f"{wtru:.6f} yd -- a residual of {worst:.3e} yd, over the {DEPTH_RESID_MAX_YD:.0e} bound. "
+        f"Rounding to an integer would hide up to 0.5 yd of this, which is how a 0.3% earth-model "
+        f"error survived this test once. Something has changed the horizontal model: see geo.mlat / "
+        f"geo.mlon, and re-read legal/11_HORIZONTAL_EARTH_MODEL.md before touching this bound.")
 
 
 def test_the_module_says_how_much_ground_detail_its_kernels_actually_remove():
@@ -18030,7 +18096,7 @@ def test_the_plane_and_arrow_spread_the_card_quotes_is_the_one_the_corpus_shows(
         import render_green as rg
         xmin, ymin, xmax, ymax = meta["bbox"]
         px_x = (xmax - xmin) * rg.mlon(meta["green_center"][0]) / W
-        px_y = (ymax - ymin) * R_LAT / H
+        px_y = (ymax - ymin) * rg.mlat(meta["green_center"][0]) / H
         arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy")).astype(
             "float64")
         arr[~np.isfinite(arr)] = np.nan
@@ -18377,82 +18443,104 @@ def test_the_depth_conversion_says_what_its_exactness_is_measured_against():
     """"exact to 1e-5 yd" was exactness against the engine's own constant, not against the ground.
 
     `screen_m_per_unit` decomposes a chord along the two pixel axes instead of scaling it by their
-    scalar mean, and the docstring closes "Done per axis the agreement is exact to 1e-5 yd". The
-    reference is a great circle on R_LAT = 111320 m/deg -- the engine's own sphere -- so the sentence
-    reads as agreement with the ground and is agreement with the assumption. That claim is one the
-    governing rule does not support, because 111320 is not either radius:
+    scalar mean, and its docstring closed "Done per axis the agreement is exact to 1e-5 yd". The
+    reference was a great circle on R_LAT = 111320 m/deg -- the engine's own sphere -- so the sentence
+    read as agreement with the ground and was agreement with the assumption. That claim was one the
+    governing rule did not support, because 111320 is neither radius:
 
         at 37.8N the true local scales are 110992.70 m/deg of latitude and 88070.46 of longitude, so
-        the model is +0.295% LONG in latitude and -0.125% SHORT in longitude -- a 0.42 pp internal
-        spread, half again the 0.84% pixel anisotropy the fix was about.
+        the retired model was +0.295% LONG in latitude and -0.125% SHORT in longitude -- a 0.42 pp
+        internal spread, half again the 0.84% pixel anisotropy the fix was about.
 
-    That is not an abstract objection. `fetch_dem_hd` samples cell centres linear in lon/lat
+    That was not an abstract objection. `fetch_dem_hd` samples cell centres linear in lon/lat
     (`lon_g = xmin + us*(xmax-xmin)`), so a green's array IS a plate-carree grid and those per-axis
-    figures are its true ground scales -- recomputed with them, the printed depth is out by a median
-    0.041 yd and FOUR of 198 land on the wrong side of a half yard, two of which the anisotropy fix
+    figures are its true ground scales -- recomputed with them, the printed depth was out by a median
+    0.041 yd and FOUR of 198 landed on the wrong side of a half yard, two of which the anisotropy fix
     had just moved the other way.
 
-    Not fixed by moving the number: `R_LAT = 111320.0` is a literal in nine shipped modules besides
-    geo.py itself (two of fetch_osm.py's are inline and not named R_LAT),
-    `tools/check_scale.py` re-derives it to gate the Rule 4.3 scale, and this suite's own ground truth
-    for depth is a great circle on the same sphere (see the R_SPHERE note above). Correcting it for
-    depth alone would print one green's depth on the ellipsoid and its tilt, its 5-yd bar, its Rule
-    4.3 sizing and its hole-map ticks on the sphere. So the claim is corrected and the arithmetic is
-    published where the constant lives, and this test re-measures it rather than quoting it -- both
-    directions: if the model is ever migrated, the published count stops matching and this fails.
+    THE MODEL HAS SINCE BEEN MIGRATED and this test polices the migrated state, in both directions:
+
+      (a) the exactness claim must name its reference, and that reference must now be the ground -- the
+          WGS84 geodesic or ellipsoid -- and must NOT be the retired sphere. A claim quoted against
+          111320 again would be the original defect returning.
+      (b) geo.py must still publish what the retired pair cost, with the retired constant itself
+          stated, and every figure in that sentence is re-measured here off pyproj rather than trusted.
+          The record of why a number moved is the only thing that stops it moving back.
+      (c) the count of printed depths the model puts on the wrong side of a half yard must be published
+          in geo.py and must match the corpus. It is now zero, and if the earth model is ever disturbed
+          the count stops matching and this goes red. Measured against an INDEPENDENT closed-form of the
+          WGS84 local scales, so a slip inside geo.mlat/geo.mlon cannot satisfy it; the geodesic form of
+          the same question is test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measured.
     """
     with open(os.path.join(ROOT, "render_green.py"), encoding="utf-8") as fh:
         rg_src = fh.read()
     with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
         geo_src = fh.read()
 
-    # (a) the exactness claim must name its reference
+    # (a) the exactness claim must name its reference, and the reference must be the GROUND
     doc = _func_prose(os.path.join(ROOT, "render_green.py"), "screen_m_per_unit")
     claims = [c for c in re.split(r"(?<=[.;:])\s+", doc) if re.search(r"\bexact\b", c, re.I)]
     assert claims, ("screen_m_per_unit no longer states how closely the per-axis conversion agrees "
                     "with anything. That figure is the whole justification for decomposing the chord; "
                     "re-read this test before removing it.")
-    unqualified = [c for c in claims
-                   if not re.search(r"111320|own sphere|own flat-earth|engine'?s own|R_LAT", c)]
+    unqualified = [c for c in claims if not re.search(r"WGS84|geodesic|ellipsoid", c, re.I)]
     assert not unqualified, (
-        "this claims an exactness without naming what it is exact AGAINST, and the only thing it is "
-        "exact against is the engine's own 111320 m/deg sphere -- which is itself +0.295% long in "
-        "latitude and -0.125% short in longitude, an error larger than the anisotropy being fixed. A "
-        "reader takes it for agreement with the ground:\n  " + "\n  ".join(unqualified))
+        "this claims an exactness without naming what it is exact AGAINST. The reference has to be "
+        "named and it has to be the ground -- the WGS84 geodesic -- because the same sentence once "
+        "quoted an exactness against the engine's own 111320 m/deg sphere, which was itself +0.295% "
+        "long in latitude and -0.125% short in longitude, and a reader took it for agreement with the "
+        "ground:\n  " + "\n  ".join(unqualified))
+    stale = [c for c in claims if re.search(r"111320|own sphere|own flat-earth", c, re.I)]
+    assert not stale, (
+        "an exactness is being quoted against the RETIRED sphere again. 111320 m/deg is not a figure of "
+        "this Earth; the engine measures on geo.mlat/geo.mlon and the claim must be against the WGS84 "
+        "geodesic:\n  " + "\n  ".join(stale))
 
-    # (b) the model's real per-axis error, published where the constant lives, re-measured here
+    # (b) what the retired pair cost, published where the scales live, re-measured here
     gp = _prose(geo_src)
-    pub = re.search(r"at ([\d.]+)N[^.]*?true local scales are ([\d.]+) m/deg of latitude and "
-                    r"([\d.]+) m/deg of longitude, so this model runs ([+-][\d.]+)% LONG in latitude "
-                    r"and ([+-][\d.]+)% SHORT in longitude", gp)
+    pub = re.search(r"retired model used ([\d.]+) m/deg of latitude and [\d.]+\*cos\(lat\) m/deg of "
+                    r"longitude: at ([\d.]+)N[^.]*?the true local scales are ([\d.]+) m/deg of "
+                    r"latitude and ([\d.]+) m/deg of longitude, so that model ran ([+-][\d.]+)% LONG "
+                    r"in latitude and ([+-][\d.]+)% SHORT in longitude", gp)
     assert pub, (
-        "geo.py does not publish how far its own flat-earth constants stand from the ellipsoid. It "
-        "quantifies the tick-radius cost of the approximation and stops there, so the standing "
-        "decision to keep 111320 is recorded against only one of its consequences. Measured at "
-        "37.8N: true scales %.2f lat / %.2f lon, i.e. %+.3f%% and %+.3f%%."
-        % (_wgs84_local_scales(37.8)[0], _wgs84_local_scales(37.8)[1],
-           100.0 * (R_LAT / _wgs84_local_scales(37.8)[0] - 1.0),
-           100.0 * (_mlon(37.8) / _wgs84_local_scales(37.8)[1] - 1.0)))
-    lat = float(pub.group(1))
+        "geo.py does not publish how far the earth model it retired stood from the ellipsoid, with the "
+        "retired constant named. That sentence is the record of WHY every printed length in this book "
+        "moved; without it the next reader has a corrected number and no reason for it, which is how a "
+        "correction gets reverted. It must read: the retired model used <C> m/deg of latitude and "
+        "<C>*cos(lat) m/deg of longitude: at <LAT>N the true local scales are <A> m/deg of latitude "
+        "and <B> m/deg of longitude, so that model ran <P>%% LONG in latitude and <Q>%% SHORT in "
+        "longitude. At 37.8N the true scales are %.2f lat / %.2f lon."
+        % _wgs84_local_scales(37.8))
+    retired_lat = float(pub.group(1))
+    lat = float(pub.group(2))
+    retired_lon = retired_lat * math.cos(math.radians(lat))
     m_lat, m_lon = _wgs84_local_scales(lat)
-    for what, said, got in (("m/deg of latitude", float(pub.group(2)), m_lat),
-                            ("m/deg of longitude", float(pub.group(3)), m_lon)):
+    for what, said, got in (("m/deg of latitude", float(pub.group(3)), m_lat),
+                            ("m/deg of longitude", float(pub.group(4)), m_lon)):
         assert abs(said - got) <= 0.01, (
             f"geo.py puts the true local scale at {lat}N at {said} {what}; measured on pyproj's own "
             f"WGS84 ellipsoid it is {got:.4f}")
     for what, said, got in (
-            ("latitude", float(pub.group(4)), 100.0 * (R_LAT / m_lat - 1.0)),
-            ("longitude", float(pub.group(5)), 100.0 * (_mlon(lat) / m_lon - 1.0))):
+            ("latitude", float(pub.group(5)), 100.0 * (retired_lat / m_lat - 1.0)),
+            ("longitude", float(pub.group(6)), 100.0 * (retired_lon / m_lon - 1.0))):
         assert abs(said - got) <= 0.005, (
-            f"geo.py says the model runs {said:+}% in {what} at {lat}N; measured it is {got:+.4f}%")
+            f"geo.py says the retired model ran {said:+}% in {what} at {lat}N; measured against the "
+            f"stated retired constant {retired_lat} it is {got:+.4f}%")
+    # ...and the live scales must BE those true ones, or (b) is a history lesson beside a wrong engine
+    import geo as _geo_live
+    for what, got, want in (("mlat", _geo_live.mlat(lat), m_lat), ("mlon", _geo_live.mlon(lat), m_lon)):
+        assert abs(got - want) <= 1e-6, (
+            f"geo.{what}({lat}) returns {got:.6f} m/deg where the WGS84 local scale is {want:.6f}. The "
+            f"note below it describes a migration the code has not made.")
 
-    # (c) what that costs the one printed LENGTH derived from it, off the corpus
+    # (c) what the model costs the one printed LENGTH derived from it, off the corpus
     if not CORPUS:
         return
     said_n = re.search(r"(\w+) printed depths land on the wrong side of a half yard", gp)
     assert said_n, ("geo.py no longer says how many printed green depths the earth model puts on the "
-                    "wrong side of a half yard. That count is the reader-facing cost of the "
-                    "approximation, and it is what changes if the model is ever migrated.")
+                    "wrong side of a half yard. That count is the reader-facing cost of the model, it "
+                    "was four before the migration and it is the number that moves if the model is "
+                    "ever disturbed again.")
     WORDS = {"no": 0, "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
              "seven": 7, "eight": 8, "nine": 9, "ten": 10}
     key = said_n.group(1).lower()
@@ -18513,54 +18601,84 @@ def _printed_green_depths(slug):
     return out
 
 
-def _depth_yd_both_models(slug, hole, meta, H, W):
-    """(engine, ground) front-to-back length in yards for one green.
+def _depth_yd_on_scales(slug, hole, meta, H, W, m_lat, m_lon):
+    """Front-to-back yards for one green, measured on the GIVEN metres-per-degree scales.
 
-    Both are measured along the same line of play with render_green's own frame, so the ONLY
-    difference between them is the earth model: the engine's 111320 m/deg sphere against the true
-    local WGS84 scales of the plate-carree grid the surface was sampled on."""
+    render_green's own frame and its own play line, so swapping the two scales is the only thing that
+    changes -- which is what makes a before/after of the earth model an apples-to-apples number rather
+    than a rebuild diff."""
     _engine(slug)
     import render_green as rg2
     xmin, ymin, xmax, ymax = meta["bbox"]
-    clat = meta["green_center"][0]
     theta, cx, cy = rg2.approach_frame(dict(meta, W=W, H=H))
     rp = [rg2.rot(x, y, cx, cy, theta)
           for x, y in rg2.poly_to_px(meta["polygon"], meta["bbox"], W, H)]
     fy, by, _midx = rg2.play_line_span(rp)
-    m_lat, m_lon = _wgs84_local_scales(clat)          # metres per degree, the grid's true scales
-    _mxe, mye = rg2.screen_m_per_unit(theta, (xmax - xmin) * rg2.mlon(clat) / W,
-                                      (ymax - ymin) * rg2.R_LAT / H)
-    _mxg, myg = rg2.screen_m_per_unit(theta, (xmax - xmin) * m_lon / W, (ymax - ymin) * m_lat / H)
-    return (fy - by) * mye / 0.9144, (fy - by) * myg / 0.9144
+    _mx, my = rg2.screen_m_per_unit(theta, (xmax - xmin) * m_lon / W, (ymax - ymin) * m_lat / H)
+    return (fy - by) * my / 0.9144
+
+
+def _depth_yd_both_models(slug, hole, meta, H, W):
+    """(what the engine measures, the TRUE WGS84 GEODESIC of the same line) in yards.
+
+    The engine half is `depth_width_yd` itself -- the function the card's printed integer comes from --
+    so nothing here re-implements it. The ground half is a geodesic between the two endpoints of that
+    same play line, taken from the polygon's own lat/lon, and owes nothing to the engine's scales. It
+    used to be the engine's 111320 m/deg sphere against the true local scales, which made this a
+    comparison of two models rather than of the book against the world."""
+    _engine(slug)
+    import render_green as rg2
+    xmin, ymin, xmax, ymax = meta["bbox"]
+    theta, cx, cy = rg2.approach_frame(dict(meta, W=W, H=H))
+    rp = [rg2.rot(x, y, cx, cy, theta)
+          for x, y in rg2.poly_to_px(meta["polygon"], meta["bbox"], W, H)]
+    fy, by, midx = rg2.play_line_span(rp)
+
+    def ll(px, py):                       # pixel -> lat/lon, the inverse of poly_to_px
+        return (ymax - py / H * (ymax - ymin), xmin + px / W * (xmax - xmin))
+
+    a = rg2.rot(midx, fy, cx, cy, -theta)
+    b = rg2.rot(midx, by, cx, cy, -theta)
+    ground = _ground_m(*ll(*a), *ll(*b)) / 0.9144
+    engine = rg2.depth_width_yd(dict(meta, W=W, H=H))[0]
+    return engine, ground
 
 
 def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER():
     """The whole disclosure of a printed residual lived in source comments. A child cannot read them.
 
     Every horizontal length this project prints -- green depth, the 5-yd ladder and scale bar, green
-    tilt %, the hole map's yardage ticks and carries, and the Rule 4.3 print scale -- is computed on
+    tilt %, the hole map's yardage ticks and carries, and the Rule 4.3 print scale -- was computed on
     one local flat-earth model: 111320 m per degree of latitude, 111320*cos(lat) per degree of
-    longitude. That is neither of the WGS84 radii the source data is referenced to, and the gap is
-    MEASURED, not assumed: at 37.8N the true local scales are 110992.70 and 88070.46 m/deg, so the
-    model runs +0.295% long in latitude and -0.125% short in longitude.
+    longitude. That is neither of the WGS84 radii the source data is referenced to, and the gap was
+    MEASURED, not assumed: at 37.8N the true local scales are 110992.70 and 88070.46 m/deg, so that
+    model ran +0.295% long in latitude and -0.125% short in longitude. FOUR of the 198 printed integers
+    landed on the wrong side of a half yard because of it -- copper-valley 16, micke-grove 13,
+    monarch-bay 1 and the-reserve 7 each printed one yard deeper than the ground.
 
-    Recomputed on the true scales, the printed green depth is out by a median 0.040 yd and worst
-    0.111, and FOUR of the 198 printed integers land on the wrong side of a half yard -- copper-valley
-    16, micke-grove 13, monarch-bay 1 and the-reserve 7 each print one yard deeper than the ground.
+    That was recorded, for a while, in the wrong place. The entire disclosure lived in comments in
+    `geo.py` and `render_green.py`; a grep across all ten `legal/` records found nothing about the
+    HORIZONTAL earth model, only a vertical geoid/ellipsoid note in `09`. The book's own panel offers
+    the generic waiver ("may contain errors"), which names no model, no size and no card. So a reader
+    holding one of those four cards had no way to know theirs was one of them.
 
-    Leaving the four integers alone is a defensible decision and this test does not reopen it. What is
-    NOT defensible is where the decision was recorded. Before this test, the entire disclosure lived
-    in comments in `geo.py` and `render_green.py`; a grep across all ten `legal/` records found nothing
-    about the HORIZONTAL earth model, only a vertical geoid/ellipsoid note in `09`. The book's own
-    panel offers the generic waiver ("may contain errors"), which names no model, no size and no card.
-    So a reader holding one of those four cards had no way to know theirs was one of them, and the
-    project's own record set -- the folder whose stated purpose is to be handed to someone asking --
-    was silent.
+    THE MODEL HAS SINCE BEEN MIGRATED to the true per-axis WGS84 local scales and the four integers now
+    print the ground. That does not retire this test, it inverts it -- the record has to describe the
+    build as it is, and a record still warning a reader about four cards that no longer round the wrong
+    way is as misleading as the silence was. So `legal/` must now state:
 
-    Hence: the model, the measured offset and the four cards by name must appear in `legal/`, and this
-    test re-measures every one of those claims off the corpus rather than quoting them. It fails in
-    BOTH directions: publish a card that is not on the boundary, or migrate the model and leave a
-    stale list of four, and it goes red.
+      (a) the retired model and its measured offset, with the retired constant named. Re-measured here
+          on pyproj's WGS84; the reason a number moved is the only thing that stops it moving back.
+      (b) the residual that REMAINS on the printed depth, which is now the plate-carree-vs-geodesic
+          difference and not a datum error at all: a median 0.0000006 yd over 198 cards. Published and
+          re-measured, so "approximate" still comes with a size.
+      (c) every card whose printed depth the migration MOVED, as printed-before, printed-now and ground
+          length -- each row re-derived here by re-running the engine's own depth on the retired
+          constant the record itself states.
+      (d) that NO card now rounds the other way, checked against the corpus.
+
+    It fails in both directions: leave the stale list of four warnings, or migrate the model again and
+    leave this table behind, and it goes red.
     """
     recs = {}
     for p in sorted(glob.glob(os.path.join(ROOT, "legal", "*.md"))):
@@ -18569,64 +18687,64 @@ def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER(
         if "111320" in txt:
             recs[os.path.basename(p)] = txt
     assert recs, (
-        "no legal/ record names the horizontal earth model. The engine measures every printed length "
-        "on 111320 m/deg of latitude and 111320*cos(lat) of longitude -- %+.3f%% and %+.3f%% against "
-        "WGS84 at 37.8N -- and that is disclosed only in geo.py and render_green.py comments, which no "
-        "reader of a book can see. legal/ carries a vertical geoid note and nothing horizontal."
-        % (100.0 * (R_LAT / _wgs84_local_scales(37.8)[0] - 1.0),
-           100.0 * (_mlon(37.8) / _wgs84_local_scales(37.8)[1] - 1.0)))
+        "no legal/ record names the horizontal earth model. Every printed length in this book rides on "
+        "geo.mlat/geo.mlon, this project's figure of the Earth -- %.2f and %.2f m/deg at 37.8N -- and a "
+        "reader who is handed the record set has to be able to find out which earth their yardages are "
+        "on and what the model before it cost. The retired flat-earth pair was disclosed only in source "
+        "comments, which no reader of a book can see, and four printed depths were a yard out because "
+        "of it." % _wgs84_local_scales(37.8))
     doc = "\n\n".join(recs.values())
     # As a reader reads it: line wrapping gone, markdown emphasis gone, and a typographic minus read
     # as a minus. A record whose figures are only findable if they are typed in ASCII would push the
     # next editor to un-typeset a legal document to keep a test green.
-    flat = " ".join(doc.split()).replace("−", "-").replace("*", "")
+    flat = " ".join(doc.split()).replace("\u2212", "-").replace("*", "")
 
-    # (a) the offset, at a latitude the record names, re-measured on pyproj's WGS84
-    pub = re.search(r"([\d.]+)\s*(?:deg|°)\s*N.{0,400}?true local (?:WGS84 )?scales are "
+    # (a) the retired model, its constant and its offset, re-measured on pyproj's WGS84
+    pub = re.search(r"retired model used ([\d.]+) m per degree of latitude.{0,200}?"
+                    r"([\d.]+)\s*(?:deg|\u00b0)\s*N.{0,400}?true local (?:WGS84 )?scales are "
                     r"([\d.]+) m per degree of latitude and ([\d.]+) m per degree of longitude, so "
-                    r"th\w+ model runs \+?([\d.-]+)% long in latitude and (-?[\d.]+)% short in "
+                    r"th\w+ model ran \+?([\d.-]+)% long in latitude and (-?[\d.]+)% short in "
                     r"longitude", flat)
     assert pub, (
-        "the legal record(s) naming the model (%s) do not state the offset against the ellipsoid in a "
-        "form that can be re-measured. Required, at a stated latitude: the two true local scales and "
-        "the two percentages. At 37.8N they are %.2f m/deg of latitude, %.2f m/deg of longitude, "
-        "%+.3f%% and %+.3f%%." % (", ".join(sorted(recs)),
-                                  _wgs84_local_scales(37.8)[0], _wgs84_local_scales(37.8)[1],
-                                  100.0 * (R_LAT / _wgs84_local_scales(37.8)[0] - 1.0),
-                                  100.0 * (_mlon(37.8) / _wgs84_local_scales(37.8)[1] - 1.0)))
-    lat = float(pub.group(1))
+        "the legal record(s) naming the model (%s) do not state the RETIRED model and its offset in a "
+        "form that can be re-measured. Required, at a stated latitude: the retired metres-per-degree "
+        "constant, the two true local scales, and the two percentages -- 'the retired model used <C> m "
+        "per degree of latitude ... at <LAT> deg N ... the true local WGS84 scales are <A> m per degree "
+        "of latitude and <B> m per degree of longitude, so that model ran <P>%% long in latitude and "
+        "<Q>%% short in longitude'. At 37.8N the truth is %.2f m/deg of latitude and %.2f m/deg of "
+        "longitude." % ((", ".join(sorted(recs)),) + _wgs84_local_scales(37.8)))
+    retired_lat_scale = float(pub.group(1))
+    lat = float(pub.group(2))
     m_lat, m_lon = _wgs84_local_scales(lat)
-    for what, said, got in (("m/deg of latitude", float(pub.group(2)), m_lat),
-                            ("m/deg of longitude", float(pub.group(3)), m_lon)):
+    retired_lon_scale = retired_lat_scale * math.cos(math.radians(lat))
+    for what, said, got in (("m/deg of latitude", float(pub.group(3)), m_lat),
+                            ("m/deg of longitude", float(pub.group(4)), m_lon)):
         assert abs(said - got) <= 0.01, (
             f"the legal record puts the true local scale at {lat}N at {said} {what}; measured on "
             f"pyproj's own WGS84 ellipsoid it is {got:.4f}")
-    for what, said, got in (("latitude", float(pub.group(4)), 100.0 * (R_LAT / m_lat - 1.0)),
-                            ("longitude", float(pub.group(5)), 100.0 * (_mlon(lat) / m_lon - 1.0))):
+    for what, said, got in (
+            ("latitude", float(pub.group(5)), 100.0 * (retired_lat_scale / m_lat - 1.0)),
+            ("longitude", float(pub.group(6)), 100.0 * (retired_lon_scale / m_lon - 1.0))):
         assert abs(said - got) <= 0.005, (
-            f"the legal record says the model runs {said:+}% in {what} at {lat}N; measured it is "
+            f"the legal record says the retired model ran {said:+}% in {what} at {lat}N; measured "
+            f"against the retired constant {retired_lat_scale} the record itself states, it is "
             f"{got:+.4f}%")
 
-    # (a2) this file's OWN note on that sphere must state the radius 111320 m/deg implies. It said
-    # 6378138 m -- WGS84's equatorial 6378137 with a digit slipped, and 28.18 m short of the truth.
-    # Nothing computes off the literal, so no printed number moved; what was wrong is a stated figure
-    # of the Earth in the note whose entire job is to say which sphere the tests below measure on.
-    # Derived here rather than repeated, so the note cannot drift from R_SPHERE again. Above the
-    # corpus gate on purpose: it needs no course data, and everything below returns without one.
-    with open(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), encoding="utf-8") as fh:
-        note = fh.read().split("R_SPHERE = R_LAT")[0].rsplit("# The sphere the whole engine", 1)[-1]
-    said_r = re.search(r"R = (\d+) m", note)
-    assert said_r and int(said_r.group(1)) == round(R_SPHERE), (
-        f"the R_SPHERE note says R = {said_r.group(1) if said_r else 'nothing'} m; 111320 m per degree "
-        f"of latitude implies {R_SPHERE:.3f} m, i.e. {round(R_SPHERE)}")
+    # (a2) the record must name the earth the build is on NOW, not only the one it left. A record that
+    # states an offset and never states which side of it the shipped book sits on is the same defect
+    # this test was raised for, one level up. Above the corpus gate on purpose: it needs no course data.
+    assert re.search(r"WGS84", flat) and re.search(r"geo\.mlat|mlat\b", flat), (
+        "the legal record describes an offset from WGS84 but never says that the build now measures ON "
+        "WGS84, via geo.mlat/geo.mlon. A reader cannot tell from it whether their yardages are the "
+        "corrected ones.")
 
     if not CORPUS:
         return
 
-    # (b) the residual on the one printed LENGTH, and the cards it rounds the other way
+    # (b) the residual that REMAINS on the printed depth, and (d) that no card rounds the other way
     import statistics
     resid, wrong, seen, checked = [], [], collections.Counter(), 0
-    printed = {}
+    moved, printed = {}, {}
     for slug, hole, meta, H, W in _green_surfaces():
         if slug not in printed:
             printed[slug] = _printed_green_depths(slug)
@@ -18644,40 +18762,61 @@ def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER(
         resid.append(abs(engine - ground))
         if pr != int(round(ground)):
             wrong.append((slug, hole, pr, ground))
+        # ...and what this same card printed under the retired constant the record states
+        was = _depth_yd_on_scales(slug, hole, meta, H, W, retired_lat_scale,
+                                  retired_lat_scale * math.cos(math.radians(meta["green_center"][0])))
+        if int(round(was)) != pr:
+            moved[(slug, hole)] = (int(round(was)), pr, ground)
     assert checked >= 180, f"only {checked} printed green depths measured; the corpus prints 198"
     assert_no_course_skipped(
         seen, "test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER")
+    assert not wrong, (
+        "a shipped card's printed depth is on the wrong side of a half yard against the WGS84 geodesic "
+        "of the line it measured, which the migration was supposed to end:\n  "
+        + "\n  ".join(f"{s} h{h}: prints {p}yd, ground {g:.4f}" for s, h, p, g in wrong[:8]))
 
-    said = re.search(r"median ([\d.]+) yd, p95 ([\d.]+) yd and worst ([\d.]+) yd", flat)
+    # Anchored on "remaining residual", not on a bare "median ... p95 ... worst": the record also
+    # publishes what the RETIRED model was out by, in the same three-figure shape, and an unanchored
+    # search matched that first and graded the wrong sentence.
+    said = re.search(r"remaining residual is a median ([\d.]+) yd, p95 ([\d.]+) yd and worst "
+                     r"([\d.]+) yd", flat)
     assert said, (
-        "the legal record does not publish the SIZE of the residual on the printed depth, so a reader "
-        "is told a model is approximate without being told by how much. Measured over %d printed "
-        "depths: median %.3f yd, p95 %.3f yd and worst %.3f yd."
+        "the legal record does not publish the SIZE of the residual left on the printed depth, so a "
+        "reader is told a model is approximate without being told by how much. It must read 'the "
+        "remaining residual is a median <M> yd, p95 <P> yd and worst <W> yd'. Measured over %d "
+        "printed depths: median %.7f yd, p95 %.7f yd and worst %.7f yd."
         % (checked, statistics.median(resid), sorted(resid)[int(0.95 * len(resid))], max(resid)))
+    # 1e-6 yd, not the 0.002 this tolerated while the residual WAS a datum error. The residual is now
+    # the plate-carree-vs-geodesic difference of a 30-yard chord and nothing else, so it is stable to
+    # far better than this, and a loose bound here would let a datum error back in under the tolerance.
     for what, val, got in (("median", float(said.group(1)), statistics.median(resid)),
                            ("p95", float(said.group(2)), sorted(resid)[int(0.95 * len(resid))]),
                            ("worst", float(said.group(3)), max(resid))):
-        assert abs(val - got) <= 0.002, (
+        assert abs(val - got) <= 1e-6, (
             f"the legal record puts the {what} residual on the printed depth at {val} yd; measured "
-            f"over {checked} cards it is {got:.4f} yd")
+            f"over {checked} cards it is {got:.7f} yd")
 
-    # Every card the record names, and no card it does not. A list that goes stale silently is the
-    # same defect one level up: it would tell a reader their card is fine when it is not.
-    named = {(m.group(1), int(m.group(2))): float(m.group(4))
-             for m in re.finditer(r"`([a-z0-9-]+)`\s*(?:\||\s)\s*hole\s*(\d+)\s*\|\s*(\d+) yd\s*\|"
-                                  r"\s*([\d.]+) yd", flat)}
-    measured = {(s, h): g for s, h, _p, g in wrong}
-    assert set(named) == set(measured), (
-        "the legal record's list of cards whose printed depth rounds the other way on the ground does "
-        "not match the corpus.\n  record names: %s\n  measured now: %s\n"
-        "  Each row must read: | `<slug>` hole <n> | <printed> yd | <ground> yd |"
-        % (sorted(named) or "none", sorted(measured) or "none"))
-    for key in sorted(measured):
-        assert abs(named[key] - measured[key]) <= 0.002, (
-            f"the legal record puts {key[0]} hole {key[1]}'s ground length at {named[key]} yd; "
-            f"measured it is {measured[key]:.4f} yd")
+    # (c) every card the migration moved, and no card it did not. A list that goes stale silently is
+    # the same defect one level up: it would tell a reader their card moved when it did not.
+    named = {(m.group(1), int(m.group(2))): (int(m.group(3)), int(m.group(4)), float(m.group(5)))
+             for m in re.finditer(r"`([a-z0-9-]+)`\s*(?:\||\s)\s*hole\s*(\d+)\s*\|\s*(\d+) yd"
+                                  r"\s*\|\s*(\d+) yd\s*\|\s*([\d.]+) yd", flat)}
+    assert set(named) == set(moved), (
+        "the legal record's list of cards whose printed depth the earth-model migration moved does not "
+        "match the corpus.\n  record names: %s\n  measured now: %s\n"
+        "  Each row must read: | `<slug>` hole <n> | <was> yd | <now> yd | <ground> yd |"
+        % (sorted(named) or "none", sorted(moved) or "none"))
+    for key in sorted(moved):
+        was, now, ground = moved[key]
+        s_was, s_now, s_ground = named[key]
+        assert (s_was, s_now) == (was, now), (
+            f"the legal record says {key[0]} hole {key[1]} went from {s_was} yd to {s_now} yd; "
+            f"re-derived off the corpus it went from {was} to {now}")
+        assert abs(s_ground - ground) <= 0.002, (
+            f"the legal record puts {key[0]} hole {key[1]}'s ground length at {s_ground} yd; measured "
+            f"it is {ground:.4f} yd")
 
-    # (c) and the record set's own index must point at it, or it is a file nobody is handed
+    # (e) and the record set's own index must point at it, or it is a file nobody is handed
     with open(os.path.join(ROOT, "legal", "README.md"), encoding="utf-8") as fh:
         idx = fh.read()
     assert any(name in idx for name in recs), (
@@ -18689,18 +18828,24 @@ def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER(
 def test_the_earth_models_published_spread_names_every_module_that_carries_it():
     """geo.py published the blast radius of its own constant and undercounted it by a module.
 
-    The standing decision not to migrate `R_LAT = 111320.0` rests on how far it has spread: the note in
-    `geo.py` argues "it is not a one-line change" and then enumerates the modules that re-declare it.
-    That enumeration is the evidence for the decision, so an incomplete one understates the cost of the
-    fix AND hides a copy from whoever eventually does it.
+    THIS TEST WAS RE-BASED, NOT RETIRED, AND ITS NAME IS KEPT ON PURPOSE so the history stays greppable.
+    It was written when `R_LAT = 111320.0` was a literal in nine shipped modules besides `geo.py` and
+    the note in geo.py enumerated them as the evidence for NOT migrating -- the enumeration listed eight
+    and there were nine, because `fetch_osm.py` carried two INLINE copies inside a distance calculation
+    (`(elo-dlo)*111320.0*math.cos(...)`, `(ela-dla)*111320.0`) rather than a module-level `R_LAT`. An
+    audit grepping for the NAME found eight; only one grepping for the NUMBER found all nine.
 
-    It listed eight and there are nine. `fetch_osm.py` carries two INLINE copies inside a distance
-    calculation (`(elo-dlo)*111320.0*math.cos(...)`, `(ela-dla)*111320.0`) rather than a module-level
-    `R_LAT`, so anyone auditing the spread by grepping for the NAME finds eight and anyone grepping for
-    the NUMBER finds nine. The one that matters is the number.
+    The spread is what the deferral rested on, and the spread has now been removed: the scales live in
+    `geo.mlat`/`geo.mlon` and every one of those nine modules imports them. So the assertion inverts and
+    tightens -- the count of other carriers must be ZERO, not "at least eight" -- and the enumeration in
+    geo.py now has a second job. It names the nine modules that ONCE carried the literal, and this test
+    proves each of them now goes through `geo` instead. A module quietly dropping back to its own copy of
+    the scales is how a corrected number gets un-corrected on one card and not the rest.
 
-    Counted here off the tree, in CODE only -- `render_green.py` and `geo.py` also discuss the constant
-    in prose, and a note that policed prose mentions would fight its own explanation.
+    Counted off the tree in CODE only -- `render_green.py`, `geo.py` and `tools/check_scale.py` all
+    discuss the retired constant in prose, and a rule that policed prose mentions would fight its own
+    explanation. See also test_no_module_re_declares_the_horizontal_earth_model, which is the general
+    guard; this one polices the geo.py NOTE against the tree.
     """
     carriers = []
     for p in sorted(glob.glob(os.path.join(ROOT, "*.py"))
@@ -18709,36 +18854,124 @@ def test_the_earth_models_published_spread_names_every_module_that_carries_it():
         with open(p, encoding="utf-8") as fh:
             if "111320" in _code_only(fh.read()):
                 carriers.append(rel)
-    assert "geo.py" in carriers, "geo.py no longer defines the constant this note is about"
-    others = [c for c in carriers if c != "geo.py"]
-    assert len(others) >= 8, (
-        f"only {len(others)} module(s) besides geo.py carry the 111320 literal; this test measures the "
-        f"spread the migration decision is argued from, so re-read it if the constant was centralised")
+    assert not carriers, (
+        "%d module(s) carry the retired earth constant 111320 in CODE again: %s. The two ground scales "
+        "have one home, geo.mlat and geo.mlon, and the whole reason the value stayed wrong for two "
+        "audits is that ten files carried it and none imported it."
+        % (len(carriers), ", ".join(carriers)))
 
     with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
-        note = _prose(fh.read())
-    WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
-             "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+        geo_src = fh.read()
+    note = _prose(geo_src)
     # The ENUMERATION, not the whole module. geo.py's own error messages tell a user to "Re-run
     # fetch_osm.py", so a whole-file substring search for the module names is satisfied by prose that
     # has nothing to do with the earth constant -- the first draft of this test passed that way while
     # the list was still one module short.
-    m = re.search(r"(?:a )?literal in (\w+) shipped modules[^(]*\(([^)]*)\)", note)
-    assert m, ("geo.py no longer enumerates the modules that re-declare its earth constant, and that "
-               "list is the evidence for not migrating it. Measured now it is %d: %s"
-               % (len(others), ", ".join(others)))
-    listed = m.group(2)
-    missing = [c for c in others if os.path.basename(c) not in listed]
-    assert not missing, (
-        "geo.py's note enumerates the modules that re-declare its earth constant, and %d of them are "
-        "not in the list: %s. The list is the evidence for not migrating; an incomplete one understates "
-        "the cost and hides a copy from whoever migrates it. All %d: %s"
-        % (len(missing), ", ".join(missing), len(others), ", ".join(others)))
-    key = m.group(1).lower()
-    said = int(key) if key.isdigit() else WORDS.get(key)
-    assert said == len(others), (
-        f"geo.py says the constant is a literal in {m.group(1)} shipped modules; counted off the tree "
-        f"there are {len(others)}: {', '.join(others)}")
+    m = re.search(r"once carried the literal:?\s*((?:[\w./-]+\.py[,\s]*)+)", note)
+    assert m, (
+        "geo.py no longer enumerates the modules that used to re-declare its earth constant. That list "
+        "is what makes the migration auditable -- it is the set of files a reader has to check to "
+        "believe the scales really have one home -- and it is asserted below to still route through geo.")
+    listed = [n.strip() for n in m.group(1).split(",") if n.strip().endswith(".py")]
+    assert len(listed) >= 9, (
+        f"geo.py's note names only {len(listed)} module(s) as former carriers of the constant: "
+        f"{', '.join(listed)}. Nine re-declared it; an incomplete list understates what had to be "
+        f"migrated and hides a file from the next reader.")
+    # Every module the note names must now GO THROUGH geo -- or, if its copy was DEAD, the note has to
+    # say so, because "deleted, it was never used" and "quietly still on its own earth" look identical
+    # from the outside and only one of them is fine. Checked on code, not prose. `_code_only` joins
+    # tokens with spaces, so `geo.mlon` reads as `geo . mlon` here.
+    dead = set(re.findall(r"([\w./-]+\.py)'s pair was DEAD", note))
+    stragglers = []
+    for name in listed:
+        p = os.path.join(ROOT, name)
+        if not os.path.exists(p):
+            stragglers.append(f"{name} (named in the note but not in the tree)")
+            continue
+        with open(p, encoding="utf-8") as fh:
+            code = _code_only(fh.read())
+        if re.search(r"from\s+geo\s+import|geo\s*\.\s*ml(?:at|on)", code):
+            continue
+        if re.search(r"\bml(?:at|on)\b|\bR_LAT\b", code):
+            stragglers.append(f"{name} (uses a ground scale but does not get it from geo)")
+        elif os.path.basename(name) not in dead:
+            stragglers.append(f"{name} (uses no ground scale at all, and geo.py's note does not "
+                              f"record that its copy was dead code)")
+    assert not stragglers, (
+        "geo.py's note names these modules as former carriers of the earth constant, and they no longer "
+        "get the scales from geo:\n  " + "\n  ".join(stragglers) +
+        "\n  One module measuring on its own earth is a card whose depth, tilt and scale bar disagree "
+        "with each other and with every other book.")
+
+
+def test_no_module_re_declares_the_horizontal_earth_model():
+    """The guard the migration needed to be worth making: one figure of the Earth, in one place.
+
+    `R_LAT = 111320.0` and `111320*cos(lat)` were re-declared as literals in nine shipped modules and
+    imported from none of them, so correcting the value meant correcting ten files and nobody did. It
+    was found and deferred twice, and the deferral was argued FROM the duplication. That is a reason to
+    introduce a single knob, not to leave the number wrong -- but a single knob only stays single if
+    something checks.
+
+    Three things are checked, over production modules AND this test file:
+
+      1. no module carries the literal 111320 in code. Prose is exempt: several files explain the
+         retired model at length, and that documentation is wanted.
+      2. no module besides geo.py defines its own `mlat`/`mlon`/`R_LAT`. A local `def mlon(lat)` is how
+         the last ten copies started -- it looks harmless because it is correct on the day it is
+         written.
+      3. geo.mlat/geo.mlon ARE the true WGS84 local scales, checked two independent ways: against a
+         closed form off pyproj's ellipsoid parameters, and against pyproj's own GEODESIC over a short
+         north-south and east-west baseline. Two, because a single closed form shared with the code
+         under test would be satisfied by the same algebra mistake twice.
+
+    Rule 3 is the one that makes 1 and 2 mean something: without it this file would only be asserting
+    that the project has one earth model, not that it is the right one.
+    """
+    scanned = (sorted(glob.glob(os.path.join(ROOT, "*.py")))
+               + sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))
+               + sorted(glob.glob(os.path.join(ROOT, "tests", "*.py"))))
+    assert len(scanned) >= 12, f"only {len(scanned)} modules found to scan; the glob has stopped working"
+    strays = []
+    for p in scanned:
+        rel = os.path.relpath(p, ROOT)
+        with open(p, encoding="utf-8") as fh:
+            code = _code_only(fh.read())
+        if "111320" in code:
+            strays.append(f"{rel}: carries the retired constant 111320 in code")
+        if re.search(r"^\s*_?R_LAT\s*=", code, re.M):
+            strays.append(f"{rel}: declares R_LAT")
+        if rel == "geo.py":
+            continue
+        for fn in ("mlat", "mlon"):
+            if re.search(r"^\s*def\s+_?%s\s*\(" % fn, code, re.M):
+                strays.append(f"{rel}: defines its own {fn}()")
+    assert not strays, (
+        "the horizontal earth model has been duplicated again:\n  " + "\n  ".join(strays) +
+        "\n  geo.mlat and geo.mlon are the only copy. Every printed length in this book -- green depth, "
+        "the 5-yd ladder, tilt %, the hole map's ticks and carries, the Rule 4.3 print scale -- comes "
+        "from them, and a second copy is a card whose own figures disagree.")
+
+    import geo
+    # ...and the one copy must be the RIGHT one, or the rules above only enforce consistency
+    for lat in (37.4525, 37.8, 40.0639, 0.0, 60.0):
+        want_lat, want_lon = _wgs84_local_scales(lat)
+        assert abs(geo.mlat(lat) - want_lat) <= 1e-6, (
+            f"geo.mlat({lat}) = {geo.mlat(lat):.6f} m/deg against a WGS84 meridian scale of "
+            f"{want_lat:.6f}")
+        assert abs(geo.mlon(lat) - want_lon) <= 1e-6, (
+            f"geo.mlon({lat}) = {geo.mlon(lat):.6f} m/deg against a WGS84 parallel scale of "
+            f"{want_lon:.6f}")
+        # second opinion: pyproj's geodesic over a short baseline about this latitude
+        d = 0.001
+        gn = _ground_m(lat - d / 2, 0.0, lat + d / 2, 0.0) / d
+        ge = _ground_m(lat, -d / 2, lat, d / 2) / d
+        assert abs(geo.mlat(lat) / gn - 1.0) <= 1e-8, (
+            f"geo.mlat({lat}) disagrees with the WGS84 geodesic by "
+            f"{100 * (geo.mlat(lat) / gn - 1):+.3e}% -- one of them is not this ellipsoid")
+        assert abs(geo.mlon(lat) / ge - 1.0) <= 1e-8, (
+            f"geo.mlon({lat}) disagrees with the WGS84 geodesic by "
+            f"{100 * (geo.mlon(lat) / ge - 1):+.3e}%")
 
 
 def _smallest_corpus_tile():
@@ -18934,8 +19167,8 @@ def test_the_served_dem_pixel_must_be_square_in_metres():
     review that covered OSM, ASPRS, TNM and R&A did not run at ArcGIS.
 
     What that costs, in the artifact:
-      * the grid becomes anisotropic by 1/cos(lat) -- 1.2637 at monarch-bay's 37.6916 deg N, measured
-        by re-issuing all six shipped URLs. render_green smooths with `gauss(arr, 3.0)`, ONE sigma in
+      * the grid becomes anisotropic by mlat/mlon -- 1.2584 at monarch-bay's 37.6916 deg N, and
+        1/cos(lat) = 1.2637 under the retired constants the six shipped URLs were requested with. render_green smooths with `gauss(arr, 3.0)`, ONE sigma in
         PIXELS, so the read is blurred 1.5 m one way and 1.9 m the other.
       * `source="USGS 3DEP seamless 1 m @0.5m sampling"` becomes FALSE, and gen_provenance prints that
         string into legal/03. An uncheckable claim in the provenance record is the thing that record
@@ -18948,7 +19181,7 @@ def test_the_served_dem_pixel_must_be_square_in_metres():
     proves a string was sent; it cannot prove the service honoured it, and honouring it is the whole
     question. The tolerance is set from the shipped corpus rather than guessed: across all 198 built
     surfaces the served pixel is between 1.000041 and 1.008503 off square, so 1.05 admits every real
-    one with 6x margin while rejecting the 1.2637 failure by 5x.
+    one with 6x margin while rejecting the ~1.26 degrees-square failure by 5x.
 
     DISCLOSED, not refused, and the distinction is forced by an existing decision:
     test_a_seamless_green_records_the_extent_its_array_actually_covers records that an expanded reply is
@@ -18971,16 +19204,17 @@ def test_the_served_dem_pixel_must_be_square_in_metres():
         "has square pixels in metres, so dropping adjustAspectRatio=false is silent")
     assert 1.02 <= fd.PIXEL_ASPECT_MAX <= 1.10, (
         f"PIXEL_ASPECT_MAX={fd.PIXEL_ASPECT_MAX} is outside the range the corpus justifies: real "
-        f"surfaces reach 1.0085 off square and the failure mode is 1.2637")
+        f"surfaces reach 1.0085 off square and the failure mode is a degrees-square grid, whose "
+        f"metric aspect is {_mlat(37.6916) / _mlon(37.6916):.4f} at monarch-bay")
 
-    R_LAT, clat = 111320.0, 37.6916
-    mlon = R_LAT * math.cos(math.radians(clat))
+    clat = 37.6916
+    mla, mlon = _mlat(clat), _mlon(clat)
 
     # square in METRES: 0.5 m each way, which is what adjustAspectRatio=false yields. The residual
     # 3e-6 is this test's own construction -- dlon is sized at the bbox's SOUTH edge while the
     # predicate uses its centre latitude -- and is four orders of magnitude below the failure.
     W = H = 100
-    dlon, dlat = W * 0.5 / mlon, H * 0.5 / R_LAT
+    dlon, dlat = W * 0.5 / mlon, H * 0.5 / mla
     square = [0.0, clat, dlon, clat + dlat]
     ratio = fd.served_pixel_aspect(square, W, H)
     assert abs(ratio - 1.0) < 1e-4, f"a 0.5 m x 0.5 m grid measured as {ratio}"
@@ -18988,9 +19222,12 @@ def test_the_served_dem_pixel_must_be_square_in_metres():
     # square in DEGREES: exactly what the service returns when the flag is not honoured
     degsq = [0.0, clat, dlat, clat + dlat]
     ratio = fd.served_pixel_aspect(degsq, W, H)
-    assert abs(ratio - 1 / math.cos(math.radians(clat))) < 1e-3, (
-        f"a degrees-square grid must measure as 1/cos(lat) = "
-        f"{1 / math.cos(math.radians(clat)):.4f}, got {ratio:.4f}")
+    # mlat/mlon, NOT 1/cos(lat). Those are the same number only on the retired sphere, where the two
+    # scales were 111320 and 111320*cos(lat); on WGS84 the ratio at this latitude is 1.2584 against
+    # 1.2637, and asserting 1/cos here would be asserting the retired earth model.
+    assert abs(ratio - mla / mlon) < 1e-3, (
+        f"a grid square in DEGREES must measure, in metres, as mlat/mlon = "
+        f"{mla / mlon:.4f}, got {ratio:.4f}")
     assert ratio > fd.PIXEL_ASPECT_MAX, "the real failure mode is inside the tolerance"
 
     # _served_patch must ACCEPT the square reply and REFUSE the degrees-square one, off the GeoTIFF

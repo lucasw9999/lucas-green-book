@@ -19,6 +19,7 @@ from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 import config
 import geo
+from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
 import surface_io
 
 DIR = config.COURSE_DIR
@@ -45,7 +46,6 @@ DISOWNED_FLAGS = ("withheld", "synthetic")
 FILTER_APPLIED = "applied"
 FILTER_UNAVAILABLE = "unavailable"
 MARGIN_M = 12.0
-R_LAT = 111320.0
 # Trust thresholds for a green surface. Above/below these the surface was not really measured,
 # so the book must not print a read for it (see the honesty gate in main()).
 NAN_FRAC_MAX = 0.02                         # max share of the green interior that may be extrapolated
@@ -53,7 +53,6 @@ DENSITY_MIN = 4.0                           # min ground returns per m^2 INSIDE 
 COVER_R_M = 1.0                             # a green node is "measured" if a ground return is
                                             # within this radius of it
 UNCOVERED_MAX = 0.02                        # max share of the green interior with no return nearby
-def mlon(lat): return 111320.0*math.cos(math.radians(lat))
 
 
 def disowned_mask(las, flag):
@@ -233,7 +232,7 @@ def _in_polygon(ux, uy, geometry):
     return inside
 
 def bearing(a_lat,a_lon,b_lat,b_lon):
-    dE=(b_lon-a_lon)*mlon((a_lat+b_lat)/2); dN=(b_lat-a_lat)*R_LAT
+    dE=(b_lon-a_lon)*mlon((a_lat+b_lat)/2); dN=(b_lat-a_lat)*mlat((a_lat+b_lat)/2)
     return (math.degrees(math.atan2(dE,dN))+360)%360
 
 def build_targets():
@@ -262,10 +261,10 @@ def build_targets():
         appr=bearing(prev['lat'],prev['lon'],gend['lat'],gend['lon'])
         gpoly=green['geometry']; lats=[p['lat'] for p in gpoly]; lons=[p['lon'] for p in gpoly]
         clat,clon=centroid(green)
-        dlat=MARGIN_M/R_LAT; dlon=MARGIN_M/mlon(clat)
+        dlat=MARGIN_M/mlat(clat); dlon=MARGIN_M/mlon(clat)
         xmin,xmax=min(lons)-dlon,max(lons)+dlon
         ymin,ymax=min(lats)-dlat,max(lats)+dlat
-        wm=(xmax-xmin)*mlon(clat); hm=(ymax-ymin)*R_LAT
+        wm=(xmax-xmin)*mlon(clat); hm=(ymax-ymin)*mlat(clat)
         W=max(40,int(wm/RES)); H=max(40,int(hm/RES))
         # grid of cell-centre lon/lat -> UTM (for interpolation) ; store bbox for renderer
         us=(np.arange(W)+0.5)/W; vs=(np.arange(H)+0.5)/H

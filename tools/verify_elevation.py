@@ -91,7 +91,9 @@ except ImportError:                     # not in requirements for years -- see t
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-R_LAT = 111320.0
+# The project's ONE figure of the Earth. Re-declaring it here is how the value stayed wrong through
+# two audits: ten files carried the literal and none imported it. See the note in geo.py.
+from geo import mlat, mlon      # noqa: E402 -- ROOT must be on sys.path first
 SAMPLE_HALF_M = 15.0        # fallback box, for a tee with no mapped ring. NOT "the same box
 # fetch_hole_elev samples at the tee" -- that comment was false on 5 of 11 courses, because TEE_R_M was
 # applied in raw CRS units there and so described a 9.1 m box, not a 30 m one. Both sides now sample the
@@ -117,10 +119,6 @@ ABS_FAULT_M = 1.0           # absolute green elevation vs the DEM. This is a SEP
 RETRIES = 5
 
 
-def _mlon(lat):
-    return 111320.0 * math.cos(math.radians(lat))
-
-
 def dem_median_over_ring(ring, px=64):
     """Median 3DEP elevation in metres over a lat/lon RING's interior, or None.
 
@@ -141,7 +139,7 @@ def dem_median_over_ring(ring, px=64):
     import fetch_hole_elev as fhe          # course-bound, so imported here rather than at module scope
     rla, rlo = ring
     la0 = float(np.mean(rla))
-    pad = 1.0 / R_LAT                                  # a metre of margin so edge pixels exist
+    pad = 1.0 / mlat(la0)                              # a metre of margin so edge pixels exist
     s, n = float(rla.min()) - pad, float(rla.max()) + pad
     w, e = float(rlo.min()) - pad/math.cos(math.radians(la0)), float(rlo.max()) + pad/math.cos(math.radians(la0))
     got = _fetch_patch(w, s, e, n, px)
@@ -153,8 +151,8 @@ def dem_median_over_ring(ring, px=64):
     lons = w + (np.arange(W) + 0.5) / W * (e - w)
     lats = n - (np.arange(H) + 0.5) / H * (n - s)
     LO, LA = np.meshgrid(lons, lats)
-    k = _mlon(la0)
-    inside = fhe._mask_in_ring((LO*k).ravel(), (LA*R_LAT).ravel(), rlo*k, rla*R_LAT).reshape(H, W)
+    k, kla = mlon(la0), mlat(la0)
+    inside = fhe._mask_in_ring((LO*k).ravel(), (LA*kla).ravel(), rlo*k, rla*kla).reshape(H, W)
     vals = a[inside & np.isfinite(a)]
     if vals.size == 0:
         return None
@@ -210,8 +208,8 @@ def dem_median_m(lat, lon, half_m=SAMPLE_HALF_M, px=48):
     """Median 3DEP elevation in metres over a box about (lat, lon), or None. The FALLBACK sampler, for
     a tee anchor no mapped ring contains -- the ring sampler above is what the greens and mapped tees
     use, so both sides of the comparison measure the same region."""
-    dlat = half_m / R_LAT
-    dlon = half_m / _mlon(lat)
+    dlat = half_m / mlat(lat)
+    dlon = half_m / mlon(lat)
     got = _fetch_patch(lon-dlon, lat-dlat, lon+dlon, lat+dlat, px)
     if got is None:
         return None

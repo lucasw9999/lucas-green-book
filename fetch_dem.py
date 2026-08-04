@@ -36,6 +36,7 @@ import urllib.request, json, math, io, time, os
 import numpy as np, rasterio
 import config
 import geo
+from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
 import surface_io
 
 DIR = config.COURSE_DIR
@@ -51,7 +52,6 @@ surface_io.sweep_staged(OUT)
 # for the coarse 1 m DEM -- the exact loss keeps_existing_surface below exists to prevent. An
 # explicit off must be off.
 OVERWRITE = os.environ.get("OVERWRITE", "").lower() not in ("", "0", "false", "no")
-R_LAT = 111320.0
 def is_seamless(meta):
     """True when this surface came from the 1 m seamless DEM rather than 0.4 m LiDAR ground returns.
 
@@ -94,13 +94,12 @@ def keeps_existing_surface(meta_path, overwrite=False):
     return bool(src) and not is_seamless(meta) and not meta.get("insufficient")
 
 
-def mlon(lat): return 111320.0 * math.cos(math.radians(lat))
 
 def centroid(g):
     la = sum(p['lat'] for p in g['geometry']) / len(g['geometry'])
     lo = sum(p['lon'] for p in g['geometry']) / len(g['geometry']); return la, lo
 def bearing(a_lat, a_lon, b_lat, b_lon):
-    dE = (b_lon - a_lon) * mlon((a_lat + b_lat) / 2); dN = (b_lat - a_lat) * R_LAT
+    dE = (b_lon - a_lon) * mlon((a_lat + b_lat) / 2); dN = (b_lat - a_lat) * mlat((a_lat + b_lat) / 2)
     return (math.degrees(math.atan2(dE, dN)) + 360) % 360
 
 NAN_FRAC_MAX = 0.02          # matches fetch_dem_hd.py's gate
@@ -181,7 +180,9 @@ class NotSquareInMetres(UnusableReply):
 # How far off square a served pixel may be before its sampling is no longer "0.5 m". Set from the
 # corpus, not guessed: across all 198 built surfaces the served pixel measures between 1.000041 and
 # 1.008503 off square (integer W,H against a real-valued span), so this admits every real one with
-# ~6x margin. The failure it exists to catch is 1/cos(lat) -- 1.2637 at monarch-bay -- rejected by 5x.
+# ~6x margin. The failure it exists to catch is a grid square in DEGREES, whose metric aspect is
+# mlat/mlon -- 1.2584 at monarch-bay -- rejected by 5x. (The retired flat-earth constants made that
+# ratio exactly 1/cos(lat), i.e. 1.2637 there, which is the figure the shipped URLs were built with.)
 PIXEL_ASPECT_MAX = 1.05
 
 
@@ -199,7 +200,7 @@ def served_pixel_aspect(bbox, W, H):
     xmin, ymin, xmax, ymax = bbox
     clat = (ymin + ymax) / 2.0
     mx = (xmax - xmin) * mlon(clat) / W
-    my = (ymax - ymin) * R_LAT / H
+    my = (ymax - ymin) * mlat(clat) / H
     lo, hi = min(abs(mx), abs(my)), max(abs(mx), abs(my))
     return float("inf") if lo == 0 else hi / lo
 
@@ -210,8 +211,9 @@ def sampling_note(bbox, W, H):
     The whole squareness of this stage's grid rested on ONE query parameter, `adjustAspectRatio=false`,
     and nothing had ever checked it. ArcGIS REST silently ignores parameters it does not recognise, so
     if that one is dropped, renamed, or retired the service goes back to keeping `size` and stretching
-    the bbox to square pixels IN DEGREES -- 1/cos(lat) anisotropic, 1.2637 at monarch-bay's 37.6916 deg,
-    measured by re-issuing all six shipped URLs. The external-contract review that covered OSM, ASPRS,
+    the bbox to square pixels IN DEGREES -- anisotropic by mlat/mlon, 1.2584 at monarch-bay's 37.6916
+    deg, measured by re-issuing all six shipped URLs, which the retired constants made 1/cos(lat) =
+    1.2637. The external-contract review that covered OSM, ASPRS,
     TNM and R&A never ran at ArcGIS, and this is the path a BRAND-NEW course takes for every green the
     LiDAR stage refuses: the least gated and most used producer in the pipeline.
 
@@ -229,7 +231,7 @@ def sampling_note(bbox, W, H):
     xmin, ymin, xmax, ymax = bbox
     clat = (ymin + ymax) / 2.0
     mx = (xmax - xmin) * mlon(clat) / W
-    my = (ymax - ymin) * R_LAT / H
+    my = (ymax - ymin) * mlat(clat) / H
     aspect = served_pixel_aspect(bbox, W, H)
     if aspect <= PIXEL_ASPECT_MAX:
         return "USGS 3DEP seamless 1 m @0.5m sampling", None
@@ -249,9 +251,10 @@ def _served_patch(raw):
     The georeference has to travel with the pixels. `size={W},{H}` is derived from the bbox's METRIC
     aspect (0.5 m per pixel each way), while `imageSR=4326` makes ArcGIS adjust the bbox to that
     size's aspect ratio IN DEGREES -- so without adjustAspectRatio=false the service expands the
-    latitude span by 1/cos(lat) and the array does not cover the bbox it was asked for. Measured by
-    re-issuing all six shipped monarch-bay URLs: 1.2542x to 1.2675x against 1/cos(37.6916 deg) =
-    1.2637, each north and south edge out by 5.5 to 7.7 m. Recording the requested bbox anyway put an
+    latitude span by mlat/mlon and the array does not cover the bbox it was asked for. Measured by
+    re-issuing all six shipped monarch-bay URLs, which were requested under the retired constants
+    that made that ratio 1/cos(37.6916 deg) = 1.2637: 1.2542x to 1.2675x, each north and south edge
+    out by 5.5 to 7.7 m. On the true WGS84 scales the same ratio there is 1.2584. Recording the requested bbox anyway put an
     inflated tilt on all six of that course's seamless cards, because render_green takes the array's
     SHAPE from the array and its metres-per-pixel and polygon mask from the meta.
 
@@ -371,13 +374,13 @@ def main():
         # list from the second hole onward.
         gpoly = green['geometry']; lats = [p['lat'] for p in gpoly]; lons = [p['lon'] for p in gpoly]
         clat, clon = centroid(green)
-        mrg = 12.0; dlat = mrg/R_LAT; dlon = mrg/mlon(clat)
+        mrg = 12.0; dlat = mrg/mlat(clat); dlon = mrg/mlon(clat)
         # The extent to ASK FOR, and a size that makes the grid square in METRES over it. What gets
         # RECORDED is whatever extent the reply carries; the two agree only because of
         # adjustAspectRatio=false below. See _served_patch.
         q_xmin, q_xmax = min(lons)-dlon, max(lons)+dlon
         q_ymin, q_ymax = min(lats)-dlat, max(lats)+dlat
-        wm = (q_xmax-q_xmin)*mlon(clat); hm = (q_ymax-q_ymin)*R_LAT
+        wm = (q_xmax-q_xmin)*mlon(clat); hm = (q_ymax-q_ymin)*mlat(clat)
         W = max(48, int(wm/0.5)); H = max(48, int(hm/0.5))
         # adjustAspectRatio=false is what makes bbox AND size both honoured. By default exportImage
         # keeps `size` and stretches the bbox to match its aspect ratio in the image SR, which in

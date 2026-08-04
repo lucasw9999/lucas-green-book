@@ -34,8 +34,6 @@ import config
 import geo
 
 DIR = config.COURSE_DIR
-R_LAT = 111320.0
-def mlon(lat): return 111320.0*math.cos(math.radians(lat))
 # NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
 # No default. A course.json without "location" used to fall back to -121.0, i.e. silently pick
 # California UTM zone 10 -- for a Pennsylvania course (zone 18) every tree would be projected

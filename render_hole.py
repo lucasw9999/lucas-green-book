@@ -16,8 +16,8 @@ import glob
 import json, math, os
 import config
 import geo
+from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
 DIR = config.COURSE_DIR
-R_LAT = 111320.0
 
 _LIDAR_TREES = None
 def _lidar_trees():
@@ -45,7 +45,6 @@ def _lidar_trees():
             print("  NOTE: ALLOW_OSM_TREES set -- drawing sparse OSM trees, not LiDAR canopy")
         _LIDAR_TREES = json.load(open(p)) if os.path.exists(p) else {}
     return _LIDAR_TREES
-def mlon(lat): return 111320.0*math.cos(math.radians(lat))
 
 def load():
     course = json.load(open(f"{DIR}/osm_course.json"))["elements"]
@@ -403,7 +402,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     green, green_end, tee_end = match_green(line, greens)
 
     lat0=sum(p['lat'] for p in line)/len(line); lon0=sum(p['lon'] for p in line)/len(line)
-    def em(lat,lon): return ((lon-lon0)*mlon(lat0), (lat-lat0)*R_LAT)   # east,north meters
+    def em(lat,lon): return ((lon-lon0)*mlon(lat0), (lat-lat0)*mlat(lat0))  # east,north meters
     tee=em(tee_end['lat'],tee_end['lon']); grn=em(green_end['lat'],green_end['lon'])
     ux,uy=grn[0]-tee[0],grn[1]-tee[1]; L=math.hypot(ux,uy) or 1; ux,uy=ux/L,uy/L
     perp=(uy,-ux)
@@ -453,11 +452,11 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         The reach test for SAND, and deliberately neither of the other two in this function.
 
         AGAINST in_corridor, WHICH MEASURES THE CENTROID: a bunker is not its centroid, and the bigger
-        the sand the worse that approximation gets. the-reserve 16's way 681278621 is a 3,568 m^2 waste
+        the sand the worse that approximation gets. the-reserve 16's way 681278621 is a 3,562 m^2 waste
         bunker -- shoelace on its own closed 75-node ring -- whose nearest edge comes 6.9 m from the
         played line 214 m along a 477 m line, about 234 yd off the tee and in the landing zone, while
         its centroid sits 40.5 m away. At the 40 m bar the centroid test excluded it, so that card
-        printed "4B 1W" and drew blank ground over all 3,568 m^2 of that sand; it appeared on NO card in the
+        printed "4B 1W" and drew blank ground over all 3,562 m^2 of that sand; it appeared on NO card in the
         corpus (centroid 40.5/120.9/133.3/176.5 m from holes 16/15/14/12). Water was rescued from
         exactly this defect (see `waters`) and watercourses before it (see _seg_near_played_line); sand
         was the last hazard still selected by one interior point. 40 m is not a new threshold -- it is
@@ -465,8 +464,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         62 of the 198 geometry cards gain at least one bunker, 907 -> 984 drawn bunkers, and no card
         loses one.
 
-        That ring is 61.9 x 130.1 m across, and this docstring published the area of THAT BOUNDING BOX
-        -- 8,050 m^2, 2.26x the sand -- as the bunker's area until it was measured on the ring
+        That ring is 61.9 x 129.8 m across, and this docstring published the area of THAT BOUNDING BOX
+        -- 8,037 m^2, 2.26x the sand -- as the bunker's area until it was measured on the ring
         (tests: test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bounding_box).
         The box is the wrong figure for "of sand" and the right one only where it says box.
 

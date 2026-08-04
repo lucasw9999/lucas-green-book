@@ -9,67 +9,108 @@ Shared geodesy helpers.
 This module exists because the same two facts were previously derived independently in
 fetch_dem_hd.py and fetch_trees.py, and a fix to one had to be hand-applied to the other. A
 divergence between them would be silent and serious: both feed the same green surface.
+
+It now also owns the project's two LOCAL GROUND SCALES -- `mlat` and `mlon` -- for the same reason
+carried to its conclusion: they were re-declared as literals in nine other modules, so the value
+could not be corrected without correcting nine copies, and it was not corrected for two audits
+running. See the note below the imports.
 """
 import math
 
-R_LAT = 111320.0                    # metres per degree of latitude (mean)
+# --- THE PROJECT'S FIGURE OF THE EARTH, AND ITS ONLY COPY ------------------------------------------
+# Every horizontal length this book prints is a difference of DEGREES multiplied by one of the two
+# functions below: green depth and width, the grey 5-yd ladder and the printed 5-yd scale bar, green
+# tilt % (a rise over one of these runs), the hole map's yardage ticks and the carries measured off
+# them, and the Rule 4.3 print scale the pocket edition claims to conform to. So `mlat` and `mlon` are
+# the figure of the Earth for this project, and the whole point of this section is that there is now
+# exactly ONE copy of them.
+#
+# There used to be ten, and the duplication was the reason the value stayed wrong through two audits
+# that found it. The retired model was the constant pair `R_LAT = 111320.0` with a longitude scale of
+# 111320.0*cos(lat), re-declared as a literal in nine shipped modules and imported from none of them.
+# Those nine modules once carried the literal: fetch_dem.py, fetch_dem_hd.py, fetch_hole_elev.py,
+# fetch_osm.py, fetch_trees.py, render_green.py, render_hole.py, tools/check_scale.py,
+# tools/verify_elevation.py. Two of fetch_osm.py's were INLINE inside a distance calculation and not
+# named R_LAT, so an audit that grepped for the NAME found eight and only one that grepped for the
+# NUMBER found all nine. There was no knob to turn; that is an argument for introducing one, which is
+# what this is, not for leaving the number wrong. All nine now import from here, except that
+# fetch_trees.py's pair was DEAD -- declared at module level and never referenced by anything in the
+# file -- so it was deleted rather than migrated. A test asserts no module re-declares either scale.
+#
+# WHY THE RETIRED PAIR WAS WRONG, measured rather than assumed. The retired model used 111320.0 m/deg
+# of latitude and 111320.0*cos(lat) m/deg of longitude: at 37.8N -- the middle of this corpus -- the
+# true local scales are 110992.70 m/deg of latitude and 88070.46 m/deg of longitude, so that model ran
+# +0.295% LONG in latitude and -0.125% SHORT in longitude. That is a 0.42 pp spread BETWEEN ITS OWN TWO
+# AXES, half again the 0.84% raster anisotropy render_green.screen_m_per_unit exists to decompose, so
+# the pipeline was internally inconsistent by more than the effect it had just been corrected for.
+#
+# WHY PER-AXIS LOCAL SCALES ARE THE RIGHT FIX rather than switching to a projected CRS. fetch_dem_hd
+# samples a green's cell centres linear in lon/lat -- `lon_g = xmin + us*(xmax-xmin)` -- so a green's
+# array genuinely IS a plate-carree grid, and the local scales of such a grid are exactly the meridian
+# radius of curvature M and the parallel arc N*cos(lat). They are LOCAL scales, not a one-degree
+# geodesic: a geodesic across a whole degree cuts inside the parallel and reads 88070.04 against
+# 88070.46 at 37.8N. Confirmed by measurement, not by argument: over all 198 built greens these scales
+# reproduce the true WGS84 geodesic length of the very front-to-back line each card measures to a median
+# 5.8e-07 yd and a worst 1.48e-05 yd, where the retired sphere differed from that same truth by a median
+# 0.0405 yd, p95 0.0939 and worst 0.1112.
+#
+# WHAT THE MIGRATION MOVED ON PAPER. Today no printed depths land on the wrong side of a half yard.
+# Four did under the retired model, and each printed one yard DEEPER than the ground: copper-valley 16
+# printed 37 against a ground length of 36.489, micke-grove 13 printed 20 against 19.450, monarch-bay 1
+# printed 35 against 34.451 on a seamless-DEM green, and the-reserve 7 printed 33 against 32.438. Two of
+# those four -- copper-valley 16 and micke-grove 13 -- were depths the earlier pixel-anisotropy fix had
+# moved the WRONG WAY, because it corrected the raster while leaving the datum wrong. The four cards are
+# named for a reader, not just here, in legal/11_HORIZONTAL_EARTH_MODEL.md, and a test re-measures every
+# figure in that record off the built corpus.
+#
+# The hole map gained more than the green card did. Comparing every course centreline vertex against a
+# WGS84 geodesic at the radii the book actually prints, the retired model was out by up to 0.43 yd at the
+# 100 yd tick, 0.73 at 200, 0.99 at 300 and 1.55 at its worst; on these scales the same 391 vertices are
+# out by at most 0.0003, 0.0013, 0.0027 and 0.0077 yd. The approximation that was documented here as
+# "deliberate and quantified" is now two orders of magnitude smaller than the integers it feeds.
 
-# The cost of this local flat-earth model, MEASURED rather than assumed. Comparing every course
-# centreline point against a WGS84 geodesic (pyproj) at the radii the book actually prints:
-#   100 yd tick -> worst 0.29 yd     200 yd -> 0.60 yd     300 yd -> 0.89 yd
-# Under one yard everywhere a tick appears, against club gaps of 10-15 yd, and the labels are
-# integers. Using the true meridian radius would shave that but would change every book's output for
-# no gain a golfer could act on -- so this is a deliberate, quantified approximation, not an
-# oversight. Re-measure before assuming it is still fine if tick radii ever exceed 300 yd (the error
-# grows with distance: 1.55 yd at 534 yd).
-#
-# THE TWO CONSTANTS ARE NOT SELF-CONSISTENT WITH EACH OTHER, and the spread between them is larger
-# than the pixel anisotropy the green card was corrected for. 111320 is neither of the ellipsoid's
-# radii: at 37.8N (mid-corpus) the true local scales are 110992.70 m/deg of latitude and 88070.46
-# m/deg of longitude, so this model runs +0.295% LONG in latitude and -0.125% SHORT in longitude -- a
-# 0.42 pp internal spread against the 0.84% raster anisotropy render_green.screen_m_per_unit exists to
-# decompose. (Local scales, not a one-degree geodesic: the meridian radius of curvature M and the
-# parallel arc N*cos(lat), which is what a grid uniform in degrees is actually spaced by.)
-#
-# What that costs the printed green depth, which is the one LENGTH the book derives from these
-# constants and prints as an integer. fetch_dem_hd samples a green's cell centres linear in lon/lat
-# (`lon_g = xmin + us*(xmax-xmin)`), so the array IS a plate-carree grid and the figures above are its
-# true ground scales. Recomputing all 198 printed depths with them -- no bbox arithmetic, no raster --
-# the engine's figure is out by a median 0.041 yd, worst 0.111 (-0.138% to +0.297% relative), and FOUR
-# printed depths land on the wrong side of a half yard:
-#     copper-valley 16 prints 37 where the ground length is 36.489
-#     micke-grove 13   prints 20                            19.450
-#     monarch-bay 1    prints 35                            34.451   (a seamless green)
-#     the-reserve 7    prints 33                            32.438
-# Two of those -- copper-valley 16 and micke-grove 13 -- are depths the anisotropy fix moved the other
-# way. The per-axis local scales reproduce the true geodesic length of the very line each card measures
-# to 1.5e-5 yd over all 198 greens, so this is the model's error and not a measurement artifact.
-#
-# NOT CORRECTED, deliberately, and it is not a one-line change. `R_LAT = 111320.0` is re-declared as a
-# literal in nine shipped modules rather than imported from here (fetch_dem.py, fetch_dem_hd.py,
-# fetch_hole_elev.py, fetch_osm.py, fetch_trees.py, render_green.py, render_hole.py,
-# tools/check_scale.py, tools/verify_elevation.py -- fetch_osm.py's two are INLINE inside a distance
-# calculation and are not named R_LAT, so an audit that greps for the NAME finds eight and only one
-# that greps for the NUMBER finds all nine); check_scale.py re-derives it to gate the Rule 4.3 print
-# scale, so a renderer that moved while the gate did not would stop being measured on the metric that
-# sized it; and the suite's own ground truth for green depth is a great circle on THIS sphere.
-# Correcting it for
-# depth alone would print one green's depth on the ellipsoid while the same card's tilt %, its 5-yd
-# scale bar, its Rule 4.3 sizing, its hole-map tick radii and its carries stayed on the sphere.
-# Measured, the coherent version of that migration moves 4 printed depths, 11 printed tilt
-# percentages, 6 median slopes, 7 greens' slope labels and 26 Rule 4.3-limited <svg> sizes: it wants
-# its own commit, its own rebuild and its own re-reading of check_scale.py.
-#
-# THE FOUR CARDS ARE NOW NAMED WHERE A READER CAN SEE THEM. Everything above is a source comment, and
-# a junior holding one of those four cards cannot read it: the whole disclosure of a printed residual
-# lived in this file and in render_green.screen_m_per_unit, and nothing in legal/ mentioned the
-# HORIZONTAL model at all. legal/11_HORIZONTAL_EARTH_MODEL.md now states the model, the measured
-# offset and the four cards by name, and a test re-measures every figure in it off the corpus.
+
+def _wgs84():
+    """(semi-major axis in metres, first eccentricity squared) of WGS84, cached.
+
+    Asked of pyproj rather than transcribed, for the same reason `vertical_scale` asks it about units:
+    a hand-copied ellipsoid parameter is a figure of the Earth that nothing checks. Cached because
+    `mlat`/`mlon` are called per green, per centreline vertex and per candidate hole line, and building
+    a CRS object each time would be the one avoidable cost in a pure-arithmetic helper.
+    """
+    global _WGS84
+    if _WGS84 is None:
+        from pyproj import CRS
+        ell = CRS.from_epsg(4326).ellipsoid
+        a = ell.semi_major_metre
+        f = 1.0 / ell.inverse_flattening
+        _WGS84 = (a, f * (2.0 - f))
+    return _WGS84
+
+
+_WGS84 = None
+
+
+def mlat(lat):
+    """Metres per degree of LATITUDE at a given latitude, on WGS84.
+
+    The meridian radius of curvature M, which is the true north-south ground scale of a grid spaced
+    uniformly in degrees -- see the note above for why that is the right quantity and for what the
+    retired constant 111320.0 cost the printed page.
+    """
+    a, e2 = _wgs84()
+    s2 = math.sin(math.radians(lat)) ** 2
+    return a * (1.0 - e2) / (1.0 - e2 * s2) ** 1.5 * math.pi / 180.0
 
 
 def mlon(lat):
-    """Metres per degree of longitude at a given latitude."""
-    return 111320.0 * math.cos(math.radians(lat))
+    """Metres per degree of LONGITUDE at a given latitude, on WGS84.
+
+    The parallel arc N*cos(lat), N being the prime-vertical radius of curvature.
+    """
+    a, e2 = _wgs84()
+    p = math.radians(lat)
+    return a / math.sqrt(1.0 - e2 * math.sin(p) ** 2) * math.cos(p) * math.pi / 180.0
 
 
 def utm_epsg(lon):
@@ -186,7 +227,7 @@ def match_green(hole_line, greens, max_m=GREEN_BIND_MAX_M, label=""):
             gg = g['geometry']
             gla = sum(p['lat'] for p in gg) / len(gg)
             glo = sum(p['lon'] for p in gg) / len(gg)
-            dm = math.hypot((pt['lon'] - glo) * mlon(gla), (pt['lat'] - gla) * R_LAT)
+            dm = math.hypot((pt['lon'] - glo) * mlon(gla), (pt['lat'] - gla) * mlat(gla))
             if dm < best:
                 best, bg = dm, g
         return best, bg
@@ -261,7 +302,7 @@ def hole_lines(elements, course_lat, course_lon):
         g = w["geometry"]
         la = sum(p["lat"] for p in g) / len(g)
         lo = sum(p["lon"] for p in g) / len(g)
-        d = math.hypot((lo - course_lon) * mlon(la), (la - course_lat) * R_LAT)
+        d = math.hypot((lo - course_lon) * mlon(la), (la - course_lat) * mlat(la))
         return (round(d, 3), w.get("id") or 0)
 
     out = {}

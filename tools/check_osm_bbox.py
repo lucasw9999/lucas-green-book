@@ -97,10 +97,10 @@ def check_course(slug):
             # how far OUTSIDE the box this vertex is, before the corridor is even added
             dlat = max(S - p["lat"], p["lat"] - N, 0.0)
             dlon = max(W - p["lon"], p["lon"] - E, 0.0)
-            out = math.hypot(dlon * geo.mlon(p["lat"]), dlat * geo.R_LAT)
+            out = math.hypot(dlon * geo.mlon(p["lat"]), dlat * geo.mlat(p["lat"]))
             # a vertex INSIDE the box still draws CORRIDOR_M around itself, so the margin it needs is
             # the corridor; anything less than that from an edge can be missing features too
-            edge = min((p["lat"] - S) * geo.R_LAT, (N - p["lat"]) * geo.R_LAT,
+            edge = min((p["lat"] - S) * geo.mlat(p["lat"]), (N - p["lat"]) * geo.mlat(p["lat"]),
                        (p["lon"] - W) * geo.mlon(p["lat"]), (E - p["lon"]) * geo.mlon(p["lat"]))
             short = max(0.0, CORRIDOR_M - edge) if out == 0 else out + CORRIDOR_M
             worst = max(worst, short)

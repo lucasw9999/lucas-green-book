@@ -24,7 +24,7 @@ built only from **open** and **public‑domain** data plus **facts**, independen
 | `09_GREEN_SURFACE_REPEATABILITY.md` | What the printed slope numbers are worth, measured across
 repeat LiDAR flights and flight-line overlap |
 | `10_SOFTWARE_DEPENDENCIES.md` | Every library the build uses and its licence |
-| `11_HORIZONTAL_EARTH_MODEL.md` | The flat-earth model every printed distance is computed on, the
+| `11_HORIZONTAL_EARTH_MODEL.md` | The WGS84 local ground scales every printed distance is computed on, the
 measured offset against WGS84, and the four cards whose printed depth it rounds the other way |
 
 **Two of the records above are local‑only and deliberately not in git**, so a copy of this folder

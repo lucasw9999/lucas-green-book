@@ -44,7 +44,6 @@ Exit: 0 = every POCKET green conforms, 1 = one is over the limit or went unmeasu
 """
 import glob
 import json
-import math
 import os
 import pathlib
 import re
@@ -67,13 +66,16 @@ from export_pdf import _headless_shell   # one discovery of the bundled
                                          # chrome-headless-shell, not two
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-R_LAT = 111320.0
-
-
-def mlon(lat):
-    return 111320.0 * math.cos(math.radians(lat))
-
-
+sys.path.insert(0, str(ROOT))
+# THE GATE AND THE THING IT GATES MUST BE ON THE SAME EARTH. This tool divides the drawn size by a
+# ground scale to get "inches per 5 yd", and render_green.py multiplies by that same scale to SIZE the
+# drawing in the first place (`legal_kf = 0.36 * px_m / 4.572`). It used to re-derive the scale from its
+# own copy of `R_LAT = 111320.0`, so the day the renderer's earth model moved the gate would have gone
+# on measuring the renderer against a metric that no longer sized it -- Rule 4.3 conformance certified
+# against the wrong ruler. Import it; never re-declare it. (Measured when the model was migrated to the
+# true per-axis WGS84 scales: the ground scale below moves by a median -0.083%, which shifts the worst
+# gated reading from 0.3601 to 0.3600 in : 5 yd against a 0.375 in cap -- a 4.0% margin.)
+from geo import mlat, mlon
 
 def px_m_of(course, hole):
     """True metres per DEM pixel for one green (mean of the two axes), or None with the reason.
@@ -90,7 +92,7 @@ def px_m_of(course, hole):
     m = json.loads(p.read_text())
     xmin, ymin, xmax, ymax = m["bbox"]
     clat = m["green_center"][0]
-    pm = ((((xmax - xmin) * mlon(clat)) / m["W"]) + (((ymax - ymin) * R_LAT) / m["H"])) / 2.0
+    pm = ((((xmax - xmin) * mlon(clat)) / m["W"]) + (((ymax - ymin) * mlat(clat)) / m["H"])) / 2.0
     if not pm:
         return None, f"dem_hd/hole{hole:02d}.json gives a zero ground scale"
     return pm, ""

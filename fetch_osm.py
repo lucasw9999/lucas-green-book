@@ -400,8 +400,8 @@ def fetch(query, out, write=True):
                         if not eg or (e.get('tags') or {}).get('golf') != 'green':
                             continue
                         ela = sum(p['lat'] for p in eg)/len(eg); elo = sum(p['lon'] for p in eg)/len(eg)
-                        dm = math.hypot((elo-dlo)*111320.0*math.cos(math.radians(dla)),
-                                        (ela-dla)*111320.0)
+                        dm = math.hypot((elo-dlo)*geo.mlon(dla),
+                                        (ela-dla)*geo.mlat(dla))
                         if dm < 25.0:
                             raise SystemExit(
                                 f"ABORT: digitized green {d.get('id')} in {path} is {dm:.1f} m from a\n"

@@ -89,12 +89,12 @@ def dates_recoverable(header):
 def _grid(meta):
     """The shipped tile's own grid, plus the green-interior mask, so every pass is compared on it."""
     import render_green as rg
-    from geo import R_LAT, mlon
+    from geo import mlat, mlon
     W, H = meta['W'], meta['H']
     xmin, ymin, xmax, ymax = meta['bbox']
     clat = (ymin+ymax)/2.0
     px_x = (xmax-xmin)*mlon(clat)/W
-    px_y = (ymax-ymin)*R_LAT/H
+    px_y = (ymax-ymin)*mlat(clat)/H
     poly = rg.poly_to_px(meta['polygon'], meta['bbox'], W, H)
     # rg.point_in_poly rather than matplotlib's Path: the same test the renderer uses, and no
     # dependency the install instructions would then have to name for one diagnostic.

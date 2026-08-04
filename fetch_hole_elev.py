@@ -63,6 +63,7 @@ import numpy as np
 
 import config
 import geo
+from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
 import render_hole                 # for par3_exact_from_tee: one definition of "straight par 3"
 
 DIR = config.COURSE_DIR
@@ -107,17 +108,12 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 MAX_TEE_RELIEF_FT = 2.5   # p5-p95 spread of the ring sample; a tee is level or it is not a tee
 MIN_RING_PTS = 30         # and enough points for that spread to mean anything
 GROUND = 2              # LAS classification for bare earth
-R_LAT = 111320.0        # metres per degree of latitude
 # A tee-to-green change beyond this is not a golf hole, it is a units or datum fault. The largest real
 # figure in the corpus is 151 ft (castlewood-hill 7, a genuinely hilly Pleasanton course), so this
 # leaves better than half again of headroom. It exists because the unit bug this file once had produced
 # 300-550 ft figures that printed on real cards and looked like data: a plausibility bound is the one
 # check that would have stopped them at the source instead of needing a reader to notice.
 MAX_PLAUSIBLE_FT = 250.0
-
-
-def _mlon(lat):
-    return 111320.0*math.cos(math.radians(lat))
 
 
 def tee_anchor(hnum, line, greens):
@@ -149,7 +145,7 @@ def tee_anchor(hnum, line, greens):
     green, gend, tend = geo.match_green(line, greens, label=f"hole {hnum}")
     la0 = sum(p['lat'] for p in line)/len(line)
     lo0 = sum(p['lon'] for p in line)/len(line)
-    em = lambda la, lo: ((lo-lo0)*_mlon(la0), (la-la0)*R_LAT)
+    em = lambda la, lo: ((lo-lo0)*mlon(la0), (la-la0)*mlat(la0))
     same = lambda a, b: abs(a['lat']-b['lat']) < 1e-9 and abs(a['lon']-b['lon']) < 1e-9
     ordered = line if same(line[0], tend) else list(reversed(line))
     pts = [em(p['lat'], p['lon']) for p in ordered]
@@ -175,7 +171,7 @@ def tee_anchor(hnum, line, greens):
                 f = (want - acc)/(seg or 1.0)          # fraction from pts[i] toward pts[i-1]
                 tx = pts[i][0] + (pts[i-1][0]-pts[i][0])*f
                 ty = pts[i][1] + (pts[i-1][1]-pts[i][1])*f
-                return (ty/R_LAT + la0, tx/_mlon(la0) + lo0,
+                return (ty/mlat(la0) + la0, tx/mlon(la0) + lo0,
                         f"walked back along the mapped line to the card {card_yd} yd "
                         f"(the line runs {arc_yd:.0f} yd, past this tee)")
             acc += seg
@@ -186,7 +182,7 @@ def tee_anchor(hnum, line, greens):
         dx, dy = te[0]-gc[0], te[1]-gc[1]
         d = math.hypot(dx, dy) or 1.0
         tx, ty = gc[0] + dx/d*card_m, gc[1] + dy/d*card_m
-        return (ty/R_LAT + la0, tx/_mlon(la0) + lo0,
+        return (ty/mlat(la0) + la0, tx/mlon(la0) + lo0,
                 f"par-3 tee extrapolated along the hole axis to the card {card_yd} yd "
                 f"(mapped line runs {arc_yd:.0f} yd)")
     return None, None, (f"mapped line is {arc_yd:.0f} yd against a card {card_yd} yd, so its tee end "
@@ -223,8 +219,8 @@ def ring_containing(la, lo, rings):
     """The (lats, lons) ring holding this lat/lon, or None. Ray-cast in a local metric frame so the
     lon/lat aspect ratio cannot distort the test on a small pad."""
     for rla, rlo in rings:
-        k = _mlon(la)
-        if _point_in_ring(lo*k, la*R_LAT, rlo*k, rla*R_LAT):
+        k, kla = mlon(la), mlat(la)
+        if _point_in_ring(lo*k, la*kla, rlo*k, rla*kla):
             return (rla, rlo)
     return None
 
@@ -299,7 +295,7 @@ def _crs_units_per_m(crs, la, lo):
     from pyproj import Transformer
     T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
     x0, y0 = T.transform(lo, la)
-    x1, y1 = T.transform(lo, la + 15.0/R_LAT)
+    x1, y1 = T.transform(lo, la + 15.0/mlat(la))
     d = math.hypot(x1-x0, y1-y0)
     return (d/15.0) if d > 1e-9 else 1.0
 

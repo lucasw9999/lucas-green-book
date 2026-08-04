@@ -32,10 +32,9 @@ import json, math, os
 import numpy as np
 import config
 import surface_io
+from geo import mlat, mlon          # the project's ONE figure of the Earth -- never re-declare these
 
 DEM = os.path.join(config.COURSE_DIR, "dem_hd")
-R_LAT = 111320.0
-def mlon(lat): return 111320.0*math.cos(math.radians(lat))
 
 def gauss(a, sig_px):
     r = max(1, int(sig_px*3)); x = np.arange(-r, r+1)
@@ -119,25 +118,28 @@ def screen_m_per_unit(theta, px_x, px_y):
     and a chord that runs in an arbitrary direction across an anisotropic grid does not scale by the
     mean of the two axes -- it scales by the axes decomposed along its own direction.
 
-    Measured against the great-circle length of the very line the card measured, the scalar mean was
-    out by a median 0.019 yd, p95 0.082 and worst 0.109 (0.413% relative), and three printed depths
-    landed on the wrong side of a half yard: copper-valley 16 printed 36 against 36.595, merion 14
-    printed 38 against 38.531, micke-grove 13 printed 19 against 19.506. Seven widths move too;
-    width_yd reaches no card today. Done per axis the agreement is exact to 1e-5 yd -- AGAINST THE
-    ENGINE'S OWN SPHERE, R_LAT = 111320 m/deg, which is the reference this fix is about and is not the
-    ground. 111320 is neither of the ellipsoid's radii: it runs +0.295% long in latitude and -0.125%
-    short in longitude, which leaves the printed depth out by a median 0.041 yd and puts four of 198
-    on the wrong side of a half yard. That is a LARGER error than the anisotropy corrected here, it is
-    the same in every module of this pipeline, and it is measured and quantified in geo.py. Do not fix
-    it here alone: the depth would then be stated on the ellipsoid while this same card's tilt, its
-    printed 5-yd bar and its Rule 4.3 sizing stayed on the sphere.
+    Measured against the ground length of the very line the card measured, the scalar mean was out by a
+    median 0.019 yd, p95 0.082 and worst 0.109 (0.413% relative), and three printed depths landed on the
+    wrong side of a half yard: copper-valley 16 printed 36 against 36.595, merion 14 printed 38 against
+    38.531, micke-grove 13 printed 19 against 19.506. Seven widths move too; width_yd reaches no card
+    today. Done per axis the agreement is exact to 1.5e-5 yd AGAINST THE TRUE WGS84 GEODESIC of that
+    line, over all 198 greens -- which is the ground, and naming the reference is the point.
 
-    The six seamless greens are NOT among the movers and must not be: their recorded bbox is
-    metre-consistent to within 0.08%, so their conversion was already right. Two earlier attempts at
-    this fix measured "ground truth" on a different figure of the Earth -- a 0.3% error, larger than
-    the anisotropy -- and "corrected" those six. That 0.3% is real (it is the paragraph above), and it
-    is a DIFFERENT error from this one; keeping them apart is the point of measuring ground truth on
-    the engine's own sphere here.
+    It did not used to be the ground. This figure was once quoted against the engine's own sphere of
+    111320 m/deg, and that sphere is neither of the ellipsoid's radii: it ran +0.295% long in latitude
+    and -0.125% short in longitude, an error LARGER than the anisotropy corrected here, and it put four
+    of 198 printed depths on the wrong side of a half yard. So an exactness against it read as agreement
+    with the ground and was agreement with the assumption. Both axes now come from `geo.mlat`/`geo.mlon`,
+    the project's single figure of the Earth, so this card's depth, its tilt %, its printed 5-yd bar, its
+    Rule 4.3 sizing and its hole map are all on one earth; geo.py holds the measurement.
+
+    The six seamless greens are NOT among the movers of the ANISOTROPY fix and must not be: their
+    recorded bbox is metre-consistent to within 0.08%, so their per-axis conversion was already right.
+    Two earlier attempts at that fix measured "ground truth" on a different figure of the Earth -- a
+    0.3% error, larger than the anisotropy -- and "corrected" those six on the strength of it. The two
+    errors are genuinely different and keeping them apart is still the point: the anisotropy is the
+    RATIO of the two pixel axes, the datum is their absolute SIZE. The datum error has since been
+    corrected on its own terms, which is why one seamless green (monarch-bay 1) does move here.
 
     Takes the two SCREEN axes rather than a single direction because that is what the card measures
     along: depth and the 5-yd ladder run down screen y (the line of play), width across screen x.
@@ -238,7 +240,7 @@ def depth_width_yd(meta):
     clat = meta['green_center'][0]
     theta, cx, cy = approach_frame(meta)
     # per AXIS, never by a scalar mean of the two -- see screen_m_per_unit
-    mx, my = screen_m_per_unit(theta, (xmax - xmin) * mlon(clat) / W, (ymax - ymin) * R_LAT / H)
+    mx, my = screen_m_per_unit(theta, (xmax - xmin) * mlon(clat) / W, (ymax - ymin) * mlat(clat) / H)
     rp = [rot(x, y, cx, cy, theta) for x, y in poly]
     rxs = [p[0] for p in rp]
     fy, by, _midx = play_line_span(rp)
@@ -517,7 +519,7 @@ def render(hole, tournament=False):
     bbox = meta['bbox']; xmin, ymin, xmax, ymax = bbox
     clat = meta['green_center'][0]
     px_x = (xmax-xmin)*mlon(clat)/W        # meters per pixel (E)
-    px_y = (ymax-ymin)*R_LAT/H             # meters per pixel (N)
+    px_y = (ymax-ymin)*mlat(clat)/H        # meters per pixel (N)
 
     poly = poly_to_px(meta['polygon'], bbox, W, H)
     # rasterize polygon mask
