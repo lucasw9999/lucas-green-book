@@ -1691,6 +1691,79 @@ def test_a_null_tee_preference_is_not_a_crash():
         "a tee name that is not a scorecard column must be refused, not silently mis-indexed"
 
 
+def test_a_malformed_scorecard_row_names_the_course_and_the_hole():
+    """course.json is HAND-TYPED and is the only copy of the transcribed scorecard, and its rows had
+    no shape check at all.
+
+    `HOLES = {int(k): tuple(v) ...}` accepted a row of any length. hole_cols says how wide a row is --
+    par, mens_hcp, then one yardage per tee -- and every consumer then indexes it positionally by name:
+    config.BACK_I, FRONT_I and each entry of config.OTHERS. A row one value SHORT does not fail where it
+    was typed; it fails later, somewhere else, as an IndexError with no hole number in it, or -- worse and
+    the reason this is a data-honesty bug rather than a crash bug -- it does not fail at all. Drop the
+    first yardage from a 7-column row and every tee shifts one column left: the card headlines the Gold
+    yardage under the Black label, and the carries, the tick gutters and the elevation are all measured
+    from a tee the player is not standing on. A row one value LONG is the same shift the other way for
+    any consumer reading from the end.
+
+    So the check belongs beside the transcription, where the file being read is the file that is wrong,
+    and it has to name the course and the hole because a bare "bad row" sends the reader to look at 18 of
+    them. Raised by an earlier completeness critic and never fixed.
+
+    Driven for real through a throwaway course dir, following the gate_course/_synth_* convention:
+    config resolves courses/ from the repo root, not the cwd, so tmp_path cannot stand in. Both
+    directions, plus the well-formed row, because a check that refuses everything would pass the first
+    case alone.
+    """
+    import shutil
+    import subprocess
+    slug = "_synth_rowlen"
+    cdir = os.path.join(ROOT, "courses", slug)
+    prev = os.environ.get("COURSE")
+
+    def bind(holes):
+        with open(os.path.join(cdir, "course.json"), "w", encoding="utf-8") as f:
+            json.dump(dict(slug=slug, name="RowLen", address="X", par=72,
+                           location={"lat": 40.0, "lon": -75.0},
+                           tees=[dict(name="Blue", yards=200, rating=70.0, slope=113)],
+                           featured_tee="Blue", secondary_tee="Red",
+                           hole_cols=["par", "mens_hcp", "Blue", "Red"],
+                           holes=holes,
+                           osm_bbox=[39.99, -75.01, 40.01, -74.99], sources={}), f)
+        return subprocess.run(
+            [sys.executable, "-c", "import config; print(config.HOLES)"],
+            cwd=ROOT, env=dict(os.environ, COURSE=slug, QUIET_TEE_CHECK="1"),
+            capture_output=True, text=True)
+
+    try:
+        os.makedirs(cdir, exist_ok=True)
+        good = {"1": [4, 15, 380, 340], "2": [3, 17, 160, 140]}
+        r = bind(good)
+        assert r.returncode == 0, f"a well-formed scorecard no longer binds:\n{r.stderr[-800:]}"
+
+        for label, holes in (("short", {"1": [4, 15, 380, 340], "2": [3, 17, 160]}),
+                             ("long", {"1": [4, 15, 380, 340], "2": [3, 17, 160, 140, 120]}),
+                             ("bare par", {"1": [4], "2": [3, 17, 160, 140]})):
+            r = bind(holes)
+            said = r.stderr + r.stdout
+            assert r.returncode != 0, (
+                f"a {label} scorecard row was accepted. hole_cols says a row is 4 wide; this one is "
+                f"not, and every consumer indexes it positionally, so the book prints one tee's "
+                f"yardages under another tee's label:\n{said[-600:]}")
+            assert "IndexError" not in said, (
+                f"a {label} row still fails as an IndexError somewhere downstream rather than being "
+                f"refused where it was typed:\n{said[-600:]}")
+            bad_hole = "1" if label == "bare par" else "2"
+            assert slug in said and f"hole {bad_hole}" in said, (
+                f"the refusal of a {label} row does not name the course and the hole, so the reader "
+                f"has 18 rows to search:\n{said[-600:]}")
+            assert "hole_cols" in said, (
+                f"the refusal of a {label} row does not name hole_cols, which is what says how wide a "
+                f"row should be:\n{said[-600:]}")
+    finally:
+        shutil.rmtree(cdir, ignore_errors=True)
+        _restore_course(prev)
+
+
 @needs_corpus
 def test_the_course_location_decides_hole_lines_by_a_wide_margin():
     """course.json "location" is now load-bearing, so measure how much room it has to be wrong.
