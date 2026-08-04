@@ -219,6 +219,33 @@ WANDER_MAX = 1.02       # arc / chord above which a line's extra length may be m
 # narrow to lay up in, so the green front joins the same merge.
 CARRY_MERGE_GAP_YD = 8.0
 
+# THE DRAWING CORRIDOR, one declaration for the whole project.
+#
+# Every feature class this module draws is selected by how near it comes to the hole's centreline, and
+# each class has its own half-width -- a wood is a background fill that may legitimately start 55 m out,
+# a fairway is not. Those nine numbers were nine literals at nine call sites, and nothing anywhere said
+# what the WIDEST of them was. tools/check_osm_bbox.py needs exactly that figure: it asks whether the
+# OSM fetch box covers what the cards draw, and it carried its own `CORRIDOR_M = 45.0` with the comment
+# "render_hole.in_corridor's drawing buffer". 45 was never the widest -- OSM tree nodes are taken to
+# 68 m -- so the pre-flight could report a box fully covered while the drawn corridor reached 23 m of
+# ground the fetch never requested. That is the same two-places defect the earth-model migration just
+# removed for the local scales, so it gets the same treatment: named here, derived there, never respelt.
+#
+# DRAW_CORRIDOR_M is computed from the set rather than written down, so widening any one class widens
+# the pre-flight with it. A new class added with a bare literal would slip past that, which is what
+# test_the_bbox_preflight_uses_the_widest_corridor_the_engine_draws watches the call sites for.
+CORRIDOR_M = {
+    "bunker":   40.0,     # edge_within: nearest EDGE of the sand, not its centroid -- see edge_within
+    "water":    45.0,     # area hazards AND watercourses, deliberately the same -- see `waters`
+    "tee":      38.0,
+    "fairway":  34.0,
+    "rough":    48.0,
+    "wood":     55.0,     # background fill, clipped at the frame edge rather than zooming the hole out
+    "treerow":  45.0,
+    "treenode": 68.0,     # the WIDEST, and so the figure the fetch box has to cover
+}
+DRAW_CORRIDOR_M = max(CORRIDOR_M.values())
+
 
 def line_traced_past_the_tee(arc_yd, back_yd, chord_yd):
     """True when the drawn line runs BEYOND the back tee, so its extra length is at the TEE end.
@@ -498,7 +525,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         pts=[em(p['lat'],p['lon']) for p in (g.get('geometry') or [])]
         if not pts: return False
         return frac_len_within(pts, line_em, buf) > 0.0
-    bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and edge_within(g,40)]
+    bunkers=[g for g in course if g.get('tags',{}).get('golf')=='bunker' and g.get('geometry') and edge_within(g, CORRIDOR_M['bunker'])]
     def _seg_near_played_line(pe, pn, qe, qn, buf):
         """True when some point of the SEGMENT p->q comes within buf of the PLAYED line.
 
@@ -611,21 +638,21 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # the over-report direction and it predates this gate.
     waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water') and g.get('geometry')
-             and (frac_in(g,45)>=0.35 or any_within(g,45))]
+             and (frac_in(g, CORRIDOR_M['water'])>=0.35 or any_within(g, CORRIDOR_M['water']))]
 
-    creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g,45)]
-    tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g,38)]
-    fairways=[g for g in course if g.get('tags',{}).get('golf')=='fairway' and g.get('geometry') and frac_in(g,34)>=0.40]
-    roughs  =[g for g in course if g.get('tags',{}).get('golf')=='rough' and g.get('geometry') and frac_in(g,48)>=0.40]
+    creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g, CORRIDOR_M['water'])]
+    tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g, CORRIDOR_M['tee'])]
+    fairways=[g for g in course if g.get('tags',{}).get('golf')=='fairway' and g.get('geometry') and frac_in(g, CORRIDOR_M['fairway'])>=0.40]
+    roughs  =[g for g in course if g.get('tags',{}).get('golf')=='rough' and g.get('geometry') and frac_in(g, CORRIDOR_M['rough'])>=0.40]
     woods   =[g for g in course if (g.get('tags',{}).get('natural') in ('wood','scrub') or g.get('tags',{}).get('landuse')=='forest')
-              and g.get('geometry') and frac_in(g,55)>=0.35]
-    treerows=[g for g in course if g.get('tags',{}).get('natural')=='tree_row' and g.get('geometry') and frac_in(g,45)>=0.35]
+              and g.get('geometry') and frac_in(g, CORRIDOR_M['wood'])>=0.35]
+    treerows=[g for g in course if g.get('tags',{}).get('natural')=='tree_row' and g.get('geometry') and frac_in(g, CORRIDOR_M['treerow'])>=0.35]
     def in_corr_pt(lat, lon, buf=48):
         pe, pn = em(lat, lon)
         return min(dist_pt_seg(pe, pn, line_em[i][0], line_em[i][1], line_em[i+1][0], line_em[i+1][1])
                    for i in range(len(line_em)-1)) < buf
     treenodes=[e for e in course if e.get('type')=='node' and e.get('tags',{}).get('natural')=='tree'
-               and 'lat' in e and in_corr_pt(e['lat'], e['lon'], 68)]
+               and 'lat' in e and in_corr_pt(e['lat'], e['lon'], CORRIDOR_M['treenode'])]
 
     # pick the tree markers we will actually DRAW (LiDAR canopy preferred over OSM)
     lt=_lidar_trees().get(str(hnum), [])
@@ -692,7 +719,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     for g in bunkers+tees+fairways+treerows+[green]:
         allpts+=poly_pts(g)
     for g in waters:
-        allpts+=corridor_pts(g, 45)
+        allpts+=corridor_pts(g, CORRIDOR_M['water'])
     allpts+=[proj(la,lo) for la,lo in tree_src]
     xs=[p[0] for p in allpts]; ys=[p[1] for p in allpts]
     wx0,wy0=min(xs),min(ys); wW=(max(xs)-wx0) or 1.0; wH=(max(ys)-wy0) or 1.0
@@ -1043,7 +1070,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # 401-429 on a 502 yd hole). Both ends chosen for the reader, not the data.
     CARRY_MIN_YD, CARRY_MAX_YD = 80.0, 300.0
     # Offset is measured from the straight tee-to-green CHORD, not from the drawn polyline that the
-    # 45 m drawing corridor uses. That INCONSISTENCY is deliberate, and it is conservative: 68 bunkers
+    # sand's own drawing corridor uses (CORRIDOR_M['bunker'], 40 m off the polyline). That INCONSISTENCY
+    # is deliberate, and it is conservative: 68 bunkers
     # across 43 holes lie within 30 m of the drawn line yet more than 30 m off the chord, so they are
     # drawn on the map but not quantified in the footer. Switching the test to the polyline was
     # prototyped and rejected -- it moves the printed carries on 37 holes in BOTH directions (merion 7

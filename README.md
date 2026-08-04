@@ -126,7 +126,7 @@ from the build outputs precisely so the legal record cannot drift from what was 
 
 Two more tools, useful when a course looks wrong rather than on every build:
 ```bash
-python3 tools/check_osm_bbox.py --all # every printed hole's 45 m corridor lies inside its fetch box
+python3 tools/check_osm_bbox.py --all # every printed hole's 68 m corridor lies inside its fetch box
 COURSE=<slug> python3 tools/lidar_dates.py   # decodes the flight date from the LiDAR point records
 python3 tools/cross_flight_check.py --all    # do two surveys of the same green print the same read?
 ```

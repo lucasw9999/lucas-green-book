@@ -19463,6 +19463,85 @@ def test_no_module_re_declares_the_horizontal_earth_model():
             f"{100 * (geo.mlon(lat) / ge - 1):+.3e}%")
 
 
+def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
+    """The pre-flight asked whether the fetch box covers 45 m. The cards draw out to 68.
+
+    tools/check_osm_bbox.py exists to answer one question -- does osm_bbox cover what a card DRAWS? --
+    and it carried its own `CORRIDOR_M = 45.0`, commented "render_hole.in_corridor's drawing buffer".
+    render_hole selects each feature class at its own half-width, and 45 was never the widest of them:
+    OSM tree nodes are taken to 68 m. So the pre-flight could report a course fully covered while the
+    drawn corridor reached 23 m of ground the fetch never requested -- and the failure is invisible by
+    construction, because a feature outside the box is never downloaded, so the card does not draw it and
+    the footer, counted FROM the map, agrees with the map. That is the defect the tool was written to
+    catch, one number too narrow to catch it.
+
+    Same two-places shape as the retired `R_LAT = 111320.0`, and the same fix: render_hole.CORRIDOR_M
+    names every class's half-width once, DRAW_CORRIDOR_M is the max DERIVED from that set, and the tool
+    reads it. Widening any one class now widens the pre-flight with it.
+
+    Three checks, because the derivation is only single-source while the call sites use the names:
+      1. the tool declares no corridor number of its own and reads render_hole's;
+      2. DRAW_CORRIDOR_M really is the maximum of the named set, and the treenode radius is what sets it;
+      3. no feature selector in render_hole is called with a bare numeric buffer -- a new class added
+         with a literal is exactly how the 45 got left behind, and it would not raise the derived max.
+
+    The set is read out of the source with ast rather than imported, so a stranger with no course data
+    still gets this check: importing render_hole binds config, which needs a course.json. Where a corpus
+    IS present the runtime values are compared against the parsed ones, so the parse cannot drift from
+    what actually runs.
+    """
+    import ast
+    tool = os.path.join(ROOT, "tools", "check_osm_bbox.py")
+    with open(tool, encoding="utf-8") as fh:
+        tool_src = fh.read()
+    tool_code = _code_only(tool_src)
+    own = re.findall(r"^\s*[A-Z_]*CORRIDOR[A-Z_]*\s*=\s*([0-9.]+)", tool_code, re.M)
+    assert not own, (
+        f"tools/check_osm_bbox.py declares its own corridor half-width {own}. It must read "
+        f"render_hole.DRAW_CORRIDOR_M, or the pre-flight measures a corridor the engine does not draw")
+    assert "DRAW_CORRIDOR_M" in tool_code, (
+        "tools/check_osm_bbox.py no longer reads render_hole.DRAW_CORRIDOR_M, so its idea of the "
+        "drawing corridor is once again its own")
+
+    rh_path = os.path.join(ROOT, "render_hole.py")
+    with open(rh_path, encoding="utf-8") as fh:
+        rh_src = fh.read()
+    radii = None
+    for node in ast.parse(rh_src).body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and getattr(node.targets[0], "id", None) == "CORRIDOR_M"):
+            radii = ast.literal_eval(node.value)
+    assert isinstance(radii, dict) and len(radii) >= 8, (
+        f"render_hole.CORRIDOR_M is no longer a module-level literal mapping of the per-class drawing "
+        f"half-widths ({radii!r}); the fetch-box pre-flight sizes itself from that set")
+    assert _in_code("DRAW_CORRIDOR_M = max(CORRIDOR_M.values())", rh_src), (
+        "DRAW_CORRIDOR_M is no longer DERIVED from CORRIDOR_M. Written down instead, it goes stale the "
+        "first time a class is widened -- which is exactly how the tool's 45 outlived the 68 m corridor")
+    assert radii["treenode"] == max(radii.values()) == 68.0, (
+        f"the widest drawing corridor is no longer the 68 m tree-node radius ({radii}). Re-measure the "
+        f"shortfalls quoted in tools/check_osm_bbox.py's docstring, because every one of them is "
+        f"computed against this number")
+    if CORPUS:
+        _cfg, rh = _engine(CORPUS[0])
+        assert rh.CORRIDOR_M == radii and rh.DRAW_CORRIDOR_M == max(radii.values()), (
+            f"the parsed set {radii} is not what render_hole binds at runtime "
+            f"({rh.CORRIDOR_M}, {rh.DRAW_CORRIDOR_M})")
+
+    rh_code = _code_only(rh_src)
+    literal = []
+    for call in ("edge_within", "in_corridor", "frac_in", "any_within", "in_corr_pt", "corridor_pts"):
+        for m in re.finditer(re.escape(call) + r" \( (.*?) \)", rh_code):
+            args = m.group(1)
+            if re.search(r",\s*[0-9]+(\.[0-9]+)?\s*$", args):
+                literal.append(f"{call}({args})")
+    assert not literal, (
+        "a feature selector in render_hole is called with a bare numeric corridor buffer:\n  "
+        + "\n  ".join(literal)
+        + "\n  Every half-width belongs in CORRIDOR_M, because DRAW_CORRIDOR_M is the max of that set "
+          "and tools/check_osm_bbox.py sizes the fetch box from it. A literal here is a corridor the "
+          "pre-flight cannot see.")
+
+
 def _smallest_corpus_tile():
     """The smallest real LAZ tile in the corpus, or None. Smallest so a test can read it cheaply."""
     tiles = glob.glob(os.path.join(ROOT, "courses", "*", "laz", "*.laz"))
