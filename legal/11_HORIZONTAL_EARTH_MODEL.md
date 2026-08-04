@@ -74,15 +74,49 @@ green. Over all 198 printed depths the **remaining residual is a median 0.000000
 and worst 0.0000148 yd** — under two hundredths of a millimetre, against a printed integer that carries ±0.5 yd of rounding.
 **No printed depth now rounds to the wrong side of a half yard**, and the test above asserts that too.
 
-The hole map gained more than the green card did. Comparing every course centreline vertex against a
-WGS84 geodesic at the radii the book actually prints:
+The hole map gained more than the green card did. A "150 to the green" tick is not drawn at a mapped
+point: `render_hole.py` places it where the drawn centreline **crosses the circle of that radius about
+the green centroid**. So the error a reader can feel at that tick is the printed radius against the
+**true WGS84 geodesic** from the green centroid to the point the tick landed on — measured below at
+every one of the **861** radius crossings the 198 drawn centrelines have, and over all **589**
+centreline vertices for the last row:
 
 | Tick radius | Retired model, worst | Now, worst |
 |---|---|---|
-| ~100 yd | 0.43 yd | 0.0003 yd |
-| ~200 yd | 0.73 yd | 0.0013 yd |
-| ~300 yd | 0.99 yd | 0.0027 yd |
-| furthest vertex (595 yd) | 1.55 yd at worst | 0.0077 yd |
+| 100 yd tick | 0.2962 yd | 0.0013 yd |
+| 150 yd tick | 0.4426 yd | 0.0018 yd |
+| 200 yd tick | 0.5931 yd | 0.0021 yd |
+| 250 yd tick | 0.7421 yd | 0.0022 yd |
+| 300 yd tick | 0.8891 yd | 0.0019 yd |
+| any centreline vertex, out to 595.8 yd | 1.5502 yd | 0.0023 yd |
+
+**This table was wrong in both columns until 2026-08-04, and the correction is recorded rather than
+quietly applied.** It read `~100 yd | 0.43 | 0.0003`, `~200 | 0.73 | 0.0013`, `~300 | 0.99 | 0.0027`,
+`furthest vertex (595 yd) | 1.55 | 0.0077`, and nothing re-derived a single cell of it.
+
+The retired column was **arithmetically impossible**. Because the retired pair scaled latitude and
+longitude by one constant and its cosine, any length it measured was out by a fraction lying between its
+two axis errors: the retired pair's **worst relative offset over these 589 vertices is +0.2975%**, and
+it is **at most +0.3008% at the corpus's southernmost hole (37.4529 deg N)** — that ceiling is
+`111320 / geo.mlat`. A 100 yd radius therefore cannot be out by more than 0.30 yd, 200 by more than
+0.60, or 300 by more than 0.90 — and 0.43, 0.73 and 0.99 each exceed the bound for their row. Those
+figures reproduce as the worst error anywhere in the 50-yard **band above** each tick, i.e. "between
+this tick and the next", printed in a column headed *Tick radius*. A reader holding a card with a 100 yd
+tick was told his was out by up to 0.43 yd; the true worst at that tick was 0.2962 yd.
+
+The "now" column was measured in a frame the engine does not use. Its published values grow
+quadratically in the radius, which a residual measured in `render_hole`'s frame does not — the engine
+takes both scales at the **centroid of the drawn line**, so the residual is bounded by that line's own
+extent and stops growing. The published column reproduces only with the scales anchored at the **green**
+(0.0004 / 0.0012 / 0.0025 / 0.0077), which nothing in the pipeline does. The effect was to understate
+the residual at the 100 yd row by about 4x and overstate the headline worst by 3x. Every one of those
+figures is a millimetre or two against a printed integer, which is the point: nobody could have caught
+it by reading a card, and an unmeasured figure in a legal record is wrong at whatever size the
+arithmetic happens to make it.
+
+`tests/test_phase1_regressions.py::test_the_hole_map_tick_error_table_is_measured_at_the_ticks_it_is_printed_against`
+now re-derives every cell above off the built corpus, checks that `geo.py`'s note quotes the same
+figures, and refuses any retired-model figure that exceeds the relative-offset bound for its own radius.
 
 ## The Rule 4.3 print scale
 

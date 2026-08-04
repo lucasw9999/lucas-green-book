@@ -63,11 +63,28 @@ import math
 # named for a reader, not just here, in legal/11_HORIZONTAL_EARTH_MODEL.md, and a test re-measures every
 # figure in that record off the built corpus.
 #
-# The hole map gained more than the green card did. Comparing every course centreline vertex against a
-# WGS84 geodesic at the radii the book actually prints, the retired model was out by up to 0.43 yd at the
-# 100 yd tick, 0.73 at 200, 0.99 at 300 and 1.55 at its worst; on these scales the same 391 vertices are
-# out by at most 0.0003, 0.0013, 0.0027 and 0.0077 yd. The approximation that was documented here as
-# "deliberate and quantified" is now two orders of magnitude smaller than the integers it feeds.
+# The hole map gained more than the green card did, and here the measurement has to match the question a
+# tick asks. A to-green tick is not drawn at a mapped point: render_hole places it where the drawn
+# centreline crosses the circle of that radius about the green centroid. So the honest figure is the
+# printed radius against the TRUE WGS84 geodesic to the point the tick lands on. Over the 861 radius
+# crossings the 198 drawn centrelines have, the retired model was out by up to 0.2962 yd at the 100 yd
+# tick, 0.4426 at the 150 yd tick, 0.5931 at the 200 yd tick, 0.7421 at the 250 yd tick and 0.8891 at the
+# 300 yd tick; on these scales the worst at those same five radii is 0.0013, 0.0018, 0.0021, 0.0022 and
+# 0.0019 yd. Out to the furthest point any centreline reaches, 595.8 yd, the retired model's worst over
+# all 589 hole-line vertices -- 598 counting the duplicate refs hole_lines() resolves -- was 1.5502 yd
+# against 0.0023 yd now.
+#
+# THE FIGURES THIS NOTE CARRIED UNTIL 2026-08-04 WERE WRONG IN BOTH DIRECTIONS, and the correction is
+# recorded because nothing re-derived them. It said 0.43 yd at 100, 0.73 at 200, 0.99 at 300, and
+# "the same 391 vertices" out by 0.0003/0.0013/0.0027/0.0077. The retired figures were impossible: this
+# pair scaled both axes off one constant, so any length it measured was out by a fraction between its two
+# axis errors -- at worst +0.2975% over these vertices -- and 0.43 yd at a 100 yd radius needs 0.43%.
+# They were the worst error anywhere in the 50-yard BAND above each tick, printed as the error AT it. The
+# new figures were measured with the scales anchored at the GREEN rather than at the line centroid where
+# render_hole takes them, which is why they grew quadratically. And "391" named a population nothing in
+# this tree produces. The approximation that was documented here as "deliberate and quantified" is still
+# two orders of magnitude smaller than the integers it feeds -- but it is now a figure a reader of
+# legal/11_HORIZONTAL_EARTH_MODEL.md can check, and a test re-derives every cell of that table.
 
 
 def _wgs84():
