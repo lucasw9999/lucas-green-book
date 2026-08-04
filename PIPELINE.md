@@ -26,7 +26,29 @@ greenbook/
       dem_hd/            # cached: 0.4 m elevation per green (.npy + .json)
       trees_lidar.json   # cached: LiDAR tree markers per hole
       greenbook.pdf      # OUTPUT (print this);  greenbook_coach.pdf = optional large-print edition
+      aerial_reference_PERSONAL.html   # HAND-MADE MASTER (poppy-ridge only) — see below
+      aerial_reference_PERSONAL.pdf    #   printed from it by hand, NOT by tools/export_pdf.py
 ```
+
+## The one artifact nothing here can rebuild
+
+`courses/poppy-ridge-golf-course/aerial_reference_PERSONAL.html` is a **master**, and **no code in this
+repo produces it**. It is ~260 kB with a public-domain USDA NAIP raster embedded as base64, hand-built
+for the one yardage-mode course (no OSM geometry, blank greens), and its `.pdf` was printed from it by
+hand — the PDFs' `/Creator` proves it: every one of the 15 books says the bare string `Chromium`
+(Skia/PDF m147), while the aerial's is a full HeadlessChrome user-agent string under Skia/PDF m150.
+Step 7 below says "always export with that tool, never by hand"; this file is the documented exception.
+
+Treat it as source, not output:
+
+- **Do not delete or truncate it.** `legal/01`, `legal/02` and `legal/07` all rest on it — they record
+  that the original Esri/Maxar imagery was removed and the sheet rebuilt from NAIP. It is also the only
+  record of the course's **pre-2025** layout, so it cannot be regenerated from current public imagery
+  either, whatever code someone writes.
+- It is watched by the suite's read-only `courses/` guard, which notices it being lost or rewritten but
+  cannot bring it back.
+- If it ever needs remaking, that is a NAIP fetch plus a hand layout plus a hand print, and the result
+  will not be the same sheet.
 
 ## Build an existing course
 ```

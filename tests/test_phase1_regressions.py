@@ -447,7 +447,7 @@ def _import_first_party(name):
 
 
 def _courses_snapshot(root):
-    """path -> mtime for every course.json, book and PDF of a REAL course under root/courses.
+    """path -> mtime for every FILE a REAL course holds, plus its green surfaces, under root/courses.
 
     Scratch directories are excluded, because seven tests here create one under courses/ and remove it
     again, and a snapshot that carried them reported that cleanup as destroyed corpus data (see
@@ -455,15 +455,30 @@ def _courses_snapshot(root):
     from distribution.is_corpus_slug rather than another startswith("_") -- that rule already existed in
     four places and the fourth had drifted.
 
+    IT USED TO BE AN ALLOWLIST OF SUFFIXES -- `*.json`, `greenbook*`, `*.pdf` -- and an allowlist is the
+    wrong shape for "notice if anything irreplaceable moved". It let exactly one file through, and it was
+    the least replaceable one in the tree: courses/poppy-ridge-golf-course/aerial_reference_PERSONAL.html,
+    a MASTER no code in this repo produces (see PIPELINE.md). Its exported .pdf was watched and its source
+    was watched by nothing, while legal/01, legal/02 and legal/07 all rest on it. So the rule is now every
+    FILE at a course's top level, and a future master dropped in beside it is covered on arrival.
+
+    dem_hd is walked too. Its .npy/.json pairs ARE the derived 0.4 m surfaces this fixture's own docstring
+    names as irreplaceable, and they were outside the snapshot entirely because they sit one level deeper
+    than the glob reached. laz/ is deliberately not walked: it is the one thing under courses/ that is
+    re-downloadable, and it is ~10 GB of it.
+
     Module-level and root-parameterised so the guard's own logic is testable without a real courses/
     tree -- the alternative is a closure nothing can reach, which is how the hole above survived."""
     import distribution
     out = {}
-    for p in glob.glob(os.path.join(root, "courses", "*", "*")):
-        if not distribution.is_corpus_slug(os.path.basename(os.path.dirname(p))):
-            continue
-        base = os.path.basename(p)
-        if base.endswith(".json") or base.startswith("greenbook") or base.endswith(".pdf"):
+    for pat in (("courses", "*", "*"), ("courses", "*", "dem_hd", "*")):
+        deep = pat[-2] == "dem_hd"
+        for p in glob.glob(os.path.join(root, *pat)):
+            up = os.path.dirname(os.path.dirname(p)) if deep else os.path.dirname(p)
+            if not distribution.is_corpus_slug(os.path.basename(up)):
+                continue
+            if os.path.basename(p).startswith(".") or not os.path.isfile(p):
+                continue
             try:
                 out[os.path.relpath(p, root)] = os.path.getmtime(p)
             except OSError:
@@ -730,6 +745,132 @@ def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_rea
     assert _in_code("is_corpus_slug", inspect.getsource(_courses_snapshot)), (
         "the scratch-slug rule must come from distribution.is_corpus_slug; a local startswith('_') "
         "here is the fourth copy of a rule that already drifted once")
+
+
+def test_the_read_only_guard_watches_every_file_a_real_course_holds():
+    """The guard is only worth its allowlist, and its allowlist missed the one unreproducible master.
+
+    _courses_snapshot took `*.json`, `greenbook*` and `*.pdf`. Under courses/ -- gitignored, no copy in
+    history, no copy on a remote -- an allowlist of suffixes is the wrong shape for "notice if anything
+    irreplaceable moved": every file it does not name is silently unwatched, and nothing anywhere lists
+    what it does not name.
+
+    Measured over this corpus, exactly one top-level file fell through, and it was the least replaceable
+    file in the tree: courses/poppy-ridge-golf-course/aerial_reference_PERSONAL.html, a hand-made master
+    that no code in this repo produces. Its exported .pdf ended in `.pdf` and WAS watched; the source it
+    was printed from was watched by nothing, while legal/01, legal/02 and legal/07 all rest on it.
+
+    The green surfaces were outside it too, one level deeper than the glob reached -- and dem_hd holds the
+    derived 0.4 m arrays the session fixture's own docstring names as irreplaceable.
+
+    So this asserts COVERAGE rather than any one filename: every file a real course holds, at its top
+    level and under dem_hd, must appear in the snapshot. Two deliberate exceptions, both asserted as
+    such: laz/, because it is the only re-downloadable thing under courses/ and it is gigabytes of it;
+    and DOT-PREFIXED names, which under a course directory are either OS litter (.DS_Store) or a staged
+    `.holeNN.json.part` that surface_io.sweep_staged is supposed to remove -- watching those would make
+    a sweep doing its job read as destroyed data, which is the false alarm this guard already had once.
+    """
+    import distribution
+    snap = _courses_snapshot(ROOT)
+    if not snap:
+        pytest.skip("no course data present (courses/ is gitignored)")
+    unwatched, laz = [], 0
+    for slug in distribution.course_slugs(ROOT):
+        cdir = os.path.join(ROOT, "courses", slug)
+        for base, _dirs, files in os.walk(cdir):
+            rel_dir = os.path.relpath(base, cdir)
+            if rel_dir.split(os.sep)[0] == "laz":
+                laz += len(files)
+                continue
+            for f in files:
+                if f.startswith("."):
+                    continue
+                rel = os.path.relpath(os.path.join(base, f), ROOT)
+                if rel not in snap:
+                    unwatched.append(rel)
+    assert not unwatched, (
+        f"{len(unwatched)} file(s) under a real course are outside the read-only guard, so losing or "
+        f"rewriting one is silent -- and courses/ has no copy anywhere:\n  "
+        + "\n  ".join(sorted(unwatched)[:8]))
+    assert laz, "no laz/ tiles found, so the one deliberate exception is not being exercised"
+    assert not any(os.sep + "laz" + os.sep in k for k in snap), (
+        "laz/ is inside the snapshot now. It is the ONE re-downloadable thing under courses/ and it is "
+        "gigabytes; watching it makes the guard cost a full walk of it every run")
+    assert not any(os.path.basename(k).startswith(".") for k in snap), (
+        "the snapshot now carries dot-prefixed names. A staged .holeNN.json.part is exactly what "
+        "surface_io.sweep_staged removes, so watching it turns a sweep doing its job into a report of "
+        "destroyed course data")
+
+
+def test_the_hand_made_aerial_master_is_recorded_as_unreproducible():
+    """One shipped master is made BY HAND, and the pipeline doc has to say so where it will be read.
+
+    courses/poppy-ridge-golf-course/aerial_reference_PERSONAL.html is ~260 kB with a NAIP raster
+    embedded as base64. No module in this repo writes it, and its exported PDF proves it was printed
+    outside tools/export_pdf.py: /Creator on all 15 books is the bare string "Chromium" (Skia/PDF m147),
+    while the aerial's is a full HeadlessChrome user-agent string under Skia/PDF m150 -- a different
+    browser run, driven by a person. PIPELINE.md step 7 says "Always export with that tool, never by
+    hand", so this file is the documented exception and had nothing documenting it.
+
+    It matters because three legal documents rest on it -- legal/01 and legal/02 record the Esri/Maxar
+    removal and the NAIP rebuild, legal/07 is entirely about it -- and because the layout it shows
+    predates Poppy Ridge's 2025 rebuild, so it cannot be regenerated from current public imagery either.
+    Lose it and the pipeline cannot make another.
+
+    Asserted as three facts rather than as a file hash: nothing produces it, the doc a maintainer reads
+    says nothing produces it, and the /Creator asymmetry that proves it is measured here rather than
+    written down.
+    """
+    master = os.path.join(ROOT, "courses", "poppy-ridge-golf-course",
+                          "aerial_reference_PERSONAL.html")
+    masters = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "aerial_reference*.html")))
+    if not masters:
+        pytest.skip("no aerial reference master built here")
+
+    # (1) nothing in the tree writes it, which is what makes it a master rather than an output
+    producers = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "*.py")) + glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        with open(p, encoding="utf-8") as fh:
+            if "aerial_reference" in _code_only(fh.read()):
+                producers.append(os.path.relpath(p, ROOT))
+    assert not producers, (
+        f"{producers} names aerial_reference in code, so this file may be reproducible after all -- "
+        f"re-read PIPELINE.md's note about it before trusting that section")
+
+    # (2) ...and the doc a maintainer actually opens says so. Matched on flattened prose, because the
+    # sentence is bold and wraps -- a literal `in` here would be one reflow away from a false alarm.
+    with open(os.path.join(ROOT, "PIPELINE.md"), encoding="utf-8") as fh:
+        pipeline = fh.read()
+    flat = " ".join(pipeline.replace("*", "").replace("`", "").split())
+    assert "aerial_reference_PERSONAL.html" in pipeline, (
+        "PIPELINE.md does not mention aerial_reference_PERSONAL.html at all. It is the one shipped "
+        "master nothing here can rebuild, and the course-folder listing beside it explains every "
+        "other file in that directory")
+    assert "no code in this repo produces it" in flat, (
+        "PIPELINE.md names the aerial master but does not say that nothing in this repo produces it, "
+        "which is the only fact about it a maintainer needs before deleting or regenerating it")
+
+    # (3) the /Creator asymmetry, measured. This is the evidence for (1) and (2), so it is re-derived.
+    try:
+        import fitz
+    except ImportError:
+        return                              # the two facts above stand without it
+    pdf = master[: -len(".html")] + ".pdf"
+    if not os.path.exists(pdf):
+        return
+    with fitz.open(pdf) as d:
+        by_hand = d.metadata.get("creator") or ""
+    tooled = set()
+    for b in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
+        with fitz.open(b) as d:
+            tooled.add(d.metadata.get("creator") or "")
+    assert tooled == {"Chromium"}, (
+        f"the books' /Creator is no longer uniformly 'Chromium' ({sorted(tooled)}), so it can no longer "
+        f"distinguish a tool-exported PDF from a hand-printed one")
+    assert by_hand not in tooled, (
+        f"the aerial PDF's /Creator is now {by_hand!r}, the same as the books' -- either it went "
+        f"through tools/export_pdf.py after all, in which case it is reproducible and PIPELINE.md's "
+        f"note is wrong, or the tool changed and this evidence needs re-deriving")
 
 
 def test_rmtree_refuses_a_real_course_before_the_syscall_and_still_allows_scratch(tmp_path):
