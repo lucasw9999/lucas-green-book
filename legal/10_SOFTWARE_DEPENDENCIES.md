@@ -23,7 +23,6 @@ compatibility question.
 | laspy | 2.7.0 | BSD-2-Clause | no |
 | lazrs | 0.8.1 | MIT | no |
 | pyproj | 3.7.2 | MIT | no |
-| tifffile | 2026.3.3 | BSD-3-Clause | no |
 | playwright | 1.59.0 | Apache-2.0 | no |
 | rasterio | 1.4.4 | BSD-3-Clause | no |
 | pytest | 9.0.3 | MIT | no |
@@ -76,8 +75,8 @@ dependency set entirely.
 ```bash
 python3 - <<'EOF'
 import importlib.metadata as md
-for p in ("numpy","scipy","laspy","lazrs","pyproj","tifffile","playwright",
-          "rasterio","pytest","pymupdf"):
+for p in ("numpy","scipy","laspy","lazrs","pyproj","rasterio","playwright",
+          "pytest","pymupdf"):
     try:
         m = md.metadata(p)
         expr = (m.get("License-Expression") or "").strip()

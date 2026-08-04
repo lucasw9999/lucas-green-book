@@ -25,7 +25,7 @@ built only from **open** and **public‑domain** data plus **facts**, independen
 repeat LiDAR flights and flight-line overlap |
 | `10_SOFTWARE_DEPENDENCIES.md` | Every library the build uses and its licence |
 | `11_HORIZONTAL_EARTH_MODEL.md` | The WGS84 local ground scales every printed distance is computed on, the
-measured offset against WGS84, and the four cards whose printed depth it rounds the other way |
+measured offset from the model they replaced, and the four cards whose printed depth that model once rounded the other way |
 
 **Two of the records above are local‑only and deliberately not in git**, so a copy of this folder
 will have twelve entries and ten files. `04` is argument rather than fact, and it asserted

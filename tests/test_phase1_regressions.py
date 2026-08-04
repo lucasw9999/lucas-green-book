@@ -3044,6 +3044,132 @@ def test_every_third_party_import_is_declared():
         "install instructions:\n  " + "\n  ".join(sorted(set(unguarded))))
 
 
+def _requirement_lines():
+    """[(package, section, comment)] for every non-OPTIONAL requirement, in file order.
+
+    Sections are the `# --- <name> ---` banners, because WHERE a package is declared is a claim about
+    which part of the build needs it, and that claim is checkable. The comment is the trailing `#` on
+    the requirement line plus any fully-commented continuation lines indented under it -- the file uses
+    those for the longer attributions (rasterio's runs three lines).
+    """
+    out, section = [], ""
+    with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as fh:
+        for raw in fh:
+            banner = re.match(r"\s*#\s*-{2,}\s*(.+?)\s*-{2,}\s*$", raw)
+            if banner:
+                section = banner.group(1).strip().lower()
+                continue
+            if re.match(r"\s*#\s*OPTIONAL:", raw):
+                continue
+            code = raw.split("#", 1)[0].strip()
+            if code:
+                name = re.split(r"[<>=!~\[]", code)[0].strip().lower()
+                out.append([name, section, raw.split("#", 1)[1].strip() if "#" in raw else ""])
+            elif out and raw.startswith("  ") and raw.lstrip().startswith("#"):
+                out[-1][2] += " " + raw.lstrip().lstrip("#").strip()
+    return [tuple(r) for r in out]
+
+
+def test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_actually_used():
+    """The declaration check ran one way only, and both of the other directions were wrong.
+
+    test_every_third_party_import_is_declared asks "is every import declared?" -- the direction that
+    stops the build working only on the author's machine. Nothing asked the reverse, and requirements.txt
+    plus legal/10_SOFTWARE_DEPENDENCIES.md had drifted in two ways at once:
+
+      * `tifffile` was declared under "core engine (fetch_* and render_*)", attributed to
+        `fetch_dem.py`, and version-verified in legal/10 as a default dependency -- and it is imported
+        NOWHERE in the tree. Only prose mentions it, in `fetch_dem.py` and in this file, both saying
+        what the code USED to do. So the install instructions asked for a package the project does not
+        use, and a legal record published its licence as though a book depended on it.
+      * `rasterio` is a module-level import in the CORE ENGINE (`fetch_dem.py`: `import numpy as np,
+        rasterio`), and it was declared under "build + verification tooling", attributed solely to
+        `tools/verify_elevation.py`. The two swapped when the served-patch read moved to rasterio, and
+        it survived a dedicated legal/10 audit because that audit checked versions and licences only.
+        A reader of requirements.txt was told the engine needs a package it does not, and that a
+        verification tool needs one the engine cannot start without.
+
+    Three rules, all derived from the tree:
+
+      (a) every declared package is imported somewhere -- unless its own comment says it is a BACKEND
+          of another declared package. `lazrs` is the real case: laspy loads it to decompress LAZ and
+          nothing imports it by name. That carve-out must be SPELLED, like every other exemption in
+          this file, so a package that has simply fallen out of use cannot hide behind it.
+      (b) any `.py` file a requirement's comment names must actually import that package. An
+          attribution is the only thing telling the next reader who the dependency is for.
+      (c) a package imported by a module at the REPO ROOT -- the engine `generate.py` runs -- must be
+          declared in the core-engine section. Root modules are the engine; `tools/` and `tests/` are
+          not, and the distinction is the whole point of the two sections.
+    """
+    import ast
+    reqs = _requirement_lines()
+    assert len(reqs) >= 8, f"only {len(reqs)} requirements parsed out of requirements.txt: {reqs}"
+    sections = {s for _n, s, _c in reqs}
+    core = sorted(s for s in sections if "core engine" in s)
+    assert len(core) == 1, (
+        f"requirements.txt no longer has exactly one 'core engine' section banner ({sorted(sections)}). "
+        f"Rule (c) below is a claim about which half of the file a package belongs in.")
+    core = core[0]
+
+    engine_imports, all_imports = {}, {}
+    for p in sorted(glob.glob(os.path.join(ROOT, "*.py"))
+                    + glob.glob(os.path.join(ROOT, "tools", "*.py"))
+                    + glob.glob(os.path.join(ROOT, "tests", "*.py"))):
+        rel = os.path.relpath(p, ROOT)
+        with open(p, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            mods = []
+            if isinstance(node, ast.Import):
+                mods = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                mods = [node.module.split(".")[0]]
+            for m in mods:
+                if m in sys.stdlib_module_names:
+                    continue
+                pkg = {v: k for k, v in DIST_TO_IMPORT.items()}.get(m, m).lower()
+                all_imports.setdefault(pkg, set()).add(rel)
+                if os.sep not in rel:
+                    engine_imports.setdefault(pkg, set()).add(rel)
+
+    declared_names = {n for n, _s, _c in reqs}
+    unused, misattributed, wrong_section = [], [], []
+    for name, section, comment in reqs:
+        users = all_imports.get(name, set())
+        if not users:
+            # (a) the spelled carve-out: a runtime backend another declared package loads for itself.
+            backend_of = [d for d in declared_names - {name}
+                          if re.search(r"backend|driver|plugin", comment, re.I) and d in comment.lower()]
+            if not backend_of:
+                unused.append(f"{name}: declared under {section!r} and imported nowhere in the tree")
+        # (b) an attribution has to be true
+        for fname in re.findall(r"([\w./-]+\.py)", comment):
+            if os.path.basename(fname) not in {os.path.basename(u) for u in users}:
+                misattributed.append(
+                    f"{name}: its comment credits {fname}, which does not import it"
+                    + (f" (it is imported by {', '.join(sorted(users))})" if users else ""))
+        # (c) declared where it is used
+        if engine_imports.get(name) and section != core:
+            wrong_section.append(
+                f"{name}: imported by the engine at the repo root ({', '.join(sorted(engine_imports[name]))}) "
+                f"but declared under {section!r}")
+
+    assert not unused, (
+        "requirements.txt declares a package nothing imports, so `pip install -r` asks for code this "
+        "project does not use -- and legal/10 publishes its licence as though a book depended on it:\n  "
+        + "\n  ".join(unused)
+        + "\n  Drop it from requirements.txt AND from legal/10's table, or, if another declared package "
+          "loads it at runtime, say so in its comment ('the LAZ decompression backend laspy needs').")
+    assert not misattributed, (
+        "a requirement's comment credits a module that does not import it. That attribution is the only "
+        "thing telling the next reader who the dependency is for:\n  " + "\n  ".join(misattributed))
+    assert not wrong_section, (
+        "a package the ENGINE cannot start without is declared under the verification-tooling section, "
+        "or vice versa. The two sections are a claim about which half of the build needs a package, and "
+        "getting it backwards is how rasterio came to be attributed to a tool while fetch_dem.py "
+        "imported it at module level:\n  " + "\n  ".join(wrong_section))
+
+
 def test_the_software_licence_record_matches_the_repo_it_describes():
     """legal/10 was the only record in legal/ that nothing checked, and it had drifted.
 
@@ -17846,7 +17972,14 @@ def test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bound
     Measured two independent ways so the answer cannot be an artefact of the projection: the shoelace
     in the hole's own local east/north frame -- the frame the 61.9 x 129.8 m box is quoted in, and the
     frame render_hole itself reasons in -- cross-checked against pyproj's ellipsoidal geodesic area,
-    which has no projection at all. They agree to 0.17%.
+    which has no projection at all. They agree to 0.00044%.
+
+    THAT LAST FIGURE WAS ITSELF THE DEFECT THIS TEST EXISTS TO CLOSE, one round later. It read "They
+    agree to 0.17%", which was the RETIRED earth model's disagreement (measured: 0.1632%). The
+    migration to geo.mlat/geo.mlon corrected 3568 -> 3562, 8050 -> 8037 and 130.1 -> 129.8 in this same
+    docstring and missed this one, because the live assertion beside it bounds the disagreement at 0.5%
+    and both figures pass that. So the sentence is now graded against the measurement too: an unmeasured
+    figure inside shipped assertion text is the exact class this docstring is about.
     """
     slug, hn, way = SAND_CASE
     if slug not in CORPUS:
@@ -17885,6 +18018,21 @@ def test_every_published_area_for_the_named_bunker_is_its_ring_and_not_its_bound
         f"the local frame puts way {way} at {shoelace:.1f} m^2 and the WGS84 geodesic at "
         f"{geod_area:.1f} m^2 -- {abs(geod_area - shoelace) / shoelace * 100:.2f}% apart. The published "
         f"figure is projection-dependent to a degree the docstrings do not say")
+    # ...and the figure the docstring above QUOTES for that agreement, which the bound cannot police:
+    # 0.17% and 0.00044% both satisfy `< 0.005`, and 0.17% is what the retired earth model gave.
+    apart_pct = abs(geod_area - shoelace) / shoelace * 100.0
+    quoted = re.search(r"They agree to ([\d.]+)%",
+                       _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                                   "test_every_published_area_for_the_named_bunker_is_its_ring"
+                                   "_and_not_its_bounding_box"))
+    assert quoted, (
+        "this test's docstring no longer states how closely the local shoelace and pyproj's geodesic "
+        "area agree ('They agree to <P>%'). That figure is the whole justification for publishing one "
+        "number for a shape measured two ways, and it went stale once already.")
+    assert abs(float(quoted.group(1)) - apart_pct) <= 1e-5, (
+        f"the docstring says the two areas agree to {quoted.group(1)}%; measured on geo.mlat/geo.mlon "
+        f"they are {apart_pct:.5f}% apart. 0.17% was the RETIRED model's disagreement (0.1632%) and the "
+        f"earth-model migration corrected three other figures in that same docstring and left this one.")
 
     assert len(ring) == SAND_CASE_NODES, (
         f"way {way} now has {len(ring)} nodes; the docstrings that quote {SAND_CASE_NODES} need "
@@ -19980,6 +20128,20 @@ def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER(
         "legal/README.md is the index of the folder that gets handed to a reader, and it does not "
         "list the record that discloses the earth model (%s). An unindexed record reaches nobody."
         % ", ".join(sorted(recs)))
+    # ...and the index must not describe in the PRESENT TENSE a rounding this corpus no longer has.
+    # It read "the four cards whose printed depth it rounds the other way" while the record's own title
+    # says "It ONCE Rounded": the antecedent was migrated to the new scales and the predicate was left
+    # in the present, so the first line of the folder a challenger is handed asserted a defect the
+    # build does not have. `wrong` is empty above, measured over every shipped card, which is what
+    # makes this checkable rather than a style note.
+    flat_idx = " ".join(idx.split()).replace("’", "'")
+    present = re.findall(r"(?<!once )(?<!Once )rounds the other way", flat_idx)
+    assert not wrong and not present, (
+        "legal/README.md describes the earth-model record as naming cards whose printed depth the build "
+        "'rounds the other way' -- present tense -- and no shipped card does: %d of %d printed depths "
+        "round the other way today. The record's own title says it ONCE rounded them. The index is the "
+        "first line of the folder handed to a challenger, so a stale predicate there is a defect the "
+        "reader will believe: %r" % (len(wrong), checked, present))
 
 
 _TICK_ERRORS = {}
