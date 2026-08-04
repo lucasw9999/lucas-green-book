@@ -7046,7 +7046,12 @@ def test_a_page_under_the_request_cap_does_not_end_a_listing_a_total_says_is_lon
     assert "offset" in str(e.value), (
         f"a service re-serving the same 50 rows at every offset was not called out as a paging "
         f"failure: {str(e.value)!r}")
-    assert len(asked) <= 6, f"it kept asking a stalled service that under-fills its pages: {len(asked)}"
+    # DERIVED, not a loose ceiling: one productive page, then TNM_STALL_PAGES that add nothing. `<= 6`
+    # stood here and 6 was nobody's measurement -- the walk makes exactly 4 requests, and a bound looser
+    # than the count cannot notice the walk taking a page more.
+    assert len(asked) == 1 + fetch_lidar.TNM_STALL_PAGES, (
+        f"a stalled service that under-fills its pages was walked for {len(asked)} requests "
+        f"({asked}); it is one productive page plus TNM_STALL_PAGES that add nothing")
 
     # (6) A LISTING THAT TRULY RAN OUT: the rows stop before the stated total and the end is reached.
     serve({0: {"total": 500, "items": every[:CAP]},
@@ -7057,6 +7062,80 @@ def test_a_page_under_the_request_cap_does_not_end_a_listing_a_total_says_is_lon
     assert "500" in str(e.value) and "300" in str(e.value), (
         f"a genuinely truncated listing must still refuse, naming what it was promised and what it "
         f"got: {str(e.value)!r}")
+
+
+def test_the_stalled_paging_refusal_names_an_offset_the_walk_actually_requested(monkeypatch):
+    """The stall refusal named an offset nothing had ever asked for -- verbatim the sin its own commit fixed.
+
+    `tnm_items` computed the offset it blames as `offset - TNM_PAGE_MAX`, which is only the last request
+    made when every page came back cap-sized. The commit that stopped a sub-cap page from ending the walk
+    is the commit that made sub-cap pages reachable mid-walk, so that subtraction now lands between two
+    requests: an offset-ignoring service under-filling every page at 150 rows against a stated 500 is
+    asked at [0, 150, 300, 450] and the refusal said "the last at offset=400". Nobody asked for 400.
+
+    That is the same defect this refusal's own sibling was rewritten for -- the truncation refusal used to
+    say "ran out after serving 350 rows" at an offset the walk never requested -- and it is the operator's
+    only lead: the number is there so they can replay the request that stalled. One that was never made
+    replays as something else, or as nothing.
+
+    Pre-fix this was UNREACHABLE, which is why it shipped: while any sub-cap page ended the walk, a stall
+    could only accumulate over cap-sized pages, where `offset - TNM_PAGE_MAX` IS the last request. The
+    test added with that commit asserted only `"offset" in str(e.value)`, which a wrong offset satisfies.
+
+    Both stall shapes are checked here, and the offset named must be the last one REQUESTED -- taken from
+    the stub's own log, not recomputed, so this cannot agree with the code by repeating its arithmetic.
+    Stubbed throughout; the live producer is never contacted."""
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    import fetch_lidar
+    monkeypatch.setattr(fetch_lidar.time, "sleep", lambda *_a, **_k: None)
+
+    asked = []
+
+    def serve(pages):
+        def _open(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            asked.append(int(re.search(r"[&?]offset=(\d+)", url).group(1)))
+            body = json.dumps(pages.get(asked[-1], {"total": 0, "items": []})).encode()
+
+            class _R:
+                def read(self_inner):
+                    return body
+            return _R()
+        monkeypatch.setattr(fetch_lidar.urllib.request, "urlopen", _open)
+
+    CAP = fetch_lidar.TNM_PAGE_MAX
+
+    def item(i):
+        return {"sourceId": f"id{i}", "title": f"t{i}.laz",
+                "downloadURL": f"https://x/Projects/CA_Test_2021_B21/LAZ/{i}.laz"}
+    every = [item(i) for i in range(3 * CAP)]
+
+    # page_rows: how many rows the stalled service hands back every time. Under the cap is the case the
+    # sub-cap fix made reachable; at the cap is the shape that used to be the only one.
+    for page_rows in (150, 50, CAP):
+        serve({off: {"total": 10 * CAP, "items": every[:page_rows]}
+               for off in range(0, 40 * CAP, page_rows)})
+        asked.clear()
+        with pytest.raises(SystemExit) as e:
+            fetch_lidar.tnm_items()
+        msg = str(e.value)
+        assert "re-served products it had already listed" in msg, (
+            f"{page_rows}-row pages: a service ignoring `offset` must be refused as a paging failure, "
+            f"not diagnosed as something else: {msg!r}")
+        named = re.search(r"offset=(\d+)", msg)
+        assert named, f"{page_rows}-row pages: the refusal no longer names the offset it stalled at: {msg!r}"
+        assert int(named.group(1)) in asked, (
+            f"{page_rows}-row pages: the refusal blames offset={named.group(1)}, which the walk never "
+            f"requested -- it asked {asked}. That number is the operator's only lead, and an offset "
+            f"nobody asked for replays as a different request.")
+        assert int(named.group(1)) == asked[-1], (
+            f"{page_rows}-row pages: the refusal names offset={named.group(1)}; the LAST request the walk "
+            f"made -- the one that stalled -- was offset={asked[-1]} of {asked}.")
+        assert len(asked) == 1 + fetch_lidar.TNM_STALL_PAGES, (
+            f"{page_rows}-row pages: the walk made {len(asked)} requests ({asked}); a stall is one "
+            f"productive page plus TNM_STALL_PAGES that add nothing.")
 
 
 def test_lidar_project_grouping_has_no_title_fallback():

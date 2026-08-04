@@ -121,16 +121,26 @@ def tnm_items(tries=8):
     naming an offset the walk had never requested. A short page still ends the walk when NO total was
     stated, which is the ordinary case on this corpus -- 4 to 14 tiles in one reply.
 
+    AND EVERY REFUSAL NAMES AN OFFSET THAT WAS ACTUALLY REQUESTED, from `last_asked`. The stall refusal
+    computed it as `offset - TNM_PAGE_MAX`, which is the last request only while every page arrives
+    cap-sized -- true until the paragraph above made sub-cap pages reachable mid-walk, and false after: a
+    service ignoring `offset` at 150 rows a page against a stated 500 is asked at 0/150/300/450 and that
+    subtraction blames 400. The offset is in the message so an operator can replay the request that
+    stalled; one that was never made replays as something else.
+
     Getting nothing at all is the old outage path and still returns [], which main() turns into its own
     "re-run later" stop.
     """
     got, ids, offset, total = [], set(), 0, None
     served = 0              # ROWS the service handed over, before dedup. The other half of the accounting.
+    last_asked = 0          # the offset of the most recent REQUEST. NOT `offset - TNM_PAGE_MAX`: pages
+                            # come back under the cap, so that subtraction names a request never made.
     stalled = 0             # CONSECUTIVE pages that added no new product
     stalls_seen = 0         # pages that added nothing, consecutive or not -- see the refusals below
     walked_to_end = False   # the listing ran out, as opposed to this loop giving up on it
     notes = []
     while True:
+        last_asked = offset
         items, page_total, note = _tnm_page(offset, tries)
         if note and str(note) not in notes:
             notes.append(str(note))
@@ -155,6 +165,11 @@ def tnm_items(tries=8):
         stalls_seen += 1 if new == 0 else 0
         if stalled >= TNM_STALL_PAGES:
             break                   # not honouring `offset`; the accounting below says what that cost
+        # Its position relative to the sub-cap block below is NOT load-bearing, and saying so beats
+        # leaving the next reader to assume it is: past page one `total` is never None -- a cap-sized
+        # page with no total raises and a sub-cap page with no total breaks -- so the only thing that
+        # block does (`if total is None: break`) cannot fire on a page where a stall could have built up.
+        # Measured: swapping the two leaves all eleven stubbed scenarios byte-identical.
         if len(items) < TNM_PAGE_MAX:
             # A SUB-CAP PAGE IS THE END ONLY WHEN NOTHING SAYS OTHERWISE. `max` is a ceiling, not a
             # quota: an HTTP API may under-fill any page and keep serving on the next. Reading a short
@@ -180,7 +195,7 @@ def tnm_items(tries=8):
     if stalled >= TNM_STALL_PAGES and not walked_to_end:
         raise SystemExit(
             f"USGS TNM re-served products it had already listed for {stalled} pages running, the last at\n"
-            f"  offset={offset - TNM_PAGE_MAX}, so it is not honouring `offset` and the listing cannot be\n"
+            f"  offset={last_asked}, so it is not honouring `offset` and the listing cannot be\n"
             f"  paged. Refusing to treat the {len(got)} products seen so far as the whole survey"
             + (f" of {total}" if total else "") + ": a short\n"
             f"  tile list is invisible downstream -- the tiles are simply absent, coverage measures\n"
