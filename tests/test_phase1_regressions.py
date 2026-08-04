@@ -5530,6 +5530,94 @@ def test_overpass_reply_validation_refuses_destructive_replies(tmp_path):
         assert json.loads(cache.read_text()) == good, f"{name}: cache must be left untouched"
 
 
+def test_the_lidar_listing_pages_rather_than_trusting_one_capped_reply(monkeypatch):
+    """fetch_lidar asked TNM for `&max=200` and read the first reply as the whole world.
+
+    A course needing more than 200 LPC products would have got a TRUNCATED tile list, silently: the
+    missing tiles are not an error anywhere downstream, they are simply absent, so lidar_coverage sees a
+    smaller footprint, choose_project ranks surveys on it, and greens fall back to the 1 m DEM or to
+    nothing for a reason that is not real. There was a `print("WARNING: hit the 200-item TNM cap")`,
+    which is a line in a long log rather than a refusal, and this project's rule is the other way round.
+
+    LATENT on this corpus -- the biggest course listing is far under the cap (4 to 14 tiles are kept per
+    course) -- so the point of the fix is the course that is not in it yet.
+
+    Driven against a STUBBED reply, never the live producer: urlopen is monkeypatched, so this measures
+    the paging logic and the refusals without asking USGS anything. Four cases:
+      * a list longer than one page is followed to the end, and the requests carry rising offsets;
+      * a page exactly at the cap with NO total refuses -- that is precisely the state where a full list
+        and a truncated one look identical, which is what the old code could not tell apart;
+      * a service that ignores `offset` and re-serves page one refuses instead of looping;
+      * a genuine empty answer (`total: 0`) is reported AS an answer and returns at once, rather than
+        being retried eight times as "service busy" -- the one diagnosis that message used to carry for
+        every cause, including a renamed `datasets=` string.
+    """
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    import fetch_lidar
+    monkeypatch.setattr(fetch_lidar.time, "sleep", lambda *_a, **_k: None)
+
+    asked = []
+
+    def serve(pages):
+        """Stub urlopen: `pages` maps an offset to the JSON reply for it."""
+        def _open(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            off = int(re.search(r"[&?]offset=(\d+)", url).group(1))
+            asked.append(off)
+            body = json.dumps(pages.get(off, {"total": 0, "items": []})).encode()
+
+            class _R:
+                def read(self_inner):
+                    return body
+            return _R()
+        monkeypatch.setattr(fetch_lidar.urllib.request, "urlopen", _open)
+
+    CAP = fetch_lidar.TNM_PAGE_MAX
+    def item(i):
+        return {"sourceId": f"id{i}", "title": f"t{i}.laz",
+                "downloadURL": f"https://x/Projects/CA_Test_2021_B21/LAZ/{i}.laz"}
+
+    # (1) three pages, followed to the end
+    n = 2 * CAP + 50
+    every = [item(i) for i in range(n)]
+    serve({0: {"total": n, "items": every[:CAP]},
+           CAP: {"total": n, "items": every[CAP:2 * CAP]},
+           2 * CAP: {"total": n, "items": every[2 * CAP:]}})
+    asked.clear()
+    got = fetch_lidar.tnm_items()
+    assert len(got) == n, (
+        f"a {n}-product listing came back as {len(got)} items -- the reply is being read one capped "
+        f"page at a time, which is a truncated tile list nothing downstream can notice")
+    assert asked == [0, CAP, 2 * CAP], f"the offsets requested were {asked}"
+    assert len({it["sourceId"] for it in got}) == n, "paging returned duplicates"
+
+    # (2) a full page with no total: a complete list and a truncated one are indistinguishable
+    serve({0: {"items": every[:CAP]}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert str(CAP) in str(e.value), f"the refusal must name the cap it hit: {e.value!r}"
+
+    # (3) a service that ignores offset must not be paged forever
+    serve({0: {"total": 10 * CAP, "items": every[:CAP]},
+           CAP: {"total": 10 * CAP, "items": every[:CAP]}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "offset" in str(e.value), f"the refusal must say the paging made no progress: {e.value!r}"
+    assert len(asked) <= 4, f"it kept asking: {len(asked)} requests"
+
+    # (4) "the service says there are none" is an ANSWER, not eight rounds of "service busy"
+    serve({0: {"total": 0, "items": []}})
+    asked.clear()
+    assert fetch_lidar.tnm_items() == []
+    assert len(asked) == 1, (
+        f"a reply that carries total 0 was retried {len(asked)} times as a busy service. That message "
+        f"was the sole diagnosis for every cause of an empty list, including a renamed datasets= string")
+
+
 def test_lidar_project_grouping_has_no_title_fallback():
     """PR #14 fixed grouping by title: TNM titles carry the per-tile ID, so every tile became its
     own 'project', coverage collapsed to one tile and most greens went unfed. The fallback that

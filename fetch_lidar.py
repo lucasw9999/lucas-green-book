@@ -24,20 +24,113 @@ os.makedirs(f"{DIR}/laz", exist_ok=True)
 S, W, N, E = config.COURSE["osm_bbox"]
 BBOX = f"{W},{S},{E},{N}"            # TNM wants minx,miny,maxx,maxy
 
-def tnm_items(tries=8):
+TNM_PAGE_MAX = 200      # products per request. The API's own cap on this endpoint -- ask for it, then PAGE.
+
+
+def _tnm_page(offset, tries):
+    """One page of TNM LPC products for the course bbox: (items, total, note).
+
+    `total` is what the service says the whole query holds, or None when it did not say. `note` is any
+    message or error field it carried, so a caller can report what was actually said.
+
+    Retries on a transport error or an empty reply, which is how this endpoint expresses being busy. But
+    an empty reply CARRYING a total of 0 is an answer, not a wobble, and comes straight back: "0 items
+    (service busy), retrying" was the sole diagnosis this module printed for every cause of an empty
+    list -- a real outage, a bbox over open water, and a renamed `datasets=` string all read the same.
+    """
     url = ("https://tnmaccess.nationalmap.gov/api/v1/products?bbox=" + BBOX +
-           "&datasets=Lidar%20Point%20Cloud%20(LPC)&outputFormat=JSON&max=200")
+           "&datasets=Lidar%20Point%20Cloud%20(LPC)&outputFormat=JSON"
+           f"&max={TNM_PAGE_MAX}&offset={offset}")
     for a in range(tries):
         try:
-            data = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent':'greenbook/1.0'}), timeout=90).read()
-            items = json.loads(data).get('items', [])
+            data = urllib.request.urlopen(urllib.request.Request(
+                url, headers={'User-Agent': 'greenbook/1.0'}), timeout=90).read()
+            reply = json.loads(data)
+            items = reply.get('items') or []
+            total = reply.get('total')
+            note = reply.get('message') or reply.get('errors') or reply.get('error')
+            if isinstance(total, str) and total.isdigit():
+                total = int(total)          # the endpoint has been seen to quote it
             if items:
-                return items
-            print(f"  TNM try {a+1}: 0 items (service busy), retrying")
+                return items, (total if isinstance(total, int) else None), note
+            if total == 0:
+                print(f"  TNM answered: it lists 0 LPC products for this bbox"
+                      + (f" -- {note}" if note else ""))
+                return [], 0, note
+            print(f"  TNM try {a+1}: 0 items and no total (service busy), retrying")
         except Exception as e:
             print(f"  TNM try {a+1} failed: {type(e).__name__}, retrying")
         time.sleep(10)
-    return []
+    return [], None, None
+
+
+def tnm_items(tries=8):
+    """Every LPC product TNM lists for this course bbox, following the API's paging.
+
+    THIS USED TO BE ONE REQUEST FOR `&max=200`, read as the whole world. A course needing more than 200
+    products would have got a silently TRUNCATED tile list: the missing tiles are not an error anywhere
+    downstream, they are simply absent, so lidar_coverage measures a smaller footprint, choose_project
+    ranks surveys on it, and greens fall back to the 1 m DEM or to nothing for a reason that is not real.
+    There was a `print("WARNING: hit the 200-item TNM cap")`, which is a line in a long log rather than a
+    refusal, and everything else in this pipeline refuses.
+
+    Latent on this corpus -- 4 to 14 tiles are kept per course, nowhere near the cap -- so the fix is for
+    the course that is not in it yet.
+
+    TWO REFUSALS, because paging can fail in two ways that both end in a short list:
+      * a page exactly at the cap with NO total. That is the one state where a complete list and a
+        truncated one are indistinguishable, which is precisely what the old code could not tell apart,
+        so it must stop rather than guess.
+      * a service that ignores `offset` and re-serves page one. Following that forever, or accepting the
+        first page as everything, are both wrong; deduplicating by sourceId makes the lack of progress
+        visible and it stops there.
+
+    A list that ends SHORT of a total the service stated is the truncation this function exists to
+    prevent, so that stops too. Getting nothing at all is the old outage path and still returns [], which
+    main() turns into its own "re-run later" stop.
+    """
+    got, ids, offset, total = [], set(), 0, None
+    while True:
+        items, page_total, note = _tnm_page(offset, tries)
+        if page_total is not None:
+            total = page_total
+        if not items:
+            break
+        new = 0
+        for it in items:
+            key = it.get('sourceId') or it.get('downloadURL') or it.get('title')
+            if key in ids:
+                continue
+            ids.add(key)
+            got.append(it)
+            new += 1
+        if new == 0:
+            raise SystemExit(
+                f"USGS TNM re-served the same {len(items)} products at offset={offset}, so it is not\n"
+                f"  honouring `offset` and the listing cannot be paged. Refusing to treat the first\n"
+                f"  {len(got)} products as the whole survey: a short tile list is invisible downstream --\n"
+                f"  the tiles are simply absent, coverage measures smaller, and greens fall back to the\n"
+                f"  1 m DEM for a reason that is not real. Check the products API before re-running."
+                + (f"\n  The service said: {note}" if note else ""))
+        offset += len(items)
+        if total is None:
+            if len(items) < TNM_PAGE_MAX:
+                break                       # a short page ends the list whatever the service does not say
+            raise SystemExit(
+                f"USGS TNM returned exactly {TNM_PAGE_MAX} products -- this request's cap -- and no\n"
+                f"  `total`, so a complete listing and a truncated one look identical. Refusing to\n"
+                f"  guess: if it is truncated, the missing tiles are not an error anywhere downstream,\n"
+                f"  they are just absent, and greens lose their 0.4 m surface for a reason that is not\n"
+                f"  real. Check what the products API now returns and extend the paging here."
+                + (f"\n  The service said: {note}" if note else ""))
+        if len(got) >= total:
+            break
+    if total and got and len(got) < total:
+        raise SystemExit(
+            f"USGS TNM says it holds {total} LPC products for this bbox but only {len(got)} could be\n"
+            f"  listed. Refusing to build on a partial tile list -- see this function's docstring for\n"
+            f"  why a short list is invisible downstream. Re-run when the service is healthy.")
+    return got
 
 # Path segments USGS uses as containers, never as a survey name.
 _BUCKETS = {'legacy', 'lpc', 'laz', 'metadata', 'projects'}
@@ -360,8 +453,6 @@ def main():
     if not items:
         raise SystemExit("USGS TNM returned no tiles after retries (temporary outage). "
                          "Re-run later; point cloud is known to exist for this bbox.")
-    if len(items) >= 200:
-        print("  WARNING: hit the 200-item TNM cap; some tiles may be missing from this listing")
     # Keep only tiles whose bounding box ACTUALLY overlaps the course. TNM's bbox
     # query returns neighbouring tiles too, and a tile that merely borders the
     # query box can miss every green -- overlap is what matters. (If no item

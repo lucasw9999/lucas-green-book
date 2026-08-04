@@ -97,7 +97,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. This file rebinds
-`COURSE` and drops modules from `sys.modules` at 89 sites, so a test can silently reconfigure the next
+`COURSE` and drops modules from `sys.modules` at 90 sites, so a test can silently reconfigure the next
 one, and file order alone will never show it — a real `IndexError` in `render_hole` hid behind that for
 its whole life and only appeared under shuffling:
 ```bash
