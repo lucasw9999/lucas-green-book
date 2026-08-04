@@ -3946,7 +3946,288 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
         f"with nothing checking it -- which is why it drifted unnoticed for two rounds.")
 
 
-# The closed historical interval the guard above tells a story about: legal/10's birth, and the commit
+def _norm_dist(name):
+    """A distribution name in PEP 503 normalised form, so `PyMuPDF` and `pymupdf` are one package."""
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
+
+
+def _release(version):
+    """`2.4.4` -> (2, 4, 4): a version's numeric release segments, for ordering. None if unrankable.
+
+    PEP 440's ordering for plain numeric releases, which is what this project and every package it
+    declares actually use. Pre/post/dev suffixes and wildcards are deliberately NOT guessed at -- they
+    come back None and the caller fails on them, because a comparator that quietly ranks `1.0rc1` equal
+    to `1.0` is a guard that quietly passes.
+    """
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)", version.strip())
+    return tuple(int(p) for p in m.group(1).split(".")) if m else None
+
+
+def _satisfies(version, spec):
+    """Does `version` satisfy every clause of the PEP 440 specifier `spec` (e.g. ">=0.8,<0.9")?
+
+    An empty specifier accepts anything, which is what "no version constraint" means. Raises ValueError
+    on a clause it cannot rank -- `~=`, `===`, a wildcard -- rather than returning True: nothing in the
+    declared set uses those, and if something starts to, this has to be extended on purpose instead of
+    believed by default.
+    """
+    have = _release(version)
+    if have is None:
+        raise ValueError(f"cannot rank version {version!r}")
+    for clause in (c.strip() for c in spec.split(",")):
+        if not clause:
+            continue
+        m = re.fullmatch(r"(==|!=|<=|>=|<|>)\s*(.+)", clause)
+        want = _release(m.group(2)) if m else None
+        if want is None:
+            raise ValueError(f"cannot evaluate specifier clause {clause!r}")
+        pad = max(len(have), len(want))
+        a, b = have + (0,) * (pad - len(have)), want + (0,) * (pad - len(want))
+        if not {"==": a == b, "!=": a != b, "<=": a <= b,
+                ">=": a >= b, "<": a < b, ">": a > b}[m.group(1)]:
+            return False
+    return True
+
+
+def _spec_floor(spec):
+    """The oldest version a specifier permits: its tightest `>=`/`==` bound, or None if it has none."""
+    ranked = [m.group(1) for m in re.finditer(r"(?:>=|==)\s*([0-9][^,\s]*)", spec)
+              if _release(m.group(1))]
+    return max(ranked, key=_release) if ranked else None
+
+
+def _spec_rejects(spec):
+    """Versions `spec` definitely refuses, one per upper bound -- what a looser declaration lets in.
+
+    `<0.9.0` refuses 0.9.0 itself; `<=0.9.0` refuses the next release after it. Both are concrete
+    versions, which is what makes "our declaration must be no looser than theirs" checkable without a
+    general specifier-intersection algebra.
+    """
+    out = []
+    for m in re.finditer(r"(<=|<)\s*([0-9][^,\s]*)", spec):
+        rel = _release(m.group(2))
+        if rel:
+            out.append(m.group(2) if m.group(1) == "<"
+                       else ".".join(str(p) for p in rel[:-1] + (rel[-1] + 1,)))
+    return out
+
+
+def _declared_specifiers():
+    """{normalised package: specifier} for every requirement requirements.txt declares.
+
+    The "# OPTIONAL:" entries count, exactly as they do for declared_dependencies(): that prefix keeps
+    pip from installing PyMuPDF, it does not make the floor published for it any less of a claim to the
+    person who installs it by hand. Extras are stripped off the name, so `laspy[lazrs]>=2.7` reads as
+    laspy and ">=2.7".
+    """
+    out = {}
+    with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as fh:
+        for raw in fh:
+            m = re.match(r"\s*#\s*OPTIONAL:\s*(.+)", raw)
+            code = (m.group(1) if m else raw.split("#", 1)[0]).strip()
+            name = re.split(r"[<>=!~\[]", code, 1)[0].strip()
+            if name:
+                out[_norm_dist(name)] = re.sub(r"^\[[^\]]*\]", "", code[len(name):].strip()).strip()
+    return out
+
+
+def _binding_requirements(parent, declared_specs):
+    """[(target, spec, kind)] -- what the INSTALLED `parent` demands of packages we also declare.
+
+    `kind` is WHY that demand binds this project's own declaration:
+
+      "install"  an unconditional requirement. pip reads it, so a floor outside it describes an install
+                 that never happens -- and, worse, an already-installed package that satisfies our
+                 floor but not the parent's is left exactly where it is.
+      "backend"  a requirement carried by an EXTRA, where the target's own requirements.txt line
+                 declares it to be this parent's runtime backend -- the carve-out `_backend_exemption`
+                 grants from the parent's metadata. This is the one NOTHING else can enforce: the extra
+                 is never requested, so no resolver ever reads the constraint.
+      "marker"   a requirement gated on something else (a python_version, a platform). Not interpreted
+                 here; the caller fails on it, because silently dropping a constraint nobody understood
+                 is how the defect this rule exists for got in.
+
+    Empty when `parent` is not installed: a constraint that cannot be read is not invented, which is
+    also why an absent optional package can never make this fail.
+    """
+    import importlib.metadata as md
+    try:
+        reqs = md.requires(parent) or []
+    except md.PackageNotFoundError:
+        return []
+    comments = {n: c for n, _s, c in _requirement_lines()}
+    out = []
+    for r in reqs:
+        head, _, marker = r.partition(";")
+        parsed = re.match(r"\s*([A-Za-z0-9._-]+)(?:\[[^\]]*\])?\s*(.*)$", head)
+        if not parsed:
+            continue
+        target = _norm_dist(parsed.group(1))
+        spec = parsed.group(2).strip().strip("()").strip()
+        if target not in declared_specs or target == _norm_dist(parent) or not spec:
+            continue
+        if not marker.strip():
+            kind = "install"
+        elif re.search(r"\bextra\b", marker):
+            confirmed, _claimed = _backend_exemption(target, comments.get(target, ""), set(comments))
+            if _norm_dist(parent) not in {_norm_dist(c) for c in confirmed}:
+                continue          # an extra this project neither requests nor claims to depend on
+            kind = "backend"
+        else:
+            kind = "marker"
+        out.append((target, spec, kind))
+    return out
+
+
+def _legal10_verified_versions():
+    """{normalised package: version} from legal/10's tables -- the versions it publishes as verified."""
+    out = {}
+    with open(os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md"), encoding="utf-8") as fh:
+        for line in fh:
+            if not line.lstrip().startswith("|"):
+                continue
+            cells = [c.strip().strip("`*").strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) >= 2 and cells[0] and _release(cells[1]):
+                out[_norm_dist(cells[0])] = cells[1]
+    return out
+
+
+def test_no_declared_version_floor_is_one_the_rest_of_the_declared_set_rejects():
+    """The install instructions blessed a `lazrs` that the package which loads it does not support.
+
+    `requirements.txt` declared `lazrs>=0.6`. The installed `laspy 2.7.0` declares
+    `lazrs<0.9.0,>=0.8.0; extra == "lazrs"` in its own metadata, and lazrs is in this file for exactly
+    one reason, which its own comment states: it is the LAZ decompression backend laspy loads, and
+    nothing here imports it by name. So the published floor described an environment -- lazrs 0.6.x or
+    0.7.x -- that laspy says it does not work with, on the LiDAR read every printed green surface in
+    this project comes from.
+
+    NOTHING COULD HAVE CAUGHT IT, and that is the interesting half. pip cannot: the constraint lives in
+    an extra (`laspy[lazrs]`) that requirements.txt does not request, so no resolver ever reads it, and
+    a machine that already holds lazrs 0.7 satisfies `>=0.6` and is left alone. A fresh install happens
+    to land on 0.8.1 because `>=0.6` has no ceiling and pip takes the newest -- which is precisely why
+    this stayed invisible: the file was wrong and the author's machine was right.
+
+    Three properties, all derived from the same source legal/10 says its own table was verified from --
+    installed metadata -- so none of this needs a network:
+
+      (1) the oldest version our declaration permits must be one every declared-and-installed consumer
+          of it accepts. That is the lazrs defect, and it fires in the other direction too: a floor
+          raised ABOVE a consumer's ceiling is the same contradiction.
+      (2) where the consumer's constraint came from an extra -- the "backend" case, the one no resolver
+          enforces -- our declaration must also be no looser than theirs at the top. Without this,
+          nothing stops a future lazrs 0.9 being installed next to a laspy that refuses it.
+      (3) the version legal/10 publishes as verified must be one requirements.txt permits. Two
+          published documents describing one number have to agree, which is the defect this branch has
+          closed repeatedly.
+
+    (3) is deliberately SATISFACTION and not equality. legal/10 records what was measured on one
+    machine; requiring the floors to equal it would pin requirements.txt to that machine and publish
+    "numpy 2.3 does not work", which no measurement here supports. A floor BELOW the verified version
+    is the support window this file intends; a floor that EXCLUDES the verified version is a
+    contradiction between two records.
+
+    An absent optional package cannot fail this: an uninstalled parent contributes no constraints, and
+    (3) reads two files. PyMuPDF is checked by (3) alone, which is the point -- it is AGPL and must stay
+    out of the default install.
+    """
+    declared = _declared_specifiers()
+    assert len(declared) >= 9, (
+        f"only {len(declared)} requirement(s) parsed out of requirements.txt ({sorted(declared)}); this "
+        f"rule cannot be checking the declared set")
+
+    problems, unranked, pairs = [], [], []
+    for parent in sorted(declared):
+        for target, spec, kind in _binding_requirements(parent, declared):
+            ours = declared[target]
+            # counted as checked BEFORE the floor is read: this constraint WAS found and understood, and
+            # a declaration with no floor at all has to report itself as that, not as "the laspy -> lazrs
+            # pair is no longer checked" -- the anti-vacuum anchor below would otherwise fire first and
+            # send a maintainer looking at laspy's metadata for a missing `>=` in this file.
+            pairs.append((parent, target, kind))
+            floor = _spec_floor(ours)
+            if floor is None:
+                problems.append(
+                    f"{target}: requirements.txt declares {ours or 'no version at all'!r}, so it names "
+                    f"no floor at all -- {parent} requires {spec!r} of it and nothing here has to meet it")
+                continue
+            probes = [(floor, spec, True, f"{parent} requires {target}{spec}")]
+            if kind == "backend":
+                # the constraint pip never reads, so OUR line has to carry its ceiling as well
+                probes += [(p, ours, False, f"{parent} refuses {target} {p}") for p in _spec_rejects(spec)]
+            for version, against, want, why in probes:
+                try:
+                    got = _satisfies(version, against)
+                except ValueError as e:
+                    unranked.append(f"{parent} -> {target}: {e}")
+                    continue
+                if got is want:
+                    continue
+                if want:
+                    problems.append(
+                        f"{target}: requirements.txt declares {ours!r}, whose oldest permitted version "
+                        f"is {version} -- and {why}. A stranger who installs the published floor gets a "
+                        f"{target} that {parent} does not support.")
+                else:
+                    problems.append(
+                        f"{target}: {why}, and requirements.txt declares {ours!r}, which permits it. "
+                        f"That constraint reached us through an extra, so pip will never enforce it -- "
+                        f"this line is the only place it can live.")
+
+    assert not unranked, (
+        "a version or specifier operator in the declared set can no longer be ranked, so this rule "
+        "stopped checking part of it:\n  " + "\n  ".join(sorted(set(unranked)))
+        + "\n  Extend _satisfies/_release deliberately. Ranking it wrong is worse than not ranking it, "
+          "which is why they raise instead of guessing.")
+    assert not [p for p in pairs if p[2] == "marker"], (
+        "a declared package now constrains another one behind an environment marker this rule does not "
+        f"interpret: {[p for p in pairs if p[2] == 'marker']}. Decide whether it binds -- a constraint "
+        f"dropped because nobody read the marker is exactly how `lazrs>=0.6` survived.")
+
+    import importlib.metadata as md
+    try:
+        md.version("laspy")
+    except md.PackageNotFoundError:
+        pass                      # (1) and (2) have nothing to read; (3) below still does
+    else:
+        assert ("laspy", "lazrs", "backend") in pairs, (
+            f"the laspy -> lazrs constraint is no longer among the ones this rule checks (it checked "
+            f"{sorted(pairs)}). That pair is the reason the rule exists: laspy declares "
+            f"`lazrs>=0.8.0,<0.9.0` in its lazrs extra and nothing in this tree imports lazrs by name. "
+            f"If laspy's metadata has changed, re-derive this from it rather than loosening the rule.")
+
+    verified = _legal10_verified_versions()
+    checked = 0
+    for name, version in sorted(verified.items()):
+        if name not in declared:
+            continue              # a row for something undeclared is the licence guard's business
+        checked += 1
+        try:
+            ok = _satisfies(version, declared[name])
+        except ValueError as e:
+            unranked.append(f"legal/10 {name} {version}: {e}")
+            continue
+        if not ok:
+            problems.append(
+                f"{name}: legal/10 publishes {version} as the version it verified, and requirements.txt "
+                f"declares {declared[name]!r}, which does not permit it. One of the two numbers is "
+                f"wrong, and both are published.")
+    assert checked >= 9, (
+        f"legal/10's tables account for only {checked} of the {len(declared)} declared packages, so the "
+        f"cross-check between the two records is not covering the dependency set")
+
+    assert not unranked, ("legal/10 publishes a version that cannot be ranked:\n  "
+                          + "\n  ".join(sorted(set(unranked))))
+    assert not problems, (
+        "a declared version floor is not one the rest of the declared set can work with, so the "
+        "published install instructions can produce an environment this project does not run in:\n  "
+        + "\n  ".join(sorted(problems))
+        + "\n  Fix requirements.txt AND legal/10 together -- the floor and the verified-version table "
+          "are two published accounts of one number.")
+
+
+# The closed historical interval test_the_software_licence_record_matches_the_repo_it_describes tells a
+# story about: legal/10's birth, and the commit
 # that corrected its file count. Both are identifiers, not measurements -- everything derived FROM them
 # below is measured -- and the interval is closed, so a file added tomorrow cannot make the story false.
 LEGAL10_BORN = "69414b2"

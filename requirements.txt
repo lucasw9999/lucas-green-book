@@ -4,14 +4,23 @@
 #   python3 -m playwright install chromium      # one extra step: the PDF renderer
 #
 # Python 3.11+ (the engine uses sys.stdlib_module_names and modern f-strings).
-# Floors are the versions this was developed and verified against; newer is expected to work.
+# Floors are the oldest versions this project supports, and newer is expected to work. They are NOT the
+# versions it was measured on -- those are in legal/10_SOFTWARE_DEPENDENCIES.md, read off installed
+# metadata -- but no floor may sit outside what another package declared here requires of it, which
+# test_no_declared_version_floor_is_one_the_rest_of_the_declared_set_rejects checks from that same
+# metadata.
 
 # --- core engine (fetch_* and render_*) -------------------------------------
 numpy>=2.0                # grids, gradients, contouring
 scipy>=1.11               # griddata interpolation of the 0.4 m green surface (fetch_dem_hd.py)
 laspy>=2.5                # read USGS LiDAR .laz point clouds
-lazrs>=0.6                # the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports
-                          # it by name, laspy loads it
+lazrs>=0.8,<0.9           # the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports
+                          # it by name, laspy loads it. The range is laspy's own -- laspy 2.7.0 declares
+                          # `lazrs>=0.8.0,<0.9.0` in that extra -- and because this file asks for lazrs
+                          # directly rather than through the extra, no resolver ever reads that
+                          # constraint. So this line is the ONLY place it can live. It said >=0.6, which
+                          # blessed a lazrs laspy does not support, on the LiDAR read every printed
+                          # green surface comes from.
 pyproj>=3.6               # lat/lon <-> UTM, per-tile CRS and Z units from the LAZ header, AND the
                           # WGS84 ellipsoid parameters that geo.py turns into this project's two
                           # ground scales (mlat/mlon). Since the earth-model migration every printed

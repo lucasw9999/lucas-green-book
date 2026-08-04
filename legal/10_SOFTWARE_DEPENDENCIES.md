@@ -90,3 +90,13 @@ EOF
 
 Re-run it when pinning or bumping anything. A licence can change between releases — PyMuPDF's did not,
 but `rasterio` moved maintainers, and a permissive-to-copyleft change in any of these would matter.
+
+Every version in the tables above must also be one `requirements.txt` actually permits. The two files
+are separate accounts of the same dependency set — this one records what was verified, that one records
+what a stranger is told to install — so a bump that moves a version outside its declared range makes the
+pair contradict itself. `test_no_declared_version_floor_is_one_the_rest_of_the_declared_set_rejects`
+asserts that, and the stronger property behind it: no floor `requirements.txt` declares may sit outside
+what another declared package requires of it. `lazrs` is declared `>=0.8,<0.9` for exactly that reason —
+the range is `laspy`'s own, carried in an extra (`laspy[lazrs]`) that this project does not request, so
+no resolver ever reads it and the requirement line is the only place it can live. It was `>=0.6`, which
+told a stranger to install a `lazrs` that the `laspy` beside it does not support.
