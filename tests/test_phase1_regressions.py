@@ -3822,21 +3822,119 @@ def _distribution_requires(parent, child):
     return any(norm(re.split(r"[<>=!~;\[\s(]", r, 1)[0]) == norm(child) for r in reqs)
 
 
+def _distribution_installed(name):
+    """Is distribution `name` installed at all, so its metadata can be read?
+
+    Split from `_distribution_requires` because "not installed" and "installed and does not declare it"
+    are different facts and only the second is evidence about requirements.txt. Reading them as one made
+    the backend carve-out machine-dependent: with laspy simply absent, a correct record was reported as a
+    false claim. The sibling version-floor guard already takes this line -- an uninstalled parent
+    contributes no constraints -- and two guards reading one source cannot disagree about silence."""
+    import importlib.metadata as md
+    try:
+        md.requires(name)
+    except md.PackageNotFoundError:
+        return False
+    return True
+
+
 def _backend_exemption(name, comment, declared_names):
-    """(confirmed, claimed) declared packages that load `name` at runtime rather than importing it.
+    """(confirmed, claimed, uncheckable) declared packages that load `name` at runtime, not by import.
 
     `claimed` is what the requirement's COMMENT says -- it must call `name` a backend, driver or plugin
     and name another declared package. `confirmed` is the subset whose own installed distribution
-    metadata actually declares `name` as a dependency of theirs.
+    metadata actually declares `name` as a dependency of theirs. `uncheckable` is the subset that is not
+    installed here, so its metadata says nothing either way.
 
     THE COMMENT ALONE USED TO BE THE WHOLE TEST, and a comment is prose. The rule this feeds claims that
     spelling the carve-out stops "a package that has simply fallen out of use" hiding behind it, and one
     line defeated that: `tifffile>=2023.1.1  # the GeoTIFF backend laspy needs` made an unimported
     package pass -- tifffile being exactly the stale declaration the rule was written to catch. laspy
-    declares no such thing, and now it has to."""
+    declares no such thing, and now it has to.
+
+    THE THIRD VALUE IS WHY THIS IS NOT MACHINE-DEPENDENT. An absent parent used to count as a refutation,
+    so on a machine without laspy the guard failed a requirements.txt that is right and told the
+    maintainer to change it. A refutation now needs metadata that could be READ and does not name `name`;
+    see test_the_backend_carve_out_reads_the_same_on_a_machine_that_has_not_installed_the_parent."""
     claimed = [d for d in sorted(declared_names - {name})
                if re.search(r"backend|driver|plugin", comment, re.I) and d in comment.lower()]
-    return [d for d in claimed if _distribution_requires(d, name)], claimed
+    return ([d for d in claimed if _distribution_requires(d, name)], claimed,
+            [d for d in claimed if not _distribution_installed(d)])
+
+
+def test_the_backend_carve_out_reads_the_same_on_a_machine_that_has_not_installed_the_parent(monkeypatch):
+    """The carve-out was machine-dependent, and with `laspy` absent it told the maintainer to fix a
+    record that is right.
+
+    `_distribution_requires` returns False when the parent is not installed, and `_backend_exemption`
+    read that as a REFUSAL. So on a machine where `laspy` is simply not installed -- a fresh clone before
+    `pip install -r`, or any environment that reads the repo without building a book -- two tests fail
+    against a correct requirements.txt:
+
+        lazrs: its comment calls it a backend of laspy, but that package does not declare it
+        lazrs's real declaration no longer earns the carve-out (claimed ['laspy'], confirmed [])
+
+    Neither says what is actually true, which is that nothing could be checked. "Not installed" and
+    "installed and does not declare it" are different facts and only the second is evidence about the
+    record; collapsing them makes the guard report the environment as a defect in the document.
+
+    THE SIBLING GUARD IN THE SAME ROUND TOOK THE OPPOSITE LINE and it is the right one: `0d0bf7e`'s
+    version-floor check reads the same metadata and treats an uninstalled parent as contributing no
+    constraints -- so it passes with laspy absent, with PyMuPDF absent, and with nothing installed at
+    all. Two guards reading one source cannot disagree about what silence means.
+
+    So the exemption is now three-valued: CONFIRMED by an installed parent that declares it, REFUTED by
+    an installed parent that does not, and UNCHECKABLE when the parent is not installed. Only a refutation
+    fails the rule. The prose hole stays shut, because the parent a comment can name has to be one of this
+    project's own declared requirements -- which `pip install -r` installs -- and the refutation cases
+    below are re-run with the metadata intact.
+
+    Both directions are exercised here: laspy hidden, and every distribution hidden."""
+    import importlib.metadata as md
+    real_requires = md.requires
+    declared = {n for n, _s, _c in _requirement_lines()} | {"lazrs", "laspy", "tifffile"}
+    real = "the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports it by name"
+
+    def hide(*names):
+        gone = {_norm_dist(n) for n in names}
+
+        def _requires(dist):
+            if not gone or _norm_dist(dist) in gone:
+                raise md.PackageNotFoundError(dist)
+            return real_requires(dist)
+        monkeypatch.setattr(md, "requires", _requires)
+
+    for what, hidden in (("laspy alone", ("laspy",)), ("every distribution", ())):
+        hide(*hidden)
+        for name in ("test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_"
+                     "actually_used",
+                     "test_the_dependency_guards_backend_carve_out_cannot_be_granted_by_prose"):
+            try:
+                globals()[name]()
+            except AssertionError as e:
+                raise AssertionError(
+                    f"with {what} hidden, {name} fails against a requirements.txt that is correct, and "
+                    f"its message tells the maintainer to change the record:\n  "
+                    f"{str(e).splitlines()[0]}\n  The sibling version-floor guard passes in exactly this "
+                    f"environment; an uninstalled parent contributes no constraints and cannot refute a "
+                    f"carve-out either.") from None
+        confirmed, claimed, uncheckable = _backend_exemption("lazrs", real, declared)
+        assert claimed == ["laspy"] and confirmed == [] and uncheckable == ["laspy"], (
+            f"with {what} hidden, lazrs's carve-out reads (confirmed {confirmed}, uncheckable "
+            f"{uncheckable}) -- an absent parent has to come back UNCHECKABLE, not refuted. Whether "
+            f"laspy happens to be installed is not a fact about requirements.txt.")
+
+    # ...and with the metadata back, a comment still cannot write itself an exemption. Same cases as the
+    # sibling test, re-run here so this test cannot pass by making the check unconditional.
+    monkeypatch.setattr(md, "requires", real_requires)
+    for comment in ("the GeoTIFF backend laspy needs",
+                    "the imagery driver rasterio needs",
+                    "the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports it"):
+        confirmed, claimed, uncheckable = _backend_exemption("tifffile", comment, declared)
+        assert claimed and not confirmed and not uncheckable, (
+            f"{comment!r} exempted tifffile with laspy and rasterio both installed and both silent "
+            f"about it (confirmed {confirmed}, uncheckable {uncheckable}). An INSTALLED parent that "
+            f"does not declare a package refutes the claim; that is the half a comment cannot write.")
 
 
 def test_the_dependency_guards_backend_carve_out_cannot_be_granted_by_prose():
@@ -3863,17 +3961,25 @@ def test_the_dependency_guards_backend_carve_out_cannot_be_granted_by_prose():
     """
     declared = {n for n, _s, _c in _requirement_lines()} | {"lazrs", "laspy", "tifffile"}
     real = "the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports it by name"
-    confirmed, claimed = _backend_exemption("lazrs", real, declared)
-    assert claimed == ["laspy"] and confirmed == ["laspy"], (
+    confirmed, claimed, uncheckable = _backend_exemption("lazrs", real, declared)
+    assert claimed == ["laspy"] and (confirmed == ["laspy"] or uncheckable == ["laspy"]), (
         f"lazrs's real declaration no longer earns the carve-out (claimed {claimed}, confirmed "
-        f"{confirmed}). laspy declares `lazrs>=0.8.0; extra == 'lazrs'` in its installed metadata; if "
-        f"that has changed, re-derive this rule rather than loosening it -- nothing in the tree imports "
-        f"lazrs by name, so without the exemption it reads as a stale declaration.")
+        f"{confirmed}, uncheckable {uncheckable}). laspy declares `lazrs>=0.8.0; extra == 'lazrs'` in "
+        f"its installed metadata; if that has changed, re-derive this rule rather than loosening it -- "
+        f"nothing in the tree imports lazrs by name, so without the exemption it reads as a stale "
+        f"declaration. laspy NOT BEING INSTALLED is the other acceptable answer, and the only one: it "
+        f"leaves the claim uncheckable rather than refuted, which is what a machine's contents may "
+        f"decide and a record may not -- see "
+        f"test_the_backend_carve_out_reads_the_same_on_a_machine_that_has_not_installed_the_parent.")
+    if _distribution_installed("laspy"):
+        assert confirmed == ["laspy"] and not uncheckable, (
+            f"laspy is installed here and its metadata does not declare lazrs (confirmed {confirmed}). "
+            f"That is a refutation, not a missing environment.")
     for comment in ("the GeoTIFF backend laspy needs",
                     "the imagery driver rasterio needs",
                     "a numpy plugin, loaded at runtime",
                     "the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports it"):
-        confirmed, claimed = _backend_exemption("tifffile", comment, declared)
+        confirmed, claimed, uncheckable = _backend_exemption("tifffile", comment, declared)
         assert claimed, (
             f"the comment {comment!r} no longer even CLAIMS a backend relationship, so this case has "
             f"stopped testing the thing it was written for -- re-anchor it on the rule's wording")
@@ -3882,10 +3988,15 @@ def test_the_dependency_guards_backend_carve_out_cannot_be_granted_by_prose():
             f"declared package loads at runtime and nothing imports. An exemption a comment can write "
             f"for itself is not an exemption, and this one would have hidden tifffile -- the stale "
             f"declaration the rule was built to catch.")
-    # and the machine half cannot be satisfied by a parent that is not installed
+    # and the machine half cannot be satisfied by a parent that is not installed: it reads as
+    # UNCHECKABLE, which grants nothing here -- the exemption still needs metadata that names the child.
     assert not _distribution_requires("a-package-that-is-not-installed", "tifffile"), (
         "an uninstallable parent granted the exemption. An exemption that cannot be checked must not be "
-        "granted, or 'the backend of <anything>' is back to being prose.")
+        "confirmed, or 'the backend of <anything>' is back to being prose.")
+    assert not _distribution_installed("a-package-that-is-not-installed"), (
+        "_distribution_installed says a package that cannot exist is installed, so the uncheckable case "
+        "-- the one that keeps this guard from failing on a machine without laspy -- is not being told "
+        "apart from a refutation at all.")
 
 
 def test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_actually_used():
@@ -3959,11 +4070,14 @@ def test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_a
         if not users:
             # (a) the carve-out is EARNED, not spelled: the comment names a parent for the reader and
             # that parent's own installed metadata has to declare this package. A comment on its own
-            # exempted tifffile, which is the very declaration this rule exists to catch.
-            confirmed, claimed = _backend_exemption(name, comment, declared_names)
+            # exempted tifffile, which is the very declaration this rule exists to catch. A parent that
+            # is NOT INSTALLED refutes nothing -- it is the machine that is short, not the record -- so
+            # only a readable metadata set that omits this package fails here. See
+            # test_the_backend_carve_out_reads_the_same_on_a_machine_that_has_not_installed_the_parent.
+            confirmed, claimed, uncheckable = _backend_exemption(name, comment, declared_names)
             if not claimed:
                 unused.append(f"{name}: declared under {section!r} and imported nowhere in the tree")
-            elif not confirmed:
+            elif not confirmed and not uncheckable:
                 unbacked.append(
                     f"{name}: its comment calls it a backend of {', '.join(claimed)}, but "
                     + ("none of those declare it in their own installed metadata" if len(claimed) > 1
@@ -4205,7 +4319,10 @@ def _binding_requirements(parent, declared_specs):
         if not marker.strip():
             kind = "install"
         elif re.search(r"\bextra\b", marker):
-            confirmed, _claimed = _backend_exemption(target, comments.get(target, ""), set(comments))
+            # `confirmed` only: we are inside `parent`'s own metadata here, so it IS installed and its
+            # silence about `target` is evidence rather than an absent environment.
+            confirmed, _claimed, _unchecked = _backend_exemption(target, comments.get(target, ""),
+                                                                 set(comments))
             if _norm_dist(parent) not in {_norm_dist(c) for c in confirmed}:
                 continue          # an extra this project neither requests nor claims to depend on
             kind = "backend"
