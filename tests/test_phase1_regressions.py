@@ -5191,6 +5191,73 @@ def test_the_3_ft_elevation_floor_sees_the_measurement_not_a_display_value():
         seen, "test_the_3_ft_elevation_floor_sees_the_measurement_not_a_display_value")
 
 
+def test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_round_guess():
+    """MAX_TILE_SPAN_DAYS was 730 -- "more than two years is not one acquisition" -- and 730 is a round
+    number nobody measured. It is the backstop that has to tell a second EPOCH from a second PASS, and
+    at 7.3x the widest real span in this corpus it cannot: a junk cluster years from the flight sits
+    comfortably inside it.
+
+    Measured over every tile this repo has dated, from the per-tile day pairs `--write` already records
+    in each course.json's `lidar_flown.tiles` -- so the bound is checked against the artifact rather than
+    re-read from 12 GB of LAZ:
+
+        philadelphia 18TVK475434 / 18TVK474434   100 days   (2024-12-17..2025-03-28, real, two epochs
+                                                             of one PA_17County_D24 acquisition)
+        Alameda 2021, 8 tiles                     11 days
+        everything else                            0 days
+
+    Independently re-measured off the point records at full resolution while writing this: the widest
+    green-near span is 100.2301 d (philadelphia 18TVK475434) and the widest WHOLE-tile span 100.2614 d
+    (18TVK474435, which feeds no green) -- and endpoints() is used for both sets, so the bound has to
+    clear the second. The next widest family is 11.07 d, so there is nothing between 11 and 100 to
+    calibrate against; the margin over the worst REAL case is the only honest way to set this.
+
+    Asserted as a relationship, not a literal: the bound must clear the worst span the corpus actually
+    holds by the stated margin, and must be far tighter than the retired 730. Tighten the corpus (or add
+    a course with a wider acquisition) and this fails, which is the moment the constant needs re-deriving.
+    """
+    import datetime as dt
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ld_probe", os.path.join(ROOT, "tools", "lidar_dates.py"))
+    ld = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ld)
+
+    worst, worst_where = 0, None
+    seen = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(p))
+        if slug.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            rec = (json.load(fh).get("lidar_flown") or {}).get("tiles") or {}
+        for name, pair in rec.items():
+            seen += 1
+            span = (dt.date.fromisoformat(pair[1]) - dt.date.fromisoformat(pair[0])).days
+            if span > worst:
+                worst, worst_where = span, f"{slug} {name}"
+    if not seen:
+        pytest.skip("no course records a per-tile flight range yet")
+    assert seen >= 20, f"only {seen} per-tile ranges on disk; too few to calibrate a bound"
+
+    assert ld.MAX_TILE_SPAN_DAYS < 730, (
+        "MAX_TILE_SPAN_DAYS is back at the round 730-day guess. It is the backstop that has to separate "
+        "a junk cluster years from the flight from a genuine second pass, and at 7.3x the widest real "
+        "span in this corpus it cannot do that")
+    assert ld.MAX_TILE_SPAN_DAYS > worst, (
+        f"MAX_TILE_SPAN_DAYS is {ld.MAX_TILE_SPAN_DAYS} d but {worst_where} genuinely spans {worst} d. "
+        f"A bound under the worst real acquisition refuses live data, which is worse than the hole it "
+        f"closes -- it silently drops a real flight date")
+    assert ld.MAX_TILE_SPAN_DAYS >= 1.5 * worst, (
+        f"MAX_TILE_SPAN_DAYS is {ld.MAX_TILE_SPAN_DAYS} d against a worst real span of {worst} d "
+        f"({worst_where}) -- under 1.5x, a course whose acquisition ran slightly longer would be "
+        f"refused outright")
+    assert ld.MAX_TILE_SPAN_DAYS <= 4 * worst, (
+        f"MAX_TILE_SPAN_DAYS is {ld.MAX_TILE_SPAN_DAYS} d, more than 4x the worst real span of "
+        f"{worst} d ({worst_where}). The looser it is, the more of a second EPOCH it reads as one "
+        f"acquisition -- which is the whole reason the 730 was replaced")
+
+
 def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
     """The flight-date trimmer's reliability INVERTED with the size of the corruption: 8 junk readings
     were trimmed with a warning, 9 were refused, and 10 published silently with n_dropped = 0.
@@ -5232,22 +5299,31 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
         got = e.endpoints()
         return (False, None) if got is None else (True, got[2])
 
-    # KNOWN OPEN, recorded rather than hidden. Beyond half the window the inversion returns: once a
-    # junk cluster fills ENDPOINT_WINDOW//2 of the kept extremes it IS the longest gap-free run in
-    # that window, and endpoints() publishes it with n_dropped = 0. Verified through the real path:
-    # 9-31 junk values refuse, 32+ publish 2010-07-23 for a 2021 flight.
+    # CLOSED for a second EPOCH, and the bound that closes it is measured rather than guessed.
     #
-    # This is NOT fixed by a saturation guard on window adjacency -- that was tried and it refused
-    # philadelphia's genuinely multi-date tiles, narrowing a published range from
-    # "2024-12-17 to 2025-03-27" to "2024-12-17" on live data. Silently dropping a real second flight
-    # date is worse than the bug. The fix has to distinguish a second EPOCH from a second PASS, which
-    # needs a per-tile span bound measured from the corpus, not another threshold guess.
+    # The hole this comment used to record: beyond half the window the inversion returned, because once a
+    # junk cluster fills ENDPOINT_WINDOW//2 of the kept extremes it IS the longest gap-free run in that
+    # window, so endpoints() returned it at i = 0 with n_dropped = 0 -- no warning, no refusal. Verified
+    # through the real path at the time: 9-31 junk values refused, 32+ published a date years from the
+    # flight. _resolve's own span test could not see it, because it only fires when it TRIMMED something.
     #
-    # The bound below is deliberately ENDPOINT_WINDOW//2, so this test locks in what IS true today and
-    # fails the moment the safe region shrinks -- rather than asserting a monotonicity the code does
-    # not yet have.
-    limit = ld.ENDPOINT_WINDOW // 2
-    for off in (-700, -365, -100, -2, 700):
+    # A saturation guard on window adjacency was tried and REGRESSED live data -- it narrowed
+    # philadelphia's genuinely multi-date range from "2024-12-17 to 2025-03-27" to "2024-12-17", which
+    # is worse than the bug. So the discriminator is the one thing that separates a second EPOCH from a
+    # second PASS: how far apart the two ends are, bounded by what a real acquisition in this corpus
+    # actually spans. Measured over all 78 dated tiles, the widest is philadelphia 18TVK474435 at
+    # 100.2614 days (whole tile) and 18TVK475434 at 100.2301 (green-near); the next widest family is
+    # 11.07. MAX_TILE_SPAN_DAYS is now that measurement times 2.0, and endpoints() applies it across the
+    # two resolved ends -- the only place both are known before either is published.
+    #
+    # Live data confirmed unchanged after the change: every one of the 11 dated courses reports the same
+    # ACQUIRED label it recorded before, philadelphia's two-epoch range included.
+    #
+    # Now monotonic THROUGH AND PAST the whole window, not just to half of it, for any offset the corpus
+    # says cannot be one acquisition.
+    limit = 2 * ld.ENDPOINT_WINDOW + 5
+    bound = ld.MAX_TILE_SPAN_DAYS
+    for off in (-700, -365, -int(bound) - 1, 700, int(bound) + 1):
         published = [k for k in range(0, limit) if outcome(k, off)[0]]
         refused = [k for k in range(0, limit) if not outcome(k, off)[0]]
         if not refused:
@@ -5258,21 +5334,43 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
             f"refuses {min(refused)} -- reliability inverts with the size of the corruption, so a "
             f"BIGGER clock fault is easier to publish than a smaller one")
 
-    # the open defect itself, asserted so it cannot be quietly "fixed" by regressing real data and so
-    # a real fix trips this and has to update it
-    saturating = ld.ENDPOINT_WINDOW // 2
-    assert outcome(saturating, -700)[0], (
-        f"{saturating} junk values no longer publish -- if that is a real fix, confirm philadelphia "
-        f"still reports '2024-12-17 to 2025-03-27' before relaxing this, because the obvious guard "
-        f"narrows that published range instead")
+    # the case that used to publish silently: a window-saturating cluster a second epoch away
+    for k in (ld.ENDPOINT_WINDOW // 2, ld.ENDPOINT_WINDOW, 2 * ld.ENDPOINT_WINDOW):
+        assert not outcome(k, -700)[0], (
+            f"{k} junk values 700 days from the bulk publish a date again. That is a second EPOCH, not "
+            f"a clock glitch: no acquisition in this corpus spans more than 100.26 days, so nothing "
+            f"about a 700-day gap can be defended")
 
-    # and a published date must never come from the junk itself: a trimmed run reports what it dropped
+    # WHAT IS STILL OPEN, stated with the measurement rather than left to be discovered. A saturating
+    # cluster WITHIN MAX_TILE_SPAN_DAYS of the bulk is still published with n_dropped = 0, so 9-31
+    # readings are refused where 32 are not. That residue is not closable with the information a
+    # 64-value extreme window holds: at 100 days out the cluster is arithmetically indistinguishable
+    # from philadelphia's real 100.23-day acquisition, and refusing it is what broke that course before.
+    # The error is now BOUNDED to one plausible acquisition span instead of a decade, which is the whole
+    # of what the corpus can support.
+    inside = int(bound) - 1
+    assert outcome(ld.ENDPOINT_WINDOW // 2, -inside)[0], (
+        f"a saturating cluster {inside} days out no longer publishes. If that is a real fix, confirm "
+        f"philadelphia still reports '2024-12-17 to 2025-03-27' first -- its own tiles span 100.23 days, "
+        f"and the obvious guard narrows that published range instead of protecting it")
+    assert not outcome(ld.ENDPOINT_WINDOW // 2, -(int(bound) + 1))[0], (
+        f"a saturating cluster past the {bound:.0f}-day bound publishes, so the bound is not being "
+        f"applied to both resolved ends")
+
+    # and a published date must never come from the junk itself: a trimmed run reports what it dropped.
+    # Measured INSIDE the span bound, because past it a handful of readings is no longer a glitch to trim
+    # -- it is a second epoch, and _resolve refuses rather than narrowing to it. No corpus tile trims at
+    # all today, so that stricter reading costs nothing live.
     for k in range(1, ld.MAX_ISOLATED_VALUES + 1):
-        ok, dropped = outcome(k, -700)
+        ok, dropped = outcome(k, -2)
         assert ok and dropped == k, (
-            f"{k} junk readings 700 days from the bulk: expected them all trimmed and counted, got "
+            f"{k} junk readings 2 days from the bulk: expected them all trimmed and counted, got "
             f"published={ok} dropped={dropped}. n_dropped is what drives the warning, so a silent 0 "
             f"means the card carries a date nobody was told to check.")
+        assert not outcome(k, -700)[0], (
+            f"{k} junk readings 700 days from the bulk were TRIMMED to a published date. A value that "
+            f"far out is a second epoch, not a glitch, and this function's own note says a tile holding "
+            f"two epochs cannot be dated at all")
 
 
 def test_every_distributed_book_disclaims_affiliation_with_the_club_it_names():

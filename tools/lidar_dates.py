@@ -47,11 +47,34 @@ LEAP_SECONDS = 18          # GPS - UTC since 2017-01-01; LiDAR here is all post-
 # Castlewood Valley was wrong the same way. A full scan of every tile costs 6-8 s per course and the
 # tool runs once per course, so there is nothing to buy with a prefix.
 CHUNK = 2_000_000
-MAX_TILE_SPAN_DAYS = 730   # a tile whose gps_time spans more than two years is not one acquisition
+# HOW WIDE ONE TILE'S gps_time RANGE MAY HONESTLY BE. This was 730 -- "more than two years is not one
+# acquisition" -- a round number nobody measured, and it is the backstop that has to tell a second
+# EPOCH from a second PASS. At 7.3x the widest real span in this corpus it cannot: a junk cluster years
+# from the flight sits comfortably inside it, which is exactly how a saturated extreme window (see
+# _resolve) published 2010 for a 2021 flight.
+#
+# MEASURED instead, off the point records of all 78 dated tiles in the corpus:
+#   * widest GREEN-NEAR span     100.2301 d  philadelphia 18TVK475434 (1,635,147 pts over greens)
+#   * widest WHOLE-TILE span     100.2614 d  philadelphia 18TVK474435 (feeds no green)
+#   * next widest family          11.07  d  Alameda 2021, 8 tiles
+#   * everything else            under 1   d  (median 0.02 d over the green-near sets)
+# Both philadelphia figures are REAL: PA_17County_D24 flew that ground in December and again in March,
+# and the book prints "2024-12-17 to 2025-03-27" because it genuinely was. endpoints() is used for the
+# whole-tile set as well as the green-near one, so the bound has to clear 100.2614.
+#
+# There is nothing between 11 and 100 days to calibrate against, so the only honest construction is a
+# margin over the worst REAL case. 2x: wide enough that an acquisition running half again as long as
+# the worst one on disk is still accepted, tight enough that a cluster a year or more from the flight
+# is refused rather than published. Written as the measurement times the margin so the two cannot
+# drift, and re-derived from each course.json's own `lidar_flown.tiles` by
+# test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_round_guess.
+WORST_MEASURED_TILE_SPAN_DAYS = 100.2614
+TILE_SPAN_MARGIN = 2.0
+MAX_TILE_SPAN_DAYS = WORST_MEASURED_TILE_SPAN_DAYS * TILE_SPAN_MARGIN     # 200.5 d
 # MAX_TILE_SPAN_DAYS above cannot fail on the case it was written for, and a guard that cannot fail
 # reads as one. ONE junk-but-positive gps_time sets an endpoint, and the span it produces is usually
-# well inside two years. Reproduced on a real-shaped tile -- 126 points spanning the true Alameda
-# acquisition 2021-06-21..2021-07-02 plus a single value of 2.618e8 -- the tool reported
+# well inside even the old two-year bound. Reproduced on a real-shaped tile -- 126 points spanning the
+# true Alameda acquisition 2021-06-21..2021-07-02 plus a single value of 2.618e8 -- the tool reported
 # 2019-12-31..2021-07-02, a span of 549 days, ACCEPTED. --write puts that label into course.json and
 # it is printed verbatim on every card and in legal/03. Tightening the threshold is not available:
 # philadelphia's 18TVK474434.laz genuinely spans 100.23 days.
@@ -121,13 +144,33 @@ class _Extremes:
         """(first, last, n_dropped_low, n_dropped_high), or None when an end cannot be resolved.
 
         None means one end is a run of more than MAX_ISOLATED_VALUES values each separated from the
-        next by more than MAX_ENDPOINT_GAP_S -- or that there is only one value in the set at all.
+        next by more than MAX_ENDPOINT_GAP_S -- or that the two resolved ends are further apart than
+        any real acquisition in this corpus -- or that there is only one value in the set at all.
         Either way we cannot tell a bad clock from a real sparse pass, and the caller refuses the
         tile rather than printing a date it cannot defend.
+
+        THE SPAN TEST IS HERE, not only in tile_dates, because this is the only place both ends are
+        known before either is published. _resolve sees one end at a time, and its own span test can
+        only fire when it TRIMMED something (`if i and ...`) -- so the case where a junk cluster fills
+        half the kept extremes, becomes the longest gap-free run in the window and is returned at
+        i = 0 with n_dropped = 0 slipped past it entirely. Measured on the real path: 9 to 31 junk
+        readings were refused, and 32 or more published a date years from the flight with no warning
+        of any kind. tile_dates' own MAX_TILE_SPAN_DAYS check would have caught the wide ones, but it
+        runs after gps_to_utc and after the adjusted/unadjusted flip, and it cannot stop `endpoints()`
+        from handing a caller a junk endpoint in the first place -- whole_ext.endpoints() has no such
+        check behind it at all.
+
+        This does NOT close the family. A junk cluster that saturates the window and sits WITHIN
+        MAX_TILE_SPAN_DAYS of the bulk is still published, because at that distance it is genuinely
+        indistinguishable from philadelphia's real 100-day acquisition with the information a 64-value
+        extreme window holds. What it does is bound the error to one plausible acquisition span instead
+        of a decade -- see MAX_TILE_SPAN_DAYS for the measurement that sets that bound.
         """
         lo = self._resolve(self._lo)                  # ascending, walked upward
         hi = self._resolve(self._hi[::-1])            # descending, walked downward
         if lo is None or hi is None:
+            return None
+        if hi[0] - lo[0] > MAX_TILE_SPAN_DAYS * 86400.0:
             return None
         return lo[0], hi[0], lo[1], hi[1]
 
@@ -143,7 +186,7 @@ class _Extremes:
         "ACQUIRED: 2023-01-17 to 2024-12-17", and --write would have put that on every card and into
         legal/03. Spacing sweep on the old rule: 1 s, 3599 s and 3600 s apart all published silently;
         only 3601 s was caught. MAX_ISOLATED_VALUES was unreachable, so the only backstop left was the
-        730-day span check, which passes drags of 100, 365 and 700 days.
+        span check, which at its then-value of 730 days passed drags of 100, 365 and 700.
 
         A cluster of up to MAX_ISOLATED_VALUES bad readings is now isolated from the bulk however
         tightly it is packed, because the distance is measured past the whole cluster. Legitimately
@@ -175,9 +218,12 @@ class _Extremes:
                 # HOW FAR the trim reached matters as much as how many it dropped. Trimming is for a
                 # clock GLITCH; a value years from the bulk is not a glitch, it is a second epoch, and
                 # a tile holding two epochs cannot be dated at all. Widening the support window made
-                # such a cluster trimmable where the old rule had (accidentally, via the 730-day span
-                # check on the resulting range) refused it -- so the bound is stated here instead of
-                # depending on a downstream check that no longer sees the discarded values.
+                # such a cluster trimmable where the old rule had (accidentally, via the then 730-day
+                # span check on the resulting range) refused it -- so the bound is stated here instead
+                # of depending on a downstream check that no longer sees the discarded values.
+                # It fires on a drag of 700 days now that the bound is measured rather than guessed:
+                # 700 > 200.5, so that is a second epoch and the tile is refused rather than trimmed.
+                # No corpus tile trims at all today, so the stricter reading costs nothing live.
                 if i and abs(inward[0] - inward[i]) > MAX_TILE_SPAN_DAYS * 86400.0:
                     return None
                 return float(inward[i]), i
@@ -359,10 +405,12 @@ def tile_dates(path, rings=()):
             return None                       # no usable gps_time anywhere in this tile
         res = dating.endpoints()
         if res is None:
-            print(f"    {os.path.basename(path)}: neither end of its gps_time range has another "
-                  f"point within {MAX_ENDPOINT_GAP_S:.0f} s of it, even after discarding "
-                  f"{MAX_ISOLATED_VALUES} value(s) -- the times in this tile are not one clock; "
-                  f"refusing to date it")
+            print(f"    {os.path.basename(path)}: its gps_time range cannot be defended -- either end "
+                  f"lacks another point within {MAX_ENDPOINT_GAP_S:.0f} s of it after discarding "
+                  f"{MAX_ISOLATED_VALUES} value(s), or the two ends lie more than "
+                  f"{MAX_TILE_SPAN_DAYS:.0f} days apart (raw range "
+                  f"{gps_to_utc(dating.raw()[0])}..{gps_to_utc(dating.raw()[1])}); "
+                  f"the times in this tile are not one acquisition, so refusing to date it")
             return None
         lo, hi, n_lo, n_hi = res
         if n_lo or n_hi:
