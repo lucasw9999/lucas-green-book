@@ -101,16 +101,27 @@ matters as much as the figure:
   the suite does not run it — it is recorded here as a method, with its figures, for the next reader.
 - **Printed size, which is the other half of that budget.** `.dqr img { width: 0.92in }` in `generate.py`
   **sizes the WHOLE asset**, and the asset is 560x643 px: the 41-module symbol occupies 448 px of the
-  width — exactly 0.800 of it — with a baked-in "LUCASWU.GOLF" caption band underneath. So the SYMBOL
-  prints **0.736 in** and each module is **0.0180 in = 0.456 mm per module**, not the 0.0224 in that
-  0.92/41 would imply. Measured on a shipped PDF at 600 dpi the symbol's ink spans 0.7433 in (0.0181 in
-  per module), the difference being antialiased edge pixels. With one codeword of Reed-Solomon headroom,
-  a 0.456 mm module is the thin part: a crease or a biro line is a whole module wide. Whether 0.92 in was
+  width — exactly 0.800 of it — with a baked-in "LUCASWU.GOLF" caption band underneath. So the
+  declaration implies a 0.736 in symbol and **0.0180 in = 0.456 mm per module**, not the 0.0224 in that
+  0.92/41 would imply — but the declaration is not what reaches paper. In all twelve shipped books the
+  asset is **placed at 66.75 pt** = 0.927083 in = exactly **89 CSS px**: the renderer takes 0.92 in =
+  88.32 px and lands on a whole pixel. So the symbol prints **0.741667 in** and the printed module is
+  0.0180894 in = **0.4595 mm per printed module**, 0.8% more than the declaration implies. Measured on
+  monarch-bay page 6 at 600 dpi, the symbol's ink spans **445 px at a min-channel threshold of 128** —
+  0.741667 in, the placed symbol to the pixel — widening to 446 px at threshold 200 and 447 at 250. (An
+  earlier round published that span as 0.7433 in "the difference being antialiased edge pixels", which
+  read a 0.0057 in PLACEMENT difference as ink bleed and so made the CSS-derived 0.456 mm look confirmed
+  by the measurement that refutes it. A span that moves with the threshold is published with its
+  threshold.) With one codeword of Reed-Solomon headroom, a 0.4595 mm module is the thin part: a crease
+  or a biro line is a whole module wide. Whether 0.92 in was
   meant for the symbol or the asset is **not recorded anywhere** — the declaration arrived with the
   initial engine commit among a screen of other CSS, no document states a target size or a minimum module
   pitch, and a CSS width on an `<img>` sizes the asset, which is what this one has always done. It is
   left as it is on that basis, and the figures are pinned instead
-  (`test_the_printed_qr_module_is_smaller_than_its_css_width_implies_and_the_record_says_so`).
+  (`test_the_printed_qr_module_is_smaller_than_its_css_width_implies_and_the_record_says_so` for the
+  declaration and the master,
+  `test_the_printed_qr_module_is_the_width_the_renderer_places_not_the_width_the_css_asks_for` for what
+  the books actually print).
 - **Quiet zone**, in the master itself: 5.12 modules left and right, 5.39 above, and **3.56 modules
   below**, where the caption band starts. ISO/IEC 18004 asks for 4, so the bottom margin is marginally
   short — measured and recorded rather than rounded up.

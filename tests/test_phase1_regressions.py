@@ -1006,14 +1006,149 @@ def test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable()
             f"are all measured above, and the payload is recorded with its method")
 
 
+def test_the_printed_qr_module_is_the_width_the_renderer_places_not_the_width_the_css_asks_for():
+    """PIPELINE.md published the printed module as 0.456 mm. Every shipped book prints 0.4595 mm.
+
+    0.456 mm is the CSS DECLARATION's implication -- 0.92 in x 0.800 / 41 -- and the declaration is not
+    what reaches paper. Measured in all twelve shipped books, the asset is placed at **66.75 pt**: that is
+    0.927083 in, exactly 89 CSS px, because the renderer takes 0.92 in = 88.32 px and lands on 89. So the
+    41-module symbol prints 0.927083 x 0.800 = 0.741667 in and each module is 0.0180894 in = **0.4595
+    mm**, 0.8% more than published. The gap is 0.0035 mm and the sibling test's own tolerance is 0.002,
+    so the figure was outside the slack the suite allowed itself -- but the sibling computes mm from the
+    CSS width, so it could not see it. Nothing in this tree measured what was placed.
+
+    AND THE RECORD'S EXPLANATION WAS WRONG TOO, in a way that hid the cause. It said the symbol's ink
+    spans 0.7433 in on a shipped PDF at 600 dpi, "the difference being antialiased edge pixels". Measured
+    on monarch-bay page 6 the span is threshold-dependent -- 445 px at min-channel < 100 and < 128, 446 at
+    < 200, 447 at < 250 -- and 445 px is 0.741667 in, the placed symbol to the pixel. So the 0.0073 in
+    gap the record attributed to antialiasing is 0.0057 in of PLACEMENT plus about one pixel of edge, and
+    reading it as ink bleed is what made 0.456 look confirmed by a measurement that in fact refuted it.
+    0.7433 reproduces only at a mid threshold, and a figure that moves with the threshold is published
+    with the threshold or not at all.
+
+    THE PRINTED BOOKS DO NOT CHANGE. The module was always 0.4595 mm; only the record of it moves, and it
+    moves in the direction that makes the error budget beside it slightly LESS tight -- which is exactly
+    why an unmeasured figure in this position is worth catching: nobody re-derives a number that says the
+    thing they already believe.
+
+    Graded three ways, so no single absence leaves the figure unwatched:
+      (a) arithmetic on the record's own published numbers -- placed width x symbol fraction / modules
+          must equal the published mm to its last digit. Clone-runnable; no PDFs, no master, no PyMuPDF.
+      (b) the placed width, measured in every shipped book. Needs PyMuPDF, which is optional (AGPL) and
+          skipped when absent, and the books, which are gitignored.
+      (c) the 600-dpi ink span at the tight threshold the record now names, which is what ties the placed
+          width to ink on paper rather than to a rectangle in a PDF."""
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        css = re.search(r"\.dqr img \{\{[^}]*?width:\s*([\d.]+)in", fh.read())
+    assert css, ("generate.py no longer sizes the QR asset with `.dqr img { width: <N>in }`; see the "
+                 "sibling test named in PIPELINE.md's printed-size bullet.")
+    with open(os.path.join(ROOT, "PIPELINE.md"), encoding="utf-8") as fh:
+        flat = " ".join(fh.read().replace("*", "").replace("`", "").split())
+
+    # (a) the record's own three numbers have to multiply out to the module it publishes.
+    pub = {}
+    for what, pat in (("placed width in points", r"placed at ([\d.]+) pt"),
+                      ("placed width in CSS px", r"([\d.]+) CSS px"),
+                      ("symbol fraction of the asset", r"exactly ([\d.]+) of it"),
+                      ("printed module in mm", r"([\d.]+) mm per printed module"),
+                      ("modules across the symbol", r"the (\d+)-module symbol")):
+        m = re.search(pat, flat)
+        assert m, (
+            f"PIPELINE.md no longer states the {what} for the QR asset (pattern {pat!r}). The printed "
+            f"module is the other half of the error budget recorded beside it, and it is derived from "
+            f"the width the renderer PLACES -- which is not the width the stylesheet asks for.")
+        pub[what] = float(m.group(1))
+    placed_in = pub["placed width in points"] / 72.0
+    assert abs(pub["placed width in CSS px"] - placed_in * 96.0) <= 0.01, (
+        f"PIPELINE.md's two spellings of the placed width disagree: {pub['placed width in points']} pt "
+        f"is {placed_in * 96:.2f} CSS px, not {pub['placed width in CSS px']}. The px figure is what "
+        f"shows the rounding -- 0.92 in is 88.32 px and the renderer lands on a whole one.")
+    module_mm = placed_in * pub["symbol fraction of the asset"] / pub["modules across the symbol"] * 25.4
+    assert _agrees_to_last_digit(re.search(r"([\d.]+) mm per printed module", flat).group(1),
+                                 module_mm, least=3), (
+        f"PIPELINE.md publishes {pub['printed module in mm']} mm per printed module; its own placed width "
+        f"({pub['placed width in points']} pt), symbol fraction ({pub['symbol fraction of the asset']}) "
+        f"and module count give {module_mm:.4f} mm. The published module was 0.456 mm for two audits "
+        f"because it was computed from the CSS width instead.")
+    assert abs(module_mm - float(css.group(1)) * pub["symbol fraction of the asset"]
+               / pub["modules across the symbol"] * 25.4) > 0.002, (
+        f"the placed width and the CSS width now imply the same printed module, so this test has stopped "
+        f"measuring the difference it exists for. If the stylesheet or the renderer changed, re-derive "
+        f"the record from the placement rather than from {css.group(1)}in.")
+
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("pymupdf not installed")
+    books = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.pdf")))
+    if not books:
+        pytest.skip("no shipped books in this checkout")
+
+    # (b) the width every shipped book places the asset at, and (c) the ink it makes at 600 dpi.
+    import numpy as np
+    placed, spans = {}, {}
+    for p in books:
+        slug = os.path.basename(os.path.dirname(p))
+        with fitz.open(p) as doc:
+            for pno in range(doc.page_count):
+                for im in doc[pno].get_images(full=True):
+                    for r in doc[pno].get_image_rects(im[0]):
+                        if not 40 < r.width < 120:
+                            continue        # a full-page map, not the brand sheet
+                        placed[slug] = round(r.width, 4)
+                        if slug not in spans:
+                            pm = doc[pno].get_pixmap(dpi=600, clip=fitz.Rect(r.x0 - 2, r.y0 - 2,
+                                                                            r.x1 + 2, r.y1 + 2))
+                            a = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.width,
+                                                                                 pm.n)
+                            ink = a[:, :, :3].min(axis=2) < 128
+                            # the caption band is a separate row band under the code; the symbol is the
+                            # widest one, measured the way _qr_symbol_band measures the master
+                            bands, start = [], None
+                            present = ink.any(axis=1)
+                            for i, v in enumerate(list(present) + [False]):
+                                if v and start is None:
+                                    start = i
+                                elif not v and start is not None:
+                                    bands.append((start, i - 1))
+                                    start = None
+                            widest = 0
+                            for b in bands:
+                                cs = np.where(ink[b[0]:b[1] + 1].any(axis=0))[0]
+                                if len(cs):
+                                    widest = max(widest, cs.max() - cs.min() + 1)
+                            spans[slug] = widest
+    assert len(placed) >= 10, (
+        f"the QR asset was located in only {len(placed)} of {len(books)} shipped books; this test is "
+        f"measuring almost nothing. It sits on the last page of every standard book.")
+    assert set(placed.values()) == {pub["placed width in points"]}, (
+        f"the shipped books place the QR asset at {sorted(set(placed.values()))} pt; PIPELINE.md "
+        f"publishes {pub['placed width in points']}. That width is what the printed module is derived "
+        f"from, so a book that prints a different one prints a different module: {placed}")
+    want_px = round(placed_in * pub["symbol fraction of the asset"] * 600)
+    off = {s: v for s, v in spans.items() if v != want_px}
+    assert not off, (
+        f"at 600 dpi and a min-channel threshold of 128 the symbol's ink must span {want_px} px -- the "
+        f"placed symbol, {placed_in * pub['symbol fraction of the asset']:.6f} in, to the pixel. Measured "
+        f"{off}. The record used to read this span as 0.7433 in of antialiased bleed around a 0.736 in "
+        f"symbol; it is a {pub['placed width in points']} pt placement plus about one pixel of edge, and "
+        f"that misreading is what made the CSS-derived 0.456 mm look confirmed.")
+
+
 def test_the_printed_qr_module_is_smaller_than_its_css_width_implies_and_the_record_says_so():
     """`.dqr img { width: 0.92in }` sizes the WHOLE asset, and the asset is not just the symbol.
 
     The master is 560x643 px: a 41-module symbol occupying 448 px of the width -- exactly 0.800 of it --
-    with a baked-in "LUCASWU.GOLF" caption band underneath. So at a CSS width of 0.92 in the SYMBOL
-    prints 0.736 in, and each module is 0.0180 in = 0.456 mm -- not the 0.0224 in = 0.570 mm that 0.92/41
-    implies. Measured on the shipped PDF at 600 dpi the symbol's ink spans 0.7433 in (0.0181 in per
-    module), the difference being antialiased edge pixels.
+    with a baked-in "LUCASWU.GOLF" caption band underneath. So a CSS width of 0.92 in IMPLIES a 0.736 in
+    symbol and 0.0180 in = 0.456 mm a module -- not the 0.0224 in = 0.570 mm that 0.92/41 implies.
+
+    THE DECLARATION IS NOT WHAT REACHES PAPER, and this test grades the declaration. The renderer places
+    the asset at 66.75 pt = 89 CSS px, so the printed module is 0.4595 mm; that half is measured off the
+    shipped books in
+    test_the_printed_qr_module_is_the_width_the_renderer_places_not_the_width_the_css_asks_for, which also
+    corrects this docstring's earlier reading of the 600-dpi ink span (0.7433 in "the difference being
+    antialiased edge pixels" -- it is 445 px = the placed symbol exactly, at a tight threshold, and 0.7433
+    is what a mid threshold gives).
 
     WAS 0.92 in MEANT FOR THE SYMBOL OR THE ASSET? Nothing in this tree says. The declaration arrived
     with the initial engine commit among a screen of other CSS, with no comment; no README, PIPELINE or
@@ -1025,13 +1160,13 @@ def test_the_printed_qr_module_is_smaller_than_its_css_width_implies_and_the_rec
 
     What IS a defect is that none of it was written down, because it is the other half of the error
     budget. The logo leaves ONE codeword of headroom in the worst RS block
-    (test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable), and at 0.456 mm per
-    module a crease or a biro line is a whole module wide. Those two facts multiply, and they were
+    (test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable), and at 0.4595 mm per
+    printed module a crease or a biro line is a whole module wide. Those two facts multiply, and they were
     published nowhere.
 
-    So this pins the three numbers that decide the printed module: the CSS width, the symbol's fraction
-    of the asset, and the mm that come out. A change to either the stylesheet or the master that shrinks
-    the printed module fails here, and PIPELINE.md has to carry the same figures.
+    So this pins the three numbers the DECLARATION decides: the CSS width, the symbol's fraction of the
+    asset, and the mm that come out of them. A change to either the stylesheet or the master that shrinks
+    the module fails here, and PIPELINE.md has to carry the same figures.
 
     Also pinned: the quiet zone the master carries -- 5.12 modules left and right, 5.39 above, and 3.56
     BELOW, where the caption band starts. ISO/IEC 18004 asks for 4, so the bottom margin is marginally
@@ -1068,9 +1203,10 @@ def test_the_printed_qr_module_is_smaller_than_its_css_width_implies_and_the_rec
         f"PIPELINE.md's printed-size figures are computed from")
     mm = css_in * frac / N * 25.4
     assert abs(mm - 0.456) <= 0.002, (
-        f"each printed module is {mm:.4f} mm at a CSS width of {css_in} in, not the 0.456 mm PIPELINE.md "
-        f"publishes. With one codeword of Reed-Solomon headroom left by the logo, the physical module "
-        f"size is the whole margin against a crease.")
+        f"each module is {mm:.4f} mm at a CSS width of {css_in} in, not the 0.456 mm PIPELINE.md "
+        f"publishes as the declaration's implication. With one codeword of Reed-Solomon headroom left by "
+        f"the logo, the physical module size is the whole margin against a crease -- and what the books "
+        f"PRINT is the placed width, 0.4595 mm, graded in the test named above.")
     pr, pc = (r1 - r0 + 1) / N, (c1 - c0 + 1) / N
     present = ink.any(axis=1)
     below = [i for i in range(r1 + 1, height) if present[i]]
