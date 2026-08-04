@@ -81,7 +81,11 @@ matters as much as the figure:
 - **The centre logo covers 13x13 = 169 modules**, rows and columns 14–26, exactly centred in the symbol.
   Measured from the fully blank scan lines that bracket it — no ink anywhere along them — which land on
   module boundaries **14.00 and 27.00**. (Per-cell ink coverage cannot do this: adjacent dark dots merge
-  and fill their cells completely, so 31 of the 755 dark cells outside the logo also reach coverage 1.00.)
+  and fill their cells completely, so **15 of the 755** dark cells outside the logo also reach coverage
+  1.00. That count is window-dependent and so is stated with its window: 15 in the **closed** cell window
+  the grid sampler itself reads with — `_qr_cell_cover(..., 0, 1)`, which includes the boundary pixel the
+  next cell shares — against 31 in a **half-open** window and 28 truncating instead of rounding. An
+  earlier round published 31 and named no window.)
 - **The Reed-Solomon budget is 88% spent, with one codeword of headroom.** Version 6 at level M is 4
   blocks of 27 data + 16 EC codewords (4 x 43 = 172), correcting **t = 8 codeword errors per block**. The
   169 logo modules fall inside **28 of the 172 codewords — 7 in every one of the four blocks**, so 7 of 8

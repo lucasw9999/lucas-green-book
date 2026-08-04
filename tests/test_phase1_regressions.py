@@ -549,6 +549,20 @@ def _qr_symbol_band(path):
     return ink, int(r0), int(r1), int(cs.min()), int(cs.max())
 
 
+def _qr_cell_cover(ink, r0, c0, pr, pc, i, j, lo, hi):
+    """Ink fraction over the window [lo, hi] of module cell (i, j), in the master's own pixel frame.
+
+    THE ONE SAMPLER. `_qr_module_grid` reads the grid with it and the coverage figure the record
+    publishes is measured with it, because that figure is definition-sensitive: this window is CLOSED --
+    `int(round(...)) + 1` includes the boundary pixel the next cell shares -- and a half-open window over
+    the same master counts 31 full cells where this one counts 15. A figure that moves with the window is
+    derived from the window the code uses, or it is not derived at all."""
+    y0, y1 = r0 + (i + lo) * pr, r0 + (i + hi) * pr
+    x0, x1 = c0 + (j + lo) * pc, c0 + (j + hi) * pc
+    s = ink[int(round(y0)):int(round(y1)) + 1, int(round(x0)):int(round(x1)) + 1]
+    return float(s.mean()) if s.size else 0.0
+
+
 def _qr_module_grid(path):
     """(N, grid) for a rasterised square QR image, or None if it cannot be read as one.
 
@@ -570,8 +584,12 @@ def _qr_module_grid(path):
 
     Per-cell INK COVERAGE cannot isolate the centre logo, which is why the footprint is measured from
     blank scan lines instead (`_qr_logo_footprint`). Adjacent dark dots merge and fill their own cells
-    completely: of the 755 dark cells outside the logo footprint, 31 reach a full-cell coverage of 1.00,
-    so "fuller than a round dot" does not separate a glyph stroke from two touching dots.
+    completely: of the 755 dark cells outside the logo footprint, 15 reach a full-cell coverage of 1.00
+    measured with `_qr_cell_cover(..., 0, 1)` -- the closed window this sampler uses -- so "fuller than a
+    round dot" does not separate a glyph stroke from two touching dots. That count is
+    WINDOW-DEPENDENT: 31 under a half-open window, 28 truncating instead of rounding, and 31 is what an
+    earlier round published without saying which. See
+    test_the_full_cell_coverage_figure_is_measured_with_the_sampler_the_grid_reads_with.
     """
     import numpy as np
     band = _qr_symbol_band(path)
@@ -584,10 +602,7 @@ def _qr_module_grid(path):
             continue
 
         def cover(i, j, lo, hi):
-            y0, y1 = r0 + (i + lo) * pr, r0 + (i + hi) * pr
-            x0, x1 = c0 + (j + lo) * pc, c0 + (j + hi) * pc
-            s = ink[int(round(y0)):int(round(y1)) + 1, int(round(x0)):int(round(x1)) + 1]
-            return float(s.mean()) if s.size else 0.0
+            return _qr_cell_cover(ink, r0, c0, pr, pc, i, j, lo, hi)
         grid = np.array([[cover(i, j, 0.30, 0.70) > 0.5 for j in range(N)] for i in range(N)]).astype(int)
         want = [(k + 1) % 2 for k in range(N - 16)]      # between the finders, starting dark at col 8
         if (list(grid[6][8:N - 8]) != want) or (list(grid[:, 6][8:N - 8]) != want):
@@ -859,6 +874,73 @@ def test_the_branded_qr_master_is_recorded_as_unreproducible():
         "and a record that omits them reads as if nothing about it were verified. Measured: "
         f"{N}x{N} modules, {_QR_V6_CODEWORDS} codewords; the record says "
         f"{said.groups() if said else 'nothing'}.")
+
+
+def test_the_full_cell_coverage_figure_is_measured_with_the_sampler_the_grid_reads_with():
+    """"31 of the 755 dark cells reach coverage 1.00" was a figure no window in this tree produces.
+
+    It is the evidence for a method choice a reader is asked to accept -- why the logo footprint is
+    measured from blank scan lines rather than from per-cell ink coverage -- and it is
+    WINDOW-DEPENDENT. Measured on the master three ways:
+
+        closed window, `_qr_cell_cover(..., 0, 1)`, which is what the grid sampler uses:  15
+        half-open window, round() on both edges:                                          31
+        half-open window, int() truncation on both edges:                                 28
+
+    The record published 31 and named no window, so the figure agreed with a definition the code does not
+    use and nothing could have noticed -- the same shape as the tick table's live column, which reproduced
+    only with the scales anchored somewhere the engine does not anchor them.
+
+    So it is derived from `_qr_cell_cover`, the one sampler, at the window the grid is read with, and the
+    alternative is stated so the sensitivity is on the record instead of being a trap for the next person
+    who re-measures it. The population figures come with it: 811 dark cells, 755 outside the logo
+    footprint and 56 inside, at the same threshold `_qr_symbol_band` uses."""
+    master = os.path.join(ROOT, UNTRACKED_MASTERS[0])
+    with open(os.path.join(ROOT, "PIPELINE.md"), encoding="utf-8") as fh:
+        flat = " ".join(fh.read().replace("*", "").replace("`", "").split())
+    m = re.search(r"(\d+) of the (\d+) dark cells outside the logo", flat)
+    assert m, (
+        "PIPELINE.md no longer says how many dark cells outside the logo reach a full-cell coverage of "
+        "1.00. That count is the whole argument for measuring the logo footprint from blank scan lines "
+        "instead of from per-cell coverage.")
+    assert "closed" in flat and "half-open" in flat, (
+        "PIPELINE.md states the full-cell coverage count without naming the window it was measured in. "
+        "The count is 15 with the closed window this suite's sampler uses and 31 with a half-open one, so "
+        "the figure means nothing without the definition -- which is how 31 came to be published.")
+    if not os.path.exists(master):
+        pytest.skip("the QR master is gitignored and not present in this checkout")
+
+    import numpy as np
+    read = _qr_module_grid(master)
+    assert read, "the QR master no longer reads as a square QR"
+    N, grid = read
+    ink, r0, r1, c0, c1 = _qr_symbol_band(master)
+    pr, pc = (r1 - r0 + 1) / N, (c1 - c0 + 1) / N
+    lo, hi = _qr_logo_footprint(master, N)
+    dark = [(i, j) for i in range(N) for j in range(N) if grid[i][j]]
+    outside = [(i, j) for i, j in dark if not (lo <= i <= hi and lo <= j <= hi)]
+    assert (len(dark), len(outside)) == (811, 755), (
+        f"the master now has {len(dark)} dark cells, {len(outside)} of them outside the logo footprint; "
+        f"the record is written against 811 and 755. Re-derive both figures and the coverage count "
+        f"below together -- they are one measurement.")
+
+    def half_open(i, j):
+        s = ink[int(round(r0 + i * pr)):int(round(r0 + (i + 1) * pr)),
+                int(round(c0 + j * pc)):int(round(c0 + (j + 1) * pc))]
+        return float(s.mean()) if s.size else 0.0
+    full = sum(1 for i, j in outside if _qr_cell_cover(ink, r0, c0, pr, pc, i, j, 0, 1) >= 1.0)
+    assert int(m.group(1)) == full and int(m.group(2)) == len(outside), (
+        f"PIPELINE.md publishes {m.group(1)} of {m.group(2)} dark cells outside the logo at a full-cell "
+        f"coverage of 1.00; measured with the sampler the grid is read with it is {full} of "
+        f"{len(outside)}. 31 was the half-open count, which is not a window anything here uses.")
+    other = sum(1 for i, j in outside if half_open(i, j) >= 1.0)
+    assert other != full, (
+        f"the closed and half-open windows now agree ({full}), so this test no longer measures the "
+        f"sensitivity it exists for -- if the master or the sampler changed, re-derive the record rather "
+        f"than deleting the distinction.")
+    assert full >= 1, (
+        "no dark cell outside the logo reaches coverage 1.00 any more, so PIPELINE.md's reason for not "
+        "measuring the footprint from per-cell coverage is no longer true as written.")
 
 
 def test_the_qr_masters_ecc_level_and_error_budget_are_measured_not_unknowable():
