@@ -301,14 +301,18 @@ def _crs_units_per_m(crs, la, lo):
 
 
 def _tee_points(anchors):
-    """{hole: (x, y)} in the LAZ CRS for each hole's tee anchor, plus the CRS used."""
+    """{hole: (x, y)} in the LAZ CRS for each hole's tee anchor, plus the CRS used.
+
+    The CRS comes from geo.sole_laz_crs, which refuses a laz/ holding more than one. This read the
+    FIRST tile's header and assumed the rest matched: mix a ftUS tile into a metric directory and every
+    anchor here lands in another county, so no ground returns fall over any tee pad and each hole simply
+    prints no height -- a refusal that looks like missing data rather than a mixed directory.
+    """
     tiles = sorted(glob.glob(f"{DIR}/laz/*.laz"))
     if not tiles:
         return {}, None
-    import laspy
     from pyproj import Transformer
-    with laspy.open(tiles[0]) as f:
-        crs = f.header.parse_crs()
+    crs = geo.sole_laz_crs(f"{DIR}/laz")
     if crs is None:
         return {}, None
     T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
@@ -605,13 +609,15 @@ def main():
         print("no hole centrelines in osm_geom.json"); return 1
 
     # Vertical units: the Z we compare must be metres. geo.vertical_scale RAISES rather than assume,
-    # which is what we want -- a ftUS cloud read as metres would report a 3.28x elevation change.
+    # which is what we want -- a ftUS cloud read as metres would report a 3.28x elevation change. And
+    # the CRS it is asked about must be the CRS of EVERY tile, not of whichever one the glob reached
+    # first: geo.sole_laz_crs refuses a mixed laz/, because on a near pair this scale would be wrong by
+    # 3.28 and the card would print a confident wrong height. Same reader fetch_dem_hd builds the green
+    # surfaces through, so the two stages cannot disagree about what CRS this course's cloud is in.
     tiles = sorted(glob.glob(f"{DIR}/laz/*.laz"))
     if not tiles:
         print(f"{config.SLUG}: no LAZ on disk, so tee heights cannot be measured"); return 2
-    import laspy
-    with laspy.open(tiles[0]) as f:
-        vscale = geo.vertical_scale(config.COURSE.get("lidar_crs") or f.header.parse_crs())
+    vscale = geo.vertical_scale(config.COURSE.get("lidar_crs") or geo.sole_laz_crs(f"{DIR}/laz"))
 
     greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
     anchors, refused, bases = {}, {}, {}

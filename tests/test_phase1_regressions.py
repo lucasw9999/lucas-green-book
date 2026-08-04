@@ -8887,17 +8887,29 @@ def test_the_surface_builder_refuses_to_guess_a_zone_or_a_vertical_unit():
         "fetch_dem_hd still defaults the course longitude -- that silently picks California zone 10"
     assert "src = UTM" not in src, \
         "fetch_dem_hd still assumes a CRS-less cloud is in the course UTM zone with metres for Z"
-    # and both stops must be reachable failures, not comments. EXACTLY three, not `>= 2`: the module
-    # raises SystemExit three times -- the missing location, a CRS whose vertical unit
-    # geo.vertical_scale refuses to read, and a CRS-less cloud -- so a `>= 2` floor left slack for
-    # either of the two guards this test is about to be DELETED and still pass. Counted on tokenised
-    # code, so a comment quoting the statement cannot stand in for it either. If a fourth guard is
-    # added on purpose, raise this number and say what it is.
-    assert _code_only(src).count("raise SystemExit") == 3, (
+    # and both stops must be reachable failures, not comments. EXACTLY two, not `>= 1`: the module
+    # raises SystemExit twice -- the missing location, and a CRS-less cloud -- so a floor would leave
+    # slack for either of the two guards this test is about to be DELETED and still pass. Counted on
+    # tokenised code, so a comment quoting the statement cannot stand in for it either. If a third guard
+    # is added on purpose, raise this number and say what it is.
+    #
+    # IT USED TO BE THREE. The third was the mixed-CRS refusal, and it MOVED rather than went: it now
+    # lives in geo.sole_laz_crs, because fetch_hole_elev needed the same answer and was reading the
+    # first tile's CRS twice on its own. So a lowered count here has to be paired with evidence that
+    # the guard is still there and still reached from this module -- otherwise this test would have
+    # rubber-stamped its deletion.
+    assert _code_only(src).count("raise SystemExit") == 2, (
         f"fetch_dem_hd.py has {_code_only(src).count('raise SystemExit')} live SystemExit guards, not "
-        f"3. The three are: no course location (silently picks California zone 10), a CRS whose "
-        f"vertical unit cannot be read, and a CRS-less cloud (every printed slope 3.28x too steep on "
-        f"a ftUS survey). Losing one is silent in the output.")
+        f"2. The two are: no course location (silently picks California zone 10), and a CRS-less cloud "
+        f"(every printed slope 3.28x too steep on a ftUS survey). Losing one is silent in the output. "
+        f"The mixed-CRS refusal is the third and lives in geo.sole_laz_crs.")
+    assert _in_code("geo.sole_laz_crs(", src), (
+        "fetch_dem_hd no longer resolves its tile CRS through geo.sole_laz_crs, so the mixed-CRS "
+        "refusal this module used to raise itself is now reached by nothing")
+    geo_src = open(os.path.join(ROOT, "geo.py"), encoding="utf-8").read()
+    assert _code_only(geo_src).count("raise SystemExit") >= 1 and "not all in one CRS" in geo_src, (
+        "geo.sole_laz_crs no longer refuses a laz/ holding more than one CRS -- that is the guard "
+        "fetch_dem_hd gave up when it stopped scanning the tiles itself")
 
 
 def test_a_mixed_crs_tile_directory_is_refused_not_projected_through_one_guess(tmp_path):
@@ -8989,6 +9001,101 @@ def test_a_mixed_crs_tile_directory_is_refused_not_projected_through_one_guess(t
     finally:
         fdh.DIR = dir0
         for m in ("config", "fetch_dem_hd"):
+            sys.modules.pop(m, None)
+
+
+def test_the_elevation_stage_reads_one_crs_for_the_whole_tile_directory(tmp_path):
+    """fetch_hole_elev read the FIRST tile's CRS, twice, and assumed the rest matched.
+
+    Both reads matter and both are silent when wrong. `_tee_points` transforms every hole's tee anchor
+    into that CRS to find the ground returns over the tee pad; main() derives the vertical scale from it
+    (`geo.vertical_scale(lidar_crs or f.header.parse_crs())`). Mix a ftUS tile into a metric laz/ and the
+    tee anchors land in another county -- no points over the pad, so the hole simply prints no height --
+    or, on a nearer pair, the Z scale is wrong by 3.28 and the card prints a confident wrong figure. This
+    is the same defect fetch_dem_hd.laz_to_utm was fixed for, and the reason it is reachable is unchanged:
+    nothing ever removes a previously-fetched project's tiles from laz/, and both CRS families are live in
+    this corpus.
+
+    LATENT, measured rather than assumed: all 11 courses with tiles resolve exactly ONE CRS today
+    (5 California zone 3 ftUS, 6 UTM 10N/18N metres; poppy-ridge has no tiles), so nothing shipped is
+    affected and the guard costs the corpus nothing. Asserted below, because a guard that stops the
+    corpus building is not a fix.
+
+    Fixed by REUSE, not by a third copy: the scan and its refusal now live in geo.sole_laz_crs -- the
+    module that exists precisely because fetch_dem_hd and fetch_trees each derived the same CRS facts
+    independently -- and fetch_hole_elev reads no header CRS of its own.
+    """
+    pytest.importorskip("laspy")
+    import laspy
+    import numpy as np
+    from pyproj import CRS
+
+    import geo
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_hole_elev"):
+        sys.modules.pop(m, None)
+    fhe = _import_first_party("fetch_hole_elev")
+
+    src = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
+    assert not _in_code("parse_crs(", src), (
+        "fetch_hole_elev reads a LAZ header CRS itself again. It must go through geo.sole_laz_crs, or "
+        "it is back to trusting whichever tile the glob reached first")
+    assert _in_code("geo.sole_laz_crs(", src), \
+        "fetch_hole_elev no longer resolves its tile CRS through the shared reader"
+
+    FT = CRS.from_epsg(2227)                       # NAD83 / California zone 3 (ftUS) -- 5 courses
+    MT = CRS.from_epsg(26910)                      # NAD83 / UTM zone 10N, metres -- 6 courses
+
+    def tile(path, crs, x, y):
+        h = laspy.LasHeader(version="1.4", point_format=6)
+        h.add_crs(crs)
+        las = laspy.LasData(h)
+        las.x = np.array([x, x + 1.0]); las.y = np.array([y, y + 1.0]); las.z = np.zeros(2)
+        las.classification = np.full(2, 2)
+        las.write(str(path))
+
+    dir0 = fhe.DIR
+    try:
+        # one CRS resolves, and it is the one on the tile
+        one = tmp_path / "one"
+        (one / "laz").mkdir(parents=True)
+        tile(one / "laz" / "a.laz", FT, 6163000.0, 2050000.0)
+        assert geo.sole_laz_crs(str(one / "laz")) == FT
+        fhe.DIR = str(one)
+        pts, crs = fhe._tee_points({1: (37.7, -122.1)})
+        assert crs == FT and pts, "a single-CRS directory must still resolve tee points"
+
+        # ...and a mixed one refuses, in BOTH glob orders, through the ELEVATION stage
+        for first, second in (("a_ft.laz", "b_metre.laz"), ("a_metre.laz", "b_ft.laz")):
+            mixed = tmp_path / f"mixed_{first.split('_')[1][0]}"
+            (mixed / "laz").mkdir(parents=True)
+            for name in (first, second):
+                if "ft" in name:
+                    tile(mixed / "laz" / name, FT, 6163000.0, 2050000.0)
+                else:
+                    tile(mixed / "laz" / name, MT, 600000.0, 4170000.0)
+            fhe.DIR = str(mixed)
+            with pytest.raises(SystemExit) as e:
+                fhe._tee_points({1: (37.7, -122.1)})
+            msg = str(e.value)
+            assert first in msg and second in msg, \
+                f"the refusal must name the tiles that disagree, got:\n{msg}"
+            assert FT.name in msg and MT.name in msg, \
+                f"the refusal must name both CRSs, got:\n{msg}"
+
+        # and the corpus must still resolve ONE CRS per course -- the measurement this docstring quotes
+        checked = 0
+        for slug in CORPUS:
+            lazd = os.path.join(ROOT, "courses", slug, "laz")
+            if not glob.glob(os.path.join(lazd, "*.laz")):
+                continue
+            assert geo.sole_laz_crs(lazd) is not None, f"{slug}: no CRS resolved from its own tiles"
+            checked += 1
+        if CORPUS:
+            assert checked >= 1, "no built course has LAZ tiles, so the corpus check proved nothing"
+    finally:
+        fhe.DIR = dir0
+        for m in ("config", "fetch_hole_elev"):
             sys.modules.pop(m, None)
 
 

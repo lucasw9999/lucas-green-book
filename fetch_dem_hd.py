@@ -153,39 +153,16 @@ def laz_to_utm():
     printing only "fed 0 greens". Had the two been closer, the surface would have been built from
     points scaled by 3.28 instead.
 
-    NOT fixed for the whole pipeline: fetch_trees.laz_to_utm() is a hand copy of the pre-fix version of
-    this function and still takes the first CRS it can read, which would put that course's tree markers
-    through it. The green surfaces every printed slope comes from are built here, so the stop is here.
+    THE SCAN AND ITS REFUSAL NOW LIVE IN geo.sole_laz_crs, because fetch_hole_elev needed the same
+    answer and was reading the first tile's CRS TWICE on its own. geo.py is where a fact two stages
+    derive independently belongs -- that is the reason the module exists -- and a third hand copy is
+    how this one stayed unfixed through two audits.
+
+    STILL not fixed for the whole pipeline: fetch_trees.laz_to_utm() is a hand copy of the pre-fix
+    version of this function and still takes the first CRS it can read, which would put that course's
+    tree markers through it. It draws markers, not numbers, which is why the stops went elsewhere first.
     """
-    tiles = sorted(glob.glob(f"{DIR}/laz/*.laz"))
-    read = []                               # (tile name, CRS) for every tile that carries one
-    for t in tiles:
-        try:
-            with laspy.open(t) as f:
-                c = f.header.parse_crs()
-        except Exception:
-            continue                        # unreadable header: it contributes no CRS, that is all
-        if c:
-            read.append((os.path.basename(t), c))
-    for name, c in read[1:]:
-        if c != read[0][1]:
-            n0, c0 = read[0]
-            def _z(crs):
-                # the vertical scale is the concrete thing that goes wrong, but a CRS whose unit
-                # geo.vertical_scale refuses to read must not replace THIS message with that one
-                try:
-                    return "Z x %s -> m" % geo.vertical_scale(crs)
-                except SystemExit:
-                    return "vertical unit unreadable"
-            raise SystemExit(
-                "the tiles in %s/laz are not all in one CRS, and one transform is applied to all of\n"
-                "  them:\n    %s: %s (%s)\n    %s: %s (%s)\n"
-                "  Refusing to project one through the other: on this pair the points land far enough\n"
-                "  apart that the misplaced tile is silently dropped by the bbox prefilter, and a\n"
-                "  closer pair would build the surface from Z values scaled by the wrong unit. Remove\n"
-                "  the tiles that do not belong to this course's LiDAR project and re-run."
-                % (DIR, n0, c0.name, _z(c0), name, c.name, _z(c)))
-    src = config.COURSE.get("lidar_crs") or (read[0][1] if read else None)
+    src = config.COURSE.get("lidar_crs") or geo.sole_laz_crs(f"{DIR}/laz")
     if src is None:
         # Assuming a CRS-less cloud is already in the course UTM zone with metres for Z is the guess
         # geo.vertical_scale exists to prevent: geo.vertical_scale(UTM) returns 1.0, so a US-survey-

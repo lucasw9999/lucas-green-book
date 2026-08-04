@@ -164,6 +164,66 @@ def vertical_scale(src):
     return factor
 
 
+def sole_laz_crs(laz_dir):
+    """The ONE CRS every tile in `laz_dir` agrees on, or None when no tile carries one.
+
+    Refuses a directory holding more than one, naming the two tiles and the two CRSs. Here, in the
+    module that exists because fetch_dem_hd and fetch_trees each derived the same CRS facts
+    independently -- because THREE stages need this answer and each read it its own way:
+
+      * fetch_dem_hd.laz_to_utm applies one transform and one vertical scale to every tile, and used to
+        break out of its scan at the first tile it could read a CRS from. Measured on a mixed directory:
+        the ftUS scale 0.3048006096 applied to a metre tile threw its points ~1.9e6 m away, where the
+        bbox prefilter dropped them in silence and the run printed "fed 0 greens". Had the two been
+        closer, the surface would have been built from Z scaled by 3.28.
+      * fetch_hole_elev read the first tile's CRS TWICE -- once to place each hole's tee anchor for the
+        ground returns over the tee pad, once for the vertical scale -- and assumed the rest matched. The
+        far case prints no height for the hole; the near case prints a confident figure 3.28x wrong.
+      * fetch_trees.laz_to_utm is still a hand copy of the pre-fix version and still takes the first CRS
+        it can read. It draws markers, not numbers, which is why the stops went to the other two first.
+
+    Reachable by ordinary use rather than hypothetical: nothing ever removes a previously-fetched
+    project's tiles from laz/, and both families are live in this corpus -- California zone 3 ftUS on 5
+    courses, UTM 10N/18N metres on 6. All 11 courses with tiles resolve one CRS today, so this is latent.
+
+    A tile whose header will not parse contributes no CRS and is not an error by itself; deciding what to
+    do with NO CRS at all belongs to the caller, which is why this returns None rather than raising --
+    fetch_dem_hd refuses, and course.json's `lidar_crs` override can answer for it.
+    """
+    import glob as _glob
+    import os as _os
+    import laspy
+    read = []                               # (tile name, CRS) for every tile that carries one
+    for t in sorted(_glob.glob(_os.path.join(laz_dir, "*.laz"))):
+        try:
+            with laspy.open(t) as f:
+                c = f.header.parse_crs()
+        except Exception:
+            continue                        # unreadable header: it contributes no CRS, that is all
+        if c:
+            read.append((_os.path.basename(t), c))
+    for name, c in read[1:]:
+        if c != read[0][1]:
+            n0, c0 = read[0]
+
+            def _z(crs):
+                # the vertical scale is the concrete thing that goes wrong, but a CRS whose unit
+                # vertical_scale refuses to read must not replace THIS message with that one
+                try:
+                    return "Z x %s -> m" % vertical_scale(crs)
+                except SystemExit:
+                    return "vertical unit unreadable"
+            raise SystemExit(
+                "the tiles in %s are not all in one CRS, and one transform is applied to all of\n"
+                "  them:\n    %s: %s (%s)\n    %s: %s (%s)\n"
+                "  Refusing to project one through the other: on this pair the points land far enough\n"
+                "  apart that the misplaced tile is silently dropped by the bbox prefilter, and a\n"
+                "  closer pair would build the surface from Z values scaled by the wrong unit. Remove\n"
+                "  the tiles that do not belong to this course's LiDAR project and re-run."
+                % (laz_dir, n0, c0.name, _z(c0), name, c.name, _z(c)))
+    return read[0][1] if read else None
+
+
 # The furthest a hole's line endpoint legitimately sits from its green's centroid, measured across
 # all 198 built greens: worst 11.1 m (philadelphia h12), median 2.0 m. The documented mis-binding --
 # bay-view hole 9 attaching to hole 7's green -- was 47.8 m away. 40 m therefore catches that with
