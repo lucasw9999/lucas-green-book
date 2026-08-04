@@ -23245,6 +23245,149 @@ def distribution_is_corpus(slug):
     return distribution.is_corpus_slug(slug)
 
 
+# A data-source noun, so "Esri imagery" reads as a source even where the name itself is an ordinary
+# capitalised word. Written out because a source is announced by what it is FOR.
+_SOURCE_NOUN = (r"(?:imagery|orthoimagery|orthophotos?|aerials?|photography|photos?|basemaps?|tiles?|"
+                r"rasters?|satellite|maps?|data|datasets?|LiDAR|DEMs?|elevation|point clouds?)")
+
+
+def _security_claimed_sources(doc):
+    """The data-source names SECURITY.md announces to the public, out of the sections that announce them.
+
+    Two passes, unioned, because one shape of pattern could not cover the class:
+      * DATASET-SHAPED tokens anywhere in those sections -- CamelCase (OpenStreetMap), acronyms with or
+        without a leading digit (USGS, 3DEP, ODbL), Name-digit datasets (Sentinel-2, Landsat-8). This
+        half was the whole check and it closed its example rather than its class: "Esri imagery",
+        "Maxar imagery" and "Google Earth imagery" are none of those shapes and each one passed.
+      * any CAPITALISED word that is not the first word of its line and does not follow `.!?:` -- i.e.
+        not a sentence opener -- plus sentence openers immediately followed by a data-source noun. That
+        catches Esri, Maxar, Nearmap, Vexcel, Bing and Planet without demanding legal/01 mention
+        "Every", "In", "No", "Out" or "See", which are exactly the words this document opens lines and
+        sentences with.
+
+    Tokens naming something in THIS repository are dropped, mechanically off the filesystem, so that
+    cannot become a place to park a source name. A callable, not a block inside the test, because the
+    only way to know whether a pattern closes a class is to drive doctored copies through it."""
+    shape = r"\b(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)\b"
+    word = r"\b[A-Z][A-Za-z0-9]*(?:[-‑]\d+)?\b"
+    claimed = set()
+    for heading in ("A note on data", "Scope"):
+        sec = re.search(r"##\s*%s\s*(.+?)(?=\n##|\Z)" % re.escape(heading), doc, re.S)
+        assert sec, (
+            f"SECURITY.md no longer has a '## {heading}' section. The sources it names are graded "
+            f"against legal/01 by reading that section, so losing the heading loses the check.")
+        plain = re.sub(r"[*_`]", "", sec.group(1))
+        claimed |= set(re.findall(shape, plain))
+        for line in plain.split("\n"):
+            first = True
+            for m in re.finditer(word, line):
+                before = line[:m.start()].rstrip()
+                opener = first or (before and before[-1] in ".!?:")
+                first = False
+                if not opener or re.match(r"\s+%s\b" % _SOURCE_NOUN, line[m.end():], re.I):
+                    claimed.add(m.group(0))
+    own = {p.split(".")[0].upper() for p in os.listdir(ROOT)} | {"SECURITY", "README", "PIPELINE"}
+    return {t for t in claimed if t.upper() not in own}
+
+
+def _legal01_documents_source(token, sources):
+    """Does legal/01 document `token` as a source this project USES -- not one it names to disclaim?
+
+    Containment was the whole test and it cannot tell those apart. legal/01 names Esri and Maxar in a
+    section headed "FORMERLY used ... REMOVED", Google and Bing under "NOT used (and why it matters)",
+    and each of those strings is `in` the file -- so a public summary claiming Esri imagery passed a
+    check whose entire purpose is to make the summary and the compliance record agree, while the record
+    said the opposite of the summary. That is worse than a source legal/01 never mentions at all.
+
+    Mechanical: a mention counts only in a `## ` section whose HEADING carries no removal or
+    never-used marker, on a LINE that carries none either. Both levels are needed -- section 4's heading
+    disclaims it while its licence line reads as ordinary prose, and section 5's per-source lines
+    disclaim individually under a heading that already does."""
+    disclaimed = (r"NOT used|never|no longer|REMOVED|FORMERLY|is gone|contains no|\bnot\b|\bno\b|"
+                  r"neither|nothing")
+    for part in re.split(r"(?m)^##\s+", sources):
+        if re.search(disclaimed, part.split("\n", 1)[0], re.I):
+            continue
+        for line in part.split("\n"):
+            if token in line and not re.search(disclaimed, line, re.I):
+                return True
+    return False
+
+
+def test_the_public_source_summary_refuses_a_source_legal_01_only_names_to_disclaim_it():
+    """The forward source check closed its EXAMPLE, and its other half could not have closed the class.
+
+    Two defects, and the live one needed both fixed:
+
+      (a) THE PATTERN. It matched CamelCase, >=2-caps acronyms and Name-digit datasets, which refuses
+          "Sentinel-2 imagery" -- the doctored line the previous round was written against -- and passes
+          "Esri imagery", "Maxar imagery", "Google Earth imagery", "Nearmap aerials", "Bing imagery",
+          "Vexcel imagery" and "Planet imagery". Measured: 7 of 8 insertions into the same sentence
+          passed the whole suite. Esri is the LIVE case, not a hypothetical: .gitignore and legal/01 both
+          record that Esri imagery was used on one file and rebuilt from public-domain NAIP.
+
+      (b) THE COMPARISON, which is the half nobody looked at. legal/01 names Esri and Maxar -- in a
+          section headed "FORMERLY used on one personal file, REMOVED 2026-07-13" -- and Google, Apple
+          and Bing under "NOT used (and why it matters)". The check asked `token in sources`. So even
+          with the pattern widened, "Esri imagery" in SECURITY.md's data note passed on containment
+          against a record that says the exact opposite. Verified both ways round: widened pattern plus
+          old containment still passes Esri.
+
+    A public summary that credits a source the compliance record disclaims is not a stale summary, it is
+    a contradiction between two documents a reader is invited to compare -- and it is the one direction
+    of this check that has now been wrong twice.
+
+    Driven through the two callables on doctored copies; SECURITY.md and legal/01 are never written."""
+    with open(os.path.join(ROOT, "SECURITY.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    with open(os.path.join(ROOT, "legal", "01_DATA_SOURCES_AND_LICENSES.md"), encoding="utf-8") as fh:
+        sources = fh.read()
+
+    def undocumented(d):
+        return sorted(t for t in _security_claimed_sources(d) if not _legal01_documents_source(t, sources))
+
+    assert not undocumented(doc), (
+        f"the real SECURITY.md already fails this check ({undocumented(doc)}), so nothing below means "
+        f"anything. Either legal/01 stopped documenting a source the summary credits, or the extraction "
+        f"is now reading ordinary prose as a source name.")
+    base = _security_claimed_sources(doc)
+    assert {"OpenStreetMap", "USGS", "3DEP", "ODbL"} <= base, (
+        f"the extraction no longer finds the sources SECURITY.md really does name ({sorted(base)}). "
+        f"Every distributed book credits OpenStreetMap and USGS.")
+
+    waved = []
+    for insert in ("Esri imagery", "Maxar imagery", "Google Earth imagery", "Sentinel-2 imagery",
+                   "Nearmap aerials", "Bing imagery", "Vexcel imagery", "Planet imagery",
+                   "Apple Maps imagery"):
+        for where, old, new in (("mid-sentence, in the list of sources",
+                                 "public‑domain USGS", insert + ", public‑domain USGS"),
+                                ("as its own sentence",
+                                 "No commercial", insert + " is also used. No commercial")):
+            assert old in doc, (
+                f"the doctoring anchor {old!r} is no longer in SECURITY.md, so this case measures "
+                f"nothing. Re-read the data note and re-anchor it.")
+            if not undocumented(doc.replace(old, new, 1)):
+                waved.append(f"{insert!r} {where}")
+    assert not waved, (
+        "SECURITY.md can announce a data source to the public that legal/01 does not document as one "
+        "this project uses, and the check that exists to stop it passes:\n  " + "\n  ".join(waved)
+        + "\n  Esri is the live case -- legal/01 records it as REMOVED and rebuilt from NAIP -- so this "
+          "is the class, not an example of it.")
+
+    # ...and the comparison half on its own: a token legal/01 mentions ONLY to disclaim must not count as
+    # documented, while every source it really documents must.
+    for token in ("Esri", "Maxar", "Google", "Apple", "Bing", "Sentinel-2", "Landsat"):
+        assert not _legal01_documents_source(token, sources), (
+            f"legal/01 is read as documenting {token!r} as a source in use. It names Esri and Maxar only "
+            f"under 'REMOVED', and Google, Apple and Bing only under 'NOT used' -- a containment test "
+            f"cannot tell a source from its own disclaimer, which is how 'Esri imagery' passed.")
+    for token in ("OpenStreetMap", "ODbL", "USGS", "3DEP", "NAIP", "LiDAR"):
+        assert _legal01_documents_source(token, sources), (
+            f"legal/01 no longer reads as documenting {token!r} as a source in use, so the check above "
+            f"would refuse the summary for naming a source this project does use. The negation markers "
+            f"are matching a line that makes a positive statement -- re-derive them.")
+
+
 def test_the_security_record_still_describes_this_repository():
     """SECURITY.md was the only tracked file in this repo with zero references anywhere.
 
@@ -23367,39 +23510,29 @@ def test_the_security_record_still_describes_this_repository():
         "the directory is gone")
 
     # (e) it is a SUMMARY of legal/01, so the sources it names must be the ones that record documents --
-    # in BOTH directions, which used to be an overstatement. The forward half iterated a hard-coded
-    # five-token vocabulary (OpenStreetMap, ODbL, 3DEP, NAIP, USGS), every one of which legal/01 already
-    # names, so it could not fail: adding "Sentinel-2 imagery" to the data note passed. The forward half
-    # now reads the source names OUT of the document -- dataset-shaped tokens in the sections that make
-    # the claim -- so a source this project has not documented cannot be announced to the public here.
+    # in BOTH directions, which used to be an overstatement TWICE OVER. The forward half first iterated a
+    # hard-coded five-token vocabulary (OpenStreetMap, ODbL, 3DEP, NAIP, USGS), every one of which
+    # legal/01 already names, so it could not fail; then it read dataset-SHAPED tokens out of the
+    # document, which closed "Sentinel-2" and left the live case open -- "Esri imagery" is neither
+    # CamelCase nor an acronym, and legal/01 names Esri only to say it was REMOVED, so a containment test
+    # passed it either way. Both halves now live in callables so they can be driven against doctored
+    # copies: see test_the_public_source_summary_refuses_a_source_legal_01_only_names_to_disclaim_it.
     with open(os.path.join(ROOT, "legal", "01_DATA_SOURCES_AND_LICENSES.md"), encoding="utf-8") as fh:
         sources = fh.read()
-    # CamelCase names (OpenStreetMap), acronyms with or without a leading digit (USGS, 3DEP, ODbL) and
-    # Name-digit datasets (Sentinel-2, Landsat-8). Ordinary prose words are not matched, which is what
-    # keeps this from demanding that legal/01 mention "Every".
-    named = r"\b(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)\b"
-    claimed = set()
-    for heading in ("A note on data", "Scope"):
-        sec = re.search(r"##\s*%s\s*(.+?)(?=\n##|\Z)" % re.escape(heading), doc, re.S)
-        assert sec, (
-            f"SECURITY.md no longer has a '## {heading}' section. The sources it names are graded "
-            f"against legal/01 by reading that section, so losing the heading loses the check.")
-        claimed |= set(re.findall(named, sec.group(1)))
-    # Tokens that name something in THIS repository rather than a data source -- mechanical, off the
-    # filesystem, so it cannot become a place to park a source name.
-    own = {p.split(".")[0].upper() for p in os.listdir(ROOT)} | {"SECURITY", "README", "PIPELINE"}
-    claimed = {t for t in claimed if t.upper() not in own}
+    claimed = _security_claimed_sources(doc)
     assert len(claimed) >= 3, (
         f"only {sorted(claimed)} read as source names out of SECURITY.md's data and scope sections. "
         f"Every distributed book credits OpenStreetMap and USGS, so an extraction finding fewer than "
         f"three names is measuring nothing -- re-derive the pattern rather than lowering this floor.")
-    undocumented = sorted(t for t in claimed if t not in sources)
+    undocumented = sorted(t for t in claimed if not _legal01_documents_source(t, sources))
     assert not undocumented, (
         f"SECURITY.md tells the public this project's data includes {undocumented} and "
         f"legal/01_DATA_SOURCES_AND_LICENSES.md -- the record that argues why the data may be used at "
-        f"all -- does not mention it. The short public summary and the compliance argument have to name "
-        f"the same sources: a source announced here with no licence argument behind it is a public claim "
-        f"this project cannot support, and it is the direction this check used to be unable to see.")
+        f"all -- does not document it AS A SOURCE IN USE. The short public summary and the compliance "
+        f"argument have to name the same sources: a source announced here with no licence argument "
+        f"behind it is a public claim this project cannot support, and a source legal/01 mentions only "
+        f"in order to disclaim it -- Esri and Maxar are both in there under 'REMOVED' -- is worse than "
+        f"one it never mentions, because the record then contradicts the summary.")
     for token in [t for t in ("OpenStreetMap", "ODbL", "3DEP", "NAIP", "USGS") if t in doc]:
         assert token in sources, (
             f"SECURITY.md tells the public this project's data includes {token!r} and "
