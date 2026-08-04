@@ -210,6 +210,15 @@ def line_runs_from_a_forward_tee(arc_yd, back_yd, tee_yds, start_at_tee_m):
 
 WANDER_MAX = 1.02       # arc / chord above which a line's extra length may be mid-line, not at an end
 
+# A GAP ALONG THE PLAYED LINE TOO SMALL TO BE A PLACE. One number, because it answers one question
+# twice. It was a bare `8` inside the carry block, used only to merge sand: a cluster of three bunkers
+# 3.8 yd apart is one decision, and printing "213 234 275" spends the card's scarcest resource on
+# noise. That is already a judgement about the ground BETWEEN two hazards -- so it is also the bar for
+# the ground between the last sand and the green, which is where a player is being invited to land.
+# See the landing test in the carry block: a strip of grass too narrow to separate two bunkers is too
+# narrow to lay up in, so the green front joins the same merge.
+CARRY_MERGE_GAP_YD = 8.0
+
 
 def line_traced_past_the_tee(arc_yd, back_yd, chord_yd):
     """True when the drawn line runs BEYOND the back tee, so its extra length is at the TEE end.
@@ -1072,6 +1081,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # Signed, and correct in both directions: positive where the line starts at a forward tee, negative
     # where it was traced past the back tee.
     tee_shift_yd = (total_yd - arc_yd) if (fwd_tee or past_tee) else 0.0
+    # Where the GREEN starts, along the same chord and through the same shift as every carry below.
+    # min() over the whole ring rather than only its near-the-chord part: a green offset from the chord
+    # projects SHORT, which understates the landing area and so refuses more carries, not fewer. That is
+    # the safe direction for a number a junior clubs against. Published in `info` for the same reason
+    # green_gap_yd is -- a test that grades the landing decision needs it, and computing it there would
+    # be a second copy of this frame's projection, chord basis and tee shift.
+    green_front_yd = min(((em(p['lat'], p['lon'])[0]-tee[0])*ux
+                          + (em(p['lat'], p['lon'])[1]-tee[1])*uy) / 0.9144 + tee_shift_yd
+                         for p in green['geometry'])
     carries = []
     for g in bunkers:
         alongs, offs = [], []
@@ -1101,11 +1119,55 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     carries.sort()
     merged = []
     for a, b in carries:
-        if merged and a - merged[-1][1] <= 8:
+        if merged and a - merged[-1][1] <= CARRY_MERGE_GAP_YD:
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
-    carries = [(round(a), round(b)) for a, b in merged][:3]
+    # A CARRY IS AN INVITATION TO LAND SHORT OF THE GREEN, AND SOME HOLES HAVE NOWHERE TO LAND. The
+    # figure answers "how far must I fly to clear the sand and land on fairway short of the green". Where
+    # the sand runs ON to the green there is no answer: flying the near edge puts the ball in sand, and
+    # the distance that would clear it is the FAR edge, which the card does not print. So the near edge
+    # becomes the one number on that card a player could act on and be wrong about.
+    #
+    # That argument was already written down here -- see the par-3 note below, on the-reserve 8 (sand
+    # ending four yards short of its green) and merion 13 (sand ending PAST its green front). It was
+    # keyed on PAR, and none of it is a property of par. Re-measured over the 198 geometry cards after
+    # the WGS84 per-axis migration, seven windows on seven PAR 4s had no landing area either:
+    #
+    #     merion 10        carry 227, sand to 284.1, green front 253.4  ->  -30.7 yd
+    #     micke-grove 3    carry 294, sand to 309.3, green front 296.8  ->  -12.5
+    #     philadelphia 1   carry 212, sand to 307.0, green front 299.4  ->   -7.6
+    #     callippe 12      carry 272, sand to 293.3, green front 293.6  ->    0.3
+    #     castlewood-v 8   carry 287, sand to 309.7, green front 311.6  ->    1.9
+    #     copper-valley 3  carry 294, sand to 312.4, green front 315.7  ->    3.3
+    #     monarch-bay 14   carry 273, sand to 283.4, green front 286.8  ->    3.4
+    #
+    # Three of those are NEGATIVE: on merion 10 the sand ends 30 yd past the green front, because the
+    # card (306 yd) and the mapped green disagree by 53 yd, so a greenside pair straddling the green
+    # slipped past the `total_yd - 40` greenside test. philadelphia 1 is the case that motivated this:
+    # three bunkers 3.8 yd apart merging into 212 -> 307 on a 325 yd hole whose green front is at 299.
+    #
+    # THE BAR IS CARRY_MERGE_GAP_YD, not a new threshold -- picking one would have been a guess. That
+    # constant already declares a gap this small along the played line to be one obstacle rather than two
+    # decisions, which is a judgement about the ground BETWEEN hazards; the ground between the last sand
+    # and the green is the same kind of ground, so the green front simply joins the merge. The corpus
+    # leaves a clean break either side of it: worst KEPT landing area 8.7 yd (micke-grove 13), best
+    # DROPPED 3.4 (monarch-bay 14).
+    #
+    # PER WINDOW, bounded by the next sand or the green, whichever comes first -- so a hole keeps the
+    # carries that DO have somewhere to land. merion 10 keeps 95 and 164 (57 and 41 yd of fairway beyond
+    # them) and loses only 227. Evaluated before the [:3] truncation, because a fourth window is still
+    # sand a third window has to land short of (merion 1 and 15 each have four).
+    #
+    # Cost: 7 figures across 7 of 198 cards, 126 -> 119; three cards lose their only carry row
+    # (philadelphia 1, micke-grove 3, callippe 12) and no course loses all of them. Nothing is hidden --
+    # the bunkers stay drawn and stay counted in the footer's "NB". Only the false invitation goes.
+    kept = []
+    for i, (a, b) in enumerate(merged):
+        beyond = min(merged[i+1][0], green_front_yd) if i+1 < len(merged) else green_front_yd
+        if beyond - b > CARRY_MERGE_GAP_YD:
+            kept.append((a, b))
+    carries = [(round(a), round(b)) for a, b in kept][:3]
     # A CARRY NEEDS AN ORIGIN THE GEOMETRY CORROBORATES. Every distance above is measured along the line
     # from where the line STARTS, shifted by tee_shift_yd. That shift only exists when tee_ok, fwd_tee or
     # past_tee established where the back tee is. Two holes printed carries with no such evidence:
@@ -1154,6 +1216,14 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # and "greenside sand, not a tee carry" were written for a driving hole. Suppressing on par 3 drops
     # 6 figures across 6 of 198 holes and adds no wrong number. The map still draws every bunker and
     # the footer still counts it, so nothing is hidden -- only the false invitation to lay up is.
+    #
+    # KEPT ALONGSIDE the landing test above, not replaced by it, and the two are not the same claim.
+    # The landing test says "this sand leaves nowhere to land"; this says "on a par 3 there is no
+    # lay-up shot at all, whatever the ground looks like". Measured: the landing test catches 3 of the
+    # 6 par-3 carries on geometry alone -- merion 13 (-5.8 yd), monarch-bay 7 (1.9), the-reserve 8
+    # (2.2) -- and would hand back the other 3, which have real fairway beyond the sand and still no
+    # shot to play to it: copper-valley 5 (19.9 yd), philadelphia 15 (21.1), micke-grove 6 (40.1).
+    # Nobody lays up at 94 yd on a 179 yd hole because the gap is 40 yd wide.
     par = config.HOLES[hnum][0] if hnum in config.HOLES else None
     if par == 3:
         carries = []
@@ -1187,6 +1257,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
               arc_yd=round(arc_yd), card_yd=total_yd, green_gap_yd=round(green_gap_yd, 2),
+              green_front_yd=round(green_front_yd, 2),
               tee_ticks=tee_ok or par3_straight or fwd_tee or past_tee,
               line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee, past_tee=past_tee,
               carry_origin_known=origin_known,

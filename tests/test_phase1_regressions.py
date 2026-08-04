@@ -3544,10 +3544,16 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         including parts up to 45 m off the line. Erring short is the right direction.
 
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
-        "Clearing it needs more than N", which is false where the sand is long: philadelphia 1 prints
-        "carry 213" for sand occupying the line out to 308 yd, so clearing it needs 308. Sand runs a
+        "Clearing it needs more than N", which is false where the sand is long: micke-grove 13 prints
+        "carry 207" for sand occupying the line out to 290 yd, so clearing it needs 290. Sand runs a
         median 23 yd past the printed number and up to 145. The number is right -- it is where the sand
         starts -- so the sentence was corrected rather than the figure.
+
+        THAT EXAMPLE USED TO BE philadelphia 1's "carry 213" out to 308, and it went stale the same way
+        the 126 below did: that card stopped printing a carry at all when the landing test arrived (see
+        test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for -- its sand reached 7.6 yd PAST
+        the green front, so there was nowhere to lay up). Twice now the illustration has been a card the
+        engine later declined to print. The measured figures below are the durable part.
 
         THE 145 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
         (see render_hole.edge_within) gave the-reserve 16 the 3,562 m^2 waste bunker it had been
@@ -3578,7 +3584,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             html = fh.read()
         assert "where fairway sand <b>starts</b>" in html and "can run well past N" in html, (
             f"{ref}: the guide no longer says the sand can run past the printed carry -- on "
-            f"philadelphia 1 that is 95 yd of unstated sand")
+            f"micke-grove 13 that is 83 yd of unstated sand")
         cfg, rh = _engine(ref)
         try:
             course, geom = rh.load()
@@ -3680,6 +3686,110 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         f"neither carry test states the MEDIAN distance sand runs past a printed carry any more. It is "
         f"{med:.1f} yd over {len(past)} shipped carries, against a worst case of {worst:.0f}, and it is "
         f"what says the hedge is about the usual case and not one outlier")
+
+
+@needs_corpus
+def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
+    """"carry N" means "fly N and land short of the green". Where the sand runs ON to the green there
+    is nowhere to land, and the number invites a shot the hole does not have.
+
+    render_hole had already made exactly this argument -- in the comment above its par-3 suppression,
+    about the-reserve 8 ("sand ending FOUR YARDS short of the green front ... the near edge is the one
+    number on that card a player could act on and be wrong about") and merion 13. But it acted on PAR,
+    and no part of that reasoning is a property of par. Re-measured over the 198 geometry cards after
+    the WGS84 per-axis migration, SEVEN printed windows on seven PAR 4s had no landing area either --
+    three of them negative, the sand reaching past the green front:
+
+        merion 10        carry 227, sand to 284.1, green front 253.4  ->  -30.7 yd
+        micke-grove 3    carry 294, sand to 309.3, green front 296.8  ->  -12.5
+        philadelphia 1   carry 212, sand to 307.0, green front 299.4  ->   -7.6
+        callippe 12      carry 272, sand to 293.3, green front 293.6  ->    0.3
+        castlewood-v 8   carry 287, sand to 309.7, green front 311.6  ->    1.9
+        copper-valley 3  carry 294, sand to 312.4, green front 315.7  ->    3.3
+        monarch-bay 14   carry 273, sand to 283.4, green front 286.8  ->    3.4
+
+    The bar is render_hole.CARRY_MERGE_GAP_YD, imported rather than respelled. That constant already
+    says what this test needs said: a gap this small along the played line is not a separate decision,
+    it is one obstacle -- which is why three bunkers 3.8 yd apart print one carry. A strip of grass
+    too narrow to separate two bunkers is too narrow to land in, so the green front joins that merge.
+    It is not a new threshold, and picking one would have been a guess; the corpus leaves a clean break
+    either side of it (worst kept 8.7 yd, best dropped 3.4).
+
+    Only the FURTHEST printed window is checked here, because the merge already guarantees more than
+    CARRY_MERGE_GAP_YD of clear ground after every other one. The unguarded boundary was the one
+    between the last sand and the green, and that is the one measured.
+
+    Sand extents are re-derived from the OSM bunker rings, not read back from the figure under test.
+    """
+    import math
+    checked, problems = 0, []
+    seen_courses = collections.Counter()
+    for ref in CORPUS:
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            carries = info.get("carries") or []
+            if not carries:
+                continue
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+            def em(la, lo):
+                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            perp = (uy, -ux)
+            # The same signed tee-to-tee shift every printed carry is measured through -- derived from
+            # the card and the arc the engine published, not from a second copy of its rule.
+            shift = ((info["card_yd"] - info["arc_yd"])
+                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+            def along_yd(la, lo):
+                e, n = em(la, lo)
+                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+            front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
+            near, far = carries[-1]                    # the sand nearest the green
+            reach = far
+            for g in bunkers:
+                al = [along_yd(q["lat"], q["lon"]) for q in g["geometry"]]
+                of = [abs((em(q["lat"], q["lon"])[0] - tee[0]) * perp[0]
+                          + (em(q["lat"], q["lon"])[1] - tee[1]) * perp[1]) for q in g["geometry"]]
+                if not al or min(of) > 30.0:
+                    continue
+                if near - 2 <= min(al) <= far + 2:     # a bunker inside the printed window
+                    reach = max(reach, max(al))
+            checked += 1
+            seen_courses[ref] += 1
+            if front - reach <= rh.CARRY_MERGE_GAP_YD:
+                problems.append(
+                    f"{ref} hole {hn}: prints carry {near} for sand reaching {reach:.1f} yd with the "
+                    f"green front at {front:.1f} -- {front - reach:.1f} yd of landing area, so there "
+                    f"is nowhere to lay up and the near edge is a number a player can act on and be "
+                    f"wrong about")
+    assert checked >= 50, f"only {checked} carry windows checked -- build the books first"
+    assert_no_course_skipped(
+        seen_courses, "test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for",
+        exempt={"bay-view-golf-club": "prints no carry on any hole -- nothing for this test to check"})
+    assert not problems, ("a printed carry has nowhere to land short of the green:\n  "
+                          + "\n  ".join(problems[:8]))
 
 
 @needs_corpus
@@ -14105,7 +14215,7 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     measured and pinned by test_a_printed_carry_never_overstates_what_it_clears.)
 
     BOTH EDITIONS, because both print the numbers. This read only `greenbook.html`, so the three
-    ENLARGED books -- merion, monarch-bay and philadelphia, which print 12, 8 and 11 carries and carry
+    ENLARGED books -- merion, monarch-bay and philadelphia, which print 12, 8 and 10 carry rows and carry
     their own copy of the legend row -- were outside every check of this wording. That is the same gap
     that once let the enlarged edition ship a stale legal panel and print "0.0%" for a green the engine
     had declined to read: the coach book is handed to a person, and its legend is generated by the same
