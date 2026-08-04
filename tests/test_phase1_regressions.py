@@ -13565,9 +13565,15 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     (every one of the nine had drifted, e.g. micke-grove was quoted at 4,334,614 bytes against
     4,325,510 on disk). test_the_cold_build_docstrings_dated_byte_counts_are_still_true now
     re-derives it from courses/*/greenbook.html on every normal-suite run, so it cannot go stale
-    unnoticed again. CURRENT SIZES (2026-08-04): micke-grove 4,325,510; castlewood-hill 4,476,546;
+    unnoticed again. It listed NINE of the twelve books until 2026-08-04; the three it omitted --
+    bay-view, valley-hi and poppy-ridge -- were unwatched for the same reason the nine had drifted, and
+    that sibling test now also fails if a book is missing from this sentence or if the date above the
+    figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
+    yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
+    CURRENT SIZES (2026-08-04): micke-grove 4,325,510; castlewood-hill 4,476,546;
     merion 5,870,072; monarch-bay 4,933,867; copper-valley 6,083,980; callippe 6,797,825;
-    castlewood-valley 5,835,713; philadelphia 4,604,280; the-reserve 5,109,777.
+    castlewood-valley 5,835,713; philadelphia 4,604,280; the-reserve 5,109,777;
+    bay-view 4,242,903; valley-hi 4,698,141; poppy-ridge 340,883.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -13722,21 +13728,45 @@ def test_the_cold_build_docstrings_dated_byte_counts_are_still_true():
     directory, and compares against os.path.getsize() of that course's committed greenbook.html: no
     network, no rebuild, and it runs every time the normal suite does. A book that gets regenerated
     without updating this sentence -- date included -- fails here on the very next `pytest tests/`.
+
+    IT GRADED NINE OF TWELVE BOOKS, and the three it missed were the three least like the others. The
+    sentence named micke-grove, castlewood-hill, merion, monarch-bay, copper-valley, callippe,
+    castlewood-valley, philadelphia and the-reserve; bay-view, valley-hi and poppy-ridge each have a
+    checked-in greenbook.html and appeared nowhere in it, so their sizes could drift exactly as the
+    nine had. Nothing could see the omission, because the test only ever walked the names it found. It
+    now walks the BOOKS in the other direction too -- every course with a greenbook.html must be named
+    -- and resolves against BOOKS rather than CORPUS, which is what excluded poppy-ridge in the first
+    place: it is yardage mode, so it has no osm_geom.json and is not in CORPUS at all. Its book is
+    still a book, and its size is still a hand-typed figure.
+
+    AND THE DATE WAS UNGRADED. The pattern asked only that SOME `\\d{4}-\\d{2}-\\d{2}` be present, so the
+    nine figures could be corrected while the date rotted -- in a sentence whose own failure text
+    instructs "rewrite BOTH the date and every figure". The date is not decoration: the claim is
+    "these were the sizes ON that day", so a greenbook.html modified AFTER it falsifies the sentence
+    even when every byte count still matches. That is checkable for free from the file's own mtime, and
+    it is the case that actually happens -- a rebuild lands, the sizes get re-typed from the new files,
+    and the date above them is left at whenever someone last thought about it.
     """
+    import datetime
     doc = test_cold_build_reproduces_every_book_byte_for_byte.__doc__
     flat = " ".join(doc.split())
     m = re.search(r"CURRENT SIZES \((\d{4}-\d{2}-\d{2})\): (.+?)\.", flat)
     assert m, f"the dated byte-count sentence is gone or reworded; re-read it before editing:\n{doc}"
     pairs = re.findall(r"([a-z][a-z-]*[a-z]) ([\d,]+)", m.group(2))
     assert pairs, f"could not parse any ref/byte pairs out of: {m.group(2)!r}"
+    assert BOOKS, "no course has a checked-in greenbook.html, so there are no sizes to grade"
 
-    stale = []
+    said_on = datetime.date.fromisoformat(m.group(1))
+    stale, named = [], set()
     for ref, count in pairs:
         count = int(count.replace(",", ""))
-        matches = [slug for slug in CORPUS if slug == ref or slug.startswith(ref + "-")]
+        # BOOKS, not CORPUS. CORPUS needs osm_geom.json, which yardage-mode poppy-ridge does not have,
+        # so resolving here is what kept its book out of the sentence and out of this check.
+        matches = [slug for slug in BOOKS if slug == ref or slug.startswith(ref + "-")]
         assert len(matches) == 1, (
             f"{ref!r} (from the docstring) does not resolve to exactly one course under courses/: "
             f"{matches} -- a course was renamed, added, or removed; update the sentence by hand")
+        named.add(matches[0])
         path = os.path.join(ROOT, "courses", matches[0], "greenbook.html")
         assert os.path.exists(path), f"{matches[0]}/greenbook.html no longer exists"
         actual = os.path.getsize(path)
@@ -13746,6 +13776,29 @@ def test_the_cold_build_docstrings_dated_byte_counts_are_still_true():
         "the cold-build docstring's 'CURRENT SIZES' sentence no longer matches the checked-in books "
         "-- re-measure os.path.getsize() for each course below and rewrite BOTH the date and every "
         "figure in that sentence (this is a disk read, not a COLD_BUILD=1 run):\n  " + "\n  ".join(stale))
+
+    missing = sorted(set(BOOKS) - named)
+    assert not missing, (
+        "these courses have a checked-in greenbook.html and the 'CURRENT SIZES' sentence does not name "
+        "them, so nothing is watching their size:\n  "
+        + "\n  ".join(f"{s}: {os.path.getsize(os.path.join(ROOT, 'courses', s, 'greenbook.html')):,} bytes"
+                      for s in missing)
+        + "\n  Add each to the sentence. A record that covers most of the corpus reads as if it covers "
+          "all of it, which is how nine of twelve looked complete.")
+
+    # The DATE, against the books' own mtimes. "CURRENT SIZES (D)" claims these were the sizes on D; a
+    # book file written after D means the sentence was not re-dated when it was re-measured.
+    rotted = []
+    for slug in sorted(BOOKS):
+        p = os.path.join(ROOT, "courses", slug, "greenbook.html")
+        built = datetime.date.fromtimestamp(os.path.getmtime(p))
+        if built > said_on:
+            rotted.append(f"{slug}: greenbook.html last written {built.isoformat()}")
+    assert not rotted, (
+        f"the 'CURRENT SIZES' sentence is dated {said_on.isoformat()} but a checked-in book has been "
+        f"written since:\n  " + "\n  ".join(rotted)
+        + "\n  The figures may well have been re-typed; the date above them was not. Both halves of "
+          "that sentence are the record, which is why its own failure text says to rewrite BOTH.")
 
 
 def test_the_cross_flight_check_shares_the_renderers_plane_fit():
@@ -20288,14 +20341,35 @@ def test_every_cached_osm_bbox_covers_the_corridor_its_cards_draw():
     plus the corridor every vertex draws around itself -- but written here so the assertion does not
     lean on the tool it is checking. DRAW_CORRIDOR_M itself is imported, because a second copy of that
     number is the defect that produced all of this.
+
+    ITS ONLY FLOOR WAS `assert checked`, WHICH ONE COURSE SATISFIES. This test regressed into the shape
+    this campaign has swept before: the per-course loop `continue`d on a missing bbox, on missing
+    geometry, and on `except SystemExit` from `geo.hole_lines` -- and then asserted nothing about how
+    many courses had actually been measured. Proven by mutation rather than argued: making
+    `geo.hole_lines` refuse every course south of 38N dropped NINE of the eleven, and this test stayed
+    green with two. A course whose hole lines stop resolving is a course whose corridor shortfall goes
+    invisible, which is precisely the failure the docstring above spends twenty lines establishing the
+    cost of.
+
+    Two things replace it. Contribution is counted PER HOLE and handed to assert_no_course_skipped, so
+    a course that is visited but measures nothing fails; and the three `continue`s are gone -- a missing
+    box, missing geometry or a refused course is now a named failure, because each of them means this
+    check does not cover a book that ships. No exemption is needed: CORPUS and geometry_courses() are
+    the same eleven, and poppy-ridge (yardage mode, no osm_geom.json) is in neither.
     """
     import geo
-    checked, short = [], []
+    seen, short, unreadable = collections.Counter(), [], []
     for slug in CORPUS:
         cfg, rh = _engine(slug)
         bbox = cfg.COURSE.get("osm_bbox")
         gp = os.path.join(cfg.COURSE_DIR, "osm_geom.json")
-        if not bbox or not os.path.isfile(gp):
+        if not bbox:
+            unreadable.append(f"{slug}: course.json records no osm_bbox, so nothing says which ground "
+                              f"its cards were allowed to draw from")
+            continue
+        if not os.path.isfile(gp):
+            unreadable.append(f"{slug}: no osm_geom.json, so the corridor its cards draw cannot be "
+                              f"measured against the box")
             continue
         S, W, N, E = bbox
         with open(gp, encoding="utf-8") as fh:
@@ -20303,9 +20377,12 @@ def test_every_cached_osm_bbox_covers_the_corridor_its_cards_draw():
         loc = cfg.COURSE.get("location") or {}
         try:
             lines = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
-        except SystemExit:
+        except SystemExit as e:
+            # NOT a `continue`. This used to swallow it, and a course that cannot resolve its own hole
+            # lines is exactly the course whose shortfall nobody would see.
+            unreadable.append(f"{slug}: geo.hole_lines refuses this course, so its corridor is not "
+                              f"checked at all -- {str(e).splitlines()[0]}")
             continue
-        checked.append(slug)
         for hn, w in sorted(lines.items()):
             worst = 0.0
             for p in w["geometry"]:
@@ -20317,9 +20394,15 @@ def test_every_cached_osm_bbox_covers_the_corridor_its_cards_draw():
                 need = (max(0.0, rh.DRAW_CORRIDOR_M - edge) if out == 0
                         else out + rh.DRAW_CORRIDOR_M)
                 worst = max(worst, need)
+            seen[slug] += 1
             if worst > 0.0:
                 short.append(f"{slug} hole {hn}: needs {worst:.0f} m more box")
-    assert checked, "no course in the corpus has both an osm_bbox and osm_geom.json"
+    assert not unreadable, (
+        f"{len(unreadable)} course(s) could not be measured against their fetched box at all, so for "
+        f"those courses this check says nothing:\n  " + "\n  ".join(unreadable)
+        + "\n  Each of these used to be a silent `continue`, and the only floor left was that SOME "
+          "course had been checked -- which one course satisfies.")
+    assert_no_course_skipped(seen, "test_every_cached_osm_bbox_covers_the_corridor_its_cards_draw")
     assert not short, (
         f"{len(short)} hole(s) draw a corridor from ground the OSM fetch never requested:\n  "
         + "\n  ".join(short[:12])
