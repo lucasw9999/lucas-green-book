@@ -5716,6 +5716,115 @@ def test_the_lidar_listing_pages_rather_than_trusting_one_capped_reply(monkeypat
         f"was the sole diagnosis for every cause of an empty list, including a renamed datasets= string")
 
 
+def test_the_lidar_listing_tells_an_unstable_order_apart_from_a_truncated_survey(monkeypatch):
+    """The paging refused three ways, and one of them fires on a HEALTHY service.
+
+    `tnm_items` advances with `offset += len(items)` and then refuses if `len(got) < total`. Both halves
+    assume TNM's `offset` is item-indexed over a STABLE ordering, and the API guarantees neither -- so a
+    reordering between two requests makes a page overlap the one before it, dedup drops the repeats, and
+    the run dies on "TNM says it holds N products but only M could be listed" for a service that is
+    working perfectly. That message names no cause and suggests re-running, which is the one thing that
+    does not help. The whole paging path was written and tested against a monkeypatched stub, so no round
+    has ever seen these semantics live; the refusals were reasoned about rather than observed.
+
+    Refusing is still right for a genuinely SHORT listing -- a missing tile is invisible downstream, so
+    coverage measures smaller and greens fall back to the 1 m DEM for a reason that is not real. The two
+    cases have to be told apart, and there is a fact that does it: how many ROWS the service handed over,
+    against the number it said it holds.
+
+      * the listing was walked to its end and the service delivered at least `total` rows, but fewer
+        DISTINCT products came back. Then every offset in the range was asked and `got` holds every
+        product the service was willing to show -- the deficit is repeated rows, not missing tiles.
+        That is an ordering artefact and it degrades to a loud warning plus best effort.
+      * the service ran OUT of rows before delivering `total`. Then the listing really is short and
+        nothing can say which products are missing. That still refuses.
+
+    Neither case may be confused with a service that ignores `offset` altogether and re-serves page one:
+    accepting that as the whole survey is the defect the paging was built for, and it must still refuse
+    however many rows it was handed. Case (c) checks that a stalled walk never reaches the degrade path.
+
+    Also pinned here: the accumulated `total` must survive an over-the-end page. The reply for an offset
+    past the end has been seen to carry `total: 0`, and the loop took the LAST total it was told, so that
+    zero erased the real figure and turned the shortfall check into a no-op -- a truncated listing would
+    then have been accepted in silence. Case (d).
+
+    Stubbed, never the live producer: urlopen is monkeypatched throughout.
+    """
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_lidar"):
+        sys.modules.pop(m, None)
+    import fetch_lidar
+    monkeypatch.setattr(fetch_lidar.time, "sleep", lambda *_a, **_k: None)
+
+    asked = []
+
+    def serve(pages):
+        def _open(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            asked.append(int(re.search(r"[&?]offset=(\d+)", url).group(1)))
+            body = json.dumps(pages.get(asked[-1], {"total": 0, "items": []})).encode()
+
+            class _R:
+                def read(self_inner):
+                    return body
+            return _R()
+        monkeypatch.setattr(fetch_lidar.urllib.request, "urlopen", _open)
+
+    CAP = fetch_lidar.TNM_PAGE_MAX
+
+    def item(i):
+        return {"sourceId": f"id{i}", "title": f"t{i}.laz",
+                "downloadURL": f"https://x/Projects/CA_Test_2021_B21/LAZ/{i}.laz"}
+    every = [item(i) for i in range(4 * CAP)]
+
+    # (a) A REORDERING BETWEEN TWO REQUESTS. total says 250; the service serves 200 rows, then 50 more
+    # of which 20 repeat what page one already showed. 250 rows delivered, 230 distinct. A healthy
+    # service, and the old code died here.
+    total_a = CAP + 50
+    serve({0: {"total": total_a, "items": every[:CAP]},
+           CAP: {"total": total_a, "items": every[CAP - 20:CAP + 30]}})
+    asked.clear()
+    got = fetch_lidar.tnm_items()
+    assert len(got) == CAP + 30, (
+        f"an ordering instability -- 250 rows served, 230 of them distinct -- came back as {len(got)} "
+        f"items or raised. Every offset in the range was asked, so this is every product the service "
+        f"was willing to show; the deficit is repeated rows, not missing tiles.")
+    assert len({it["sourceId"] for it in got}) == len(got), "the best-effort list carries duplicates"
+
+    # (b) A GENUINELY SHORT LISTING. total says 500; the service runs out after 300 rows, none repeated.
+    # Nothing can say which products are missing, so this must still refuse.
+    serve({0: {"total": 500, "items": every[:CAP]},
+           CAP: {"total": 500, "items": every[CAP:CAP + 100]}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    msg = str(e.value)
+    assert "500" in msg and "300" in msg, (
+        f"a truncated listing must name what it was promised and what it got: {msg!r}")
+
+    # (c) A SERVICE THAT IGNORES offset must not reach the degrade path however many rows it hands over.
+    # It re-serves page one forever, so it delivers far more rows than `total` -- and accepting the
+    # first page as the whole survey is the defect this paging exists to prevent.
+    serve({off: {"total": CAP + 50, "items": every[:CAP]} for off in range(0, 9 * CAP, CAP)})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "offset" in str(e.value), (
+        f"a service re-serving page one was not called out as a paging failure: {str(e.value)!r}")
+    assert len(asked) <= 5, f"it kept asking a stalled service: {len(asked)} requests"
+
+    # (d) AN OVER-THE-END PAGE ANSWERING total: 0 must not erase the real total and wave a short list
+    # through. Same shape as (b), but the terminating page states a total of its own.
+    serve({0: {"total": 500, "items": every[:CAP]},
+           CAP: {"total": 0, "items": []}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "500" in str(e.value), (
+        f"the total stated on page one was erased by an over-the-end page's total of 0, so a listing "
+        f"200 products short of 500 was accepted in silence: {str(e.value)!r}")
+
+
 def test_lidar_project_grouping_has_no_title_fallback():
     """PR #14 fixed grouping by title: TNM titles carry the per-tile ID, so every tile became its
     own 'project', coverage collapsed to one tile and most greens went unfed. The fallback that
