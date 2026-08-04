@@ -13557,9 +13557,17 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
         LiDAR greens with the 1 m DEM. Monarch Bay: 3,889,124 bytes against 4,973,620.
 
     It ran on ONE course until both of those were found by hand on others, so it now runs on all of
-    them. Verified 2026-07-30, byte-for-byte: micke-grove 4,334,614; castlewood-hill 4,483,840;
-    merion 5,878,513; monarch-bay 4,973,620; copper-valley 6,101,580; callippe 6,818,104;
-    castlewood-valley 5,855,370; philadelphia 4,617,612; the-reserve 5,136,961.
+    them. Byte-for-byte reproducibility was last confirmed by a fresh COLD_BUILD=1 run on 2026-07-30.
+
+    The list below is a DIFFERENT claim -- not that reproducibility run, but the size of the books
+    actually checked in today -- and it used to be exactly the unwatched fact this docstring is
+    warning about: hand-typed on 2026-07-30 and silently stale by the time anyone read it again
+    (every one of the nine had drifted, e.g. micke-grove was quoted at 4,334,614 bytes against
+    4,325,510 on disk). test_the_cold_build_docstrings_dated_byte_counts_are_still_true now
+    re-derives it from courses/*/greenbook.html on every normal-suite run, so it cannot go stale
+    unnoticed again. CURRENT SIZES (2026-08-04): micke-grove 4,325,510; castlewood-hill 4,476,546;
+    merion 5,870,072; monarch-bay 4,933,867; copper-valley 6,083,980; callippe 6,797,825;
+    castlewood-valley 5,835,713; philadelphia 4,604,280; the-reserve 5,109,777.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -13692,6 +13700,52 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     missed = sorted(want_coach - got)
     assert not missed, f"enlarged book(s) never compared by the cold build: {missed}"
     assert not problems, "cold build is not reproducible:\n  " + "\n  ".join(problems)
+
+
+@needs_corpus       # the courses it names are gitignored; a fresh clone has none to measure against
+def test_the_cold_build_docstrings_dated_byte_counts_are_still_true():
+    """The dated 'CURRENT SIZES (<date>): ...' sentence above is a hand-typed record of the checked-in
+    books' sizes, sitting right next to a SEPARATE, unrelated date for when COLD_BUILD=1 last
+    confirmed reproducibility -- that flag gates network access plus reprocessing ~300 MB of LiDAR
+    per course, so nobody re-runs it by accident. Nothing was watching the nine sizes, and they went
+    stale: every one of them drifted (e.g. micke-grove was quoted at 4,334,614 bytes while the
+    checked-in book measured 4,325,510 by the time this test was written). legal/README.md states the
+    project's own standard for exactly this shape of problem -- a "verbatim" record that is not
+    verbatim is worse than none -- and a byte count nothing re-derives is the same failure with a date
+    stamped on it.
+
+    Re-deriving the REPRODUCIBILITY claim for real means running the cold build, which is precisely
+    what COLD_BUILD=1 already does and what this test must NOT require (that gate is how the drift
+    went unnoticed). But the byte counts are a narrower claim than reproducibility -- they are a claim
+    about the CHECKED-IN book, the same file this test can read for free. So this reads the dated
+    sentence back out of the other test's docstring, resolves each short name to its course
+    directory, and compares against os.path.getsize() of that course's committed greenbook.html: no
+    network, no rebuild, and it runs every time the normal suite does. A book that gets regenerated
+    without updating this sentence -- date included -- fails here on the very next `pytest tests/`.
+    """
+    doc = test_cold_build_reproduces_every_book_byte_for_byte.__doc__
+    flat = " ".join(doc.split())
+    m = re.search(r"CURRENT SIZES \((\d{4}-\d{2}-\d{2})\): (.+?)\.", flat)
+    assert m, f"the dated byte-count sentence is gone or reworded; re-read it before editing:\n{doc}"
+    pairs = re.findall(r"([a-z][a-z-]*[a-z]) ([\d,]+)", m.group(2))
+    assert pairs, f"could not parse any ref/byte pairs out of: {m.group(2)!r}"
+
+    stale = []
+    for ref, count in pairs:
+        count = int(count.replace(",", ""))
+        matches = [slug for slug in CORPUS if slug == ref or slug.startswith(ref + "-")]
+        assert len(matches) == 1, (
+            f"{ref!r} (from the docstring) does not resolve to exactly one course under courses/: "
+            f"{matches} -- a course was renamed, added, or removed; update the sentence by hand")
+        path = os.path.join(ROOT, "courses", matches[0], "greenbook.html")
+        assert os.path.exists(path), f"{matches[0]}/greenbook.html no longer exists"
+        actual = os.path.getsize(path)
+        if actual != count:
+            stale.append(f"{ref} ({matches[0]}): docstring says {count:,}, on disk is {actual:,}")
+    assert not stale, (
+        "the cold-build docstring's 'CURRENT SIZES' sentence no longer matches the checked-in books "
+        "-- re-measure os.path.getsize() for each course below and rewrite BOTH the date and every "
+        "figure in that sentence (this is a disk read, not a COLD_BUILD=1 run):\n  " + "\n  ".join(stale))
 
 
 def test_the_cross_flight_check_shares_the_renderers_plane_fit():
