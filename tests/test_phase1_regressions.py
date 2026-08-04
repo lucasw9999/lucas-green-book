@@ -21338,6 +21338,32 @@ def _tick_band_worsts(retired_lat_scale):
     return _TICK_BANDS[key]
 
 
+_FORENSIC_FIGURES = (
+    # (what it is, population it is measured in, band key, legal/11 pattern, geo.py pattern)
+    # The account of where the four RETIRED figures came from. Both records carry all six numbers, in
+    # different words, so each gets its own anchored pattern rather than one loose regex that would find
+    # a neighbouring figure in whichever record it was not written for.
+    ("[100,150) green-end worst", "green_end", 100,
+     r"([\d.]+) yd in \[100,150\)", r"([\d.]+) in \[100,150\)"),
+    ("[300,350) green-end worst", "green_end", 300,
+     r"([\d.]+) in \[300,350\)", r"([\d.]+) in \[300,350\)"),
+    ("green-end global worst", "green_end", "global",
+     r"([\d.]+) over every vertex", r"([\d.]+) over every vertex"),
+    ("[200,250) green-end worst, the band the 200 yd row does NOT reproduce in", "green_end", 200,
+     r"its worst in \[200,250\) is ([\d.]+)", r"\(([\d.]+) there\)"),
+    ("[200,250) segment-length worst, the only population 0.7268 reproduces in", "segment", 200,
+     r"segment lengths in \[200,250\), ([\d.]+)", r"SEGMENT length in \[200,250\), ([\d.]+)"),
+    ("segment-length global worst, which is not the 1.55 the same row published", "segment", "global",
+     r"population's own global worst is ([\d.]+)", r"own global worst is ([\d.]+)"),
+)
+
+# Same shape, minus the band lookup: the retired pair's worst relative offset over the corpus. Graded
+# against the corpus below off legal/11's wording; geo.py's copy is the one that was ungraded.
+_SHARED_REL_OFFSET = (("retired pair's worst relative offset", None, None,
+                       r"worst relative offset[^.]*?\+?([\d.]+)%",
+                       r"at worst \+?([\d.]+)% over these vertices"),)
+
+
 def _grade_tick_error_table(rec, note, measured):
     """Every check the published tick-error table has to pass, as a callable rather than a test body.
 
@@ -21354,9 +21380,19 @@ def _grade_tick_error_table(rec, note, measured):
     # "yd tick" in the first cell, not a bare "<n> yd": the same record carries a four-card depth
     # table whose rows are `| 37 yd | 36 yd | 36.489 yd |`, and an unanchored row pattern matches
     # those first and grades the wrong table.
-    published = {int(m.group(1)): (m.group(2), m.group(3))
-                 for m in re.finditer(r"\|\s*(\d+) yd tick\s*\|\s*([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|",
-                                      rec)}
+    # Collected as a LIST and then checked for repeats, never read straight into a dict: a dict
+    # comprehension lets the LAST match win, so `| 100 yd tick | 0.9999 yd | 0.9999 yd |` inserted ABOVE
+    # the real row leaves the real one in the dict and grades nothing at all -- while the doctored row is
+    # the one a reader's eye reaches first. The closing row has the mirror-image hazard, because
+    # `re.search` takes the FIRST match and a duplicate below it is the invisible one.
+    rows = [(int(m.group(1)), (m.group(2), m.group(3)))
+            for m in re.finditer(r"\|\s*(\d+) yd tick\s*\|\s*([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|", rec)]
+    repeated = sorted(R for R, n in collections.Counter(R for R, _ in rows).items() if n > 1)
+    assert not repeated, (
+        "legal/11_HORIZONTAL_EARTH_MODEL.md's tick-error table carries more than one row for the %s yd "
+        "tick. Whichever of them this grader reads, the other is a reader-facing figure nothing checks."
+        % ", ".join(str(R) for R in repeated))
+    published = dict(rows)
     assert set(published) == set(radii), (
         "legal/11_HORIZONTAL_EARTH_MODEL.md must carry one row per tick radius the hole map prints "
         "(%s), each row reading `| <R> yd tick | <retired worst> yd | <live worst> yd |`. Found rows "
@@ -21367,6 +21403,9 @@ def _grade_tick_error_table(rec, note, measured):
         "legal/11_HORIZONTAL_EARTH_MODEL.md no longer closes the tick table with the worst over ALL "
         "centreline vertices. Its row must read `| any centreline vertex, out to <R> yd | <retired> yd "
         "| <live> yd |` -- the ticks stop at %d yd and the map draws the whole line." % max(radii))
+    assert len(re.findall(r"\|\s*any centreline vertex", rec)) == 1, (
+        "legal/11 carries more than one `| any centreline vertex ... |` row. This grader reads the first; "
+        "the rest are reader-facing figures nothing checks.")
 
     # (a) geo.py has to quote the same numbers. It states them as prose because it is a source note,
     # so the shape is fixed and parsed rather than left free.
@@ -21387,6 +21426,22 @@ def _grade_tick_error_table(rec, note, measured):
             f"geo.py quotes {said_retired[R]}/{said_live[R]} yd at the {R} yd tick and legal/11 quotes "
             f"{published[R][0]}/{published[R][1]}. The reader gets the record, the next editor gets the "
             f"note, and they have to be the same measurement.")
+    # ...and the same holds for every OTHER figure both records carry: the forensic account of where the
+    # four retired numbers came from, and the relative offset the impossibility argument rests on. Those
+    # were graded against the measurement in legal/11 ONLY, so geo.py's copies -- which are the half the
+    # next editor reads -- were the ungraded half, by exactly the argument two lines above. Compared to
+    # each other HERE so a clone with no corpus refuses a one-sided edit, and to the corpus in (d).
+    for what, _pop, _key, rec_pat, note_pat in _FORENSIC_FIGURES + _SHARED_REL_OFFSET:
+        pair = []
+        for label, text, pat in (("legal/11", rec, rec_pat), ("geo.py's note", note, note_pat)):
+            m = re.search(pat, text)
+            assert m, (
+                "%s no longer states the %s. Both records carry it, and a figure only one of them "
+                "carries is a figure the other goes stale against." % (label, what))
+            pair.append(m.group(1))
+        assert float(pair[0]) == float(pair[1]), (
+            "legal/11 states the %s as %s and geo.py's note as %s. The reader gets the record, the next "
+            "editor gets the note, and they have to be the same measurement." % (what, pair[0], pair[1]))
 
     # (b) the arithmetic bound. No corpus needed: it follows from the retired constant and the
     # southernmost latitude, and the latitude is pinned here as well as in the record -- taken on the
@@ -21431,6 +21486,30 @@ def _grade_tick_error_table(rec, note, measured):
         + "\n  ".join(impossible)
         + "\n  A figure above this bound is a 'worst anywhere beyond this tick' figure printed in a "
           "column headed by the tick, which is what the reader takes it for. Measure at the tick.")
+    # The record does not leave that ceiling as a percentage: it turns it into yardages per radius, and
+    # THOSE are the numbers a reader weighs the old 0.43 / 0.73 / 0.99 against. Ungraded, the sentence
+    # read "cannot be out by more than 0.90 yd, 200 by more than 1.60, or 300 by more than 2.90" and
+    # refuted nothing while still calling all three figures impossible. Recomputed, so it holds on a
+    # clone -- which is the only place the arithmetic paragraph is all there is.
+    derived = re.search(r"A (\d+) yd radius therefore cannot be out by more than ([\d.]+) yd, (\d+) by "
+                        r"more than ([\d.]+), or (\d+) by more than ([\d.]+)", rec)
+    assert derived, (
+        "legal/11 no longer turns the ceiling into the per-radius yardages a reader can weigh the "
+        "retired column against -- 'A <R> yd radius therefore cannot be out by more than <E> yd, <R> by "
+        "more than <E>, or <R> by more than <E>'. A bare percentage refutes nothing a card printed.")
+    slack = []
+    for R, said in zip(derived.group(1, 3, 5), derived.group(2, 4, 6)):
+        assert int(R) in published, (
+            f"legal/11's derived-bound sentence bounds the {R} yd radius, which is not a tick the hole "
+            f"map prints ({sorted(published)}). It has to bound rows the table actually has.")
+        if not _agrees_to_last_digit(said, ceiling * int(R), least=2):
+            slack.append(f"{R} yd: record says at most {said} yd, the ceiling gives "
+                         f"{ceiling * int(R):.4f} yd")
+    assert not slack, (
+        "legal/11's derived per-radius bounds are not the ceiling it just published, times the radius. "
+        f"At {100 * ceiling:.4f}%:\n  " + "\n  ".join(slack)
+        + "\n  Inflated, that sentence admits exactly the impossible retired column it exists to refuse, "
+          "and it is the form of the argument a reader actually reads.")
 
     if measured is None:
         return
@@ -21497,18 +21576,22 @@ def _grade_tick_error_table(rec, note, measured):
         "(%d vs %d) is exactly what geo.hole_lines exists to resolve, and a bare count leaves the next "
         "reader unable to tell which was meant -- which is how '391' survived."
         % (counts["vertices"], counts["vertices_with_duplicate_refs"]))
-    # and the two relative offsets the bound in (b) rests on, so the argument is measured not asserted
-    for what, want, pat in (
-            ("worst measured", counts["worst_retired_rel_pct"],
+    # and the two relative offsets the bound in (b) rests on, so the argument is measured not asserted.
+    # Both records' copies of the worst offset, not just legal/11's: they were checked against each other
+    # in (a), and against the corpus here, so neither can drift alone or together.
+    for what, want, label, text, pat in (
+            ("worst measured", counts["worst_retired_rel_pct"], "legal/11", rec,
              r"worst relative offset[^.]*?\+?([\d.]+)%"),
-            ("southernmost-hole latitude", counts["southmost_lat"],
+            ("worst measured", counts["worst_retired_rel_pct"], "geo.py's note", note,
+             _SHARED_REL_OFFSET[0][4]),
+            ("southernmost-hole latitude", counts["southmost_lat"], "legal/11", rec,
              r"southernmost hole \(([\d.]+) ?(?:deg|°) ?N\)")):
-        m = re.search(pat, rec)
+        m = re.search(pat, text)
         tol = 0.001 if what.startswith("worst") else 0.01
         assert m and abs(float(m.group(1)) - want) <= tol, (
-            "legal/11 states the retired pair's %s as %s; measured over the corpus it is %.4f. That "
+            "%s states the retired pair's %s as %s; measured over the corpus it is %.4f. That "
             "figure is the whole argument for why the old column was impossible."
-            % (what, m.group(1) if m else "nothing", want))
+            % (label, what, m.group(1) if m else "nothing", want))
     assert abs(_TICK_SOUTHMOST_LAT - counts["southmost_lat"]) <= 0.001, (
         "the southernmost latitude pinned in this file (%.4f) is not the corpus's (%.4f). That literal "
         "is what grades the record on a clone with no courses/, so it has to be the ground."
@@ -21522,31 +21605,28 @@ def _grade_tick_error_table(rec, note, measured):
     # (d) WHERE THE OLD FIGURES CAME FROM. Both records asserted all four "reproduce as the worst error
     # anywhere in the 50-yard band above each tick". Measured, three do and one does not, and no single
     # population yields all four -- so the record now names a population per figure and every one of
-    # those figures is graded here.
-    forensic = [(r"([\d.]+) yd in \[100,150\)", bands["green_end"][100], "green-end band [100,150)"),
-                (r"([\d.]+) in \[300,350\)", bands["green_end"][300], "green-end band [300,350)"),
-                (r"([\d.]+) over every vertex", bands["green_end"]["global"], "green-end global"),
-                (r"its worst in \[200,250\) is ([\d.]+)", bands["green_end"][200],
-                 "green-end band [200,250), the one the 200 yd row does NOT reproduce in"),
-                (r"segment lengths in \[200,250\), ([\d.]+)", bands["segment"][200],
-                 "segment-length band [200,250), the only population 0.7268 reproduces in"),
-                (r"population's own global worst is ([\d.]+)", bands["segment"]["global"],
-                 "segment-length global, which is not the 1.55 the same row published")]
+    # those figures is graded here, IN BOTH RECORDS: geo.py carries its own copy of every one of them and
+    # they were graded in legal/11 alone, which is the same half-graded pair (a) exists to refuse.
     wrong = []
-    for pat, want, what in forensic:
-        m = re.search(pat, rec)
-        if not (m and _agrees_to_last_digit(m.group(1), want)):
-            wrong.append(f"{what}: record says {m.group(1) if m else 'nothing'}, measured {want:.5f}")
+    for what, pop, key, rec_pat, note_pat in _FORENSIC_FIGURES:
+        want = bands[pop][key]
+        for label, text, pat in (("legal/11", rec, rec_pat), ("geo.py's note", note, note_pat)):
+            m = re.search(pat, text)
+            if not (m and _agrees_to_last_digit(m.group(1), want)):
+                wrong.append(f"{what}, in {label}: says {m.group(1) if m else 'nothing'}, measured "
+                             f"{want:.5f}")
     assert not wrong, (
-        "legal/11's account of where the four retired figures came from is not the measurement. It "
+        "an account of where the four retired figures came from is not the measurement. Both records "
         "asserted all four 'reproduce as the worst error anywhere in the 50-yard band above each tick'; "
         "0.43 and 1.55 do, 0.73 and 0.99 do not, and NO single population reproduces all four -- which "
         "is a forensic claim about a reader-facing record, so it is derived or it is not made:\n  "
         + "\n  ".join(wrong))
-    assert "No single population reproduces all four" in rec, (
-        "legal/11 no longer states that no single population reproduces all four retired figures. That "
-        "is the finding: the earlier one-population explanation was wrong for the 200 yd row, and a "
-        "record that offers a single tidy origin for all four is offering one that was measured false.")
+    for label, text in (("legal/11", rec), ("geo.py's note", note)):
+        assert "No single population reproduces all four" in text, (
+            "%s no longer states that no single population reproduces all four retired figures. That "
+            "is the finding: the earlier one-population explanation was wrong for the 200 yd row, and a "
+            "record that offers a single tidy origin for all four is offering one that was measured "
+            "false." % label)
 
 
 def _tick_radii():
@@ -21888,6 +21968,94 @@ def test_the_tick_error_tables_grader_refuses_the_four_edits_it_used_to_wave_thr
     assert ran >= (len(cases) if measured is not None else 1), (
         f"only {ran} of {len(cases)} mutations were exercised, so this test is passing on the ones it "
         f"skipped. Every mutation runs with a corpus; on a clone, the latitude case must still run.")
+
+
+def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed_row():
+    """A FIFTH hole in the same grader: it graded ONE of the two records, and the row it read was the last.
+
+    The commit that derived the tick table argued its own case -- "the reader gets the record, the next
+    editor gets the note, and they have to be the same measurement" -- and then applied the forensic
+    regexes, and the retired pair's relative offset, to `legal/11` ALONE. `geo.py` carries its own copies
+    of every one of those figures, so the half of the pair aimed at the next editor was the ungraded half:
+    0.4334 -> 0.9999, 0.72683 -> 0.99999, 0.9714 -> 0.1111 and "+0.2975%" -> "+0.9999%" in `geo.py` all
+    passed the whole suite. That is the same defect the commit closed, one file over.
+
+    And the table's rows were read into a dict comprehension, so a DUPLICATE row won the wrong way round:
+    `| 100 yd tick | 0.9999 yd | 0.9999 yd |` inserted ABOVE the real row leaves the last match -- the
+    real one -- in the dict, and the reader-facing row the renderer puts first is graded by nothing. The
+    mechanism is fixed, not the six figures: rows are collected as a list and a repeated radius is
+    refused, so no future duplicate can hide behind the one that happens to be last.
+
+    Also graded here: legal/11's DERIVED bound prose. The record spends a paragraph turning its ceiling
+    into per-radius yardages -- "cannot be out by more than 0.30 yd, 200 by more than 0.60, or 300 by
+    more than 0.90" -- and those three numbers are the sentence a reader actually weighs the old 0.43 /
+    0.73 / 0.99 against. Doctored to 0.90 / 1.60 / 2.90 the paragraph refutes nothing and passed. They
+    are now recomputed from the ceiling at the latitude the record names, so they hold on a clone too.
+
+    Driven through `_grade_tick_error_table` on doctored copies, exactly like the sibling test above; the
+    files on disk are never written."""
+    with open(os.path.join(ROOT, "legal", "11_HORIZONTAL_EARTH_MODEL.md"), encoding="utf-8") as fh:
+        rec = " ".join(fh.read().split()).replace("−", "-").replace("*", "")
+    with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
+        note = _prose(fh.read())
+    measured = None
+    if CORPUS:
+        pub = re.search(r"retired model used ([\d.]+) m per degree of latitude", rec)
+        assert pub, "legal/11 no longer names the retired metres-per-degree constant"
+        per_tick, vertex, counts = _tick_radius_errors(float(pub.group(1)))
+        measured = (per_tick, vertex, counts, _tick_band_worsts(float(pub.group(1))))
+    _grade_tick_error_table(rec, note, measured)      # the real records pass, or nothing below means much
+
+    # (rec_edits, note_edits, needs_corpus). Every geo.py case is refusable without a corpus too, because
+    # legal/11 quotes the same figure and the two have to agree -- so none of them is skipped on a clone.
+    cases = [
+        ("a duplicate 100 yd row ABOVE the real one, which the dict comprehension let the real one hide",
+         [("| 100 yd tick | 0.2962 yd",
+           "| 100 yd tick | 0.9999 yd | 0.9999 yd | | 100 yd tick | 0.2962 yd")], [], False),
+        ("legal/11's derived per-radius bounds inflated to admit the impossible retired column",
+         [("cannot be out by more than 0.30 yd, 200 by more than 0.60, or 300 by more than 0.90",
+           "cannot be out by more than 0.90 yd, 200 by more than 1.60, or 300 by more than 2.90")],
+         [], False),
+        ("geo.py's copy of the [100,150) green-end forensic figure",
+         [], [("0.4334 in [100,150)", "0.9999 in [100,150)")], False),
+        ("geo.py's copy of the segment-length figure the 200 yd row reproduces in",
+         [], [("SEGMENT length in [200,250), 0.72683", "SEGMENT length in [200,250), 0.99999")], False),
+        ("geo.py's copy of the segment population's global worst",
+         [], [("own global worst is 0.9714", "own global worst is 0.1111")], False),
+        ("geo.py's copy of the retired pair's worst relative offset",
+         [], [("+0.2975% over these vertices", "+0.9999% over these vertices")], False),
+    ]
+    waved, ran = [], 0
+    for what, rec_edits, note_edits, needs_corpus in cases:
+        r, n = rec, note
+        applied = True
+        for old, new in rec_edits:
+            if old not in r:
+                applied = False
+            r = r.replace(old, new)
+        for old, new in note_edits:
+            if old not in n:
+                applied = False
+            n = n.replace(old, new)
+        assert applied, (
+            f"the mutation for {what!r} no longer applies -- the record's wording moved, so this case is "
+            f"measuring nothing. Re-read legal/11 and geo.py and re-anchor it.")
+        if needs_corpus and measured is None:
+            continue
+        ran += 1
+        try:
+            _grade_tick_error_table(r, n, measured)
+        except AssertionError:
+            continue
+        waved.append(what)
+    assert not waved, (
+        "the tick-error table's grader accepts a doctored record. Each of these was applied to the real "
+        "legal/11 or geo.py and passed the whole suite:\n  " + "\n  ".join(waved)
+        + "\n  geo.py's copies are the half aimed at the next editor, and a row shadowed by a duplicate "
+          "is the half aimed at the reader.")
+    assert ran == len(cases), (
+        f"only {ran} of {len(cases)} mutations were exercised. Every case here is refusable on a clone -- "
+        f"the geo.py ones because legal/11 quotes the same figures, the other two by arithmetic.")
 
 
 def test_the_earth_models_published_spread_names_every_module_that_carries_it():
