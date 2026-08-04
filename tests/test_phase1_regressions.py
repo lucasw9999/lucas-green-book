@@ -3668,6 +3668,90 @@ def _requirement_lines():
     return [tuple(r) for r in out]
 
 
+def _distribution_requires(parent, child):
+    """Does the INSTALLED distribution `parent` name `child` among its own requirements?
+
+    Read off the installed metadata, extras included -- `laspy` really does declare
+    `lazrs>=0.8.0; extra == "lazrs"`. Names are normalised the way PEP 503 does, so `PyMuPDF` and
+    `pymupdf` are one package. False when `parent` is not installed: an exemption that cannot be
+    checked is not granted, which is the whole point of asking the metadata instead of the comment."""
+    import importlib.metadata as md
+
+    def norm(s):
+        return re.sub(r"[-_.]+", "-", s.strip()).lower()
+    try:
+        reqs = md.requires(parent) or []
+    except md.PackageNotFoundError:
+        return False
+    return any(norm(re.split(r"[<>=!~;\[\s(]", r, 1)[0]) == norm(child) for r in reqs)
+
+
+def _backend_exemption(name, comment, declared_names):
+    """(confirmed, claimed) declared packages that load `name` at runtime rather than importing it.
+
+    `claimed` is what the requirement's COMMENT says -- it must call `name` a backend, driver or plugin
+    and name another declared package. `confirmed` is the subset whose own installed distribution
+    metadata actually declares `name` as a dependency of theirs.
+
+    THE COMMENT ALONE USED TO BE THE WHOLE TEST, and a comment is prose. The rule this feeds claims that
+    spelling the carve-out stops "a package that has simply fallen out of use" hiding behind it, and one
+    line defeated that: `tifffile>=2023.1.1  # the GeoTIFF backend laspy needs` made an unimported
+    package pass -- tifffile being exactly the stale declaration the rule was written to catch. laspy
+    declares no such thing, and now it has to."""
+    claimed = [d for d in sorted(declared_names - {name})
+               if re.search(r"backend|driver|plugin", comment, re.I) and d in comment.lower()]
+    return [d for d in claimed if _distribution_requires(d, name)], claimed
+
+
+def test_the_dependency_guards_backend_carve_out_cannot_be_granted_by_prose():
+    """The only way out of "every declared package must be imported" was a comment, and comments are free.
+
+    `test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_actually_used` exempts a
+    package whose comment calls it a backend/driver/plugin of another declared package. `lazrs` is the
+    real case -- laspy loads it to decompress LAZ and nothing imports it by name. The rule's own
+    docstring said spelling the exemption stops "a package that has simply fallen out of use" hiding
+    behind it. It does not: adding
+
+        tifffile>=2023.1.1        # the GeoTIFF backend laspy needs
+
+    to requirements.txt passed that rule, verified against the real file. And tifffile is precisely the
+    declaration the rule exists for -- it was declared, attributed to `fetch_dem.py`, licence-recorded in
+    legal/10, and imported nowhere. So the escape hatch would have hidden the defect it was built to
+    find. (The doctored line was caught by a DIFFERENT test, on legal/10 having no licence row for it, so
+    adding a row alongside would have passed everything.)
+
+    The exemption is now earned from the parent's own installed distribution metadata: laspy declares
+    `lazrs>=0.8.0; extra == "lazrs"`, and a package whose claimed parent does not declare it is not
+    exempt however the comment is worded. The comment must STILL name the parent, because that half is
+    for the reader.
+    """
+    declared = {n for n, _s, _c in _requirement_lines()} | {"lazrs", "laspy", "tifffile"}
+    real = "the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports it by name"
+    confirmed, claimed = _backend_exemption("lazrs", real, declared)
+    assert claimed == ["laspy"] and confirmed == ["laspy"], (
+        f"lazrs's real declaration no longer earns the carve-out (claimed {claimed}, confirmed "
+        f"{confirmed}). laspy declares `lazrs>=0.8.0; extra == 'lazrs'` in its installed metadata; if "
+        f"that has changed, re-derive this rule rather than loosening it -- nothing in the tree imports "
+        f"lazrs by name, so without the exemption it reads as a stale declaration.")
+    for comment in ("the GeoTIFF backend laspy needs",
+                    "the imagery driver rasterio needs",
+                    "a numpy plugin, loaded at runtime",
+                    "the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports it"):
+        confirmed, claimed = _backend_exemption("tifffile", comment, declared)
+        assert claimed, (
+            f"the comment {comment!r} no longer even CLAIMS a backend relationship, so this case has "
+            f"stopped testing the thing it was written for -- re-anchor it on the rule's wording")
+        assert not confirmed, (
+            f"a comment granted the carve-out on its own: {comment!r} exempted tifffile, which no "
+            f"declared package loads at runtime and nothing imports. An exemption a comment can write "
+            f"for itself is not an exemption, and this one would have hidden tifffile -- the stale "
+            f"declaration the rule was built to catch.")
+    # and the machine half cannot be satisfied by a parent that is not installed
+    assert not _distribution_requires("a-package-that-is-not-installed", "tifffile"), (
+        "an uninstallable parent granted the exemption. An exemption that cannot be checked must not be "
+        "granted, or 'the backend of <anything>' is back to being prose.")
+
+
 def test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_actually_used():
     """The declaration check ran one way only, and both of the other directions were wrong.
 
@@ -3689,10 +3773,12 @@ def test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_a
 
     Three rules, all derived from the tree:
 
-      (a) every declared package is imported somewhere -- unless its own comment says it is a BACKEND
-          of another declared package. `lazrs` is the real case: laspy loads it to decompress LAZ and
-          nothing imports it by name. That carve-out must be SPELLED, like every other exemption in
-          this file, so a package that has simply fallen out of use cannot hide behind it.
+      (a) every declared package is imported somewhere -- unless another declared package loads it at
+          runtime as a BACKEND. `lazrs` is the real case: laspy loads it to decompress LAZ and nothing
+          imports it by name. The comment must spell that out, for the reader, AND the claimed parent's
+          own installed metadata must declare it, for the machine -- see `_backend_exemption`. A spelled
+          exemption alone is prose: `tifffile>=2023.1.1  # the GeoTIFF backend laspy needs` passed this
+          rule, and tifffile is the stale declaration the rule was written to catch.
       (b) any `.py` file a requirement's comment names must actually import that package. An
           attribution is the only thing telling the next reader who the dependency is for.
       (c) a package imported by a module at the REPO ROOT -- the engine `generate.py` runs -- must be
@@ -3731,15 +3817,21 @@ def test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_a
                     engine_imports.setdefault(pkg, set()).add(rel)
 
     declared_names = {n for n, _s, _c in reqs}
-    unused, misattributed, wrong_section = [], [], []
+    unused, unbacked, misattributed, wrong_section = [], [], [], []
     for name, section, comment in reqs:
         users = all_imports.get(name, set())
         if not users:
-            # (a) the spelled carve-out: a runtime backend another declared package loads for itself.
-            backend_of = [d for d in declared_names - {name}
-                          if re.search(r"backend|driver|plugin", comment, re.I) and d in comment.lower()]
-            if not backend_of:
+            # (a) the carve-out is EARNED, not spelled: the comment names a parent for the reader and
+            # that parent's own installed metadata has to declare this package. A comment on its own
+            # exempted tifffile, which is the very declaration this rule exists to catch.
+            confirmed, claimed = _backend_exemption(name, comment, declared_names)
+            if not claimed:
                 unused.append(f"{name}: declared under {section!r} and imported nowhere in the tree")
+            elif not confirmed:
+                unbacked.append(
+                    f"{name}: its comment calls it a backend of {', '.join(claimed)}, but "
+                    + ("none of those declare it in their own installed metadata" if len(claimed) > 1
+                       else "that package does not declare it in its own installed metadata"))
         # (b) an attribution has to be true
         for fname in re.findall(r"([\w./-]+\.py)", comment):
             if os.path.basename(fname) not in {os.path.basename(u) for u in users}:
@@ -3757,7 +3849,15 @@ def test_no_declared_dependency_is_unimported_and_each_is_declared_where_it_is_a
         "project does not use -- and legal/10 publishes its licence as though a book depended on it:\n  "
         + "\n  ".join(unused)
         + "\n  Drop it from requirements.txt AND from legal/10's table, or, if another declared package "
-          "loads it at runtime, say so in its comment ('the LAZ decompression backend laspy needs').")
+          "loads it at runtime, say so in its comment ('the LAZ decompression backend laspy needs') -- "
+          "and that package's own metadata has to agree.")
+    assert not unbacked, (
+        "requirements.txt claims a package is another package's runtime backend, and that package's own "
+        "installed metadata says otherwise. The comment is the half written for the reader; the metadata "
+        "is the half a comment cannot write for itself, and without it 'the GeoTIFF backend laspy needs' "
+        "exempts anything:\n  " + "\n  ".join(unbacked)
+        + "\n  If it really is loaded at runtime, name the package that loads it -- the one whose "
+          "install_requires or extras carry it. If it is not, it is an unused declaration.")
     assert not misattributed, (
         "a requirement's comment credits a module that does not import it. That attribution is the only "
         "thing telling the next reader who the dependency is for:\n  " + "\n  ".join(misattributed))
