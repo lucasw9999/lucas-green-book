@@ -22487,8 +22487,12 @@ def test_the_security_record_still_describes_this_repository():
           generated disclaimer record and the book itself -- because a researcher who mails the stale
           one gets no answer and reasonably concludes nobody is listening.
       (d) the scope statement names `legal/`, which has to exist for the sentence to mean anything.
-      (e) the data sources it names are the ones legal/01 documents. This file is the short public
-          summary of that record, and two summaries of one fact are how one goes stale.
+      (e) the data sources it names are the ones legal/01 documents, in BOTH directions. This file is the
+          short public summary of that record, and two summaries of one fact are how one goes stale.
+          The forward half USED TO BE an overstatement: it iterated a hard-coded five-token vocabulary
+          (OpenStreetMap, ODbL, 3DEP, NAIP, USGS), all five of which legal/01 already names, so no
+          insertion could fail it -- adding "Sentinel-2 imagery" to the data note passed. It now reads
+          the source names out of the document itself.
     """
     import ast
     p = os.path.join(ROOT, "SECURITY.md")
@@ -22582,11 +22586,39 @@ def test_the_security_record_still_describes_this_repository():
         "the directory is gone")
 
     # (e) it is a SUMMARY of legal/01, so the sources it names must be the ones that record documents --
-    # in BOTH directions. Naming a source legal/01 does not document is a public claim with no
-    # compliance argument behind it; DROPPING one the books credit makes the summary read as though the
-    # project used less data than it does, which is the same defect pointing the other way.
+    # in BOTH directions, which used to be an overstatement. The forward half iterated a hard-coded
+    # five-token vocabulary (OpenStreetMap, ODbL, 3DEP, NAIP, USGS), every one of which legal/01 already
+    # names, so it could not fail: adding "Sentinel-2 imagery" to the data note passed. The forward half
+    # now reads the source names OUT of the document -- dataset-shaped tokens in the sections that make
+    # the claim -- so a source this project has not documented cannot be announced to the public here.
     with open(os.path.join(ROOT, "legal", "01_DATA_SOURCES_AND_LICENSES.md"), encoding="utf-8") as fh:
         sources = fh.read()
+    # CamelCase names (OpenStreetMap), acronyms with or without a leading digit (USGS, 3DEP, ODbL) and
+    # Name-digit datasets (Sentinel-2, Landsat-8). Ordinary prose words are not matched, which is what
+    # keeps this from demanding that legal/01 mention "Every".
+    named = r"\b(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)\b"
+    claimed = set()
+    for heading in ("A note on data", "Scope"):
+        sec = re.search(r"##\s*%s\s*(.+?)(?=\n##|\Z)" % re.escape(heading), doc, re.S)
+        assert sec, (
+            f"SECURITY.md no longer has a '## {heading}' section. The sources it names are graded "
+            f"against legal/01 by reading that section, so losing the heading loses the check.")
+        claimed |= set(re.findall(named, sec.group(1)))
+    # Tokens that name something in THIS repository rather than a data source -- mechanical, off the
+    # filesystem, so it cannot become a place to park a source name.
+    own = {p.split(".")[0].upper() for p in os.listdir(ROOT)} | {"SECURITY", "README", "PIPELINE"}
+    claimed = {t for t in claimed if t.upper() not in own}
+    assert len(claimed) >= 3, (
+        f"only {sorted(claimed)} read as source names out of SECURITY.md's data and scope sections. "
+        f"Every distributed book credits OpenStreetMap and USGS, so an extraction finding fewer than "
+        f"three names is measuring nothing -- re-derive the pattern rather than lowering this floor.")
+    undocumented = sorted(t for t in claimed if t not in sources)
+    assert not undocumented, (
+        f"SECURITY.md tells the public this project's data includes {undocumented} and "
+        f"legal/01_DATA_SOURCES_AND_LICENSES.md -- the record that argues why the data may be used at "
+        f"all -- does not mention it. The short public summary and the compliance argument have to name "
+        f"the same sources: a source announced here with no licence argument behind it is a public claim "
+        f"this project cannot support, and it is the direction this check used to be unable to see.")
     for token in [t for t in ("OpenStreetMap", "ODbL", "3DEP", "NAIP", "USGS") if t in doc]:
         assert token in sources, (
             f"SECURITY.md tells the public this project's data includes {token!r} and "
