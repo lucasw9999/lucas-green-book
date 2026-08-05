@@ -231,8 +231,10 @@ def source_cell_clause(arr, px_x, px_y):
     `LowPS < 20` at monarch-bay hole 1's green centre): the finest raster covering that point is
     `CA_AlamedaCounty_2021_B21` at LowPS 1, and the next is OID 11875
     `ned19_n37x75_w122x25_ca_sanfrancisocoast_2010` at LowPS 3.4358 in WebMercator -- which is
-    3.4358*cos(37.69 deg) = 2.720 m on the ground, the E-W figure the arrays give to three decimals,
-    and "ned19" is literally NED 1/9 arc-second. Its AcquisitionDate is 2011-04-03. That date is NOT
+    3.4358*cos(37.69 deg) = 2.7189 m on the ground -- inside the 2.70-2.73 m E-W range the six arrays
+    measure, and 0.23% from hole 1's own 2.7250 m. (This read "= 2.720 m ... to three decimals" and
+    neither half held: the arithmetic gives 2.719, and that green's array gives 2.725.) "ned19" is
+    literally NED 1/9 arc-second. Its AcquisitionDate is 2011-04-03. That date is NOT
     published anywhere in this repo and must not be: the offline lattice is what any future run can
     re-derive from its own artifacts, whereas which raster the default mosaic rule resolves to is a
     property of the service on the day. legal/03 says instead that this build decodes no acquisition

@@ -59,10 +59,20 @@ def gauss(a, sig_px):
 # --- the SOURCE grid a surface was resampled from, measured from the array alone ---------------
 # Fraction of second differences that must land at the float32 floor before a surface is called a
 # resample of something coarser. Set from the corpus, not guessed: across the 198 built surfaces the
-# six seamless greens sit at 49.5-72.2% (measured per axis) and the 192 LiDAR ones at 0.3-6.1%,
+# six seamless greens sit at 49.5-72.3% (measured per axis) and the 192 LiDAR ones at 0.2-19.8%,
 # because a LiDAR green is interpolated from a dense point cloud over a Delaunay triangulation and
-# has no rectangular lattice at all. 0.25 is 4x above the worst LiDAR green and 2x below the weakest
-# seamless one.
+# has no rectangular lattice at all. So the gap the threshold sits in is 2.51x: 0.25 is 1.27x above the
+# worst LiDAR green (the-reserve 18, N-S) and 1.98x below the weakest seamless one (monarch-bay 10,
+# E-W).
+#
+# THAT UPPER FIGURE WAS PUBLISHED HERE AS 6.1% AND IT IS 19.8%. 11 LiDAR greens carry an axis above
+# 6.1%, and the gap was published as 8x. The margin is REAL -- 0 false positives over the 192 and 6 of
+# 6 true positives, re-measured every run -- but it is about three times thinner than this paragraph
+# claimed, and this paragraph is the only recorded derivation of the constant, so it is what anyone
+# retuning it would work from. Every figure in it is now re-derived from the arrays by
+# test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_measures, in both of the
+# two records that carry them, because a figure with a second uncross-checked copy is how five of the
+# six here drifted.
 SOURCE_LATTICE_FLAT_MIN = 0.25
 # The band of source-cell sizes, in PIXELS, this looks in. 1.8 px is the finest lattice a resample
 # could carry and still be visible in a second difference; 18 px is wider than any green patch has
@@ -86,23 +96,42 @@ def _lattice_profile(M):
     return np.where(np.isfinite(prof), prof, 0.0), d2
 
 
+def _storage_floor(scale):
+    """The magnitude a float32 round-trip can leave where the true second difference is exactly 0.
+
+    ONE spelling, because two things need it and they used to agree by coincidence: _flat_fraction
+    decides whether a surface is flat ENOUGH to hold a lattice, and _comb_period has to decide whether
+    the comb it is about to measure has any teeth at all above this floor.
+    """
+    return 8.0 * np.finfo(np.float32).eps * max(scale, 1.0)
+
+
 def _flat_fraction(d2, scale):
     """Fraction of second differences at the float32 storage floor -- 1.0 for a perfect resample.
 
     Tolerance from the STORAGE, not from a guess: 3DEP serves float32 and the .npy keeps it, so a
     cancellation that is algebraically zero comes back as a few float32 eps of the elevation itself.
-    Measured on monarch-bay hole 1, the values split cleanly into 30% exactly 0.0, a further 34%
-    under 5e-7, and nothing at all between 5e-7 and 1e-4 -- so this threshold sits inside a gap two
-    orders of magnitude wide rather than on a slope.
+    Measured on monarch-bay hole 1 along E-W: 30.3% of its second differences are exactly 0.0 and a
+    further 34.0% sit under 5e-7, which is one float32 quantum at that green's relief.
+
+    WHAT THE THRESHOLD SITS ON IS A PLATEAU IN THE FRACTION, not an empty band in the values. This
+    docstring offered the second reading -- "nothing at all between 5e-7 and 1e-4 ... a gap two orders
+    of magnitude wide" -- and 0.6% of the values lie in that band, with the tolerance this actually
+    uses INSIDE it, 4.79e-6 on that green. The insensitivity is real, and it is what was worth writing
+    down: the corpus verdict is unchanged for every multiplier from 0.5 to 64.0 times eps -- 0 of 192
+    LiDAR greens called resampled, 6 of 6 seamless found -- and only breaks at 128.0, which is 16x the
+    8.0 used here. Every figure in this paragraph is re-derived per run by
+    test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_measures.
     """
     fin = d2[np.isfinite(d2)]
     if not fin.size:
         return 0.0
-    return float((fin <= 8.0 * np.finfo(np.float32).eps * max(scale, 1.0)).mean())
+    return float((fin <= _storage_floor(scale)).mean())
 
 
-def _comb_period(prof):
-    """Spacing of the comb in `prof`, in samples, or None.
+def _comb_period(prof, floor=0.0):
+    """Spacing of the comb in `prof`, in samples, or None. `floor` is the storage floor its teeth
+    must stand above.
 
     Taken as the LONGEST period carrying near-peak power, not the strongest: a comb has energy at
     every harmonic of its fundamental, so an argmax over the band lands on c/2 as readily as on c --
@@ -110,15 +139,26 @@ def _comb_period(prof):
     COARSEST grid consistent with it. Verified against a ground-truth resample in
     test_a_resampled_dem_patch_gives_up_its_own_source_grid_with_no_network.
 
-    A frequency scan rather than an FFT bin, because the array is ~100 px wide and holds only 15-18
-    periods: bin spacing would quantise the answer to several percent, and the printed label rounds
-    to 0.1 m.
+    A frequency scan rather than an FFT bin, because the array is ~100 px wide and holds only
+    12.3-20.1 periods: bin spacing would quantise the answer to several percent, and the printed label
+    rounds to 0.1 m.
+
+    THE FLOOR IS WHAT STOPS THIS FABRICATING A CELL. `if not np.any(p)` catches only the exactly
+    constant profile, and an exact PLANE stored as float32 is not that: its second differences are
+    quantisation dust, `_flat_fraction` reads 1.0, and this function used to hand back whichever dust
+    period happened to peak -- a source cell of several metres measured off rounding error, published
+    with no warning. Unreachable on real data (the corpus's own relief is far above the dust, and the
+    direction of the error is conservative in any case, overstating coarseness) but still a number the
+    data cannot support, which this project does not print. A genuine comb's teeth ARE the source
+    nodes, so they carry real elevation differences: measured over the corpus the seamless greens' peak
+    tooth stands 4059x to 10220x above this floor, and an exact plane's stands below it. Graded both
+    ways in test_the_lattice_detector_refuses_to_measure_a_cell_off_quantisation_dust.
     """
     n = prof.size
     if n < 3 * _LATTICE_PX_MIN:
         return None
     p = prof - prof.mean()
-    if not np.any(p):
+    if not np.any(p) or prof.max() <= floor:
         return None
     per = np.linspace(_LATTICE_PX_MAX, _LATTICE_PX_MIN, 8001)
     P = np.abs(np.exp(-2j * np.pi * np.outer(1.0 / per, np.arange(n))) @ p)
@@ -156,7 +196,7 @@ def source_lattice(arr, px_x, px_y):
     for key, M, px in (("ew", arr, px_x), ("ns", arr.T, px_y)):
         prof, d2 = _lattice_profile(M)
         flat = _flat_fraction(d2, scale)
-        per = _comb_period(prof) if flat >= SOURCE_LATTICE_FLAT_MIN else None
+        per = _comb_period(prof, _storage_floor(scale)) if flat >= SOURCE_LATTICE_FLAT_MIN else None
         out[f"flat_{key}"] = flat
         out[f"cell_{key}_m"] = (per * px) if per else float(px)
         out[f"found_{key}"] = per is not None

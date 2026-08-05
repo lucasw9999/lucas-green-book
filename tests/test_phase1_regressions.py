@@ -17131,6 +17131,12 @@ def _tee_geometry():
     percentage point from 0.30 m cells down to 0.05 m, so the 0.10 m grid used here is not a tuning
     knob.
 
+    Two reach figures, because they answer different questions and the difference is 2 pads. `reach_m`
+    is RADIAL -- the farthest vertex -- and it is what tee_elevations' own derivation publishes.
+    `axis_m` is the larger of the two axis-aligned half-extents, which is the criterion that actually
+    CLIPS, because the window is applied as `abs(x - tx) < R and abs(y - ty) < R`. A ring can reach
+    18 m diagonally and still sit entirely inside the window.
+
     Cached, because two graders read it and every anchor costs a pyproj transform."""
     global _TEE_GEOM
     if _TEE_GEOM is not None:
@@ -17162,12 +17168,15 @@ def _tee_geometry():
         g = (np.arange(300) + 0.5) / 300.0 * 2 * R - R
         GX, GY = np.meshgrid(g, g)
         share, reach = {}, {}
+        axis = {}
         for hn, (vx, vy) in pads.items():
             tx, ty = targets[hn]
             share[hn] = float(fhe._mask_in_ring((GX + tx).ravel(), (GY + ty).ravel(), vx, vy).mean())
             reach[hn] = float(np.max(np.hypot(vx - tx, vy - ty)) / upm)
+            axis[hn] = float(max(np.max(np.abs(vx - tx)), np.max(np.abs(vy - ty))) / upm)
         out[slug] = {"anchors": sorted(targets), "pads": sorted(pads), "share": share,
-                     "reach_m": reach, "upm": upm, "nrings": len(fhe.tee_rings_latlon())}
+                     "reach_m": reach, "axis_m": axis, "upm": upm,
+                     "nrings": len(fhe.tee_rings_latlon())}
     _elev_bind(fhe, a_course())
     _TEE_GEOM = out
     return out
@@ -17321,6 +17330,115 @@ def _short(slug):
                    "-at-spanos-park"):
         slug = slug.replace(suffix, "")
     return slug
+
+
+@needs_corpus
+def test_the_independent_checker_says_which_region_each_side_of_it_samples():
+    """The tool whose whole value is being INDEPENDENT published a false premise, in four records.
+
+    tools/verify_elevation.py exists because every check inside the elevation pipeline shares that
+    pipeline's assumptions -- which is how a US-survey-foot tee height subtracted from a metric green
+    height put 74 of 175 holes out by a median 298 ft with nothing objecting. Its argument rests on
+    both sides measuring the same ground, and 9cc3bce moved the PRODUCER's tee sample onto the mapped
+    pad INTERSECTED with a 15 m window at the anchor while this tool went on sampling the WHOLE mapped
+    ring. Measured here: 55 of 177 mapped pads have a ring reaching past that window on an axis -- the
+    criterion that actually clips -- the farthest 63.0 m, and the producer's own derivation puts the
+    resulting median shift at up to 1.87 ft. TOL_FT is 10 ft, so this tool can never flag it.
+
+    FOUR records said the regions matched and none of them was graded:
+      * SAMPLE_HALF_M's note                  "Both sides now sample the same REGIONS"
+      * dem_median_m's docstring              "both sides ... measure the same region"
+      * the comment at the sampling call      "the SAME regions the pipeline does"
+      * generate.elev_phrase's docstring      "now sampled over the SAME regions this pipeline samples"
+
+    The fourth is the one that matters most: elev_phrase's docstring is the recorded justification of
+    the 3 ft PRINT FLOOR, the gate deciding whether any elevation number reaches a card at all. The
+    floor itself is not weakened by this -- a wider reference region INFLATES the measured
+    disagreement, so the spread those figures quote is an upper bound and the floor is conservative --
+    but the reason given for trusting the spread was not the reason that held.
+
+    The sampling is deliberately NOT changed: which region an independent reference should read is a
+    real design question with a measured cost, and a checker quietly re-pointed at the producer's own
+    choice is a weaker check, not a stronger one. So the four records now say what each side reads, and
+    this grades that against the CODE (the reference still takes the unclipped ring), against the
+    ARTIFACT (the producer's rows record a window), and against the GEOMETRY (how many pads differ).
+    """
+    geom = _tee_geometry()
+    assert geom, "no green-mode course with LiDAR on disk; nothing to measure"
+    ve = open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8").read()
+    gen = open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read()
+
+    # 1. THE CODE. The reference's tee sample is the ring `ring_containing` returns, unclipped -- if
+    #    that ever changes, the prose below is what has to change with it, and this is the tripwire.
+    assert re.search(r"_ring\s*=\s*fhe\.ring_containing\(", ve) and \
+        re.search(r"dem_median_over_ring\(_ring\)", ve), (
+        "tools/verify_elevation.py no longer feeds the whole mapped ring straight into its tee "
+        "reference. If it now clips to the producer's window, every record below saying it reads the "
+        "WHOLE ring is stale -- and if it clips, it is no longer independent of the producer's choice "
+        "of region, which is the reason it was left alone.")
+
+    # 2. THE ARTIFACT. The producer records the region it actually sampled, per row.
+    regions = set()
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "hole_elev.json"))):
+        with open(p, encoding="utf-8") as fh:
+            for row in (json.load(fh).get("holes") or {}).values():
+                if "pad" in str(row.get("tee_region", "")):
+                    regions.add(row["tee_region"])
+    assert regions and all("window" in r for r in regions), (
+        f"the producer's pad rows no longer record a WINDOW as the region they sampled: {regions}. "
+        f"Either the producer changed or the label did; either way this test's premise moved.")
+
+    # 3. THE GEOMETRY, by the criterion that actually clips.
+    axis = [(g["axis_m"][h], _short(s), h) for s, g in geom.items() for h in g["pads"]]
+    past = [a for a in axis if a[0] > 15.0]
+    worst = max(axis)
+    assert past, ("no mapped ring reaches past the window on an axis, so the two sides DO sample the "
+                  "same tee region and every record below is now understating the tool -- re-derive "
+                  "this before deleting it")
+
+    problems = []
+    for where, text, pat in (
+            ("tools/verify_elevation.py's SAMPLE_HALF_M note", ve,
+             r"(\d+) of (\d+) mapped pads whose ring reaches past that window on an axis -- up to "
+             r"([\d.]+) m, (\S+) (\d+)"),
+            ("generate.elev_phrase's docstring", gen,
+             r"a region difference too, on (\d+) of (\d+) pads")):
+        m = re.search(pat, _flow(text))
+        assert m, (f"{where} no longer states how many pads the two regions differ on ({pat!r}). That "
+                   f"sentence is the only place the cost of this tool's premise is written down.")
+        g = m.groups()
+        if (int(g[0]), int(g[1])) != (len(past), len(axis)):
+            problems.append(f"{where} says {g[0]} of {g[1]} pads differ; measured {len(past)} of "
+                            f"{len(axis)}")
+        if len(g) > 2 and (abs(float(g[2]) - worst[0]) > 0.1 or (g[3], int(g[4])) != worst[1:]):
+            problems.append(f"{where} names the farthest as {g[2]} m on {g[3]} {g[4]}; measured "
+                            f"{worst[0]:.1f} m on {worst[1]} {worst[2]}")
+
+    # 4. THE RETIRED CLAIM, in all four records. It is what made the mismatch invisible.
+    #    Matched as the SHAPE the claim had -- "both sides ... the same regions", or "the same regions"
+    #    followed by the green-and-tee pair -- not as any mention of "same region", because the GREEN
+    #    side genuinely IS the same region and each record now says so. A clause that denies the claim
+    #    is cleared, the same way every other prose gate in this file clears one.
+    RETIRED = re.compile(r"both sides[^.]*same\s+REGIONS?"
+                         r"|same\s+REGIONS?[^.]*(?:green polygon and the (?:mapped )?tee|tee pad)", re.I)
+    for where, text in (("tools/verify_elevation.py", ve), ("generate.py", gen)):
+        for m in re.finditer(r"[^.]*\.", _flow(text)):
+            s = m.group(0)
+            if RETIRED.search(s) and not re.search(r"\bdo(?:es)? not\b|\bnot\b|never", s, re.I):
+                problems.append(f"{where} still claims both sides sample the same region: "
+                                f"{s.strip()[:150]}")
+    for where, text, want in (
+            ("tools/verify_elevation.py's dem_median_m docstring", ve, r"see SAMPLE_HALF_M"),
+            ("the comment at the sampling call", ve, r"WHOLE mapped tee ring"),
+            ("generate.elev_phrase's docstring", gen, r"whole mapped tee ring")):
+        if not re.search(want, _flow(text), re.I):
+            problems.append(f"{where} no longer says which region the reference reads at the tee "
+                            f"({want!r} is gone)")
+
+    assert not problems, (
+        "the independent elevation checker misdescribes what it samples, or the records of it "
+        "disagree. Four copies of one premise with no cross-check is how this survived 9cc3bce:\n  "
+        + "\n  ".join(problems))
 
 
 @needs_corpus
@@ -27791,8 +27909,9 @@ def test_a_resampled_dem_patch_gives_up_its_own_source_grid_with_no_network():
         pixels wide, and the 192 LiDAR greens must NOT, or the discriminator is decoration.
 
     The 0.4 m greens are interpolated from a dense point cloud over a Delaunay triangulation, which
-    has no rectangular lattice at all: measured, 0.3-6.1% of their second differences land at the
-    float32 floor against 49-72% on the six. That 8x gap is what SOURCE_LATTICE_FLAT_MIN sits in.
+    has no rectangular lattice at all: measured, 0.2-19.8% of their second differences land at the
+    float32 floor against 49.5-72.3% on the six. That 2.51x gap is what SOURCE_LATTICE_FLAT_MIN sits
+    in -- not the 8x this docstring and render_green's own comment both published for it.
     """
     import numpy as np
     import render_green as rg
@@ -27846,6 +27965,77 @@ def test_a_resampled_dem_patch_gives_up_its_own_source_grid_with_no_network():
             f"this test exists to refute would be arguable again -- re-read it before editing.")
 
 
+def test_the_lattice_detector_refuses_to_measure_a_cell_off_quantisation_dust():
+    """An exact PLANE stored as float32 used to come back resampled, with a fabricated source cell.
+
+    Found by a ground-truth sweep of 20 constructed cases: 18 pass, one misses and fails safe, and this
+    one FABRICATED. A plane's second differences are algebraically zero, so in float32 they are
+    rounding dust; `_flat_fraction` reads 1.0 -- flatter than any real resample, which tops out at
+    72.3% -- and `_comb_period`'s `if not np.any(p)` guard catches only the EXACTLY CONSTANT profile,
+    not a profile that is entirely dust. So it returned whichever dust period happened to peak and the
+    caller published it as a source cell, several metres wide, measured off rounding error and carrying
+    no warning.
+
+    Unreachable on the real corpus and conservative in direction -- it overstates coarseness, and the
+    corpus's own relief is orders of magnitude above the dust -- but it is still a number the data
+    cannot support, and this project does not print those. The guard is the physics: a real comb's
+    teeth ARE the source nodes, so they carry real elevation differences, while dust cannot rise above
+    the storage floor by construction.
+
+    Graded BOTH ways, because a guard that also killed the true positives would be worse than the
+    fabrication: the constructed plane must be refused, and the six real seamless greens must still be
+    found, with the margin on each side measured rather than assumed.
+    """
+    import numpy as np
+    import render_green as rg
+
+    H, W = 104, 112
+    yy, xx = np.mgrid[0:H, 0:W]
+    for name, z in (
+            ("an exact plane in float32",
+             (100.0 + 0.03 * xx + 0.02 * yy).astype("float32").astype("float64")),
+            ("an exact plane in float64", 100.0 + 0.03 * xx + 0.02 * yy),
+            ("an exactly constant array", np.full((H, W), 42.0)),
+            ("a plane with a tiny float32 offset",
+             (12.5 + 0.007 * xx - 0.011 * yy).astype("float32").astype("float64"))):
+        got = rg.source_lattice(z, 0.5027, 0.5044)
+        assert not got["resampled"], (
+            f"{name} is reported as a resample of a "
+            f"{got['cell_ew_m']:.2f} x {got['cell_ns_m']:.2f} m grid. There is no lattice in it to "
+            f"find -- its second differences are quantisation dust -- so that cell is measured off "
+            f"rounding error, and the caller publishes it as the resolution of a green's data.")
+        for axis, cell, px in (("E-W", got["cell_ew_m"], 0.5027), ("N-S", got["cell_ns_m"], 0.5044)):
+            assert abs(cell - px) < 1e-9, (
+                f"{name} reports a {axis} figure of {cell:.4f} m where `resampled` is False, which by "
+                f"source_lattice's contract must be the PIXEL size {px:.4f} m and carry no claim")
+
+    # the margin, both sides, measured
+    rows = [r for r in _lattice_arrays() if r[2]]
+    if not rows:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    ratios = []
+    for _slug, _hole, _seam, arr, _px_x, _px_y in rows:
+        scale = float(np.nanmax(np.abs(arr)))
+        floor = rg._storage_floor(scale)
+        for M in (arr, arr.T):
+            prof, _d2 = rg._lattice_profile(M)
+            ratios.append(float(prof.max() / floor))
+    plane = (100.0 + 0.03 * xx + 0.02 * yy).astype("float32").astype("float64")
+    pprof, _pd2 = rg._lattice_profile(plane)
+    pratio = float(pprof.max() / rg._storage_floor(float(np.nanmax(np.abs(plane)))))
+    assert pratio < 1.0 <= min(ratios), (
+        f"the guard has no room: a plane's peak tooth stands {pratio:.3f}x above the storage floor and "
+        f"the weakest real seamless green's stands {min(ratios):.0f}x. The floor has to fall between "
+        f"them or it either fabricates again or starts refusing real greens.")
+    said = _published_figures(rg._comb_period.__doc__,
+                      r"peak\s+tooth stands ([\d]+)x to ([\d]+)x above this floor",
+                      "_comb_period's docstring")
+    assert said[0] <= min(ratios) and said[1] >= max(ratios) and \
+        abs(said[0] - min(ratios)) < 1 and abs(said[1] - max(ratios)) < 1, (
+        f"_comb_period's docstring publishes the real greens' margin as {said[0]:.0f}x to "
+        f"{said[1]:.0f}x; measured {min(ratios):.1f}x to {max(ratios):.1f}x")
+
+
 def test_the_producer_records_the_source_cell_it_measured_instead_of_a_resolution_tier():
     """The string `fetch_dem.py` writes is the origin of every downstream resolution claim.
 
@@ -27891,6 +28081,242 @@ def test_the_producer_records_the_source_cell_it_measured_instead_of_a_resolutio
         f"cell: {src2!r}. That is a resolution claim the data does not support.")
     assert "NOT MEASURED" in src2 and warn2, (
         f"a reply whose source grid could not be measured says nothing about it: {src2!r} / {warn2!r}")
+
+
+def _lattice_arrays():
+    """[(slug, hole, seamless?, array, px_x, px_y)] for every built green -- loaded once, ~0.1 s."""
+    import numpy as np
+    out = []
+    for mp in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        slug = os.path.basename(os.path.dirname(os.path.dirname(mp)))
+        if slug.startswith("_"):
+            continue
+        ap = mp[:-5] + ".npy"
+        if not os.path.exists(ap):
+            continue
+        with open(mp, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        arr = np.load(ap).astype("float64")
+        arr[~np.isfinite(arr)] = np.nan
+        arr[np.abs(arr) > 1e30] = np.nan
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        out.append((slug, int(meta["hole"]), "seamless" in str(meta.get("source", "")).lower(), arr,
+                    (xmax - xmin) * _mlon(clat) / meta["W"],
+                    (ymax - ymin) * _mlat(clat) / meta["H"]))
+    return out
+
+
+def _flow(text):
+    """Source text with comment markers stripped and every whitespace run collapsed to one space.
+
+    So a pattern can span the line wrap. Without it these graders were hostage to where the 100-column
+    limit happened to break a sentence: re-wrapping a paragraph would have made the pattern stop
+    matching, and the test then reports a MISSING figure rather than a wrong one -- which is a real
+    failure, but the wrong one, and after two of those nobody trusts the message.
+    """
+    return re.sub(r"\s+", " ", re.sub(r"(?m)^[ \t]*#", " ", text))
+
+
+def _published_figures(text, pattern, where):
+    """Every numeric group of `pattern` in `text`, or an assertion naming what went missing.
+
+    A grader that silently finds no figure to compare passes, which is the failure mode this whole
+    file exists to prevent: 108a894's sweep and the "8x gap" both survived because nothing objected to
+    their absence. So a pattern that stops matching is an error, not a skip.
+
+    Named apart from `_published` above, which does the same job for fetch_hole_elev.py and returns the
+    MATCH rather than the numbers. Two of them because this one flows the text first and coerces to
+    float; naming them the same shadowed that one at module scope and broke its twenty call sites with
+    a TypeError, caught by running the full suite.
+    """
+    m = re.search(pattern, _flow(text))
+    assert m, (f"{where} no longer publishes the figure this grades ({pattern!r}). Either the sentence "
+               f"was reworded -- update the pattern -- or the justification was deleted, which is worse: "
+               f"the constant then has no recorded derivation at all.")
+    return [float(g) for g in m.groups() if g is not None]
+
+
+@needs_corpus
+def test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_measures():
+    """Six figures in the detector's OWN threshold justification were wrong, one of them by 3.2x.
+
+    `SOURCE_LATTICE_FLAT_MIN`'s comment is the only recorded derivation of the constant that decides
+    whether a green's card prints a coarse-data caveat, and it published the LiDAR greens' flat
+    fraction as "0.3-6.1%". Measured per axis over the 192 of them: 0.2-19.8%. ELEVEN LiDAR greens
+    carry an axis above 6.1% (the-reserve 18 at 19.7%, its 17 at 18.8%, valley-hi 16 at 16.9%), the
+    gap the threshold sits in is 2.51x rather than the "8x" that comment and this file's own detector
+    test both claimed, and the constant stands 1.27x above the worst LiDAR green rather than 4x. The
+    margin is REAL -- 0 false positives over 192 greens, 6 of 6 true positives -- but it is about
+    three times thinner than the paragraph whose whole job is to justify the number said it was, and a
+    restyler tightening the constant would have been working from that paragraph.
+
+    `_comb_period` published "15-18 periods" for arrays that hold 12.4-20.1, and `_flat_fraction`
+    published "nothing at all between 5e-7 and 1e-4" for a band that holds 0.6% of the values -- with
+    the tolerance it actually uses sitting INSIDE that band. That last one is the interesting one: the
+    threshold IS insensitive, but the insensitivity is a plateau in the FRACTION, not an empty band in
+    the values, so the evidence offered for it was evidence for something else.
+
+    Every figure above is re-derived here from the arrays on disk and compared to the text of the
+    comment and the docstrings that publish it -- in BOTH records, because two copies of one figure
+    with no cross-check is how five of these six drifted. Verdict stability is measured by re-running
+    the whole detector at nine tolerance multipliers (~2 s).
+    """
+    import numpy as np
+    import render_green as rg
+    rows = _lattice_arrays()
+    if not rows:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+
+    flats = {}
+    periods = []
+    for slug, hole, seam, arr, px_x, px_y in rows:
+        scale = float(np.nanmax(np.abs(arr))) if np.isfinite(arr).any() else 0.0
+        for key, M, px in (("E-W", arr, px_x), ("N-S", arr.T, px_y)):
+            prof, d2 = rg._lattice_profile(M)
+            flats[(slug, hole, key)] = (seam, rg._flat_fraction(d2, scale))
+            per = rg._comb_period(prof) if flats[(slug, hole, key)][1] >= \
+                rg.SOURCE_LATTICE_FLAT_MIN else None
+            if seam and per:
+                periods.append(prof.size / per)
+    lid = [v for (_s, _h, _k), (seam, v) in flats.items() if not seam]
+    sea = [v for (_s, _h, _k), (seam, v) in flats.items() if seam]
+    assert lid and sea and periods, "the corpus holds no seamless/LiDAR pair to measure against"
+    thr = rg.SOURCE_LATTICE_FLAT_MIN
+    m = {"lidar_lo": min(lid) * 100, "lidar_hi": max(lid) * 100,
+         "seam_lo": min(sea) * 100, "seam_hi": max(sea) * 100,
+         "gap": min(sea) / max(lid), "above_worst_lidar": thr / max(lid),
+         "below_weakest_seam": min(sea) / thr,
+         "per_lo": min(periods), "per_hi": max(periods)}
+
+    src = open(os.path.join(ROOT, "render_green.py"), encoding="utf-8").read()
+    here = open(__file__, encoding="utf-8").read()
+    problems = []
+
+    def grade(where, got, want, tol, label):
+        if abs(got - want) > tol:
+            problems.append(f"{where} publishes {label} as {got:g}; measured {want:.4g}")
+
+    def grade_bound(where, got, want, side, label, step=0.1):
+        """A published RANGE endpoint must contain the measurement and be one rounding step from it.
+
+        Not `abs(got - want) <= tol`: an upper bound that rounds DOWN excludes the very green it is
+        supposed to cover, and a bound rounded away by more than a step is not a rounding, it is a
+        different figure. So the two errors are graded separately and named differently.
+        """
+        contains = got <= want + 1e-12 if side == "lo" else got >= want - 1e-12
+        if not contains:
+            problems.append(f"{where} publishes {label} as {got:g}, which EXCLUDES the measured "
+                            f"{want:.4g} -- a range that does not contain its own corpus")
+        elif abs(got - want) > step:
+            problems.append(f"{where} publishes {label} as {got:g}; measured {want:.4g}")
+
+    # (a) the constant's own comment, and this file's detector test, publish the same four figures
+    for where, text, pat in (
+            ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
+             r"six seamless greens sit at ([\d.]+)-([\d.]+)% \(measured per axis\) and the 192 LiDAR "
+             r"ones at ([\d.]+)-([\d.]+)%"),
+            ("this file's detector test", here,
+             r"measured, ([\d.]+)-([\d.]+)% of their second differences land at the float32 floor "
+             r"against ([\d.]+)-([\d.]+)% on the six")):
+        vals = _published_figures(text, pat, where)
+        order = ("seam_lo", "seam_hi", "lidar_lo", "lidar_hi") if "seamless greens sit" in pat \
+            else ("lidar_lo", "lidar_hi", "seam_lo", "seam_hi")
+        for got, key in zip(vals, order):
+            grade_bound(where, got, m[key], key[-2:], f"the {key} flat fraction")
+
+    for where, text, pat, key, label in (
+            ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
+             r"0\.25 is ([\d.]+)x above the worst LiDAR green", "above_worst_lidar",
+             "the margin above the worst LiDAR green"),
+            ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
+             r"and ([\d.]+)x below the weakest seamless one", "below_weakest_seam",
+             "the margin below the weakest seamless green"),
+            ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
+             r"the gap the threshold sits in is ([\d.]+)x", "gap", "the gap"),
+            ("this file's detector test", here,
+             r"That ([\d.]+)x gap is what SOURCE_LATTICE_FLAT_MIN sits in", "gap", "the gap"),
+            ("render_green's _comb_period docstring", src,
+             r"holds only ([\d.]+)-([\d.]+) periods", "per", "the periods an array holds")):
+        vals = _published_figures(text, pat, where)
+        if key == "per":
+            grade_bound(where, vals[0], m["per_lo"], "lo", "the low end of " + label)
+            grade_bound(where, vals[1], m["per_hi"], "hi", "the high end of " + label)
+        else:
+            grade(where, vals[0], m[key], 0.01, label)
+
+    # (b) how many LiDAR greens exceed the figure that WAS published, since the comment now says so
+    over = sorted({(s, h) for (s, h, _k), (seam, v) in flats.items() if not seam and v > 0.061})
+    said = _published_figures(src, r"([\d.]+) LiDAR greens carry an axis above 6\.1%",
+                      "render_green's SOURCE_LATTICE_FLAT_MIN comment")
+    grade("render_green's SOURCE_LATTICE_FLAT_MIN comment", said[0], len(over), 0.5,
+          "the count of LiDAR greens above the figure it used to publish")
+
+    # (c) _flat_fraction's band, on the green it names, and the tolerance it actually uses
+    doc = rg._flat_fraction.__doc__
+    h1 = [r for r in rows if r[0] == "monarch-bay-golf-club" and r[1] == 1]
+    assert h1, "monarch-bay hole 1 is the green _flat_fraction's docstring measures; it is not built"
+    arr = h1[0][3]
+    scale = float(np.nanmax(np.abs(arr)))
+    tol_used = 8.0 * np.finfo(np.float32).eps * max(scale, 1.0)
+    prof, d2 = rg._lattice_profile(arr)
+    fin = d2[np.isfinite(d2)]
+    said = _published_figures(doc, r"([\d.]+)% of its second differences are exactly 0\.0 and a "
+                           r"further ([\d.]+)% sit under 5e-7", "_flat_fraction's docstring")
+    grade("_flat_fraction's docstring", said[0], float((fin == 0.0).mean()) * 100, 0.06,
+          "the share exactly 0.0")
+    grade("_flat_fraction's docstring", said[1],
+          float(((fin > 0) & (fin < 5e-7)).mean()) * 100, 0.06, "the share under 5e-7")
+    said = _published_figures(doc, r"and ([\d.]+)% of the values lie in that band", "_flat_fraction's docstring")
+    grade("_flat_fraction's docstring", said[0],
+          float(((fin >= 5e-7) & (fin <= 1e-4)).mean()) * 100, 0.06, "the share inside the band")
+    assert 5e-7 <= tol_used <= 1e-4, (
+        f"_flat_fraction's docstring says the tolerance it uses sits inside the 5e-7 to 1e-4 band; it "
+        f"measures {tol_used:.3g} on monarch-bay hole 1, which does not")
+    said = _published_figures(doc, r"INSIDE it.*?([\d.]+e-[\d]+) on that green", "_flat_fraction's docstring")
+    grade("_flat_fraction's docstring", said[0], tol_used, 0.01e-6, "the tolerance it uses")
+
+    # (d) the verdict-stability claim, by re-running the whole detector at each multiplier
+    said = _published_figures(doc, r"from ([\d.]+) to ([\d.]+) times eps", "_flat_fraction's docstring")
+    breaks = _published_figures(doc, r"only breaks at ([\d.]+), which is ([\d.]+)x the ([\d.]+) used here",
+                        "_flat_fraction's docstring")
+    orig = rg._flat_fraction
+    verdicts = {}
+    try:
+        for mult in (said[0], 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, said[1], breaks[0]):
+            def ff(dd, sc, _m=mult):
+                f = dd[np.isfinite(dd)]
+                return float((f <= _m * np.finfo(np.float32).eps * max(sc, 1.0)).mean()) if f.size else 0.0
+            rg._flat_fraction = ff
+            fp = fn = 0
+            for _s, _h, seam, a, px, py in rows:
+                r = rg.source_lattice(a, px, py)
+                fp += bool(r["resampled"] and not seam)
+                fn += bool(seam and not r["resampled"])
+            verdicts[mult] = (fp, fn)
+    finally:
+        rg._flat_fraction = orig
+    stable = {k: v for k, v in verdicts.items() if said[0] <= k <= said[1]}
+    if set(stable.values()) != {(0, 0)}:
+        problems.append(f"_flat_fraction's docstring says the verdict is unchanged from {said[0]} to "
+                        f"{said[1]} times eps; measured {sorted(stable.items())} "
+                        f"(false positives, missed seamless)")
+    if verdicts[breaks[0]] == (0, 0):
+        problems.append(f"_flat_fraction's docstring says the verdict breaks at {breaks[0]:g} times "
+                        f"eps; at that multiplier it is still clean")
+    grade("_flat_fraction's docstring", breaks[1], breaks[0] / breaks[2], 0.01,
+          "how far the breaking multiplier stands above the one used")
+    said = _published_figures(doc, r"([\d.]+) of ([\d.]+) LiDAR greens called resampled, ([\d.]+) of ([\d.]+) "
+                           r"seamless found", "_flat_fraction's docstring")
+    grade("_flat_fraction's docstring", said[1], len([r for r in rows if not r[2]]), 0.5,
+          "the LiDAR green count")
+    grade("_flat_fraction's docstring", said[3], len([r for r in rows if r[2]]), 0.5,
+          "the seamless green count")
+
+    assert not problems, (
+        "the source-lattice detector's own justification publishes figures the corpus denies. This is "
+        "the paragraph a future restyler tunes the constant against, so a stale figure here is not a "
+        "comment defect -- it is the derivation:\n  " + "\n  ".join(problems))
 
 
 
