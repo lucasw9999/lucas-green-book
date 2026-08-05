@@ -65,6 +65,18 @@ def point_in_poly(x, y, poly):
         j = i
     return inside
 
+# Strength the heat layer is composited at. It is NOT full: the contours, the flow arrows, the slope
+# numbers and the outline are all drawn OVER these cells, and at full strength the dark-red end
+# swallows the line work the reader has to follow across it.
+#
+# A CONSTANT, and referenced by name everywhere, because it decides what reaches PAPER. Every cell
+# prints 255 - HEAT_OPACITY*(255 - c) per channel over white, so the ramp's own RGB is a colour the
+# book never puts on a page. Two things were grading the intent instead of the ink while this was a
+# literal buried in an f-string: the mono-print gate believed it had 5.69 grey levels of headroom
+# over its 6.0 bar when the truth is 1.25, and the guide card drew its three key swatches at full
+# strength -- so the reddest cell any map can draw printed nearer the 2.5% swatch than the 5% one.
+HEAT_OPACITY = 0.62
+
 def heat_color(slope_pct):
     """Green -> amber -> red by steepness, with LIGHTNESS that falls monotonically.
 
@@ -76,8 +88,16 @@ def heat_color(slope_pct):
 
     Fixed by darkening the mid and end stops so luminance falls 189 -> 62 with no reversal, which
     keeps the colour reading identical (hues still 120 deg green, amber, red) while making the
-    grayscale print monotonic -- now at least 11 grey levels per 1.5 points of slope. Geometry is
-    untouched, so no scale, layout, or Rule 4.3 measurement moves.
+    grayscale print monotonic. Geometry is untouched, so no scale, layout, or Rule 4.3 measurement
+    moves.
+
+    ON PAPER that is at least 7 grey levels per 1.5 points of slope, not the 11.69 the stops
+    themselves separate. These values never print: render() composites the heat layer at
+    HEAT_OPACITY over white, so the page runs grey 214.3 -> 135.8 where the ramp runs 189.3 -> 62.8,
+    and the worst 1.5-point separation is 7.25. This docstring published the 11 for a long time --
+    the figure a restyler would tune against, in the one place it is written down, describing a
+    colour the book does not print. Ordering and monotonicity survive the composite exactly (it is a
+    positive linear scale), so no shipped read ever inverted from this; the headroom did not survive.
     """
     t = min(max(slope_pct/5.0, 0), 1)
     stops = [(0.0,(150,205,150)),(0.5,(206,170,60)),(1.0,(150,40,32))]
@@ -626,7 +646,7 @@ def render(hole, tournament=False):
         for c in range(0, W, step):
             if mask[r, c]:
                 cells.append(f'<rect x="{c}" y="{r}" width="1.05" height="1.05" fill="{heat_color(slope[r,c])}"/>')
-    heat = f'<g opacity="0.62">{"".join(cells)}</g>'
+    heat = f'<g opacity="{HEAT_OPACITY}">{"".join(cells)}</g>'
 
     # contour lines, fine 0.15 m in BOTH modes. Rule 4.3 limits SCALE + book size,
     # not the presence of contours/arrows/% -- so the tournament book keeps full

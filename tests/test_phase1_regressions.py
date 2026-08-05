@@ -3160,6 +3160,23 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
     So the swatches are compared against heat_color(0), heat_color(2.5) and heat_color(5.0) -- the ramp
     evaluated, not copied. All 11 books match exactly today.
 
+    AND AT THE MAP'S OWN STRENGTH. Matching the fill was not enough: render() draws the heat layer as
+    `<g opacity="{HEAT_OPACITY}">` beneath the contours and arrows over bare paper, so no cell on any
+    map is ever the ramp's own RGB -- while this legend drew its three rects at full strength. Every
+    swatch printed darker and more saturated than the ground it explains, by that same 0.62 squeeze,
+    and two of the three then keyed to the wrong band (nearest swatch in Rec.709 grey):
+
+        slope    swatch (was)      map cell        nearest swatch to that map cell
+        0.0%     150,205,150       190,224,190     flat   -- correct
+        2.5%     206,170,60        225,202,134     FLAT   -- amber ground matched the flat key
+        5.0%     150, 40, 32       191,122,117     AMBER  -- the reddest cell the card can draw
+                                                            matched the 2.5% swatch, 2.5 points flat
+
+    That is the failure the ramp fix was written for ("a 3.6% cell matched the FLAT swatch") re-entering
+    through the compositing instead of through the hues, and it survived this test because the test
+    compared the two INTENDED colours while the page composites only one of them. Fixed by drawing the
+    key at the map's opacity, so both sides of the comparison go through the same composite.
+
     The "(>=5%)" in the legend text is checked too, because it is the one number in the sentence: the
     ramp saturates at 5% by construction (t = slope/5, clamped), so 5% and 50% draw the identical red.
     That is what makes the claim true, and a change to the divisor would falsify the printed number
@@ -3169,8 +3186,8 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
     2.2 + 3.4*min(slope/smax, 1) against a 92nd-percentile smax, so the steepest arrows share one
     length -- 7.3% of 12,161 arrows sit at their green's cap, median 7.4% per green, worst 13.3%. The cap
     is right rather than wrong: without it a single outlier pixel would shrink every other arrow to
-    nothing. The legend is a fair simplification of the ordinary case, and the card carries slope
-    numbers and colour as well, so the tail is not unreadable -- just not distinguishable by length.
+    nothing. The card also carries slope numbers and colour, so the tail is not unreadable -- just not
+    distinguishable by length.
     """
     cfg, _rh = _engine(a_course())
     import render_green
@@ -3192,6 +3209,12 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
         assert got == want, (
             f"{ref}/{os.path.basename(p)}: the legend shows {got} but the map's ramp is {want} -- a "
             f"reader matching a patch to a swatch would misread the slope")
+        ops = re.findall(r'<rect[^>]*?\bopacity="([\d.]+)"', g.group(1))
+        assert [float(o) for o in ops] == [render_green.HEAT_OPACITY] * 3, (
+            f"{ref}/{os.path.basename(p)}: the legend's swatches carry opacity {ops} but the map's "
+            f"heat layer prints at {render_green.HEAT_OPACITY}, so every swatch is a deeper colour "
+            f"than any cell it explains -- and the reddest cell the map can draw then sits nearer the "
+            f"2.5% swatch than the 5% one")
         # the sentence's own number must be where the ramp actually saturates
         assert re.search(r"red \(&ge;5%\)|red \(\u22655%\)", html), (
             f"{ref}/{os.path.basename(p)}: the colour legend no longer states the 5% saturation point")
@@ -7984,13 +8007,43 @@ def test_the_steepness_colour_still_reads_in_black_and_white():
     Asserts the property, not the constants: luminance must fall monotonically across the whole
     interpolated range, and two slopes 1.5 points apart must be separated by enough grey to tell
     apart. Written against the ramp's OUTPUT so any future restyle is free to change the hues.
+
+    MEASURED ON THE INK, NOT ON THE RAMP. `heat_color`'s RGB never reaches paper: render() emits the
+    heat cells as `<g opacity="{HEAT_OPACITY}">`, bottom-most under the contours, arrows and outline,
+    with nothing but white paper below, so every cell prints 255 - HEAT_OPACITY*(255 - c) per channel.
+    The ramp runs grey 189.3 -> 62.8; the page runs 214.3 -> 135.8, and the worst separation per 1.5
+    points of slope is 7.25 grey levels on paper against 11.69 in the ramp.
+
+    Nothing shipped ever inverted, because a positive linear scale preserves order and monotonicity
+    exactly -- so this was a gate-precision defect and not a broken book. But it was 4.6x the whole
+    margin the gate believed it had: 5.69 grey levels of headroom over the 6.0 bar, where the truth
+    is 1.25. A restyle tuned to hold the RAMP's separation at the bar would have put the PRINTED
+    separation at 3.7, below the figure this assertion exists to guarantee, and the gate would have
+    passed it.
+
+    Monotonicity is still checked on the ramp: the +0.4 tolerance is there for the `int()` truncation
+    in heat_color's own interpolation, and that rounding lives in the ramp's integers -- squeezing it
+    by 0.62 first would make the tolerance 1.6x looser than the noise it was chosen for.
     """
     cfg, _rh = _engine(a_course())
     import render_green
 
+    # The opacity has to come FROM the renderer, not be copied into the test beside it: a copy is how
+    # the gate ends up grading a composite the card no longer draws.
+    rg_src = open(os.path.join(ROOT, "render_green.py"), encoding="utf-8").read()
+    heat_lines = [ln.strip() for ln in rg_src.splitlines() if "<g opacity=" in ln]
+    assert heat_lines and all("HEAT_OPACITY" in ln for ln in heat_lines), (
+        "the heat layer's opacity is a literal inside the SVG string instead of "
+        "render_green.HEAT_OPACITY, so this gate cannot know what strength actually reaches paper: "
+        f"{heat_lines}")
+
     def lum(pct):
         r, g, b = map(int, re.findall(r"\d+", render_green.heat_color(pct)))
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def ink(pct):
+        """The grey a cell of this slope PRINTS: the ramp composited over white paper."""
+        return 255.0 - render_green.HEAT_OPACITY * (255.0 - lum(pct))
 
     ls = [lum(i / 100.0) for i in range(0, 501)]
     reversals = [(i / 100.0, ls[i], ls[i + 1]) for i in range(len(ls) - 1) if ls[i + 1] > ls[i] + 0.4]
@@ -7999,11 +8052,29 @@ def test_the_steepness_colour_still_reads_in_black_and_white():
         f"{reversals[0][0]:.2f}% ({reversals[0][1]:.0f} -> {reversals[0][2]:.0f} grey). On a mono "
         f"printer that makes steep ground impersonate flat ground.")
 
-    # a reader must be able to tell 1.5 percentage points apart in grey alone
-    sep = min(ls[i] - ls[i + 150] for i in range(len(ls) - 150))
+    # a reader must be able to tell 1.5 percentage points apart in grey alone, ON PAPER
+    ks = [ink(i / 100.0) for i in range(0, 501)]
+    sep = min(ks[i] - ks[i + 150] for i in range(len(ks) - 150))
     assert sep >= 6.0, (
-        f"two slopes 1.5 points apart differ by only {sep:.1f} grey levels at the worst point -- "
-        f"indistinguishable in a home mono print")
+        f"two slopes 1.5 points apart print only {sep:.1f} grey levels apart at the worst point "
+        f"(the ramp itself separates {min(ls[i] - ls[i + 150] for i in range(len(ls) - 150)):.1f}, "
+        f"but the heat layer prints at opacity {render_green.HEAT_OPACITY}) -- indistinguishable in "
+        f"a home mono print")
+
+    # and the figure heat_color PUBLISHES must be the one that reaches paper. It said 11 -- the ramp's
+    # separation -- in the docstring a restyler reads before retuning the stops.
+    doc = render_green.heat_color.__doc__ or ""
+    m = re.search(r"at least ([\d.]+) grey levels per 1\.5 points of slope", doc)
+    assert m, ("heat_color no longer publishes a grey-separation figure; the number a restyler is "
+               "handed is the whole reason this gate has a bar")
+    published = float(m.group(1))
+    assert published <= sep, (
+        f"heat_color's docstring publishes 'at least {published:g} grey levels per 1.5 points of "
+        f"slope' but only {sep:.2f} survive the {render_green.HEAT_OPACITY} composite onto paper -- "
+        f"that is the ramp's figure, not the page's")
+    assert published >= sep - 1.0, (
+        f"heat_color publishes {published:g} grey levels where {sep:.2f} actually print; understating "
+        f"it by more than a grey level is a stale figure too")
 
     # and the legend swatches must be the ramp's own output, not a hardcoded copy that can drift
     src = _code_only(open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read())
@@ -16898,10 +16969,10 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-05): micke-grove 4,325,590; castlewood-hill 4,476,546;
-    merion 5,870,166; monarch-bay 4,933,911; copper-valley 6,084,024; callippe 6,797,869;
-    castlewood-valley 5,835,757; philadelphia 4,604,342; the-reserve 5,109,777;
-    bay-view 4,242,903; valley-hi 4,698,141; poppy-ridge 340,883.
+    CURRENT SIZES (2026-08-05): micke-grove 4,325,635; castlewood-hill 4,476,591;
+    merion 5,870,211; monarch-bay 4,933,956; copper-valley 6,084,069; callippe 6,797,914;
+    castlewood-valley 5,835,802; philadelphia 4,604,387; the-reserve 5,109,822;
+    bay-view 4,242,948; valley-hi 4,698,186; poppy-ridge 340,883.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a

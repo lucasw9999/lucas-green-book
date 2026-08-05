@@ -684,6 +684,34 @@ def _no_fall_note():
             'eyes.</span></div>\n')
 
 
+def _heat_swatches():
+    """The three colour-key rects, drawn the way the MAP draws its heat cells.
+
+    Both halves matter and only the first used to be right. The fill is `render_green.heat_color`
+    evaluated, never a copy, so a retuned ramp cannot leave a stale key behind -- but the map
+    composites those cells at `render_green.HEAT_OPACITY` under its contours and arrows, and this
+    legend drew them at full strength. So every swatch was a deeper, more saturated colour than any
+    cell on the map it explains, and matching a patch to the key read one band too FLAT: measured in
+    Rec.709 grey, a 2.5% map cell (225,202,134) sat nearest the FLAT swatch and a 5% cell
+    (191,122,117) -- the reddest thing the card can draw -- sat nearest the 2.5% swatch. That is the
+    same misread the ramp fix was written for, re-entering through the compositing.
+
+    Emitting the opacity keeps both sides on one number: change HEAT_OPACITY and the key follows the
+    map. Do not replace it with the pre-composited RGB -- the point is that the key and the map are
+    the same colour instruction, not two that currently agree.
+
+    Both renderer names are called OUTSIDE the f-string on purpose. test_the_steepness_colour... reads
+    generate.py through _code_only(), which strips string literals, so a heat_color() call interpolated
+    inside the format string is invisible to the guard that this legend derives its swatches rather than
+    hardcoding them -- and that guard has already been defeated twice elsewhere in this project by a
+    name that was present but not in code position.
+    """
+    op = render_green.HEAT_OPACITY
+    cols = [render_green.heat_color(pct) for pct in (0.0, 2.5, 5.0)]
+    return "".join(f'<rect x="{x}" y="3" width="7" height="9" fill="{c}" opacity="{op}"/>'
+                   for x, c in zip((2, 10, 18), cols))
+
+
 def guide_panel():
     return '''<div class="panel guide">
   <div class="gtitle">How to read a green</div>
@@ -694,7 +722,7 @@ def guide_panel():
     <b>down the middle</b>. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
   <div class="legrow"><svg width="28" height="14"><path d="M2,11 Q9,3 26,6" stroke="#3c5a34" fill="none" stroke-width="0.9"/><path d="M2,13 Q11,7 26,11" stroke="#3c5a34" fill="none" stroke-width="0.9"/></svg>
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep. Bar = 5&nbsp;yd.</span></div>
-  <div class="legrow"><svg width="28" height="14"><rect x="2" y="3" width="7" height="9" fill="''' + render_green.heat_color(0.0) + '''"/><rect x="10" y="3" width="7" height="9" fill="''' + render_green.heat_color(2.5) + '''"/><rect x="18" y="3" width="7" height="9" fill="''' + render_green.heat_color(5.0) + '''"/></svg>
+  <div class="legrow"><svg width="28" height="14">''' + _heat_swatches() + '''</svg>
     <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; dark red (&ge;5%);
     steeper is always <b>darker</b>, so it reads in black and white too.
     <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
