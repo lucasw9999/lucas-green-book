@@ -12663,6 +12663,161 @@ def test_waiving_churn_on_a_volatile_kind_does_not_waive_the_green_check(tmp_pat
             os.environ.pop(var, None)
 
 
+def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
+    """The shrink guard exempted a kind for being RARE, and rare is when one loss matters most.
+
+    Two holes, both on the courses that were actually re-fetched. `oc[k] < 4: continue` exempted every
+    kind with fewer than four features ENTIRELY, and `water` is VOLATILE with tolerance max(1, 2%), so
+    the floor of 1 gave a three-pond course a free pond. Measured on the adopted caches:
+
+        castlewood-hill      water_hazard 1, water 3, bunker 36   -- draws water on 3 of 18 cards
+        castlewood-valley    water_hazard 2, lateral_water_hazard 1, water 7, bunker 59  -- 12 of 18
+        monarch-bay          water_hazard 1, water 1, bunker 81    -- 3 of 18
+        callippe             water_hazard 1;  merion lateral_water_hazard 1
+        philadelphia         lateral_water_hazard 3;  valley-hi water 4 (tolerance 1)
+
+    Every count above is below the four-feature floor, or one churn tolerance away from it. So a single
+    water hazard could have disappeared out of any of those caches and nothing -- not the guard, not a
+    test, not any surviving artifact -- would have said so. That is the exact opposite of what this book
+    promises: never omit a hazard the golfer can reach.
+
+    THE PRE-`febbbba` CACHES NO LONGER EXIST AND THAT LOSS IS PERMANENT. `courses/` is gitignored, so
+    git never held them; they are not in the repo, /tmp, /var/tmp or the home tree. febbbba's commit
+    message reports ZERO upstream drift on all four re-fetched courses, and that claim is now
+    UNVERIFIABLE -- it cannot even be shown that the new box is not narrower on some side. Reconstruction
+    was attempted and is not determinate: a uniform-shrink model reproduces every published shortfall
+    and then self-refutes, because under it hill 16's own green would have been outside the old box and
+    the book rendered hole 16. Nobody may read that zero as established, which is why fetch_osm now says
+    so beside the guard rather than leaving it to a commit message.
+
+    Fixed by naming the kinds whose loss removes drawn HAZARD ink from a card -- sand and water, tan and
+    blue, the two things the footer counts as "NB" and "NW" -- and giving them no rarity exemption and no
+    tolerance floor. The proportional part of the tolerance stays, because a 60-way creek network really
+    is re-segmented at road crossings; what goes is the floor that made 3 -> 2 and 1 -> 0 free.
+
+    A THIRD waiver, for the reason this module already carries a second: a waiver granted for one
+    judgement must not silently spend another. ALLOW_SHRINK is granted for a deleted tree stump and
+    would otherwise accept a drained pond; ALLOW_STRUCTURAL_SHRINK is granted for a re-mapped green and
+    would otherwise accept a filled-in bunker. Three different things a human has to look at.
+
+    Stubs only -- no live producer is contacted.
+    """
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "fetch_osm"):
+        sys.modules.pop(m, None)
+    import fetch_osm
+
+    WAIVERS = ("ALLOW_SHRINK", "ALLOW_STRUCTURAL_SHRINK", "ALLOW_HAZARD_SHRINK")
+
+    def el(i, tags):
+        return {"type": "way", "id": i, "tags": dict(tags),
+                "geometry": [{"lat": 37.7, "lon": -121.9}]}
+
+    def reply(**counts):
+        els, n = [], iter(range(1, 100000))
+        for kind, count in counts.items():
+            tags = ({"natural": "water"} if kind == "water" else
+                    {"natural": "tree"} if kind == "tree" else
+                    {"natural": "wood"} if kind == "wood" else
+                    {"golf": kind})
+            els += [el(next(n), tags) for _ in range(count)]
+        return {"version": 0.6, "elements": els}
+
+    # the three adopted caches this was measured on, as the guard sees them
+    HILL = dict(green=18, hole=18, fairway=18, bunker=36, water_hazard=1, water=3, wood=2)
+    VALLEY = dict(green=19, hole=20, fairway=18, bunker=59, water_hazard=2,
+                  lateral_water_hazard=1, water=7)
+    MONARCH = dict(green=18, hole=18, fairway=18, bunker=81, water_hazard=1, water=1)
+
+    def cache_for(base, name):
+        p = tmp_path / name
+        p.write_text(json.dumps(reply(**base)))
+        return str(p)
+
+    for var in WAIVERS:
+        os.environ.pop(var, None)
+    try:
+        for label, base in (("castlewood-hill", HILL), ("castlewood-valley", VALLEY),
+                            ("monarch-bay", MONARCH)):
+            path = cache_for(base, f"{label}.json")
+
+            def check(**delta):
+                got = dict(base); got.update(delta)
+                return fetch_osm._check_response(reply(**got), path, f"{label}/osm_course.json")
+
+            check()                                     # unchanged -> accepted
+            # every hazard-class kind this cache holds, one feature lighter, must ABORT
+            for kind in ("bunker", "water_hazard", "lateral_water_hazard", "water"):
+                if kind not in base:
+                    continue
+                with pytest.raises(SystemExit) as ei:
+                    check(**{kind: base[kind] - 1})
+                msg = str(ei.value)
+                assert f"{kind} {base[kind]} -> {base[kind] - 1}" in msg, (
+                    f"{label}: losing one {kind} of {base[kind]} aborted without naming the loss: {msg}")
+                assert "ALLOW_HAZARD_SHRINK" in msg, (
+                    f"{label}: the hazard abort must name its OWN waiver, or the flag someone set for a "
+                    f"tree stump spends it: {msg}")
+                assert "ALLOW_SHRINK=1" not in msg and "ALLOW_STRUCTURAL_SHRINK" not in msg, (
+                    f"{label}: the hazard abort prescribes another check's waiver: {msg}")
+                # ...and losing ALL of them is not somehow milder
+                with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
+                    check(**{kind: 0})
+            # a volatile NON-hazard kind keeps its floor: nothing a card draws as a hazard comes from it
+            if "wood" in base:
+                check(wood=base["wood"] - 1)
+
+        # the proportional tolerance survives where it is earned: the-reserve's 60 water ways really are
+        # re-segmented at road crossings, so 2% of 60 is still one. This is the residual and it is
+        # deliberate -- a course with 60 of a kind is not a course where one loss is invisible.
+        big = dict(green=21, hole=18, fairway=20, bunker=76, water=60, lateral_water_hazard=9)
+        bigp = cache_for(big, "the-reserve.json")
+        fetch_osm._check_response(reply(**{**big, "water": 59}), bigp, "the-reserve/osm_course.json")
+        with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
+            fetch_osm._check_response(reply(**{**big, "water": 57}), bigp, "the-reserve/osm_course.json")
+        # 9 lateral hazards are NOT volatile, so there is no tolerance to earn
+        with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
+            fetch_osm._check_response(reply(**{**big, "lateral_water_hazard": 8}), bigp,
+                                      "the-reserve/osm_course.json")
+
+        # THE WAIVERS ARE INDEPENDENT, in both directions
+        hillp = cache_for(HILL, "hill2.json")
+
+        def hill(**delta):
+            got = dict(HILL); got.update(delta)
+            return fetch_osm._check_response(reply(**got), hillp, "castlewood-hill/osm_course.json")
+
+        for var in ("ALLOW_SHRINK", "ALLOW_STRUCTURAL_SHRINK"):
+            os.environ[var] = "1"
+            try:
+                with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
+                    hill(water_hazard=0)
+            finally:
+                os.environ.pop(var, None)
+        os.environ["ALLOW_HAZARD_SHRINK"] = "1"
+        try:
+            hill(water_hazard=0, water=0, bunker=0)       # a real removal, waived by name
+            with pytest.raises(SystemExit, match="ALLOW_STRUCTURAL_SHRINK"):
+                hill(green=17)                            # ...and it does not spend the green check
+        finally:
+            os.environ.pop("ALLOW_HAZARD_SHRINK", None)
+    finally:
+        for var in WAIVERS:
+            os.environ.pop(var, None)
+
+    # THE RECORD. febbbba's zero-drift claim lives in a commit message and its evidence is gone, so the
+    # module that would have caught a loss has to say that plainly or the next reader takes the zero for
+    # a measurement that still stands.
+    src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read().lower()
+    for want, why in (("febbbba", "name the re-fetch whose baseline is gone"),
+                      ("unverifiable", "say the zero-drift claim cannot now be checked"),
+                      ("gitignored", "say WHY the baseline is unrecoverable -- git never held it")):
+        assert want in src, (
+            f"fetch_osm.py no longer carries the record of the lost pre-re-fetch caches -- it must "
+            f"{why}. Without it febbbba's 'ZERO upstream drift' reads as established fact, and the "
+            f"caches that would prove or refute it do not exist anywhere.")
+
+
 def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000.0,
                    near_offset_m=0.0):
     """A tiny LAZ whose points carry known gps_times: some at a green, some far away."""

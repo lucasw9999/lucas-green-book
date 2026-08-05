@@ -150,6 +150,16 @@ VOLATILE_KINDS = frozenset({
     'water', 'building', 'bare_rock', 'rock', 'stone',
 })
 
+# Kinds whose loss removes drawn HAZARD ink from a card: sand and water, the tan and the blue, the two
+# things the footer counts as "NB" and "NW". These get NO rarity exemption and NO tolerance floor,
+# because rare is exactly when one loss matters most -- see the block in _check_response.
+#
+# `water` is in BOTH sets, and that is the point. It churns (a creek is re-segmented at a road
+# crossing, so a 60-way network legitimately becomes 59) and it is also the class a card draws to warn
+# a junior about a pond. So it keeps the PROPORTIONAL part of the churn tolerance and loses the floor
+# of 1: 2% of 60 is still one way, 2% of 3 is zero ponds.
+HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water'})
+
 # 2%, floor 1. Chosen from what these counts actually are on this corpus (the-reserve 2,462 trees and
 # 1,530 buildings, micke-grove 532 trees, the-reserve 60 water ways, merion 8 wood) against what the
 # guard has to keep catching: every documented truncation lost 89-100% of a kind (fairway 18 -> 0,
@@ -160,7 +170,15 @@ VOLATILE_KINDS = frozenset({
 CHURN_TOLERANCE = 0.02
 
 
-def _churn_tolerance(old_count):
+def _churn_tolerance(old_count, kind=None):
+    """How many features of `kind` may go missing without a human looking.
+
+    The floor of 1 exists for the reproduced defect (one deleted tree node out of 2,462 hard-aborted a
+    whole fetch) and it is wrong for a HAZARD kind, where it hands a three-pond course a free pond.
+    Hazard kinds therefore get the proportional part only, which is zero below 50 features.
+    """
+    if kind in HAZARD_KINDS:
+        return int(old_count * CHURN_TOLERANCE)
     return max(1, int(old_count * CHURN_TOLERANCE))
 
 
@@ -177,11 +195,14 @@ def _check_response(j, path, out):
     KIND against the cache we are about to overwrite, and refuse one whose total golf-feature count
     has collapsed.
 
-    TWO different waivers, because these are two different questions. ALLOW_SHRINK=1 accepts a real
-    OSM deletion of a VOLATILE kind (trees, buildings, landcover, water); ALLOW_STRUCTURAL_SHRINK=1
-    accepts the loss of a green, hole, fairway or any other kind a card is built from. One flag used
-    to gate both, and the message for a churned tree prescribed it -- so waiving a deleted tree stump
-    also waived the green check that exists to stop 18 cards rebinding.
+    THREE different waivers, because these are three different questions a human has to answer.
+    ALLOW_SHRINK=1 accepts a real OSM deletion of a VOLATILE kind (trees, buildings, landcover);
+    ALLOW_HAZARD_SHRINK=1 accepts the loss of drawn HAZARD ink -- sand or water, the kinds in
+    HAZARD_KINDS; ALLOW_STRUCTURAL_SHRINK=1 accepts the loss of a green, hole, fairway or any other kind
+    a card is built from. One flag used to gate the first two of those, and the message for a churned
+    tree prescribed it -- so waiving a deleted tree stump also waived the green check that exists to stop
+    18 cards rebinding. The third was split off for the identical reason: a waiver granted for a
+    re-mapped green must not also accept a bunker that quietly stopped being fetched.
     """
     if not isinstance(j, dict) or not isinstance(j.get('elements'), list):
         raise SystemExit(f"ABORT: Overpass reply for {out} is not an element list -- refusing to write.")
@@ -235,15 +256,42 @@ def _check_response(j, path, out):
                     if '_digitized' not in (e.get('tags') or {})
                     and e.get('_from_relation') is None]
         oc, nc = census(_fetchable(old)), census(j['elements'])
-        lost, churn = {}, {}
+        # RARE IS NOT SAFE, and the `oc[k] < 4` floor below said it was. It exempted any kind with
+        # fewer than four features ENTIRELY, and `water`'s max(1, 2%) tolerance gave the small ones
+        # one free loss on top. Measured on the caches now on disk:
+        #
+        #     castlewood-hill    water_hazard 1, water 3    -- draws water on 3 of 18 cards
+        #     castlewood-valley  water_hazard 2, lateral_water_hazard 1, water 7   -- 12 of 18
+        #     monarch-bay        water_hazard 1, water 1    -- 3 of 18
+        #     callippe water_hazard 1; merion lateral 1; philadelphia lateral 3; valley-hi water 4
+        #
+        # Reproduced against those counts: hill could lose ALL THREE of its water features, valley both
+        # its water_hazards, monarch-bay its only one, and every one of those replies was accepted
+        # silently. A book that promises never to omit a hazard the golfer can reach had no floor at all
+        # under the hazards a card actually draws.
+        #
+        # THE BASELINE THAT WOULD SETTLE IT IS GONE. febbbba re-fetched exactly these courses and its
+        # message reports "ZERO upstream drift on all four". The pre-fetch caches no longer exist
+        # anywhere -- `courses/` is gitignored, so git never held them, and they are not in /tmp,
+        # /var/tmp or the home tree -- which makes that zero UNVERIFIABLE rather than established. It
+        # cannot even be ruled out that the new box is narrower on some side. Reconstruction is not
+        # determinate: a uniform-shrink model reproduces every published shortfall and then self-refutes,
+        # because under it hill 16's own green would have sat outside the old box and the book rendered
+        # hole 16. Read the zero as unchecked, and do not let this happen a second time -- which is what
+        # HAZARD_KINDS is for.
+        lost, churn, hazard = {}, {}, {}
         for k in oc:
-            if oc[k] < 4 or nc[k] >= oc[k]:
+            if nc[k] >= oc[k]:
                 continue
-            if k in VOLATILE_KINDS:
-                if oc[k] - nc[k] > _churn_tolerance(oc[k]):
-                    churn[k] = (oc[k], nc[k])
-            else:
-                lost[k] = (oc[k], nc[k])
+            if oc[k] < 4 and k not in HAZARD_KINDS:
+                continue
+            # A hazard kind that also churns keeps the proportional tolerance and nothing else; one that
+            # does not churn (golf-tagged sand and hazards are stable mapped polygons) gets none.
+            tol = _churn_tolerance(oc[k], k) if k in VOLATILE_KINDS else 0
+            if oc[k] - nc[k] <= tol:
+                continue
+            bucket = hazard if k in HAZARD_KINDS else churn if k in VOLATILE_KINDS else lost
+            bucket[k] = (oc[k], nc[k])
         def _detail(d):
             return ", ".join(f"{k} {o} -> {n}" for k, (o, n) in sorted(d.items()))
         if lost and not os.environ.get("ALLOW_STRUCTURAL_SHRINK"):
@@ -254,6 +302,16 @@ def _check_response(j, path, out):
                 f"  prints a confident, correctly-computed read of the WRONG putting surface.\n"
                 f"  Re-run; if OSM really did lose these features, set ALLOW_STRUCTURAL_SHRINK=1\n"
                 f"  deliberately.")
+        if hazard and not os.environ.get("ALLOW_HAZARD_SHRINK"):
+            raise SystemExit(
+                f"ABORT: Overpass returned FEWER HAZARD features than the existing cache for {out}:\n"
+                f"    {_detail(hazard)}\n"
+                f"  Sand and water are the two things this book promises never to omit -- the map draws\n"
+                f"  them and the footer counts them as NB and NW. There is no rarity exemption here on\n"
+                f"  purpose: a course with one water hazard is the course where losing it is invisible.\n"
+                f"  Re-run; if OSM really did lose them (a bunker filled in, a pond drained), set\n"
+                f"  ALLOW_HAZARD_SHRINK=1 deliberately -- that waives THIS check only, never the\n"
+                f"  greens/holes/fairways one, and no other waiver grants it.")
         if churn and not os.environ.get("ALLOW_SHRINK"):
             raise SystemExit(
                 f"ABORT: Overpass returned far fewer features of a churning kind than the existing\n"
