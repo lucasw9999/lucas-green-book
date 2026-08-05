@@ -7081,18 +7081,19 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
             f"a clock glitch: no acquisition in this corpus spans more than 100.26 days, so nothing "
             f"about a 700-day gap can be defended")
 
-    # WHAT IS STILL OPEN, stated with the measurement rather than left to be discovered. A saturating
-    # cluster WITHIN MAX_TILE_SPAN_DAYS of the bulk is still published with n_dropped = 0, so 9-31
-    # readings are refused where 32 are not. That residue is not closable with the information a
-    # 64-value extreme window holds: at 100 days out the cluster is arithmetically indistinguishable
-    # from philadelphia's real 100.23-day acquisition, and refusing it is what broke that course before.
-    # The error is now BOUNDED to one plausible acquisition span instead of a decade, which is the whole
-    # of what the corpus can support.
+    # WHAT WAS OPEN, AND IS NOW CLOSED, stated with the measurement rather than left to be discovered.
+    # A saturating cluster WITHIN MAX_TILE_SPAN_DAYS of the bulk used to be published with
+    # n_dropped = 0, so 9-31 readings were refused where 32 were not. This comment recorded that as not
+    # closable "with the information a 64-value extreme window holds" -- which was true, and the window
+    # is the module's OWN choice: tile_dates streams every point of every tile. Counting how many points
+    # share each endpoint's instant separates the two by mass where span cannot, and it now refuses this
+    # case. See test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness for the
+    # derivation, and for the live proof that philadelphia's real two-epoch range survives it.
     inside = int(bound) - 1
-    assert outcome(ld.ENDPOINT_WINDOW // 2, -inside)[0], (
-        f"a saturating cluster {inside} days out no longer publishes. If that is a real fix, confirm "
-        f"philadelphia still reports '2024-12-17 to 2025-03-27' first -- its own tiles span 100.23 days, "
-        f"and the obvious guard narrows that published range instead of protecting it")
+    assert not outcome(ld.ENDPOINT_WINDOW // 2, -inside)[0], (
+        f"a saturating cluster {inside} days out publishes a date again. Span cannot separate it from "
+        f"philadelphia's real 100.23-day acquisition -- MIN_ENDPOINT_CLUSTER_PTS is what does, and "
+        f"32 readings is not a pass")
     assert not outcome(ld.ENDPOINT_WINDOW // 2, -(int(bound) + 1))[0], (
         f"a saturating cluster past the {bound:.0f}-day bound publishes, so the bound is not being "
         f"applied to both resolved ends")
@@ -7111,6 +7112,160 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
             f"{k} junk readings 700 days from the bulk were TRIMMED to a published date. A value that "
             f"far out is a second epoch, not a glitch, and this function's own note says a tile holding "
             f"two epochs cannot be dated at all")
+
+
+def _lidar_dates_module():
+    """tools/lidar_dates.py loaded under its own name, so importing it cannot shadow anything."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ld_probe", os.path.join(ROOT, "tools", "lidar_dates.py"))
+    ld = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ld)
+    return ld
+
+
+def test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness():
+    """The last flight-date residue was called irreducible, and the discriminator was already streaming.
+
+    A junk cluster large enough to fill the 64-value extreme window BECOMES the longest gap-free run
+    inside it, so _resolve returns it at i = 0 with n_dropped = 0 -- no warning, no trim. Within
+    MAX_TILE_SPAN_DAYS of the bulk the span test cannot refuse it either, because by span it IS
+    philadelphia's real 100.23-day two-epoch acquisition. That was recorded as unclosable "with the
+    information a 64-value extreme window holds", and the window is the module's OWN choice: tile_dates
+    already reads every point of every tile.
+
+    A pass leaves a CROWD; a bad clock leaves a handful. Measured over all 78 tiles, both the green-near
+    and the whole-tile set of each -- 236 real endpoint clusters, bucketed at MAX_ENDPOINT_GAP_S:
+
+        sparsest real cluster       3,432 pts   castlewood-valley w6156n2055 green-near low end
+        next four                   4,136 / 5,612 / 8,716 / 15,295
+        philadelphia 18TVK475434    1,567,309 and 67,838 either side of its 100.2156-day gap
+
+    That 67,838 is the SECOND EPOCH this test must not refuse; it is 20x the sparsest real cluster, not
+    the sparsest one, as was once recorded. Against a failure mode that needs 32-128 readings, the
+    sparsest real endpoint clears the largest junk cluster by 27x and the smallest by 107x -- so about
+    two orders of magnitude, not the three once claimed, which had compared against the 67,838. Still far
+    more headroom than the 2.0x already accepted on the span bound.
+
+    The bound is that measurement DIVIDED by a margin, the same shape as MAX_TILE_SPAN_DAYS, so an
+    endpoint whose pass left a quarter of the returns of the thinnest one on disk is still accepted.
+
+    The live half of this test re-dates all 39 tiles the eleven records NAME and requires each to
+    reproduce its recorded per-tile dates, in the course's own timezone. It costs about 55 s and it is
+    the point: a naive saturation guard once silently narrowed philadelphia's genuine
+    "2024-12-17 to 2025-03-27" to a single date, which is worse than the bug it was fixing.
+    """
+    import numpy as _np
+    ld = _lidar_dates_module()
+    base = 1024358400.0                                   # a real GPS-adjusted flight second
+
+    # (1) THE CONSTANT IS DERIVED, not typed. Both factors have to be present, or the next person
+    # tunes the product and the measurement stops constraining it.
+    assert ld.MIN_ENDPOINT_CLUSTER_PTS == int(
+        ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS / ld.ENDPOINT_CLUSTER_MARGIN), (
+        "MIN_ENDPOINT_CLUSTER_PTS is no longer the measured sparsest real cluster divided by its "
+        "margin, so it is a guess again")
+    assert ld.MIN_ENDPOINT_CLUSTER_PTS < ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS, (
+        f"MIN_ENDPOINT_CLUSTER_PTS ({ld.MIN_ENDPOINT_CLUSTER_PTS}) is at or above the sparsest real "
+        f"endpoint cluster in the corpus ({ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS}), so it refuses "
+        f"real data")
+    assert ld.MIN_ENDPOINT_CLUSTER_PTS > 2 * ld.ENDPOINT_WINDOW, (
+        f"MIN_ENDPOINT_CLUSTER_PTS ({ld.MIN_ENDPOINT_CLUSTER_PTS}) is not above the cluster size that "
+        f"saturates a {ld.ENDPOINT_WINDOW}-value window, so the case it exists for still passes")
+
+    def outcome(junk_n, off_days, bulk_n=4000):
+        """(published?, span_days) through _Extremes + endpoints() -- the path production takes."""
+        e = ld._Extremes()
+        if junk_n:
+            e.add(_np.array([base + off_days * 86400.0 + i * 0.01 for i in range(junk_n)]))
+        e.add(_np.array([base + i * 0.01 for i in range(bulk_n)]))
+        got = e.endpoints()
+        return (False, None) if got is None else (True, (got[1] - got[0]) / 86400.0)
+
+    inside = int(ld.MAX_TILE_SPAN_DAYS) - 1               # 199 d: inside the span bound
+    # (2) THE RESIDUE, refused. Every cluster size that used to publish silently now cannot.
+    for k in (ld.ENDPOINT_WINDOW // 2, ld.ENDPOINT_WINDOW, 2 * ld.ENDPOINT_WINDOW,
+              ld.MIN_ENDPOINT_CLUSTER_PTS - 1):
+        assert not outcome(k, -inside)[0], (
+            f"{k} junk readings {inside} days from the bulk still publish a date. {k} readings is not "
+            f"a pass: the sparsest real endpoint in this corpus holds "
+            f"{ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS}")
+
+    # (3) A REAL SECOND EPOCH, at the same distance and the same shape, is still published. This is the
+    # half that matters most -- philadelphia's thinner epoch is 67,838 returns 100.2156 days from its
+    # bulk, and a guard that cannot tell it from junk destroys a true range.
+    ok, span = outcome(67838, -100, bulk_n=1567309)
+    assert ok, ("a second epoch of philadelphia's real mass (67,838 returns 100 days out) is refused, "
+                "so this guard would narrow '2024-12-17 to 2025-03-27' to a single date -- the exact "
+                "regression a saturation guard caused before")
+    assert 99.9 < span < 100.4, f"the published span collapsed to {span:.4f} d instead of ~100"
+    # ...and it must not be a fluke of that one size: anything at or above the bound publishes
+    assert outcome(ld.MIN_ENDPOINT_CLUSTER_PTS, -inside)[0], (
+        f"a cluster of exactly MIN_ENDPOINT_CLUSTER_PTS ({ld.MIN_ENDPOINT_CLUSTER_PTS}) is refused, so "
+        f"the bound is off by one against its own measurement")
+
+    # (4) MONOTONIC IN MASS. A denser cluster must never be harder to publish than a thinner one, which
+    # is the property the three previous fixes to this function each broke by moving a threshold.
+    # Measured as "did the far cluster SET the endpoint", not "was anything published": at or below
+    # MAX_ISOLATED_VALUES the cluster is legitimately TRIMMED and the bulk's own date published, which is
+    # the right answer and not the same event. Conflating the two made this assertion read k=8 as an
+    # acceptance and report a false inversion.
+    def sets_endpoint(k):
+        ok, span = outcome(k, -inside)
+        return bool(ok and span is not None and span > inside / 2.0)
+    seen = [(k, sets_endpoint(k)) for k in (8, 32, 64, 128, 500, 857, 858, 2000, 5000)]
+    accepted = [k for k, p in seen if p]
+    rejected = [k for k, p in seen if not p]
+    assert accepted and rejected, f"nothing to compare: {seen}"
+    assert max(rejected) < min(accepted), (
+        f"whether a far cluster may SET the published endpoint is not monotonic in its mass -- it does "
+        f"for {accepted} and does not for {rejected}. A BIGGER cluster must never be easier to reject "
+        f"than a smaller one, and vice versa")
+    assert min(accepted) >= ld.MIN_ENDPOINT_CLUSTER_PTS, (
+        f"a cluster of {min(accepted)} points set a published endpoint, below the measured floor of "
+        f"{ld.MIN_ENDPOINT_CLUSTER_PTS}")
+
+    # (5) THE LIVE CORPUS. Every tile the eleven records name must still date, and to the same days.
+    checked, problems, seen_courses = 0, [], collections.Counter()
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        cdir = os.path.dirname(cj)
+        slug = os.path.basename(cdir)
+        if slug.startswith("_"):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        rec = cfg.get("lidar_flown") or {}
+        if not rec.get("tiles"):
+            continue
+        loc = cfg.get("location") or {}
+        tz = ld.course_tz(loc.get("lat"), loc.get("lon"), cfg.get("tz"))
+        rings = ld.green_rings(cdir)
+        for name, want in sorted(rec["tiles"].items()):
+            p = os.path.join(cdir, "laz", name)
+            if not os.path.exists(p):
+                continue                  # laz/ is the one refetchable directory; absent is not wrong
+            got = ld.tile_dates(p, rings)
+            checked += 1
+            seen_courses[slug] += 1
+            if got is None:
+                problems.append(f"{slug}/{name}: no longer dates at all, but the record says "
+                                f"{want} -- the cluster-mass floor is refusing real data")
+                continue
+
+            def day(d):
+                return str((d.astimezone(tz) if tz else d).date())
+            first, last = day(got[0]), day(got[1])
+            if [first, last] != list(want):
+                problems.append(f"{slug}/{name}: re-dates to {first}..{last}, recorded {want}")
+    if not checked:
+        pytest.skip("no LAZ tiles on disk (laz/ is refetchable and gitignored)")
+    assert not problems, ("re-dating the recorded tiles no longer reproduces the recorded label:\n  "
+                          + "\n  ".join(problems[:8]))
+    assert checked >= 39, (
+        f"only {checked} of the 39 recorded tiles were re-dated, so the eleven ACQUIRED labels are not "
+        f"all being proven")
+    assert len(seen_courses) >= 11, (
+        f"only {len(seen_courses)} courses re-dated; eleven have a recorded label: {sorted(seen_courses)}")
 
 
 def test_every_distributed_book_disclaims_affiliation_with_the_club_it_names():
@@ -11501,6 +11656,18 @@ def test_the_elevation_stage_reads_one_crs_for_the_whole_tile_directory(tmp_path
             sys.modules.pop(m, None)
 
 
+# HOW MANY RETURNS A SYNTHETIC LAZ FIXTURE NEEDS TO LOOK LIKE A PASS.
+#
+# lidar_dates.MIN_ENDPOINT_CLUSTER_PTS requires each resolved endpoint to sit in a temporal cluster of
+# at least 858 returns, because that is what separates a flight pass from a bad clock reading -- the
+# sparsest real endpoint cluster in this corpus holds 3,432 and the junk that saturates the extreme
+# window is 32 to 128. The fixtures below used 64, 100 and 128 points, which is a hundredth of the
+# thinnest real green-near set (16,034) and well inside junk territory, so under that floor they no
+# longer date. Raised rather than exempted: a fixture that a real guard would refuse is not testing the
+# real path, and every assertion those three tests make is unchanged.
+PASS_LIKE_RETURNS = 1200
+
+
 def test_gps_week_time_is_refused_not_turned_into_september_2011():
     """global_encoding bit 0 == 0 means GPS WEEK TIME: seconds since the start of the current GPS
     week, with the week number recorded NOWHERE in the file, so the absolute date is not recoverable.
@@ -11533,12 +11700,12 @@ def test_gps_week_time_is_refused_not_turned_into_september_2011():
     inst = dt.datetime(2019, 8, 14, 15, 4, 1, tzinfo=dt.timezone.utc)
     standard = (inst - dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)).total_seconds() + 18
     with tempfile.TemporaryDirectory() as td:
-        ok = write_tile(os.path.join(td, "adjusted.laz"), 1, [standard - 1e9] * 64)
+        ok = write_tile(os.path.join(td, "adjusted.laz"), 1, [standard - 1e9] * PASS_LIKE_RETURNS)
         got = ld.tile_dates(ok)
         assert got and got[0].date() == inst.date(), f"adjusted time must decode exactly, got {got}"
 
         # week time: 0..604800 seconds, no week number anywhere
-        wk = write_tile(os.path.join(td, "weektime.laz"), 0, [345_600.0] * 64)
+        wk = write_tile(os.path.join(td, "weektime.laz"), 0, [345_600.0] * PASS_LIKE_RETURNS)
         assert ld.tile_dates(wk) is None, \
             "GPS Week Time carries no week number -- the date is not recoverable and must be refused"
 
@@ -11876,7 +12043,7 @@ def test_one_junk_gps_time_cannot_drag_a_whole_survey_back_eight_years():
     hdr = laspy.LasHeader(version="1.4", point_format=6)
     hdr.global_encoding.gps_time_type = 1
     las = laspy.LasData(hdr)
-    n = 128
+    n = PASS_LIKE_RETURNS
     las.x = np.linspace(0, 10, n); las.y = np.linspace(0, 10, n); las.z = np.zeros(n)
     times = np.full(n, good)
     times[0] = 1.0                     # junk, positive, decodes to 2011-09-14
@@ -12839,7 +13006,7 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
     h.global_encoding.gps_time_type = 1            # adjusted standard GPS time
     h.add_crs(crs)
     las = laspy.LasData(h)
-    n = 100
+    n = PASS_LIKE_RETURNS
     off_near, off_far = near_offset_m / per_unit, far_offset_m / per_unit
     las.x = np.concatenate([np.full(n, cx + off_near), np.full(n, cx + off_far)])
     las.y = np.concatenate([np.full(n, cy), np.full(n, cy + off_far)])
@@ -13556,7 +13723,7 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
     over = ld.tile_dates(f, [ring])
     assert over is not None
     first, last, npts, crs_ok, wfirst, wlast = over
-    assert npts == 100 and crs_ok is True, (npts, crs_ok)
+    assert npts == PASS_LIKE_RETURNS and crs_ok is True, (npts, crs_ok)
     # the WHOLE-tile range must still span both days even though first/last are narrowed to the
     # green. main() builds its "over whole tiles the range would be" comparison from these, and it
     # used to build it from the narrowed first/last -- understating the very range it contrasts with.
@@ -13582,7 +13749,7 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
                   (lon + tiny, lat + tiny), (lon - tiny, lat + tiny)]
     ft = _synthetic_laz(tmp_path / "ftus.laz", 2227, small_ring, near, far, near_offset_m=20.0)
     r = ld.tile_dates(ft, [small_ring])
-    assert r[2] == 100, \
+    assert r[2] == PASS_LIKE_RETURNS, \
         (f"found {r[2]} points 20 m from the green in a ftUS tile; the {ld.GREEN_PAD_M:g} m pad was "
          f"probably not converted from metres")
     assert r[0].date() == near.date() and r[1].date() == near.date()

@@ -21,6 +21,7 @@ Run:  COURSE=<slug> python3 tools/lidar_dates.py [--write]
       --write records {"lidar_flown": {"first","last","label","tz","basis","tiles"}} into
       the course's course.json. `basis` names what the range was measured over.
 """
+import collections
 import datetime as dt
 import glob
 import json
@@ -56,17 +57,25 @@ CHUNK = 2_000_000
 # MEASURED instead, off the point records of all 78 dated tiles in the corpus:
 #   * widest GREEN-NEAR span     100.2301 d  philadelphia 18TVK475434 (1,635,147 pts over greens)
 #   * widest WHOLE-TILE span     100.2614 d  philadelphia 18TVK474435 (feeds no green)
-#   * next widest family          11.07  d  Alameda 2021, 8 tiles
+#   * next widest, whole tile     36.7360 d  the-reserve t390135 (26.8M pts, feeds no green)
+#   * next widest family          11.07  d  Alameda 2021, 26 sets across three courses
+#   * then                         2.0006 d  castlewood-hill w6156n2052 green-near, and 2.0005 on
+#                                            w6159n2052 and w6159n2055; 1.9459 on w6153n2055 whole
 #   * everything else            under 1   d  (median 0.02 d over the green-near sets)
 # Both philadelphia figures are REAL: PA_17County_D24 flew that ground in December and again in March,
 # and the book prints "2024-12-17 to 2025-03-27" because it genuinely was. endpoints() is used for the
 # whole-tile set as well as the green-near one, so the bound has to clear 100.2614.
 #
-# There is nothing between 11 and 100 days to calibrate against, so the only honest construction is a
-# margin over the worst REAL case. 2x: wide enough that an acquisition running half again as long as
-# the worst one on disk is still accepted, tight enough that a cluster a year or more from the flight
-# is refused rather than published. Written as the measurement times the margin so the two cannot
-# drift, and re-derived from each course.json's own `lidar_flown.tiles` by
+# The two middle rows above are new, and they replace a claim in this comment that was FALSE: it said
+# "there is nothing between 11 and 100 days to calibrate against" and that everything below the Alameda
+# family was "under 1 d". t390135 sits at 36.736 d, and fourteen green-near sets reach 1 d or more.
+# Neither figure moves the bound -- 200.5 > 100.26 > 36.74 -- but a gap that is not there was being used
+# as part of the argument for the margin, so it is stated correctly now.
+#
+# The margin is a margin over the worst REAL case. 2x: wide enough that an acquisition running half
+# again as long as the worst one on disk is still accepted, tight enough that a cluster a year or more
+# from the flight is refused rather than published. Written as the measurement times the margin so the
+# two cannot drift, and re-derived from each course.json's own `lidar_flown.tiles` by
 # test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_round_guess.
 WORST_MEASURED_TILE_SPAN_DAYS = 100.2614
 TILE_SPAN_MARGIN = 2.0
@@ -97,6 +106,37 @@ MAX_TILE_SPAN_DAYS = WORST_MEASURED_TILE_SPAN_DAYS * TILE_SPAN_MARGIN     # 200.
 MAX_ENDPOINT_GAP_S = 3600.0
 MAX_ISOLATED_VALUES = 8
 ENDPOINT_WINDOW = 64
+# WHAT THE 64-VALUE WINDOW CANNOT SEE, AND THE POINT CLOUD CAN. Everything above works on the extremes
+# window, and that is why one residue survived it: a junk cluster big enough to saturate the window
+# (measured: 32 or more readings) BECOMES the longest gap-free run inside it, so it is returned at
+# i = 0 with n_dropped = 0 and no warning. Within MAX_TILE_SPAN_DAYS of the bulk it was published,
+# because at 100 days out it is arithmetically identical to philadelphia's real 100.23-day acquisition
+# -- with the information a 64-value window holds. That last clause was the whole of the limit: the
+# window is this module's own choice, and tile_dates already streams every point of every tile.
+#
+# A pass leaves a CROWD. A bad clock leaves a handful. So count how many points share each endpoint's
+# own instant and refuse an endpoint that stands almost alone, whatever its span.
+#
+# MEASURED over all 78 tiles, both the green-near and the whole-tile set of each, 236 real endpoint
+# clusters in total (bucketed at MAX_ENDPOINT_GAP_S, the endpoint's bucket plus the two beside it):
+#   * smallest real cluster        3,432 pts  castlewood-valley w6156n2055 green-near low end
+#                                             (0.1944% of that set's 1,765,670 points -- also the
+#                                              smallest fraction, so the absolute count is the tighter
+#                                              of the two tests and a fraction adds nothing)
+#   * next four                    4,136 / 5,612 / 8,716 / 15,295
+#   * philadelphia 18TVK475434     1,567,309 and 67,838 either side of its 100.2156-day gap -- the
+#                                  SECOND EPOCH this test must not refuse, and its 67,838 is 20x the
+#                                  sparsest real cluster, not the sparsest as once recorded
+# Against a failure mode that needs only 32-128 readings, the sparsest real endpoint clears the largest
+# junk cluster by 27x and the smallest by 107x. Not the three orders of magnitude once claimed for it --
+# that compared against philadelphia's 67,838 rather than against the sparsest real endpoint -- but far
+# more headroom than the 2.0x already accepted on the span bound.
+#
+# The bound is that measurement DIVIDED by a margin, the same shape as MAX_TILE_SPAN_DAYS: an endpoint
+# whose pass left a quarter as many returns as the thinnest one on disk is still accepted.
+SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS = 3432
+ENDPOINT_CLUSTER_MARGIN = 4.0
+MIN_ENDPOINT_CLUSTER_PTS = int(SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS / ENDPOINT_CLUSTER_MARGIN)  # 858
 # Collar around a green's own footprint, for deciding which points DATE it. Deliberately wider than
 # the 12 m margin fetch_dem_hd.py builds the surface from (MARGIN_M): the question here is "was this
 # tile flown over this green", and a flight line that clipped the collar is the same pass. Note the
@@ -122,6 +162,11 @@ class _Extremes:
         self.n = 0
         self._lo = np.empty(0, dtype="float64")
         self._hi = np.empty(0, dtype="float64")
+        # HOW MANY POINTS EACH INSTANT HOLDS, bucketed at MAX_ENDPOINT_GAP_S -- the same "still the
+        # same pass" distance the isolation walk already uses, so this adds no threshold to justify.
+        # One int per bucket: a 100-day acquisition is 2,400 of them, and even a junk value four
+        # decades out only makes it ~350,000. See MIN_ENDPOINT_CLUSTER_PTS for what it is for.
+        self._mass = collections.defaultdict(int)
 
     def add(self, v):
         """Fold in one chunk's values, which the caller has already filtered to > 0."""
@@ -135,6 +180,20 @@ class _Extremes:
         hi = np.partition(v, v.size - m)[v.size - m:]
         self._lo = np.sort(np.concatenate([self._lo, lo]))[:self.k]
         self._hi = np.sort(np.concatenate([self._hi, hi]))[-self.k:]
+        # bincount, not unique: O(n) against unique's sort, on the hot path that reads every point of
+        # every tile. Offset by the chunk's own lowest bucket so the array is span-sized, not
+        # value-sized.
+        b = np.floor_divide(v, MAX_ENDPOINT_GAP_S).astype("int64")
+        b0 = int(b.min())
+        counts = np.bincount(b - b0)
+        for i in np.flatnonzero(counts):
+            self._mass[b0 + int(i)] += int(counts[i])
+
+    def cluster_mass(self, value):
+        """How many points sit in `value`'s own temporal cluster -- its bucket and the two beside it,
+        i.e. everything within MAX_ENDPOINT_GAP_S of it and at most twice that."""
+        b = int(np.floor(value / MAX_ENDPOINT_GAP_S))
+        return sum(self._mass.get(b + d, 0) for d in (-1, 0, 1))
 
     def raw(self):
         """(min, max) over every value seen, or None if none were."""
@@ -161,16 +220,24 @@ class _Extremes:
         check behind it at all.
 
         This does NOT close the family. A junk cluster that saturates the window and sits WITHIN
-        MAX_TILE_SPAN_DAYS of the bulk is still published, because at that distance it is genuinely
-        indistinguishable from philadelphia's real 100-day acquisition with the information a 64-value
-        extreme window holds. What it does is bound the error to one plausible acquisition span instead
-        of a decade -- see MAX_TILE_SPAN_DAYS for the measurement that sets that bound.
+        MAX_TILE_SPAN_DAYS of the bulk is not separable BY SPAN from philadelphia's real 100-day
+        acquisition, so the CLUSTER MASS test below is what separates them instead -- see
+        MIN_ENDPOINT_CLUSTER_PTS. The span bound remains the backstop, bounding any error that gets
+        past both to one plausible acquisition span rather than a decade.
         """
         lo = self._resolve(self._lo)                  # ascending, walked upward
         hi = self._resolve(self._hi[::-1])            # descending, walked downward
         if lo is None or hi is None:
             return None
         if hi[0] - lo[0] > MAX_TILE_SPAN_DAYS * 86400.0:
+            return None
+        # EACH END MUST BE A PASS, NOT A READING. The span test above cannot tell a saturating junk
+        # cluster 100 days out from philadelphia's real second epoch 100.23 days out, because by span
+        # they are the same measurement. By mass they differ by 27x at worst: philadelphia's thinner
+        # epoch holds 67,838 returns and the whole corpus's thinnest endpoint 3,432, while the junk that
+        # saturates a 64-value window is 32 to 128 readings. Both ends, because either can be the junk
+        # one -- philadelphia's second epoch is its HIGH end.
+        if min(self.cluster_mass(lo[0]), self.cluster_mass(hi[0])) < MIN_ENDPOINT_CLUSTER_PTS:
             return None
         return lo[0], hi[0], lo[1], hi[1]
 
@@ -405,11 +472,14 @@ def tile_dates(path, rings=()):
             return None                       # no usable gps_time anywhere in this tile
         res = dating.endpoints()
         if res is None:
+            raw = dating.raw()
             print(f"    {os.path.basename(path)}: its gps_time range cannot be defended -- either end "
                   f"lacks another point within {MAX_ENDPOINT_GAP_S:.0f} s of it after discarding "
-                  f"{MAX_ISOLATED_VALUES} value(s), or the two ends lie more than "
-                  f"{MAX_TILE_SPAN_DAYS:.0f} days apart (raw range "
-                  f"{gps_to_utc(dating.raw()[0])}..{gps_to_utc(dating.raw()[1])}); "
+                  f"{MAX_ISOLATED_VALUES} value(s), or its own temporal cluster holds fewer than "
+                  f"{MIN_ENDPOINT_CLUSTER_PTS} points ({dating.cluster_mass(raw[0])} low, "
+                  f"{dating.cluster_mass(raw[1])} high) so it is a reading rather than a pass, or the "
+                  f"two ends lie more than {MAX_TILE_SPAN_DAYS:.0f} days apart (raw range "
+                  f"{gps_to_utc(raw[0])}..{gps_to_utc(raw[1])}); "
                   f"the times in this tile are not one acquisition, so refusing to date it")
             return None
         lo, hi, n_lo, n_hi = res
