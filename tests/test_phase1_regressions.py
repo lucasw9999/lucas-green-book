@@ -4725,6 +4725,50 @@ def test_no_test_carries_the_same_skip_condition_twice():
         "invisible in the run output and reads as a second, different guard:\n  " + "\n  ".join(dupes))
 
 
+def test_every_test_this_repo_cites_by_name_exists():
+    """This codebase argues in prose and cites the test that grades each claim. A dead citation is a
+    reader following a pointer to nothing, and nothing here noticed one.
+
+    render_hole.py:238 named the fetch-box pre-flight test `..._uses_the_widest_corridor_...`. The real
+    test is `..._measures_...`, and it has never been called anything else -- the citation was wrong the
+    day it was written. A second one, in this file, named a rating test by a function name that does not
+    exist either. Both point at exactly the guard a sceptical reader would go read to check the
+    paragraph they are standing in, which is the worst place to be wrong.
+
+    A PREFIX counts as a hit, because the house style wraps long names across comment lines and a
+    fragment of a real name is a formatting artifact rather than a stale pointer. `test_phase1_
+    regressions` is the module and is exempt. Both spellings that survived the prefix rule were real.
+    Neither dead name is written out in full here, for the reason _STALE_RESERVE8_SHORTFALL is
+    assembled rather than spelled: this scan reads its own docstring, and the first draft matched it.
+    """
+    import glob as _glob
+    files = (sorted(_glob.glob(os.path.join(ROOT, "*.py")))
+             + sorted(_glob.glob(os.path.join(ROOT, "tools", "*.py")))
+             + sorted(_glob.glob(os.path.join(ROOT, "tests", "*.py"))))
+    defined = set()
+    sources = {}
+    for f in files:
+        with open(f, encoding="utf-8") as fh:
+            sources[f] = fh.read()
+        defined |= set(re.findall(r"^def (test_\w+)", sources[f], re.M))
+    assert len(defined) > 200, f"only {len(defined)} test functions found; the scan is not reading them"
+    dead, cited = [], 0
+    for f, src in sources.items():
+        for m in re.finditer(r"\btest_[a-z0-9_]{10,}\b", src):
+            name = m.group(0)
+            if name == "test_phase1_regressions":
+                continue
+            cited += 1
+            if any(d.startswith(name) for d in defined):
+                continue
+            dead.append(f"{os.path.relpath(f, ROOT)}:{src[:m.start()].count(chr(10)) + 1} cites "
+                        f"{name}, which no module defines")
+    assert cited > 100, f"only {cited} test-name citations found; the scan is not reading the prose"
+    assert not dead, (
+        "a comment or docstring cites a test by a name nothing defines, so a reader who goes to check "
+        "the claim finds no such guard:\n  " + "\n  ".join(dead))
+
+
 def test_no_test_skips_itself_when_one_of_this_repos_own_modules_is_missing(tmp_path):
     """A test whose subject is a module must FAIL when that module is gone, not skip.
 
@@ -17575,7 +17619,7 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
         # A tee named in the ratings table with no hole column is not an error -- the-reserve's
         # Blu/Wht and Wht/Grn are combination tees, philadelphia's Green is published but not
         # transcribed per hole -- and those rows are daggered and footnoted on the card
-        # (test_the_rating_table_marks_tees_it_cannot_break_down covers that). Skipped here, not
+        # (test_a_tee_with_no_hole_by_hole_yardages_is_marked covers that). Skipped here, not
         # silently: counted, and required to stay a small minority.
         for y, r, s, nm in rows:
             if nm in cols and y:
@@ -19786,8 +19830,33 @@ def test_water_on_the_card_depends_on_where_the_water_is_not_how_it_was_noded():
 # ---------------------------------------------------------------------------
 # End-cap exclusion, on AUTHORED geometry so it runs on a bare clone
 # ---------------------------------------------------------------------------
-WATER_CORRIDOR_M = 45.0      # render_hole's own water corridor width: any_within(g, 45), and the
-                             # same 45 the area-water gate uses on both of its halves
+def _rh_corridor_m():
+    """render_hole.CORRIDOR_M, PARSED rather than imported.
+
+    The per-class drawing half-widths belong in exactly one place, and this suite had respelt two of
+    them as literals -- 45.0 for water, 40.0 for sand -- each commented with the call form fc6b7cc
+    replaced. A class widened in render_hole would then leave the tests grading the old width while
+    their names claim to grade the engine's, which is the defect the tool's own `CORRIDOR_M = 45.0`
+    already caused once.
+
+    ast rather than `import render_hole`, because importing it binds config and config needs a
+    course.json, and the tests these constants feed are the authored-geometry ones that must run on a
+    bare clone. The parse is checked against the runtime values wherever a corpus IS present -- see
+    test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws.
+    """
+    import ast
+    with open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8") as fh:
+        for node in ast.parse(fh.read()).body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and getattr(node.targets[0], "id", None) == "CORRIDOR_M"):
+                return ast.literal_eval(node.value)
+    raise AssertionError("render_hole.CORRIDOR_M is no longer a module-level literal mapping, so this "
+                         "suite cannot read the half-widths the engine draws at")
+
+
+_RH_CORRIDOR_M = _rh_corridor_m()
+WATER_CORRIDOR_M = _RH_CORRIDOR_M["water"]   # the corridor render_hole selects area water AND
+                                             # watercourses on, both halves of the gate
 WATER_GAP_M = 25.0           # how far past an end vertex the end-cap streams start: inside the
                              # corridor as a plain capsule, outside the PLAYED line
 WATER_OFF_M = 20.0           # lateral offset of the streams that must be counted
@@ -20252,7 +20321,7 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
         f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
 
 
-SAND_CORRIDOR_M = 40.0       # render_hole's own bunker corridor: the 40 in `edge_within(g,40)`
+SAND_CORRIDOR_M = _RH_CORRIDOR_M["bunker"]   # the corridor render_hole selects sand on, by nearest EDGE
 SAND_FILL = 'fill="#efe3b8"'  # one drawn bunker
 
 # The one bunker this suite and render_hole both name by OSM way id: the case the edge rule was
@@ -23725,6 +23794,9 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
       4. ...and no selector DECLARES one as a default either. Check 3 reads call sites only, and two
          defaults outlived it: `in_corridor(g, buf=45)` and `in_corr_pt(lat, lon, buf=48)`. The 45 is
          the number this whole guard is about -- the tool's own literal was named after this default.
+      5. the COUNTS published in prose -- how many classes the set names, how many call sites read it --
+         are derived here, because both were published wrong (nine and nine; it is eight and eleven);
+      6. and this suite may not respell a half-width either, for the reason the tool's 45 proves.
 
     The set is read out of the source with ast rather than imported, so a stranger with no course data
     still gets this check: importing render_hole binds config, which needs a course.json. Where a corpus
@@ -23812,6 +23884,51 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
         + "\n  That is a half-width named in a second place, and DRAW_CORRIDOR_M -- the figure the "
           "fetch-box pre-flight sizes itself from -- is the max of CORRIDOR_M only. Take the default "
           "away so every caller must name the class it is selecting.")
+
+    # 5. THE PUBLISHED COUNTS, derived. How many classes the set names and how many places read it are
+    # both stated in prose -- render_hole "Those nine numbers were nine literals at nine call sites",
+    # tools/check_osm_bbox twice over "45 is one of nine per-class radii" -- and every one of those was
+    # wrong. CORRIDOR_M names EIGHT classes, and fc6b7cc's own diff replaced ELEVEN literals at eleven
+    # selector call sites (water's 45 appeared four times, on ten lines). A count nothing grades is the
+    # same shape of defect as the 45 the tool carried: nobody checks it until it is load-bearing.
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+             "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14}
+
+    def _count(tok):
+        return int(tok) if tok.isdigit() else words.get(tok.lower())
+    reads = len(re.findall(r"(?<![A-Z_])CORRIDOR_M\s*\[", rh_code))
+    stale, seen_radii, seen_sites = [], 0, 0
+    for rel, src in ((os.path.relpath(rh_path, ROOT), rh_src),
+                     (os.path.relpath(tool, ROOT), tool_src)):
+        for m in re.finditer(r"([A-Za-z]+|\d+)[ -]per-class radii", src):
+            seen_radii += 1
+            if _count(m.group(1)) != len(radii):
+                stale.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} says {m.group(0)!r}; "
+                             f"CORRIDOR_M names {len(radii)}: {sorted(radii)}")
+        for m in re.finditer(r"([A-Za-z]+|\d+) literals at ([A-Za-z]+|\d+) (?:selector )?call sites",
+                             src):
+            seen_sites += 1
+            if _count(m.group(1)) != reads or _count(m.group(2)) != reads:
+                stale.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} says {m.group(0)!r}; "
+                             f"{reads} selector call sites read CORRIDOR_M")
+    assert seen_radii and seen_sites, (
+        f"the prose no longer states how many per-class radii there are ({seen_radii} mentions) or how "
+        f"many call sites read them ({seen_sites}) -- both were published wrong, so both are graded, "
+        f"and deleting the sentence must not be the way to pass")
+    assert not stale, ("a published count of the corridor set is not what the set holds:\n  "
+                      + "\n  ".join(stale))
+
+    # 6. ...AND THIS FILE MAY NOT RESPELL ONE EITHER. Check 1 forbids the TOOL its own corridor literal,
+    # for the reason the tool's 45 proves. This suite carried two more -- `WATER_CORRIDOR_M = 45.0` and
+    # `SAND_CORRIDOR_M = 40.0`, each commented with the call form fc6b7cc replaced -- so a class widened
+    # in CORRIDOR_M would leave the tests grading the old width while claiming to grade the engine's.
+    with open(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), encoding="utf-8") as fh:
+        here_code = _code_only(fh.read())
+    own_here = re.findall(r"^\s*([A-Z_]*CORRIDOR[A-Z_]*)\s*=\s*([0-9.]+)", here_code, re.M)
+    assert not own_here, (
+        f"this suite declares its own corridor half-width literal {own_here}. Derive it from "
+        f"render_hole.CORRIDOR_M (see _RH_CORRIDOR_M) so a class widened there widens the test with "
+        f"it, rather than leaving the test measuring a corridor the engine no longer draws.")
 
 
 @needs_corpus

@@ -225,8 +225,9 @@ CARRY_MERGE_GAP_YD = 8.0
 #
 # Every feature class this module draws is selected by how near it comes to the hole's centreline, and
 # each class has its own half-width -- a wood is a background fill that may legitimately start 55 m out,
-# a fairway is not. Those nine numbers were nine literals at nine call sites, and nothing anywhere said
-# what the WIDEST of them was. tools/check_osm_bbox.py needs exactly that figure: it asks whether the
+# a fairway is not. Those eight numbers were eleven literals at eleven call sites -- water's 45 spelled
+# four times over -- and nothing anywhere said what the WIDEST of them was. tools/check_osm_bbox.py needs
+# exactly that figure: it asks whether the
 # OSM fetch box covers what the cards draw, and it carried its own `CORRIDOR_M = 45.0` with the comment
 # "render_hole.in_corridor's drawing buffer". 45 was never the widest -- OSM tree nodes are taken to
 # 68 m -- so the pre-flight could report a box fully covered while the drawn corridor reached 23 m of
@@ -235,7 +236,8 @@ CARRY_MERGE_GAP_YD = 8.0
 #
 # DRAW_CORRIDOR_M is computed from the set rather than written down, so widening any one class widens
 # the pre-flight with it. A new class added with a bare literal would slip past that, which is what
-# test_the_bbox_preflight_uses_the_widest_corridor_the_engine_draws watches the call sites for.
+# test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws watches the call sites for --
+# along with the defaults, and with both of the counts published in this paragraph.
 CORRIDOR_M = {
     "bunker":   40.0,     # edge_within: nearest EDGE of the sand, not its centroid -- see edge_within
     "water":    45.0,     # area hazards AND watercourses, deliberately the same -- see `waters`

@@ -29,7 +29,7 @@ half-width render_hole selects any feature class on -- render_hole.DRAW_CORRIDOR
 OSM tree-node radius. Reported in metres of overshoot per hole, worst first.
 
 THIS CHECK USED TO ASK FOR 45 m, from a `CORRIDOR_M = 45.0` of its own commented "render_hole's drawing
-buffer". 45 is one of nine per-class radii and was never the widest, so the pre-flight could pass a
+buffer". 45 is one of eight per-class radii and was never the widest, so the pre-flight could pass a
 course whose drawn corridor reached 23 m of ground the fetch never requested -- which is precisely the
 failure this tool exists to catch, since a feature outside the box is never downloaded, the card does
 not draw it, and the footer is counted FROM the map. The number is now derived from render_hole's own
@@ -110,7 +110,7 @@ def check_course(slug):
     import geo                                      # noqa: E402
     # The corridor half-width comes from the engine that DRAWS it, never from a second copy here. This
     # module carried `CORRIDOR_M = 45.0` commented "render_hole.in_corridor's drawing buffer", and 45
-    # was never the widest of render_hole's nine per-class radii -- OSM tree nodes reach 68 m -- so this
+    # was never the widest of render_hole's eight per-class radii -- OSM tree nodes reach 68 m -- so this
     # pre-flight could pass a course whose drawn corridor took in 23 m of ground the fetch never
     # requested. render_hole.DRAW_CORRIDOR_M is the max of its named set, so widening any one class
     # widens this check with it. Imported after COURSE is bound, because render_hole reads config at
