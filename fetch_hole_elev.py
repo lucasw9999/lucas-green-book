@@ -37,7 +37,7 @@ guessed one, and the card simply omits the line, when ANY of these holds:
   * the green has no usable surface -- no dem_hd patch, flagged insufficient, or a ring that
     rasterises to nothing (green_elevation);
   * the tee sample holds too few ground returns (MIN_RING_PTS on a mapped pad, MIN_TEE_PTS in the
-    fallback box);
+    fallback disc);
   * the sampled tee ground spans more height than MAX_TEE_RELIEF_FT, so a median over it does not stand
     for a tee height -- 6 of the 172 sampled pads, and a cause of its own rather than a variant of the
     two above it: merion h1 holds 3851 ground returns on a pad it fails by relief, over a usable green
@@ -74,14 +74,49 @@ from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re
 import render_hole                 # for par3_exact_from_tee: one definition of "straight par 3"
 
 DIR = config.COURSE_DIR
-TEE_R_M = 15.0          # half-width of the square window sampled around the tee anchor
-# TWO roles, and the second one went undocumented for as long as the ring sampler has existed: this is
-# the fallback BOX when no mapped tee ring holds the anchor, AND -- because tee_elevations applies it
-# BEFORE the ring test -- the WINDOW the mapped-pad sample is confined to. So on the pads whose ring
-# reaches past it, the sample is pad INTERSECT window and both the height and the relief the gate bounds
-# are measured over that window, not over the whole pad. That is the right sample and it is now derived
-# from a measurement rather than inherited from the box: see tee_elevations.
-MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached the tee at all
+TEE_R_M = 15.0          # half-width of the square WINDOW the mapped-pad sample is confined to
+# ONE role now, and the second one went undocumented for as long as the ring sampler existed: because
+# tee_elevations applies this BEFORE the ring test, it is the WINDOW the mapped-pad sample is confined
+# to. So on the pads whose ring reaches past it, the sample is pad INTERSECT window and both the height
+# and the relief the gate bounds are measured over that window, not over the whole pad. That is the
+# right sample and it is derived from a measurement rather than inherited from the fallback: see
+# tee_elevations. It is NO LONGER the fallback region -- see TEE_FALLBACK_R_M.
+TEE_FALLBACK_R_M = 6.0  # radius of the disc sampled when NO mapped tee ring holds the anchor
+# MEASURED FROM THE CORPUS, not chosen. The pad branch samples the mapped ring intersected with the
+# window, and the median area of that region is 113.5 m^2 over the 177 mapped pads (the 12.6% share
+# _tee_pads publishes, against the 900 m^2 box); a disc of that area has a radius of 6.0104 m. So the
+# fallback now samples a region the size of a teeing ground, centred on the anchor, which is what the
+# pad branch gets from the polygon and the fallback had no way to ask for.
+#
+# WHAT IT REPLACED, and why: the fallback was a full TEE_R_M box -- 900 m^2 of whatever surrounds the
+# anchor -- and the relief check sits inside `if on_pad:`, so nothing bounded how much height that
+# sample could span. bay-view 16's box spanned 31.9 ft over 10,532 returns on a HILLSIDE and its median
+# sat 1.90 ft below the ground at its own anchor, so its card printed "green 46 ft below the tee" for a
+# hole its own near-anchor returns put at 48. Applying the relief gate to that branch instead would have
+# silenced all five fallback cards for a spread that is an artifact of the REGION rather than a property
+# of the tee; sampling the region properly fixes the cause.
+#
+# COST, measured: 2 of the 5 printed integers move: bay-view 16 46 -> 48 and merion 9 34 -> 33. The
+# other three (castlewood-hill 4, merion 3, merion 15) do not move at ANY radius between 0.2 m and the
+# window.
+#
+# SWEPT CONTINUOUSLY, at 0.01 m, because a discrete probe gets this wrong: at {2.5, 5, 7.5, 10} m all
+# five look settled, and merion 9's printed integer flips from 33 to 32 at 5.66 m -- 0.34 m below this
+# radius, the tightest margin any of the five has. Above, the nearest flip is 7.87 m away. bay-view 16
+# prints 48 from 0.2 m all the way to 13.11 m, so the value that arrives sits in a 12.9 m-wide band
+# while the 46 it replaces occupied a 1.6 m sliver at the very top of the box's range. That merion 9
+# margin is thin and is published rather than smoothed: its change measures -32.553 ft, 0.053 ft from
+# the 32/33 rounding boundary, so the integer is genuinely near a tie and the radius is not tuned to
+# pick a side of it.
+MIN_TEE_PTS = 25        # fallback disc only: below this the disc barely reached the tee at all
+# RE-DERIVED for the smaller region. This was 200, calibrated against the 900 m^2 box -- 0.2222
+# returns/m^2 -- and left at 200 over a 113.097 m^2 disc it would have meant something 8x stricter than
+# it says, which is the exact fault _crs_units_per_m records about this same constant. Preserving the
+# areal density it encoded gives 0.2222 * pi * 6.0^2 = 25.1 -> 25.
+# Latent either way today: the thinnest fallback sample is castlewood-hill 4's 984 returns, a 39.4x
+# margin, and it refuses nothing above r = 0.85 m. What it changes is the next course whose fallback
+# anchor sits on thin ground. It also has to stay above the 20 returns `_spread` needs before it uses
+# percentiles, or every fallback row's recorded relief would quietly become a peak-to-peak.
 # When the sample is the mapped TEE RING, "few points" no longer means "we probably missed the tee" --
 # every point is inside the pad by construction, so the only question left is whether the median is
 # stable. That is measurable, so it is measured rather than approximated by a count: a median's standard
@@ -120,7 +155,8 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # pad spanning 3.1 ft.
 # THAT BAND IS A STATEMENT ABOUT THE PAD BRANCH ALONE. It was offered as evidence for the threshold
 # without saying so, and the threshold sits inside a predicate with a second branch that never reaches
-# it: the box fallback gates on COUNT only and accepts bay-view 16, whose box spans 31.9 ft. See
+# it: the fallback branch gates on COUNT only and accepts bay-view 16, whose sample spans 7.8 ft over
+# the 6.0 m disc (31.9 ft over the 15 m box that disc replaced). See
 # tee_median_is_trustworthy, which now states that cost instead of leaving it to be discovered.
 # NOR IS IT A STATEMENT ABOUT THE WHOLE MAPPED PAD. 7 pads span more than MAX_TEE_RELIEF_FT over the
 # whole ring while the sampled window is level -- callippe-preserve 11, merion 14, merion 16,
@@ -278,7 +314,8 @@ def _tee_pads(anchors, crs):
 
     The rings are in osm_course.json and were never loaded. Refusing to guess when the anchor lands in
     none of them (5 of the 182 anchors this corpus resolves -- bay-view 16, castlewood-hill 4, merion 3,
-    merion 9 and merion 15): those fall back to the box, which is at least centred on the tee.
+    merion 9 and merion 15): those fall back to a TEE_FALLBACK_R_M disc at the anchor, sized to the
+    median mapped pad, which is the nearest thing to a pad that can be had without a polygon.
 
     Published as 8 of 177 holes at 4b19d2f. THE CHANGE WAS febbbba AND NOT c7a4f65, which 9cc3bce
     credited: febbbba widened four courses' OSM fetch box, and three anchors that used to fall back now
@@ -423,13 +460,17 @@ def tee_elevations(anchors):
         the book is built on, and a median over that is a blend of two tees rather than this tee's
         height. So the window stays, the label says window (see the `tee_region` recorded per row), and
         the pad-wide spread is recorded beside it.
-      * a true TEE_R_M box in the FALLBACK, because TEE_R_M was applied in raw CRS units. See
-        _crs_units_per_m: on the five US-survey-foot courses that made the box 9.1 m square instead of
-        30 m, a 10.8x difference in sampled area for the same nominal measurement.
+      * a TEE_FALLBACK_R_M DISC in the FALLBACK, centred on the anchor, sized to the median mapped pad.
+        This was a full TEE_R_M box in raw CRS units, so it was two separate faults: 9.1 m square on the
+        five US-survey-foot courses against 30 m on the six metric ones (a 10.8x difference in sampled
+        area for the same nominal measurement -- see _crs_units_per_m), and then, once that was a true
+        30 m box everywhere, 900 m^2 of whatever surrounds the anchor with no relief bound on it at all.
+        See TEE_FALLBACK_R_M for the derivation and for the two printed integers it moves.
 
     `relief` is the p95-p5 spread of the SAMPLE -- the region the median came from, which is what
     tee_median_is_trustworthy bounds. `pad_relief` beside it is the same spread over the WHOLE mapped
-    ring, measured but not gated on, so a reader can see the seven pads above from the artifact.
+    ring, measured but not gated on, so a reader can see the seven pads above from the artifact; it is
+    `None` on a fallback row, which has no pad to measure.
     """
     targets, crs = _tee_points(anchors)
     if not targets:
@@ -439,15 +480,17 @@ def tee_elevations(anchors):
     # one representative anchor is enough: a course spans far too little to change the scale factor
     _la, _lo = next(iter(anchors.values()))
     upm = _crs_units_per_m(crs, _la, _lo)
-    R = TEE_R_M * upm                          # the box, now genuinely TEE_R_M metres in every CRS
+    R = TEE_R_M * upm                 # the window, now genuinely TEE_R_M metres in every CRS
+    RF = TEE_FALLBACK_R_M * upm       # and the fallback disc, likewise
     acc = {hn: [] for hn in targets}
     pad_acc = {hn: [] for hn in targets}       # the WHOLE ring, recorded rather than gated on
-    # Per hole, how far the sample has to reach: the window, or the whole ring where that is wider. Only
-    # the pad-wide spread needs the wider reach; the median and the gate still see the window.
+    # Per hole, how far the sample has to reach: the fallback disc where there is no ring, otherwise the
+    # window or the whole ring where that is wider. Only the pad-wide spread needs the wider reach; the
+    # median and the gate still see the window.
     reach = {}
     for hn, (tx, ty) in targets.items():
         ring = pads.get(hn)
-        reach[hn] = (R if ring is None else
+        reach[hn] = (RF if ring is None else
                      max(R, float(np.max(np.abs(ring[0] - tx))), float(np.max(np.abs(ring[1] - ty)))))
     for path in sorted(glob.glob(f"{DIR}/laz/*.laz")):
         with laspy.open(path) as f:
@@ -467,20 +510,27 @@ def tee_elevations(anchors):
                 z = np.asarray(chunk.z)[g]
                 for hn, (tx, ty) in targets.items():
                     # A box test over a 3 M-point chunk is the cheap way in; a ring test over all of it
-                    # would not be affordable. But this box is the WINDOW as well as the prefilter --
-                    # it CLIPS the ring on 51 of the corpus's mapped pads, which the comment here used
-                    # to deny -- so the wider `reach` is filtered separately for the pad-wide spread.
+                    # would not be affordable. But on a mapped pad this box is the WINDOW as well as the
+                    # prefilter -- it CLIPS the ring on 51 of the corpus's mapped pads, which the comment
+                    # here used to deny -- so the wider `reach` is filtered separately for the pad-wide
+                    # spread. On a FALLBACK hole `reach` is already the disc's bounding box, and the disc
+                    # itself is cut below.
                     h = reach[hn]
                     m = (np.abs(x - tx) < h) & (np.abs(y - ty) < h)
                     if not m.any():
                         continue
                     xm, ym, zm = x[m], y[m], z[m]
-                    win = (np.abs(xm - tx) < R) & (np.abs(ym - ty) < R)
                     ring = pads.get(hn)
                     if ring is None:
-                        if win.any():
-                            acc[hn].append(zm[win])
+                        # A DISC, not the box that bounds it: the box's corners reach 1.41x further than
+                        # its faces, and on a hillside that is the whole difference between the tee and
+                        # the ground it sits above. Nothing about the CRS axes has anything to do with
+                        # which way a teeing ground faces, so the region must not depend on them.
+                        near = (xm - tx) ** 2 + (ym - ty) ** 2 < RF * RF
+                        if near.any():
+                            acc[hn].append(zm[near])
                         continue
+                    win = (np.abs(xm - tx) < R) & (np.abs(ym - ty) < R)
                     inr = _mask_in_ring(xm, ym, ring[0], ring[1])
                     if inr.any():
                         pad_acc[hn].append(zm[inr])
@@ -516,9 +566,13 @@ def tee_sample_region(on_pad):
     window that names a region several times the one sampled. It is a field whose whole job is to let a
     reader audit one card, and tools/verify_elevation.py samples its reference over the WHOLE ring on the
     stated grounds that both sides measure the same place -- so the label being loose is how a checker
-    ends up measuring a different region and calling the difference data."""
+    ends up measuring a different region and calling the difference data.
+
+    The fallback half names a DISC and its radius, because that is the whole of what a reader can check
+    about a height taken where no polygon exists. It said "a 15 m box" until the fallback stopped being
+    one; see TEE_FALLBACK_R_M."""
     return (f"the mapped tee pad within the {TEE_R_M:.0f} m window at the tee anchor" if on_pad else
-            f"a {TEE_R_M:.0f} m box at the tee anchor (no mapped tee ring contains it)")
+            f"a {TEE_FALLBACK_R_M:g} m disc at the tee anchor (no mapped tee ring contains it)")
 
 
 def tee_median_is_trustworthy(n, relief_raw, on_pad, vscale):
@@ -530,20 +584,17 @@ def tee_median_is_trustworthy(n, relief_raw, on_pad, vscale):
       is the p95-p5 of the very returns the median came from, which is the pad inside a TEE_R_M window at
       the anchor and NOT always the whole pad (see tee_elevations). The whole pad's spread is measured
       too, and recorded rather than gated on; the derivation beside MAX_TEE_RELIEF_FT says why.
-    * BOX: no containment guarantee. A handful of points there means the box barely reached the tee, and
-      a tight median over five returns on a cart path is stable and wrong. The count is the only signal,
-      so the original 200 floor stands -- AND THE RELIEF CHECK IS NEVER REACHED ON THIS BRANCH. That is
-      deliberate: the box legitimately reaches off a raised tee onto the ground below it, so its spread
-      measures the sampling region and not the tee. What it costs is real and is stated here rather than
-      left to be discovered: bay-view 16's box spans 31.9 ft on 10,532 returns and is accepted, and that
-      median sits 1.90 ft BELOW the ground at its own anchor (514.65, 514.66, 514.61 and 514.42 ft at
-      r = 2.5, 5, 7.5 and 10 m against 512.75 ft at 15 m), so its card prints "green 46 ft below the
-      tee" where the near-anchor ground supports 48 -- and bay-view 16 is the corpus's worst disagreement
-      against the 3DEP seamless DEM. Five holes take this branch (bay-view 16, castlewood-hill 4,
-      merion 3, merion 9 and merion 15) and all five print a height. Applying the relief gate here
-      instead would silence all five for a spread that is an artifact of the region, so the fix is not
-      that; it is to sample the fallback the way the pad branch is sampled, which moves five printed
-      figures and is not in this change.
+    * FALLBACK DISC: no containment guarantee. A handful of points there means the disc barely reached
+      the tee, and a tight median over five returns on a cart path is stable and wrong. The count is the
+      only signal, so a count floor is what gates it -- MIN_TEE_PTS, re-derived from the 200 that was
+      calibrated against the old 900 m^2 box. THE RELIEF CHECK IS STILL NEVER REACHED ON THIS BRANCH,
+      and that is deliberate: the disc legitimately reaches off a raised tee onto the ground below it,
+      so its spread measures the region and not the tee, and gating on it would silence all five
+      fallback cards for an artifact. What made that acceptable to state and not merely to assert is
+      that the REGION is now the size of a teeing ground: bay-view 16's sample spans 7.8 ft over the
+      6.0 m disc where the old 15 m box spanned 31.9 ft over 10,532 returns, and its median is now the
+      ground at its own anchor rather than 1.90 ft below it. That card printed 46 and prints 48.
+      See TEE_FALLBACK_R_M for the derivation, the two printed integers it moves, and the swept margins.
 
     Split out as a predicate because the two branches are easy to conflate and a loosened gate is the
     failure mode this project is most exposed to. The first version of this function gated the ring on
@@ -561,8 +612,9 @@ def tee_median_is_trustworthy(n, relief_raw, on_pad, vscale):
                            f"over it does not stand for a tee height")
         return True, ""
     if n < MIN_TEE_PTS:
-        return False, (f"only {n} ground returns in the {TEE_R_M:.0f} m box (need {MIN_TEE_PTS}); no "
-                       f"mapped tee ring contains this anchor, so a small sample may not be the tee")
+        return False, (f"only {n} ground returns in the {TEE_FALLBACK_R_M:g} m disc at the anchor "
+                       f"(need {MIN_TEE_PTS}); no mapped tee ring contains this anchor, so a small "
+                       f"sample may not be the tee")
     return True, ""
 
 
@@ -873,7 +925,8 @@ def main():
 
     tees = tee_elevations(anchors)
     rows = {}
-    print(f"{config.SLUG}  ({len(holes)} holes, tee pad or {TEE_R_M:g} m box, Z x {vscale:g} -> m)")
+    print(f"{config.SLUG}  ({len(holes)} holes, mapped pad in a {TEE_R_M:g} m window or a "
+          f"{TEE_FALLBACK_R_M:g} m disc, Z x {vscale:g} -> m)")
     for hn in sorted(holes):
         gz = green_elevation(hn)
         tz_n = tees.get(hn)
@@ -946,13 +999,16 @@ def main():
         # {"tee_radius_m": 15.0, "min_tee_points": 200} beside a source line naming a 0.4 m surface, and
         # all three were claims rather than records: nothing in the repo reads any of them, MIN_TEE_PTS
         # gated 5 of the corpus's 171 rows (the other 166 came off a mapped pad, where the gates are
-        # MIN_RING_PTS and MAX_TEE_RELIEF_FT and 200 is never consulted), and 2 rows are measured over a
-        # patch built from the 3DEP seamless mosaic. So the gate set is published in full, and the
-        # source line is BUILT from the rows -- one derivation, not a second copy to drift.
+        # MIN_RING_PTS and MAX_TEE_RELIEF_FT and the fallback floor is never consulted), and 2 rows are
+        # measured over a patch built from the 3DEP seamless mosaic. So the gate set is published in
+        # full, and the source line is BUILT from the rows -- one derivation, not a second copy to drift.
+        # BOTH sampled regions are published, because there are two and a row names only its own: the
+        # window for a mapped pad and the fallback disc's radius for an anchor in no ring.
         write_hole_elev(p, {"tee_window_m": TEE_R_M,
+                            "tee_fallback_radius_m": TEE_FALLBACK_R_M,
                             "gates": {"min_pad_points": MIN_RING_PTS,
                                       "max_sample_relief_ft": MAX_TEE_RELIEF_FT,
-                                      "min_box_points": MIN_TEE_PTS,
+                                      "min_fallback_points": MIN_TEE_PTS,
                                       "max_change_ft": MAX_PLAUSIBLE_FT,
                                       "print_floor_ft": PRINT_FLOOR_FT},
                             "source": source_line(rows),

@@ -17367,7 +17367,7 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
 # this table against the point cloud.
 TEE_SAMPLES_MEASURED = {
     ("bay-view", 3): (4581, 3.572, True),
-    ("bay-view", 16): (10532, 31.915, False),
+    ("bay-view", 16): (1129, 7.836, False),
     ("callippe-preserve", 11): (5068, 2.000, True),
     ("castlewood-hill", 9): (838, 2.755, True),
     ("castlewood-hill", 18): (150, 4.302, True),
@@ -17418,12 +17418,16 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
     to watch at all. (It carries @needs_corpus only because fetch_hole_elev imports config, which
     resolves a course directory at import and exits without one; nothing below reads a course file.)
 
-    The BOX branch is asserted too, and asserted to be DIFFERENT: it gates on the count only, because
-    there is no containment guarantee and the box legitimately reaches off the pad onto the ground a
-    raised tee sits above -- bay-view 16's box spans 31.9 ft and is accepted on 10,532 returns. Applying
-    the relief gate there would cost five more holes their height for a spread that is an artifact of the
-    sampling region, not a property of the tee. What THAT costs is stated in
-    tee_median_is_trustworthy's own docstring and graded off the LiDAR.
+    The FALLBACK branch is asserted too, and asserted to be DIFFERENT: it gates on the count only,
+    because there is no containment guarantee and the sampled disc legitimately reaches off a raised tee
+    onto the ground it sits above -- bay-view 16's disc spans 7.8 ft and is accepted on 1,129 returns.
+    Applying the relief gate there would cost five more holes their height for a spread that is an
+    artifact of the sampling region, not a property of the tee. What made that defensible rather than
+    merely asserted is that the region was fixed instead: as a 15 m box that same sample spanned 31.9 ft
+    over 10,532 returns and read the tee 1.90 ft low, and the card printed 46 for a hole its own
+    near-anchor ground puts at 48. Both spreads, the offset and both printed integers are graded off the
+    LiDAR by test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives and
+    test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it.
     """
     sys.modules.pop("fetch_hole_elev", None)
     _config, _rh = _engine(a_course())
@@ -17500,11 +17504,26 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
         "a 29-point pad is accepted; a spread over that many returns is not a measurement of the pad"
     nbx, ftbx = sample("bay-view", 16)
     assert fhe.tee_median_is_trustworthy(nbx, raw(ftbx), False, 1.0)[0], (
-        f"bay-view 16's 15 m BOX spans {ftbx} ft and is being refused: the box is not the pad, so its "
-        f"spread is the ground around a raised tee and the count is the only signal there")
-    assert not fhe.tee_median_is_trustworthy(150, raw(0.2), False, 1.0)[0], (
-        "a 150-point box is accepted; with no containment guarantee a small sample may not be the tee "
-        "at all, which is what MIN_TEE_PTS is for")
+        f"bay-view 16's fallback DISC spans {ftbx} ft and is being refused: the disc is not a mapped "
+        f"pad, so its spread is partly the ground around a raised tee and the count is the only signal "
+        f"there. It spanned 31.9 ft as a 15 m box, which is why the region was the fix and the gate "
+        f"was not")
+    assert not fhe.tee_median_is_trustworthy(fhe.MIN_TEE_PTS - 1, raw(0.2), False, 1.0)[0], (
+        f"a {fhe.MIN_TEE_PTS - 1}-point fallback sample is accepted; with no containment guarantee a "
+        f"small sample may not be the tee at all, which is what MIN_TEE_PTS is for")
+    assert fhe.tee_median_is_trustworthy(fhe.MIN_TEE_PTS, raw(0.2), False, 1.0)[0], (
+        f"a sample exactly AT MIN_TEE_PTS ({fhe.MIN_TEE_PTS}) is refused, so the floor is off by one "
+        f"from the count it publishes in the artifact's gate set")
+    # ...and the floor must be the area-equivalent of the one it replaced, not the 200 that was
+    # calibrated against a 900 m^2 box. Left at 200 over a 113 m^2 disc it would refuse a disc under
+    # 2.5 m radius -- 8x stricter than it says -- which is the fault _crs_units_per_m records about
+    # this same constant. The derivation is graded off the corpus in
+    # test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it; here the point
+    # is only that it did not stay at the box's number.
+    assert fhe.MIN_TEE_PTS < 200, (
+        f"MIN_TEE_PTS is {fhe.MIN_TEE_PTS}, the floor calibrated against the retired 900 m^2 box. The "
+        f"fallback now samples a {fhe.TEE_FALLBACK_R_M:g} m disc, "
+        f"{(2 * fhe.TEE_R_M) ** 2 / (math.pi * fhe.TEE_FALLBACK_R_M ** 2):.1f}x smaller in area.")
 
     # (6) and the module comment must quote the spread the gate actually computes. It quoted the
     # PEAK-TO-PEAK figures (5.1 and 9.1 ft) beside a gate defined on p95-p5, on the two pads it names
@@ -17611,6 +17630,24 @@ def _tee_geometry():
     return out
 
 
+def _fallback_disc(fhe, dx, dy):
+    """The region the shipped sampler takes when no mapped tee ring holds the anchor.
+
+    Read off the module rather than respelled, so this suite cannot go on measuring the region the
+    producer USED to sample -- which is exactly what happened for as long as the fallback was a 15 m
+    box: `_tee_samples` computed the box statistic and called it the sample, and the box-branch grader
+    then compared a figure to itself. `dx`/`dy` are already metres.
+    """
+    import numpy as np
+    r = getattr(fhe, "TEE_FALLBACK_R_M", None)
+    assert r is not None, (
+        "fetch_hole_elev has no TEE_FALLBACK_R_M, so this suite cannot tell which region the box "
+        "fallback samples. If the fallback went back to a TEE_R_M box, this helper and the grader "
+        "test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it are what "
+        "have to change with it -- not silently.")
+    return np.hypot(dx, dy) < r
+
+
 def _tee_samples():
     """Every tee's ground returns measured five ways, in ONE pass over each course's LAZ.
 
@@ -17707,9 +17744,17 @@ def _tee_samples():
                         "rel_ft": rel * vscale * FT}
 
             row = {"on_pad": on_pad,
-                   "sample": stat((inr & win) if on_pad else win),
+                   "sample": stat((inr & win) if on_pad else _fallback_disc(fhe, dx, dy)),
                    "ring": stat(inr) if on_pad else None,
                    "box": stat(win)}
+            if not on_pad:
+                # The raw fallback sample, kept so a grader can SWEEP the radius continuously instead
+                # of sampling a handful of points. A discrete probe of {2.5, 5, 7.5, 10} would report
+                # merion 9's printed integer as settled when it flips 0.34 m below the shipped radius.
+                # Small: no fallback hole holds more than about 18k returns inside the 15 m box.
+                row["scan"] = {"d_m": np.hypot(dx, dy), "z_ft": z * vscale * FT,
+                               "green_ft": None if fhe.green_elevation(hn) is None
+                               else fhe.green_elevation(hn) * FT}
             near = inr if on_pad else np.ones(len(dx), bool)
             for rad in (2.5, 5.0, 7.5, 10.0):
                 m = (np.abs(dx) < rad) & (np.abs(dy) < rad) & near
@@ -18522,35 +18567,50 @@ def test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives():
         assert int(m.group(1)) == len(lost), (
             f"fetch_hole_elev.py publishes {m.group(1)} for {what}; measured {live}")
 
-    # 6. the BOX branch, which never reaches the relief check. That is deliberate and pinned by
-    #    test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height; what was missing is that
-    #    the cost is real, so the module has to state it rather than leave the reader to find it.
+    # 6. the FALLBACK branch, which never reaches the relief check. That is still deliberate and still
+    #    pinned by test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height; what makes it
+    #    defensible now is that the REGION is a teeing ground rather than 900 m^2 of hillside, and the
+    #    module has to state both spreads and the offset the box median had -- each of them TWICE in the
+    #    source, so each is graded here.
     bv = S.get(("bay-view-golf-club", 16))
     assert bv and not bv["on_pad"], (
-        "bay-view 16 no longer takes the box fallback; the box-branch note names it")
-    live = (f"relief {bv['box']['rel_ft']:.2f} ft over {bv['box']['n']} returns; medians "
-            + ", ".join(f"{bv[f'med_{r}']:.2f}" for r in (2.5, 5.0, 7.5, 10.0))
-            + f" at r = 2.5/5/7.5/10 m against {bv['box']['med_ft']:.2f} at 15 m, so the printed tee "
-              f"is {bv['med_2.5'] - bv['box']['med_ft']:.2f} ft below its own near-anchor ground")
-    m = _published(src, r"bay-view 16's box spans ([\d.]+) ft on ([\d,]+) returns",
-                   "bay-view 16's box spread", live)
-    assert abs(float(m.group(1)) - bv["box"]["rel_ft"]) < 0.05 and \
-        int(m.group(2).replace(",", "")) == bv["box"]["n"], (
-        f"the box-branch note says bay-view 16's box spans {m.group(1)} ft on {m.group(2)} returns; "
-        f"measured {live}")
-    m = _published(src, r"([\d.]+), ([\d.]+), ([\d.]+) and ([\d.]+) ft at r = 2\.5, 5, 7\.5 and 10 m "
-                        r"against ([\d.]+) ft at 15 m", "bay-view 16's near-anchor medians", live)
-    for i, rad in enumerate((2.5, 5.0, 7.5, 10.0)):
-        assert abs(float(m.group(i + 1)) - bv[f"med_{rad}"]) < 0.02, (
-            f"the r = {rad} m median is published as {m.group(i+1)} ft; measured "
-            f"{bv[f'med_{rad}']:.2f}. {live}")
-    assert abs(float(m.group(5)) - bv["box"]["med_ft"]) < 0.02, (
-        f"the 15 m median is published as {m.group(5)} ft; measured {bv['box']['med_ft']:.2f}")
-    m = _published(src, r"median sits ([\d.]+) ft BELOW the ground", "how far below its own near-anchor "
-                   "ground the box median sits", live)
-    assert abs(float(m.group(1)) - (bv["med_2.5"] - bv["box"]["med_ft"])) < 0.03, (
-        f"the offset is published as {m.group(1)} ft; measured "
-        f"{bv['med_2.5'] - bv['box']['med_ft']:.2f}. {live}")
+        "bay-view 16 no longer takes the fallback; the fallback-branch note names it")
+    off = bv["med_2.5"] - bv["box"]["med_ft"]
+    live = (f"disc relief {bv['sample']['rel_ft']:.2f} ft over {bv['sample']['n']} returns; the 15 m box "
+            f"spanned {bv['box']['rel_ft']:.2f} ft over {bv['box']['n']}, and its median sat {off:.2f} ft "
+            f"below the ground at r = 2.5 m")
+    # the MAX_TEE_RELIEF_FT note's copy of the pair...
+    m = _published(src, r"whose sample spans ([\d.]+) ft over\s*the [\d.]+ m disc \(([\d.]+) ft over "
+                        r"the 15 m box that disc replaced\)",
+                   "bay-view 16's two spreads, as the relief-limit note states them", live)
+    assert abs(float(m.group(1)) - bv["sample"]["rel_ft"]) < 0.05, (
+        f"the relief-limit note says the disc spans {m.group(1)} ft; measured {live}")
+    assert abs(float(m.group(2)) - bv["box"]["rel_ft"]) < 0.05, (
+        f"the relief-limit note says the box it replaced spanned {m.group(2)} ft; measured {live}")
+    # ...and the predicate's, which is the copy a reader of the gate meets. Two records, one figure.
+    m = _published(src, r"bay-view 16's sample spans ([\d.]+) ft over the [\d.]+ m disc where the old "
+                        r"15 m box spanned ([\d.]+) ft over ([\d,]+) returns",
+                   "bay-view 16's two spreads, as the gate predicate states them", live)
+    assert abs(float(m.group(1)) - bv["sample"]["rel_ft"]) < 0.05, (
+        f"the predicate says the disc spans {m.group(1)} ft; measured {live}")
+    assert abs(float(m.group(2)) - bv["box"]["rel_ft"]) < 0.05, (
+        f"the predicate says the box spanned {m.group(2)} ft; measured {live}")
+    assert int(m.group(3).replace(",", "")) == bv["box"]["n"], (
+        f"the predicate says the old box held {m.group(3)} returns; measured {bv['box']['n']}. {live}")
+    m = _published(src, r"rather than ([\d.]+) ft below it",
+                   "how far below its own near-anchor ground the box median sat", live)
+    assert abs(float(m.group(1)) - off) < 0.03, (
+        f"the offset is published as {m.group(1)} ft; measured {off:.2f}. {live}")
+    m = _published(src, r"That card printed (\d+) and prints (\d+)",
+                   "bay-view 16's printed integer before and after the fallback change",
+                   f"box {bv['box']['med_ft']:.2f} ft, disc {bv['sample']['med_ft']:.2f} ft")
+    gf = bv["scan"]["green_ft"]
+    for grp, med, which in ((1, bv["box"]["med_ft"], "the 15 m box"),
+                            (2, bv["sample"]["med_ft"], "the fallback disc")):
+        want = math.floor(abs(gf - med) + 0.5)
+        assert int(m.group(grp)) == want, (
+            f"the predicate says bay-view 16's card reads {m.group(grp)} off {which}; measured "
+            f"{want} ({gf - med:+.3f} ft)")
 
     # 7. and TEE_SAMPLES_MEASURED, the table the pure-predicate gate test runs on. That test cannot
     #    check its own inputs -- a stale number is still a valid input to a pure function, which is why
@@ -18574,6 +18634,207 @@ def test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives():
                          "test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height is "
                          "exercising the gate with numbers the corpus does not produce:\n  "
                          + "\n  ".join(drifted))
+
+
+@needs_corpus
+def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it():
+    """The box fallback gated on COUNT alone, and one card printed 46 where its own ground gives 48.
+
+    Five of the corpus's 182 anchors land in no mapped `golf=tee` ring and take the fallback. It used
+    to be a TEE_R_M box -- 900 m^2 of whatever surrounds the anchor -- and the relief check sat inside
+    `if on_pad:`, so nothing bounded how much height that sample could span. bay-view 16's box spanned
+    31.9 ft over 10,532 returns ON A HILLSIDE, and its median sat 1.90 ft BELOW the ground at its own
+    anchor, where the ground is remarkably well determined. That card printed "green 46 ft below the
+    tee" for a hole its own near-anchor returns put at 48, and bay-view 16 is also the corpus's worst
+    disagreement against the 3DEP seamless DEM.
+
+    Applying the relief gate to that branch instead would have silenced all five cards for a spread
+    that is an artifact of the sampling REGION rather than a property of the tee -- the module said so
+    itself, and it is the wrong fix. The right one is to sample the fallback the way the pad branch is
+    sampled: over a region the size of a teeing ground, centred on the anchor.
+
+    THE RADIUS IS MEASURED FROM THE CORPUS, not chosen. The pad branch samples the mapped ring
+    intersected with the window, and over all 177 mapped pads the median area of that region is about
+    113 m^2 (12.6% of the 900 m^2 box, which _tee_pads already publishes). A disc of the same area has
+    a radius of 6.0 m. That is the whole derivation, and this test re-runs it.
+
+    AND THE THRESHOLD IS SWEPT CONTINUOUSLY, because a discrete probe would have got this wrong. At
+    {2.5, 5, 7.5, 10} m every one of the five looks settled; swept at 0.01 m, merion 9's printed
+    integer flips from 33 to 32 at 5.66 m -- 0.34 m below the shipped radius. That margin is published
+    and graded rather than left to be discovered, which is the same failure a headroom figure in this
+    campaign already had (16x published against 10.5x measured, because the grader tested powers of two).
+
+    MEASURED COST: 2 of the 5 printed integers move. Both the value that leaves and the value that
+    arrives are re-derived here from the point cloud -- neither is copied from the module or from the
+    card -- and the three that do not move are asserted not to.
+    """
+    S = _tee_samples()
+    geom = _tee_geometry()
+    assert S and geom, "no green-mode course with LiDAR on disk; nothing to measure"
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    import numpy as np
+    R = fhe.TEE_FALLBACK_R_M
+    src = _fhe_prose()
+
+    def median(v):
+        v = sorted(v)
+        return v[len(v) // 2] if len(v) % 2 else (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2
+
+    def printed(ft):
+        """The integer the card prints, or 0 for a height the print floor suppresses."""
+        return math.floor(abs(ft) + 0.5) if abs(ft) >= float(fhe.PRINT_FLOOR_FT) else 0
+
+    # 1. THE RADIUS, re-derived from the pad branch's own sampled area. `share` is the fraction of the
+    #    TEE_R_M box each mapped ring covers inside the window -- the same rasterisation _tee_pads
+    #    publishes 12.6% from -- so the area is share * the box's area, and no new measurement is needed.
+    box_area = (2 * fhe.TEE_R_M) ** 2
+    areas = sorted(v * box_area for g in geom.values() for v in g["share"].values())
+    want_r = math.sqrt(median(areas) / math.pi)
+    assert abs(R - want_r) < 0.05, (
+        f"TEE_FALLBACK_R_M is {R} m; the disc with the same area as the MEDIAN region the pad branch "
+        f"samples ({median(areas):.1f} m^2 over {len(areas)} mapped pads) has radius {want_r:.3f} m. "
+        f"The fallback radius is derived from that area and from nothing else -- if the corpus has "
+        f"moved, move the constant with it and re-derive the headroom below.")
+    m = _published(src, r"median area of that region is ([\d.]+) m\^2 over the (\d+) mapped pads",
+                   "the median sampled pad area the radius comes from",
+                   f"{median(areas):.1f} m^2 over {len(areas)}")
+    assert abs(float(m.group(1)) - median(areas)) < 0.5 and int(m.group(2)) == len(areas), (
+        f"the derivation publishes {m.group(1)} m^2 over {m.group(2)} pads; measured "
+        f"{median(areas):.1f} m^2 over {len(areas)}")
+
+    # 2. THE SHIPPED SAMPLER really takes that disc, not the box it used to. Measured off the LAZ: the
+    #    fallback rows' sample size must be the disc's and must differ from the 15 m box's, or this
+    #    whole test is grading a region nothing samples.
+    box_rows = sorted(k for k, r in S.items() if not r["on_pad"])
+    assert len(box_rows) == 5, (
+        f"{len(box_rows)} anchors take the fallback, not the five this derivation was measured on "
+        f"({[(_short(s), h) for s, h in box_rows]}); re-measure before trusting the figures below")
+    for k in box_rows:
+        r = S[k]
+        n_disc = int((r["scan"]["d_m"] < R).sum())
+        assert r["sample"]["n"] == n_disc and r["sample"]["n"] < r["box"]["n"], (
+            f"{_short(k[0])} {k[1]}: the sampled fallback holds {r['sample']['n']} returns; the "
+            f"{R} m disc holds {n_disc} and the {fhe.TEE_R_M:g} m box {r['box']['n']}. The sampler is "
+            f"not reading the disc.")
+
+    # 3. THE FIVE PRINTED INTEGERS, both regions, from the point cloud. Nothing here is copied: the
+    #    "before" is the median over the 15 m box and the "after" the median over the disc, each
+    #    against the same green surface, put through generate.elev_phrase's own rounding.
+    moved, held = [], []
+    for k in box_rows:
+        r = S[k]
+        g = r["scan"]["green_ft"]
+        assert g is not None, f"{_short(k[0])} {k[1]}: no green surface, so no change to compute"
+        before = g - r["box"]["med_ft"]
+        after = g - r["sample"]["med_ft"]
+        (moved if printed(before) != printed(after) else held).append(
+            (_short(k[0]), k[1], printed(before), before, printed(after), after))
+    live = "; ".join(f"{s} {h} {pb} ({fb:+.3f}) -> {pa} ({fa:+.3f})"
+                     for s, h, pb, fb, pa, fa in sorted(moved + held))
+    assert len(moved) == 2, (
+        f"{len(moved)} of the 5 fallback cards change their printed integer, not the 2 this change was "
+        f"measured to cost: {live}")
+    m = _published(src, r"2 of the 5 printed integers move: (\S+) (\d+) (\d+) -> (\d+) and (\S+) "
+                        r"(\d+) (\d+) -> (\d+)", "which two printed integers the fallback change moves",
+                   live)
+    assert [(m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4))),
+            (m.group(5), int(m.group(6)), int(m.group(7)), int(m.group(8)))] == \
+        [(s, h, pb, pa) for s, h, pb, _fb, pa, _fa in sorted(moved)], (
+        f"the module names a different pair of moved figures than the LiDAR gives: {live}")
+    for s, h, pb, _fb, pa, _fa in held:
+        assert pb == pa, "internal: a held hole moved"
+
+    # ...and the ARTIFACT on disk must carry the disc figure, or the cards are still printing the box.
+    stale = []
+    for k in box_rows:
+        p = os.path.join(ROOT, "courses", k[0], "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            row = json.load(fh)["holes"].get(str(k[1]))
+        if row is None:
+            stale.append(f"{_short(k[0])} {k[1]}: no row at all now")
+            continue
+        want = S[k]["scan"]["green_ft"] - S[k]["sample"]["med_ft"]
+        got = row.get("change_ft_exact")
+        if got is None or abs(got - want) > 0.02:
+            stale.append(f"{_short(k[0])} {k[1]}: records {got} ft; the {R} m disc gives {want:+.3f} "
+                         f"(the {fhe.TEE_R_M:g} m box gave "
+                         f"{S[k]['scan']['green_ft'] - S[k]['box']['med_ft']:+.3f})")
+        if R != fhe.TEE_R_M and str(int(fhe.TEE_R_M)) in str(row.get("tee_region") or ""):
+            stale.append(f"{_short(k[0])} {k[1]}: tee_region still names a "
+                         f"{fhe.TEE_R_M:g} m region: {row.get('tee_region')!r}")
+    assert not stale, ("hole_elev.json has not been regenerated for the fallback change, so those "
+                       "cards still print the box figure:\n  " + "\n  ".join(stale))
+
+    # 4. THE HEADROOM, SWEPT. Where each printed integer ACTUALLY flips, at 0.01 m, not where the
+    #    nearest convenient probe flips. The module has to publish the tightest margin and name the
+    #    hole that owns it, because that margin is the whole answer to "is this radius a knob?".
+    grid = np.arange(0.20, fhe.TEE_R_M + 1e-9, 0.01)
+    margins = []
+    for k in box_rows:
+        r = S[k]
+        d, z, g = r["scan"]["d_m"], r["scan"]["z_ft"], r["scan"]["green_ft"]
+        here = printed(g - r["sample"]["med_ft"])
+        below = above = None
+        for rad in grid[grid < R][::-1]:
+            mm = d < rad
+            if mm.any() and printed(g - float(np.median(z[mm]))) != here:
+                below = float(rad)
+                break
+        for rad in grid[grid > R]:
+            mm = d < rad
+            if mm.any() and printed(g - float(np.median(z[mm]))) != here:
+                above = float(rad)
+                break
+        margins.append((_short(k[0]), k[1], here,
+                        None if below is None else R - below,
+                        None if above is None else above - R))
+    tight = min((t for t in margins if t[3] is not None), key=lambda t: t[3], default=None)
+    live = "; ".join(f"{s} {h} prints {p}, flips "
+                     f"{'nowhere below' if b is None else f'{b:.2f} m below'} / "
+                     f"{'nowhere above' if a is None else f'{a:.2f} m above'}"
+                     for s, h, p, b, a in margins)
+    assert tight is not None, (
+        "no fallback hole's printed integer flips anywhere between 0.2 m and the window, so the sweep "
+        "below is measuring nothing -- re-derive it rather than trusting the published margin")
+    m = _published(src, r"flips from (\d+) to (\d+) at ([\d.]+) m -- ([\d.]+) m below",
+                   "the tightest printed-integer margin around the fallback radius", live)
+    assert abs(float(m.group(4)) - tight[3]) < 0.02 and abs(float(m.group(3)) - (R - tight[3])) < 0.02, (
+        f"the module publishes a tightest margin of {m.group(4)} m (flipping at {m.group(3)} m); "
+        f"swept at 0.01 m the tightest is {tight[3]:.2f} m on {tight[0]} {tight[1]} "
+        f"(flipping at {R - tight[3]:.2f} m). {live}")
+    assert re.search(rf"{re.escape(tight[0])}\s+h?{tight[1]}\b[^.]{{0,120}}flips", src) or \
+        re.search(rf"flips[^.]{{0,120}}{re.escape(tight[0])}\s+h?{tight[1]}\b", src), (
+        f"the tightest margin belongs to {tight[0]} {tight[1]} and the module does not name that hole "
+        f"beside it; measured {live}")
+
+    # 5. MIN_TEE_PTS, re-derived for the smaller area. It meant "the box barely reached the tee at all"
+    #    over 900 m^2; left at 200 over a 113 m^2 disc it would mean something 8x stricter -- the exact
+    #    fault _crs_units_per_m records about the same constant. The derivation is areal DENSITY, so
+    #    that is what is graded, plus the live margin and the radius at which the floor really bites.
+    m = _published(src, r"([\d.]+) returns/m\^2", "the areal density MIN_TEE_PTS encodes",
+                   f"{fhe.MIN_TEE_PTS / (math.pi * R ** 2):.4f} returns/m^2")
+    dens = float(m.group(1))
+    assert fhe.MIN_TEE_PTS == round(dens * math.pi * R ** 2), (
+        f"MIN_TEE_PTS is {fhe.MIN_TEE_PTS}; the density the module publishes as its derivation "
+        f"({dens} returns/m^2) over the {R} m disc gives {round(dens * math.pi * R ** 2)}")
+    assert fhe.MIN_TEE_PTS >= 20, (
+        f"MIN_TEE_PTS is {fhe.MIN_TEE_PTS}, below the 20 returns `_spread` needs before it uses "
+        f"percentiles -- every fallback row's recorded relief would silently become a peak-to-peak")
+    thin = min(S[k]["sample"]["n"] for k in box_rows)
+    bites = max(next(float(rad) for rad in grid if (S[k]["scan"]["d_m"] < rad).sum() >= fhe.MIN_TEE_PTS)
+                for k in box_rows)
+    live = (f"thinnest fallback sample {thin} returns, {thin / fhe.MIN_TEE_PTS:.1f}x the floor; the "
+            f"floor first bites at r = {bites:.2f} m")
+    assert thin > fhe.MIN_TEE_PTS, (
+        f"the re-derived floor would refuse a card the corpus prints today: {live}")
+    m = _published(src, r"([\d.]+)x margin, and it refuses nothing above r = ([\d.]+) m",
+                   "the live margin on the re-derived count floor", live)
+    assert abs(float(m.group(1)) - thin / fhe.MIN_TEE_PTS) < 0.5 and \
+        abs(float(m.group(2)) - bites) < 0.05, (
+        f"the module publishes a {m.group(1)}x margin biting at r = {m.group(2)} m; measured {live}")
 
 
 @needs_corpus
