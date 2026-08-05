@@ -8,7 +8,7 @@ Check the LAZ tiles on disk against the greens they are supposed to feed.
 
 Why this exists: nothing verified that a downloaded tile's DATA reaches the greens, and a tile can
 be present, correctly named, and still hold no points where a green is. Castlewood Hill shipped
-holes 14 and 16 on the 1 m seamless DEM although 0.4 m LiDAR for them exists. Measured:
+holes 14 and 16 on the seamless DEM although 0.4 m LiDAR for them exists. Measured:
 
   both greens fall in grid cell w6153n2055
   the copy on disk (CA_AlamedaCo_1_2021, 30,648,617 bytes) has a DATA footprint of only
@@ -88,7 +88,7 @@ def _footprint_boxes(course_dir):
     An empty list is NOT the same as "everything is covered", and conflating the two made this module
     assert something it had not checked: with zero tiles on disk it printed "all 1 green(s) sit inside
     the downloaded tiles' data" and exited 0. Poppy Ridge reaches that path today (it has no LAZ at
-    all), as would any course built purely on the 1 m seamless DEM.
+    all), as would any course built purely on the seamless DEM.
     """
     foot = tile_footprints(os.path.join(course_dir, "laz"))
     if not foot:
@@ -194,7 +194,7 @@ def fell_back(course_dir):
 
     The bbox test above is a rectangle, so it can prove a green is outside the point data but never
     that it is inside. dem_hd/holeNN.json is the other end of the same question, recorded after the
-    fact by the stage that actually read the points: `source` names the 1 m seamless DEM when
+    fact by the stage that actually read the points: `source` names the seamless DEM when
     fetch_dem.py had to fill the green in, and `insufficient` is set when fetch_dem_hd.py refused its
     own 0.4 m attempt. Either way the LiDAR did not produce a usable surface there.
 
@@ -221,7 +221,7 @@ def fell_back(course_dir):
         if m.get("insufficient"):
             out[gid] = (m.get("hole"), "the 0.4 m attempt was refused as insufficient")
         elif "seamless" in src.lower():
-            out[gid] = (m.get("hole"), "built from the 1 m seamless DEM, not the point cloud")
+            out[gid] = (m.get("hole"), "built from the seamless DEM, not the point cloud")
     return out
 
 
@@ -236,7 +236,7 @@ def report(course_dir):
     els = _elements(course_dir)          # parsed ONCE and threaded down, not three times
     rings = _green_rings(course_dir, els)
     if not boxes:
-        print(f"  coverage NOT CHECKED: {why}. Greens here are read from the 1 m seamless DEM (or\n"
+        print(f"  coverage NOT CHECKED: {why}. Greens here are read from the seamless DEM (or\n"
               f"     not at all); nothing has been verified against a point cloud.")
         return why, [], []
     if not rings:
@@ -305,7 +305,7 @@ def main():
         return 2          # could not check -- same convention as tools/gen_provenance.py
     # holes count too: a course can have every green covered while a centreline leaves the data, and
     # that is where fetch_trees.py looks for canopy returns. So does a green the BBOX vouches for that
-    # the built surface says fell back to the 1 m DEM -- returning 0 for that was the under-report
+    # the built surface says fell back to the seamless DEM -- returning 0 for that was the under-report
     # this module's whole purpose forbids (monarch-bay: 6 fallback greens, 3 flagged).
     flagged = {gid for gid, _o, _t in bad}
     unexplained = [gid for gid in fell_back(config.COURSE_DIR) if gid not in flagged]

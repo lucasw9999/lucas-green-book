@@ -9056,7 +9056,8 @@ def test_the_lidar_listing_pages_rather_than_trusting_one_capped_reply(monkeypat
 
     A course needing more than 200 LPC products would have got a TRUNCATED tile list, silently: the
     missing tiles are not an error anywhere downstream, they are simply absent, so lidar_coverage sees a
-    smaller footprint, choose_project ranks surveys on it, and greens fall back to the 1 m DEM or to
+    smaller footprint, choose_project ranks surveys on it, and greens fall back to the seamless DEM or
+    to
     nothing for a reason that is not real. There was a `print("WARNING: hit the 200-item TNM cap")`,
     which is a line in a long log rather than a refusal, and this project's rule is the other way round.
 
@@ -9151,7 +9152,8 @@ def test_the_lidar_listing_tells_an_unstable_order_apart_from_a_truncated_survey
     has ever seen these semantics live; the refusals were reasoned about rather than observed.
 
     Refusing is still right for a genuinely SHORT listing -- a missing tile is invisible downstream, so
-    coverage measures smaller and greens fall back to the 1 m DEM for a reason that is not real. The two
+    coverage measures smaller and greens fall back to the seamless DEM for a reason that is not real. The
+    two
     cases have to be told apart, and there is a fact that does it: how many ROWS the service handed over,
     against the number it said it holds.
 
@@ -10978,7 +10980,7 @@ def test_honesty_gate_blanks_a_green_it_refused_to_read(gate_course):
 
 
 def test_render_refuses_an_ungated_surface_that_is_mostly_nodata(gate_course):
-    """fetch_dem.py -- the 1 m seamless path a BRAND-NEW course uses -- wrote no gate keys at all,
+    """fetch_dem.py -- the seamless path a BRAND-NEW course uses -- wrote no gate keys at all,
     so meta.get("insufficient") was None (falsy) and an unusable surface printed slope numbers.
     render_green must therefore gate on the surface itself, not only on the producer's verdict."""
     import numpy as np
@@ -13096,7 +13098,7 @@ def test_a_mixed_crs_tile_directory_is_refused_not_projected_through_one_guess(t
     metres on 6. Nothing ever removes a previously-fetched project's tiles from laz/, so a directory
     holding both is reachable by ordinary use, and the failure is SILENT: reproduced here, the ftUS
     transform applied to a metre tile throws its points about 1.9e6 m away, where main()'s bbox
-    prefilter drops them and prints "fed 0 greens". The green then falls to the 1 m DEM, or to nothing,
+    prefilter drops them and prints "fed 0 greens". The green then falls to the seamless DEM, or to nothing,
     for a reason that is not real -- and had the offset been small instead, the surface would have been
     built from points scaled by 3.28.
 
@@ -13628,7 +13630,7 @@ def test_every_built_green_records_its_coverage():
             continue
         m = _json.load(open(mf))
         if "seamless" in str(m.get("source", "")).lower():
-            continue                       # the 1 m fallback path records its own keys
+            continue                       # the seamless fallback path records its own keys
         assert "uncovered" in m, f"{mf} has no coverage figure -- the gate's input is unrecorded"
         assert m.get("density") is not None and m.get("nan_frac") is not None
         worst_unc = max(worst_unc, float(m["uncovered"]))
@@ -14681,7 +14683,7 @@ def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
         meta("b.json", source=lidar["source"], insufficient=True)) is False
     # an existing seamless surface may be refreshed
     assert fd.keeps_existing_surface(
-        meta("c.json", source="USGS 3DEP seamless 1 m @0.5m sampling", insufficient=False)) is False
+        meta("c.json", source="USGS 3DEP seamless mosaic @0.5m sampling", insufficient=False)) is False
     # absent or unreadable: rebuilding is the repair
     assert fd.keeps_existing_surface(str(tmp_path / "nope.json")) is False
     bad = tmp_path / "bad.json"
@@ -14770,7 +14772,7 @@ def test_a_malformed_only_is_refused_rather_than_silently_meaning_every_hole():
 
     Combined with OVERWRITE=1 -- the flag it is documented next to -- that is the difference between
     rebuilding 9 greens and rebuilding all 18, on the stage that replaces 0.4 m LiDAR surfaces with the
-    coarse 1 m DEM. A typo silently DOUBLING the scope of a destructive run is the one direction a
+    coarse seamless one. A typo silently DOUBLING the scope of a destructive run is the one direction a
     scope filter must not fail in.
 
     Ranges stay unsupported deliberately: the documented syntax is a comma-separated list (`ONLY=14,16`
@@ -15202,7 +15204,7 @@ def test_one_shared_rule_decides_what_may_be_distributed():
 def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     """Nothing checked that a downloaded tile's DATA reaches the greens. A tile can be present,
     correctly named, and hold no points where a green is -- and the green then silently falls back to
-    the 1 m seamless DEM even though 0.4 m LiDAR for it exists.
+    the seamless DEM even though 0.4 m LiDAR for it exists.
 
     Castlewood Hill shipped holes 14 and 16 that way. Measured: both greens fall in grid cell
     w6153n2055; the copy on disk (CA_AlamedaCo_1_2021, 30,648,617 bytes) has a data footprint of only
@@ -15306,7 +15308,7 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     # "nothing flagged" must never be reported as "verified covered" when NOTHING WAS CHECKED. With
     # zero tiles on disk this printed "all 1 green(s) sit inside the downloaded tiles' data" and
     # exited 0 -- asserting a coverage it had not looked at. Poppy Ridge reaches that path today (no
-    # LAZ at all), as would any course built purely on the 1 m seamless DEM.
+    # LAZ at all), as would any course built purely on the seamless DEM.
     empty = tmp_path / "empty"
     (empty / "laz").mkdir(parents=True)
     (empty / "osm_geom.json").write_text(json.dumps({"elements": [
@@ -18592,7 +18594,7 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
       * An OSM re-fetch changed which polygons a tree may sit on and the tree layers were not
         rebuilt. Micke Grove: 5,642 markers committed and 5,642 fresh.
       * fetch_dem.py rewrote every hole it was given instead of filling gaps, replacing good 0.4 m
-        LiDAR greens with the 1 m DEM. Monarch Bay: 3,889,124 bytes against 4,973,620.
+        LiDAR greens with the seamless one. Monarch Bay: 3,889,124 bytes against 4,973,620.
 
     It ran on ONE course until both of those were found by hand on others, so it now runs on all of
     them. Byte-for-byte reproducibility was last confirmed by a fresh COLD_BUILD=1 run on 2026-07-30.
@@ -19740,7 +19742,7 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
     lidar_coverage.py reports as having centreline outside the point data ("Trees along those stretches
     ... will be missing"). They are the ONLY zero-tree holes anywhere in the corpus, which is what makes
     the blank the survey's edge rather than open ground. The card already named those holes for a
-    different reason -- their greens fall back to the 1 m DEM -- so a reader was told the green was
+    different reason -- their greens fall back to the seamless DEM -- so a reader was told the green was
     coarser and not that the corridor was unmapped.
 
     On the hole card, not the guide card, and that placement is load-bearing rather than cosmetic. The
@@ -20384,10 +20386,10 @@ def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path
     assert not insufficient, (
         "green surface(s) on disk are marked insufficient, so their cards print blank:\n  "
         + "\n  ".join(insufficient)
-        + "\n  If this followed a re-run of fetch_dem_hd.py, it overwrote a working 1 m fallback. "
+        + "\n  If this followed a re-run of fetch_dem_hd.py, it overwrote a working seamless fill. "
           "Re-run fetch_dem.py to restore the fill, or use OVERWRITE=1 if blanking was the intent.")
     assert len(seamless) >= 6, (
-        f"only {len(seamless)} green(s) are on the 1 m seamless fallback; monarch-bay alone has 6. A "
+        f"only {len(seamless)} green(s) are on the seamless fallback; monarch-bay alone has 6. A "
         f"drop means fetch_dem_hd replaced a fill -- with a GOOD 0.4 m surface that is an upgrade and "
         f"this floor should be lowered deliberately, but with a refused one it is a blanked green.")
 
@@ -20406,12 +20408,12 @@ def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path
         return fetch_dem_hd.keeps_existing_surface(str(mp), overwrite)
 
     LIDAR = {"source": "USGS 3DEP LiDAR ground returns @0.4m", "insufficient": False}
-    SEAMLESS = {"source": "USGS 3DEP 1 m seamless DEM", "insufficient": False}
+    SEAMLESS = {"source": "USGS 3DEP seamless mosaic @0.5m sampling", "insufficient": False}
     cases = [
         (LIDAR, False, True, "a good 0.4 m LiDAR surface -- the 192-green majority. The old guard "
                              "tested is_seamless, so it protected ONLY the 6 seamless records and would "
                              "have let a refused re-run blank any of the other 192."),
-        (SEAMLESS, False, True, "a working 1 m seamless fill -- the case the guard was written for"),
+        (SEAMLESS, False, True, "a working seamless fill -- the case the guard was written for"),
         ({**LIDAR, "insufficient": True}, False, False,
          "a record that was ALREADY a refusal is not worth keeping; rebuilding it is the repair"),
         ({"insufficient": False}, False, False,
@@ -27958,6 +27960,16 @@ def _green_labels(path):
     return out
 
 
+# Every wording in which a printed page binds a resolution figure to the coarse-green caveat: the card
+# mark and the quoted mark inside the guide note ("2.7&times;3.4 m data"), and the guide note's own name
+# for the product ("the coarser <b>2.7&times;3.4 m</b> national model"). Both halves carry `<b>` and
+# smart quotes in the shipped HTML, so the tags are part of the pattern rather than stripped first.
+_PRINTED_CELL_WORDING = re.compile(
+    r"(?<![\d.])([\d.]+(?:&times;[\d.]+)?)\s*m(?:</b>)?(?:&rdquo;)?\s*data\b"
+    r"|coarser\s*(?:<b>)?\s*(?<![\d.])([\d.]+(?:&times;[\d.]+)?)\s*m(?:</b>)?\s*national model\b",
+    re.I)
+
+
 @needs_corpus
 def test_the_card_prints_the_source_cell_its_own_array_measures():
     """Six cards said `1 m data` for greens whose source grid measures 2.72 x 3.43 m.
@@ -28039,10 +28051,19 @@ def test_the_card_prints_the_source_cell_its_own_array_measures():
                         f"from a separately produced raster whose acquisition date this build records "
                         f"nowhere, so a flight date beside them implies a contemporaneity nothing "
                         f"establishes.")
-        # and the false claim must be gone from the printed page, in both of its wordings
-        for phrase in ("1 m data", "coarser <b>1 m</b>", "1 m</b> national model"):
-            if phrase in html:
-                problems.append(f"{os.path.relpath(bf, ROOT)} still prints {phrase!r}")
+        # ...and no OTHER resolution may appear on the printed page in any of the wordings this caveat
+        # uses -- the card mark, the guide note's model name, and the quoted mark inside it.
+        # DERIVED from the measurement, not a list of the three wordings that were wrong once: a
+        # hardcoded copy of the dead label catches only the mistake already made, and it is itself a
+        # literal that every prose sweep in this file then has to be taught to ignore. Any figure the
+        # arrays do not measure fails here, including one nobody has typed yet.
+        measured = {_norm_label(f"{v[0]:.1f}&times;{v[1]:.1f} m data") for (s, _h), v in cells.items()
+                    if s == slug and v[3]}
+        for m in _PRINTED_CELL_WORDING.finditer(html):
+            said = m.group(1) or m.group(2)
+            if _norm_label(f"{said} m data") not in measured:
+                problems.append(f"{os.path.relpath(bf, ROOT)} prints {' '.join(m.group(0).split())!r}; "
+                                f"its seamless greens measure {sorted(measured)}")
 
     assert graded, "no card carrying a measured-cell label was graded, so this test verified nothing"
     assert_no_course_skipped(seen, "test_the_card_prints_the_source_cell_its_own_array_measures")
@@ -28170,21 +28191,76 @@ def _norm_label(s):
     return re.sub(r"\s+", "", s).lower()
 
 
-def _prose_of_repo():
-    """[(where, text)] -- every comment BLOCK, docstring and user-facing doc in the repo.
+def _py_sources(root=None):
+    """Every .py file this repo owns: root, tools/ and tests/."""
+    root = root or ROOT
+    return (sorted(glob.glob(os.path.join(root, "*.py")))
+            + sorted(glob.glob(os.path.join(root, "tools", "*.py")))
+            + sorted(glob.glob(os.path.join(root, "tests", "*.py"))))
+
+
+def _prose_docs(root=None):
+    """The repo's user-facing documents: the two READMEs a reader starts from, and every legal record.
+
+    legal/*.md is in here because two of those records carried a stale resolution and NOTHING graded
+    them -- they are the most public prose the project has, and they were the last prose any grader
+    could see. Globbed rather than listed so a new record cannot be added ungraded, and that includes
+    the two GENERATED ones (legal/03, legal/05): if a generator prints a stale figure into them, the
+    document is still wrong on disk, and the repair is to fix the generator and regenerate.
+    """
+    root = root or ROOT
+    return ["README.md", "PIPELINE.md"] + sorted(
+        os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "legal", "*.md")))
+
+
+def _string_literals_of(path):
+    """[(lineno, text)] -- every string literal in one .py file that is NOT a docstring.
+
+    The hole 108a894 left. Its grader promised to refuse "any record OR RUNTIME STRING that names a
+    mark the engine does not produce", and it collected tokenize COMMENT tokens and AST docstrings
+    only -- so `print("... 1 m data ...")` was invisible to the one test whose entire job was to find
+    exactly that, and injecting the dead label into a print() left the full suite byte-identical to
+    baseline. A runtime message is the most user-facing prose a pipeline module has: it is read while
+    the pipeline runs, by the person deciding whether to trust the output.
+
+    f-strings included: `ast.walk` reaches the Constant parts inside a JoinedStr, which is how the
+    SystemExit text in fetch_lidar.py is written. Docstrings are excluded by identity (the Constant
+    that IS a docstring), never by content, so a literal that merely looks like prose is still graded.
+    """
+    import ast
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    docs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if ast.get_docstring(node):
+                docs.add(id(node.body[0].value))
+    return [(node.lineno, node.value) for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and id(node) not in docs]
+
+
+def _prose_of_repo(root=None):
+    """[(where, text)] -- every comment BLOCK, docstring, STRING LITERAL and user-facing doc.
 
     Comments come out as blocks (consecutive `#` lines joined) because a sentence is written across
     them, and the grader below judges a whole clause. Docstrings come from the AST rather than a regex
     so a string that merely looks like one is not mistaken for prose.
+
+    String literals and legal/*.md were the two surfaces 108a894 claimed to cover and did not. Both
+    are in now, and the mutation test for it is
+    test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_in, which injects the
+    dead label into all eight surfaces one at a time and requires a failure from each. A grader that
+    cannot see the class it was written for is worse than no grader: it certifies the absence of the
+    defect.
+
+    `root` exists only for that mutation test, which needs to point the collector at a scratch copy.
     """
+    import tokenize
+    root = root or ROOT
     out = []
-    files = (sorted(glob.glob(os.path.join(ROOT, "*.py")))
-             + sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))
-             + sorted(glob.glob(os.path.join(ROOT, "tests", "*.py"))))
-    for p in files:
-        rel = os.path.relpath(p, ROOT)
-        import ast
-        import tokenize
+    for p in _py_sources(root):
+        rel = os.path.relpath(p, root)
         block, first = [], None
         with open(p, "rb") as fh:
             prev = None
@@ -28200,6 +28276,7 @@ def _prose_of_repo():
                 prev = tok.start[0]
         if block:
             out.append((f"{rel}:{first}", " ".join(block)))
+        import ast
         with open(p, encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         for node in ast.walk(tree):
@@ -28207,9 +28284,28 @@ def _prose_of_repo():
                 doc = ast.get_docstring(node)
                 if doc:
                     out.append((f"{rel}:{getattr(node, 'lineno', 1)} docstring", doc))
-    for d in ("README.md", "PIPELINE.md"):
-        with open(os.path.join(ROOT, d), encoding="utf-8") as fh:
+        for lineno, text in _string_literals_of(p):
+            out.append((f"{rel}:{lineno} string literal", text))
+    for d in _prose_docs(root):
+        with open(os.path.join(root, d), encoding="utf-8") as fh:
             out.append((d, fh.read()))
+    return out
+
+
+def _stale_label_mentions(live, root=None):
+    """[(where, said, clause)] -- prose naming a resolution label the engine does not print.
+
+    Split out from the assertion so the mutation test above can drive the SAME collector and the SAME
+    clause rule over a scratch copy. Two graders reading one function is the point: a mutation test
+    against a re-implementation of the scan would prove nothing about the scan that ships.
+    """
+    out = []
+    for where, text in _prose_of_repo(root):
+        for clause in _clauses(text):
+            for m in _CELL_LABEL_CLAIM.finditer(clause):
+                if _norm_label(m.group(0)) in live or _DEAD_LABEL_REFUTED.search(clause):
+                    continue
+                out.append((where, m.group(0), " ".join(clause.split())[:140]))
     return out
 
 
@@ -28278,19 +28374,216 @@ def test_no_record_names_a_green_label_the_engine_does_not_print():
                   f"stopped being measured or the label stopped naming it; both are the defect "
                   f"9f37857 fixed.")
 
-    stale = []
-    for where, text in _prose_of_repo():
-        for clause in _clauses(text):
-            for m in _CELL_LABEL_CLAIM.finditer(clause):
-                if _norm_label(m.group(0)) in live or _DEAD_LABEL_REFUTED.search(clause):
-                    continue
-                stale.append(f"{where}: says {m.group(0)!r}; the engine prints "
-                             f"{sorted(emitted)} -- clause: {' '.join(clause.split())[:140]}")
+    stale = [f"{where}: says {said!r}; the engine prints {sorted(emitted)} -- clause: {clause}"
+             for where, said, clause in _stale_label_mentions(live)]
     assert not stale, (
         f"a record names a green label the engine does not print. The label is the one mark whose job "
         f"is to tell a junior to trust that green LESS, so a stale copy of it is not cosmetic. Say what "
         f"the engine says, or mark the mention as history (a clause that refutes it is cleared):\n  "
         + "\n  ".join(stale))
+
+
+# The eight surfaces a resolution label can hide in, each with the shape of injection that reaches it.
+# A comment, a docstring and a runtime string live in code; the other five are documents. 108a894's
+# grader saw three of the eight and its message claimed all of them.
+#
+# The label to inject is PASSED IN, never typed here. A mutation test for a grader that reads this file
+# would otherwise trip its own grader on its own fixtures -- and the way out of that must not be to
+# split the phrase across two literals to hide it, because a repo where prose can dodge the sweep by
+# spelling is a repo where the next stale label dodges it too.
+def _label_injections(dead):
+    return (
+        ("a comment", "lidar_coverage.py",
+         lambda s: s + f"\n# every green here is {dead}.\n"),
+        ("a docstring", "lidar_coverage.py",
+         lambda s: s.replace('"""', f'"""Reads greens that are {dead}.\n\n', 1)),
+        ("a print() string literal", "lidar_coverage.py",
+         lambda s: s + f'\n\ndef _probe():\n    print("hole 9: {dead}")\n'),
+        ("a SystemExit message", "fetch_lidar.py",
+         lambda s: s + f'\n\ndef _probe(n):\n    raise SystemExit(f"{{n}} greens are {dead}")\n'),
+        ("README.md", "README.md", lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+        ("PIPELINE.md", "PIPELINE.md", lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+        ("legal/01_DATA_SOURCES_AND_LICENSES.md", "legal/01_DATA_SOURCES_AND_LICENSES.md",
+         lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+        ("legal/11_HORIZONTAL_EARTH_MODEL.md", "legal/11_HORIZONTAL_EARTH_MODEL.md",
+         lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+    )
+
+
+def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_in():
+    """MUTATION TEST. 108a894 shipped a grader that could not see the class it was written for.
+
+    Its message said it refuses "any record OR RUNTIME STRING that names a mark the engine does not
+    produce, so the next relabel cannot strand these again". That was not true and no test could have
+    said so. Measured afterwards: the dead card label injected into PIPELINE.md did fail the grader by
+    name, and the same three words injected into a `print()` literal in lidar_coverage.py left the FULL
+    SUITE byte-identical to baseline -- because `_prose_of_repo` collected tokenize COMMENT tokens, AST
+    docstrings, README.md and PIPELINE.md, and nothing else. String literals and every one of the legal
+    records were invisible to the one test whose whole job was to find a stale label anywhere in the
+    repo.
+
+    A grader that misses the exact class it was written for is worse than no grader: it certifies the
+    absence of the defect, so the next person to look does not look. So the collector is now
+    MUTATION-TESTED rather than asserted. Each surface gets a dead label injected into a real copy of a
+    real file, one surface at a time, and the grader must come back with that surface named. The
+    unmutated copy must come back clean first, so every failure below is attributable to its injection
+    and not to something the copy already carried.
+
+    Fast and hermetic: the copy holds only the files the injections touch, so the collector's globs
+    (`*.py`, `legal/*.md`) find exactly those and the whole sweep runs in well under a second.
+    """
+    import shutil
+    import tempfile
+    live = {"2.7x3.4mdata"}          # a stand-in for the engine's vocabulary; this test grades the
+    #                                  COLLECTOR, and test_no_record_names... grades the vocabulary
+    dead = f"{9.9:.1f} m data"       # a figure outside it, BUILT rather than written down
+    assert _norm_label(dead) not in live and _CELL_LABEL_CLAIM.search(dead), (
+        f"the probe label {dead!r} is not a resolution claim outside the vocabulary, so injecting it "
+        f"would prove nothing about any surface")
+    injections = _label_injections(dead)
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "legal"))
+        for rel in sorted({s[1] for s in injections} | set(_prose_docs())):
+            shutil.copyfile(os.path.join(ROOT, rel), os.path.join(td, rel))
+        pristine = {rel: open(os.path.join(td, rel), encoding="utf-8").read()
+                    for rel in sorted({s[1] for s in injections})}
+
+        clean = _stale_label_mentions(live, root=td)
+        assert not clean, (
+            f"the unmutated copy already names a label outside the engine's vocabulary, so no "
+            f"injection below would be attributable: {clean[:4]}")
+
+        missed = []
+        for name, rel, inject in injections:
+            path = os.path.join(td, rel)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(inject(pristine[rel]))
+            try:
+                found = [w for w, _said, _cl in _stale_label_mentions(live, root=td)]
+            finally:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(pristine[rel])
+            if not any(w.split(":")[0] == rel for w in found):
+                missed.append(f"{name}: put {dead!r} in {rel} and the grader reported "
+                              f"{found or 'nothing at all'}")
+        assert not missed, (
+            "the stale-label grader cannot see one of the surfaces a stale label has actually hidden "
+            "in, so it certifies prose it never read:\n  " + "\n  ".join(missed))
+
+
+# A resolution bound DIRECTLY to the seamless product, in either order: "1 m seamless DEM",
+# "seamless 1 m", "1 m fallback", "1 m mosaic", "1 m national model", "1 m DEM". Deliberately an
+# ADJACENCY rule rather than "a number anywhere in a clause that mentions the mosaic" -- the clauses
+# that legitimately put 0.4 m LiDAR beside the seamless fallback in one sentence are everywhere in this
+# repo, and a grader that flagged them would be switched off within a day.
+_SEAMLESS_RES = re.compile(
+    r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b\s+"
+    r"(?:seamless|mosaic|national\s+model|fallback|DEM\b)"
+    r"|(?:seamless|mosaic|fallback)\s+(?:DEM\s+|service\s+)?(?<![\d.])(\d[\d.]*)\s*"
+    r"(?:m|metres?|meters?)\b",
+    re.I)
+
+
+def _seamless_grid_figures():
+    """(sorted allowed metre figures, how each was measured) for the seamless surfaces.
+
+    TWO figures describe those arrays and they are not the same thing: the SOURCE cell the reply was
+    resampled from (render_green.source_lattice, read off the pixels) and the OUTPUT sampling the patch
+    was delivered at (the recorded bbox over the array's own shape). Prose may name either -- both are
+    true and both are useful. What it may not name is a THIRD figure, and "1 m" is a third figure: it
+    was typed into `source` once, and 3DEP's seamless ImageServer is a multi-resolution mosaic that
+    answered from a tier 2.7x and 3.4x coarser at every green this project has ever taken from it.
+    """
+    cells = _measured_cells()
+    seam = [(s, h) for (s, h), v in cells.items() if v[3]]
+    figs = {}
+    for s, h in seam:
+        v = cells[(s, h)]
+        figs.setdefault(round(v[0], 2), "a measured E-W source cell")
+        figs.setdefault(round(v[1], 2), "a measured N-S source cell")
+        mp = os.path.join(ROOT, "courses", s, "dem_hd", f"hole{h:02d}.json")
+        with open(mp, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        figs.setdefault(round((xmax - xmin) * _mlon(clat) / meta["W"], 2), "the output sampling")
+        figs.setdefault(round((ymax - ymin) * _mlat(clat) / meta["H"], 2), "the output sampling")
+    return figs
+
+
+@needs_corpus
+def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_one_metre_product():
+    """Six live sites went on calling the seamless fallback "the 1 m seamless DEM" after 9f37857.
+
+    9f37857 measured that product off the arrays and corrected the CARD. It did not correct the places
+    a user actually meets the same claim: `lidar_coverage.py`'s uncovered-green report prints "built
+    from the 1 m seamless DEM" three lines below the corrected text and in the same output block,
+    `fetch_lidar.py` says it in a SystemExit, `fetch_dem.py` says it in a print, and legal/01 and
+    legal/11 both say it in a published record. Those two legal records were graded by NOTHING: the
+    label grader above could not see legal/*.md at all, and the one-metre grader ran only over
+    course.json fields.
+
+    All of it is one claim -- that the raster those six greens come from has a 1 m cell -- and the
+    arrays deny it. The direction is the dangerous one: it tells a reader the coarse greens are nearly
+    three times better than they are, on the exact greens the book is asking them to trust least.
+
+    GRADED AGAINST THE ARRAYS, never against the corrected card. The allowed figures are the source
+    cell `render_green.source_lattice` measures and the sampling the patch was delivered at, both from
+    `_seamless_grid_figures()`; any other figure bound to the product fails here by name and by file.
+
+    SCOPE, stated positively so it cannot be read as more than it is: this grades every STRING LITERAL
+    in the repo's .py files -- the runtime messages a user reads while the pipeline runs, and the
+    fixtures that stand in for recorded artifacts -- plus README.md, PIPELINE.md and every legal
+    record. It does NOT grade comments or docstrings: two pipeline modules outside this change still
+    carry the stale product name in internal notes, so a grader that swept them would be red on
+    arrival and would have to be waived, which is worse than a narrower grader that is honest about
+    its edges. Widening the surface set to comments and docstrings needs no change to the measurement
+    below -- only for those notes to be corrected first.
+    """
+    allowed = _seamless_grid_figures()
+    if not allowed:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    tol = 0.06                          # the same cell tolerance the card and legal/03 graders use
+    ranges = {}
+    for a, why in allowed.items():
+        lo, hi = ranges.get(why, (a, a))
+        ranges[why] = (min(lo, a), max(hi, a))
+    measured = "; ".join(f"{lo:.2f}-{hi:.2f} m {why}" if lo != hi else f"{lo:.2f} m {why}"
+                         for why, (lo, hi) in sorted(ranges.items()))
+    surfaces = []
+    for p in _py_sources():
+        rel = os.path.relpath(p, ROOT)
+        surfaces += [(f"{rel}:{ln} string literal", t) for ln, t in _string_literals_of(p)]
+    for d in _prose_docs():
+        with open(os.path.join(ROOT, d), encoding="utf-8") as fh:
+            surfaces.append((d, fh.read()))
+
+    bad = []
+    for where, text in surfaces:
+        for clause in _clauses(text):
+            for m in _SEAMLESS_RES.finditer(clause):
+                said = float(m.group(1) or m.group(2))
+                if any(abs(said - a) <= tol for a in allowed):
+                    continue
+                bad.append(f"{where}: calls it {m.group(0)!r}; measured {measured} "
+                           f"-- clause: {' '.join(clause.split())[:130]}")
+
+    # The other half of the same claim, and the half that replaces the figures just removed: a document
+    # that names the source cell PER AXIS is graded against the axis it names. legal/01 now carries such
+    # a pair, and a corrected figure nothing grades is the next stale figure -- that is how "1 m"
+    # survived six cards and two lines of legal/03.
+    cells = _measured_cells()
+    seam = [v for v in cells.values() if v[3]]
+    for d in _prose_docs():
+        with open(os.path.join(ROOT, d), encoding="utf-8") as fh:
+            said_ew, said_ns = _axis_cells(fh.read())
+        bad += _cells_off(d, said_ew, [v[0] for v in seam], "E-W")
+        bad += _cells_off(d, said_ns, [v[1] for v in seam], "N-S")
+
+    assert not bad, (
+        "a runtime message or a published record names a resolution for the seamless fallback that the "
+        "surfaces built from it deny. Name the measured figure, or name no figure at all -- "
+        "\"the seamless DEM\" is both shorter and true:\n  " + "\n  ".join(bad))
 
 
 @needs_corpus

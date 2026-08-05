@@ -75,7 +75,8 @@ def tnm_items(tries=8):
     THIS USED TO BE ONE REQUEST FOR `&max=200`, read as the whole world. A course needing more than 200
     products would have got a silently TRUNCATED tile list: the missing tiles are not an error anywhere
     downstream, they are simply absent, so lidar_coverage measures a smaller footprint, choose_project
-    ranks surveys on it, and greens fall back to the 1 m DEM or to nothing for a reason that is not real.
+    ranks surveys on it, and greens fall back to the seamless DEM or to nothing for a reason that is
+    not real.
     There was a `print("WARNING: hit the 200-item TNM cap")`, which is a line in a long log rather than a
     refusal, and everything else in this pipeline refuses.
 
@@ -199,7 +200,7 @@ def tnm_items(tries=8):
             f"  paged. Refusing to treat the {len(got)} products seen so far as the whole survey"
             + (f" of {total}" if total else "") + ": a short\n"
             f"  tile list is invisible downstream -- the tiles are simply absent, coverage measures\n"
-            f"  smaller, and greens fall back to the 1 m DEM for a reason that is not real. Check the\n"
+            f"  smaller, and greens fall back to the seamless DEM for a reason that is not real. Check\n"
             f"  products API before re-running." + said)
     if total and got and len(got) < total:
         if walked_to_end and served >= total:

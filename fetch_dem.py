@@ -528,7 +528,7 @@ def main():
     if skipped:
         print(f"\nkept the existing 0.4 m LiDAR surface on {len(skipped)} green(s): "
               f"{', '.join(str(h) for h in sorted(skipped))}\n"
-              f"  This stage only FILLS GAPS. To replace a good surface with the 1 m DEM anyway, "
+              f"  This stage only FILLS GAPS. To replace a good surface with the seamless one anyway, "
               f"re-run with OVERWRITE=1.")
     print(f"\nWrote {done} greens -> {OUT}")
 
