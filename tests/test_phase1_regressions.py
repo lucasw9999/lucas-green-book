@@ -141,6 +141,37 @@ def _engine(slug):
     return config, render_hole
 
 
+def _sand_the_engine_sees(rh, em, line, bunkers):
+    """The bunkers render_hole actually puts on THIS hole's card, in the engine's own frame.
+
+    Every test that re-derives the carry rule has to start from the same sand the engine starts from,
+    and four of them did not: they took every `golf=bunker` way on the course and applied only the
+    along-line filters, skipping the CORRIDOR pre-filter that builds `bunkers` in render_hole --
+    `edge_within(g, CORRIDOR_M['bunker'])`, the nearest EDGE of the ring within 40 m of the DRAWN
+    polyline. That makes the test's window population a strict SUPERSET: 144 merged windows against the
+    engine's 137, differing on ten holes, six of them in window COUNT (bay-view 9, callippe 15,
+    micke-grove 11, the-reserve 10 and 14, valley-hi 2) and four in a window's EDGES (callippe 1 and 2,
+    merion 10 and 15).
+
+    It already published wrong figures. render_hole's landing-bound note named micke-grove 11 at 8.5031
+    as one of four kept windows tighter than the worst green-bounded one; that window does not exist in
+    the engine -- it is built from ways 1315241570/1315241571, which come 2.2 m and 8.4 m off the CHORD
+    but more than 40 m off the drawn polyline, so the engine never selects them. Three windows are
+    tighter, not four.
+
+    The refusal SETS happen to agree today, so nothing mis-fires; a re-fetch that moves one phantom
+    window over the bound would make a test demand a refusal the engine cannot make.
+
+    `edge_within` itself is not re-implemented -- frac_len_within is the engine's own closed-form
+    boundary-length measure, and a second copy of it here is a second thing to keep in step.
+    """
+    line_em = [em(q["lat"], q["lon"]) for q in line]
+    buf = rh.CORRIDOR_M["bunker"]
+    return [g for g in bunkers
+            if rh.frac_len_within([em(q["lat"], q["lon"]) for q in (g.get("geometry") or [])],
+                                  line_em, buf) > 0.0]
+
+
 def _dist_to_poly(pt, poly, em):
     """Metres from a projected point to a polygon: 0 inside, else nearest edge. Written here rather
     than imported so the test's model choice does not lean on the engine's own geometry code."""
@@ -5728,8 +5759,11 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
     recorded 2.24 (218.03 - 215.79) and then repeated the old one in a NEW comment beside it. A figure
     four passages quote and nothing grades goes stale once and then propagates.
 
-    Re-derived here from the OSM rings through the engine's own frame, and required in every passage that
-    states it, so the next migration cannot leave one behind.
+    Re-derived here from the OSM rings through the engine's own frame -- and from the engine's own sand,
+    which this test did not start from either: see _sand_the_engine_sees. the-reserve 8's figures do not
+    move under the pre-filter, but the test was one re-fetch away from measuring a window off a bunker
+    the card does not draw. Required in every passage that states it, so the next migration cannot leave
+    one behind.
 
     Note what the number is and is not: 215.79 is the far edge of the window the CARRY FILTERS keep, so
     2.24 yd is the shortfall of the printed decision. The full waste complex reaches 234.83 -- 16.81 yd
@@ -5773,7 +5807,7 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
     front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
     total = info["card_yd"]
     raw = []
-    for g in bunkers:
+    for g in _sand_the_engine_sees(rh, em, hole, bunkers):
         al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
         of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
         if not al:
@@ -5932,12 +5966,19 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     Neither figure was wrong; the omission was which one it was. The thinner is the honest headline, and
     0.4352 yd on a bound that governs 119 printed figures is thin.
 
-    AND FOUR KEPT WINDOWS ARE TIGHTER THAN 8.7456, which the sentence's word "worst" denies:
-    copper-valley 17 (8.2538), micke-grove 11 (8.5031), merion 5 (8.5073), monarch-bay 2 (8.5827). All
-    four are bounded by the NEXT SAND rather than by the green, and the merge guarantees a sand-to-sand
-    gap above CARRY_MERGE_GAP_YD by construction -- so they are tautological and can never be dropped.
-    That is exactly why the qualification matters: 8.7456 is the worst of the 86 windows the rule can
-    actually DECIDE and 8.2538 the worst of all 132, and a reader cannot tell which claim was made.
+    AND THREE KEPT WINDOWS ARE TIGHTER THAN 8.7456, which the sentence's word "worst" denies:
+    copper-valley 17 (8.2538), merion 5 (8.5073), monarch-bay 2 (8.5827). All three are bounded by the
+    NEXT SAND rather than by the green, and the merge guarantees a sand-to-sand gap above
+    CARRY_MERGE_GAP_YD by construction -- so they are tautological and can never be dropped. That is
+    exactly why the qualification matters: 8.7456 is the worst of the 83 KEPT windows the green front
+    bounds and 8.2538 the worst of all 125 kept, and a reader cannot tell which claim was made.
+
+    IT SAID FOUR, AND THE FOURTH WAS A PHANTOM. This test used to take every `golf=bunker` way on the
+    course and apply only the along-line filters, skipping the corridor pre-filter that builds `bunkers`
+    in render_hole -- so its population was a strict superset of the engine's, 144 merged windows against
+    137, and micke-grove 11 grew a second window at 8.5031 out of two ways the engine never selects.
+    The counts went with it: the published 86 and 132 were counts of KEPT windows measured over that
+    superset, described as "windows this rule can actually decide" and "all". See _sand_the_engine_sees.
 
     THAT COUNT WAS GRADED BY `str(len(tighter)) in rh_src`, WHICH IS NOT A CHECK. It is a substring test
     for one digit in a 1,400-line file, and every count from 0 to 9 passes it. Proven vacuous by
@@ -6007,8 +6048,9 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                 return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
+            in_corr = _sand_the_engine_sees(rh, em, line, bunkers)
             raw = []
-            for g in bunkers:
+            for g in in_corr:
                 al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                 of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                 if not al:
@@ -6030,7 +6072,7 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
             def reach_of(a, b):
                 """Furthest sand inside a window, including greenside sand the carry filter drops."""
                 r = b
-                for g in bunkers:
+                for g in in_corr:
                     al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                     of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                     if not al or min(of) > 30.0:
@@ -6051,7 +6093,12 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                 printed_last.append((front - reach_of(near, far), ref, hn))
     assert len(kept) >= 100 and dropped, f"only {len(kept)} kept / {len(dropped)} dropped -- build first"
     assert_no_course_skipped(
-        seen_courses, "test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to")
+        seen_courses, "test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to",
+        exempt={"bay-view-golf-club": "the engine selects no in-corridor sand window on any of its "
+                                      "holes, which is why it prints no carry at all -- there is no "
+                                      "landing decision here to measure. It DID contribute one until "
+                                      "the corridor pre-filter arrived: hole 9's 100.94-117.57 window "
+                                      "is built from sand the engine never puts on the card."})
     bound = 8.0
 
     # (1) THE TAUTOLOGY, measured rather than asserted in prose: a window bounded by the next sand can
@@ -6120,6 +6167,25 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
         "their own margin beside their hole number:\n  " + "\n  ".join(unnamed)
         + "\n  The list is the whole qualification: without it 'worst KEPT' reads as a claim about "
           "every window, and a figure quoted without its hole cannot be checked.")
+    # ...AND THE POPULATION COUNTS THOSE TWO FIGURES ARE THE WORST OF. The note read "8.7456 is the worst
+    # of the 86 windows this rule can actually decide; 8.2538 is the worst of all 132". Both numbers were
+    # counts of KEPT windows -- neither is a count of decidable windows and neither is a count of all --
+    # and both came from the pre-filter-free superset. Four counts are in play and all four are derived
+    # here, so the sentence cannot describe one and print another.
+    decidable = len([x for x in kept + dropped if x[3] == "green"])
+    allw = len(kept) + len(dropped)
+    for pat, want in ((r"worst of the (\d+) KEPT windows the green front bounds", (len(green_bound),)),
+                      (r"worst of all (\d+) kept", (len(kept),)),
+                      (r"(\d+) of the corpus's (\d+) windows are green-bounded", (decidable, allw))):
+        got = re.search(pat, flat)
+        assert got, (
+            f"render_hole.py's landing-bound note no longer carries the population count matching "
+            f"{pat!r}. Measured: {len(green_bound)} kept green-bounded, {len(kept)} kept, {decidable} "
+            f"green-bounded of {allw} windows in all.")
+        assert tuple(int(g) for g in got.groups()) == want, (
+            f"render_hole.py says {got.group(0)!r}; measured over the engine's own sand population it "
+            f"is {want}. These were published as 86 and 132, which were counts of KEPT windows wearing "
+            f"the words 'can actually decide' and 'all'.")
 
     for phrase in ("rule's own", "suppression test"):
         assert phrase in rh_src.lower(), (

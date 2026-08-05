@@ -1197,11 +1197,16 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #     rounding 289.69 up to 290 costs 0.31 yd. Margin over the bound: 0.4352, and that is the
     #     thinnest real margin, so it is the honest headline for a bound governing 119 printed figures.
     #
-    # "worst KEPT" also needed qualifying: 4 kept windows are tighter than 8.7456 -- copper-valley 17 at
-    # 8.2538, micke-grove 11 at 8.5031, merion 5 at 8.5073, monarch-bay 2 at 8.5827. Every one is bounded
+    # "worst KEPT" also needed qualifying: 3 kept windows are tighter than 8.7456 -- copper-valley 17 at
+    # 8.2538, merion 5 at 8.5073, monarch-bay 2 at 8.5827. Every one is bounded
     # by the NEXT SAND rather than the green, and the merge guarantees a sand-to-sand gap above
     # CARRY_MERGE_GAP_YD by construction, so those are TAUTOLOGICAL and can never be dropped. 8.7456 is
-    # the worst of the 86 windows this rule can actually decide; 8.2538 is the worst of all 132.
+    # the worst of the 83 KEPT windows the green front bounds, and 8.2538 the worst of all 125 kept;
+    # 95 of the corpus's 137 windows are green-bounded and so decidable at all. (That list said FOUR,
+    # naming micke-grove 11 at 8.5031, and the counts said 86 and 132. All three came from a test that
+    # re-derived the rule over every golf=bunker way on the course, skipping the corridor pre-filter
+    # `bunkers` is built with -- so micke-grove 11's second window is sand this engine never selects,
+    # and 86 and 132 were counts of KEPT windows wearing the words "decide" and "all".)
     #
     # And the value is inherited rather than measured ON PURPOSE. The physical question -- "is N yards a
     # landing area for a junior's tee shot" -- needs dispersion data this project does not have, so a
