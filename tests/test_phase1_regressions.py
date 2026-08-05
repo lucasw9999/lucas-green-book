@@ -5466,7 +5466,9 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     real but the figures are METRIC-DEPENDENT, so see
     test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to, which derives every one
     of them from the corpus and grades the prose in render_hole.py against them. By THIS test's measure
-    the worst kept is 8.4352 yd and the best dropped -0.4795; by the rule's own, 8.7456 and 3.4251.
+    the worst kept is 17.1187 yd (callippe 8) and the best dropped -0.8540 (monarch-bay 14); by the
+    rule's own, 8.8428 (castlewood-hill 10) and 6.1489 (micke-grove 13). Those read 8.4352 / -0.4795 and
+    8.7456 / 3.4251 until micke-grove 13 stopped printing a carry -- it held BOTH worst-kept records.
 
     Only the FURTHEST printed window is checked here, because the merge already guarantees more than
     CARRY_MERGE_GAP_YD of clear ground after every other one. The unguarded boundary was the one
@@ -6108,24 +6110,29 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     """CARRY_MERGE_GAP_YD decides whether a carry is printed, and its margin was published unqualified.
 
     render_hole said "the corpus leaves a clean break either side of it: worst KEPT landing area 8.7 yd
-    (micke-grove 13), best DROPPED 3.4 (monarch-bay 14)". Every figure there is right and the sentence
+    (micke-grove 13), best DROPPED 3.4 (monarch-bay 14)". Every figure there was right and the sentence
     is still misleading, because there are TWO measures in play and it named neither:
 
-      * THE RULE'S OWN -- `beyond = min(next sand, green front)`, unrounded edges. micke-grove 13 has
-        8.7456 yd, so "8.7" is this measure, and the margin over the 8.0 bound is 0.7456.
+      * THE RULE'S OWN -- `beyond = min(next merged window, greenside sand, green front)`, unrounded
+        edges. The worst kept window the rule can DECIDE is castlewood-hill 10 at 8.8428, bounded by
+        greenside sand, and the best dropped is micke-grove 13 at 6.1489. Margin over the 8.0 bound:
+        0.8428, and that is the thinner of the two, so it is the honest headline.
       * THE SUPPRESSION TEST'S -- last printed window only, `reach` seeded from the ROUNDED printed far
-        edge, bound the green front alone. micke-grove 13's far edge rounds 289.69 up to 290, which
-        costs 0.31 yd, so the same window measures 8.4352 and the margin is 0.4352.
+        edge and chained across strips of grass narrower than CARRY_MERGE_GAP_YD. Worst kept 17.1187
+        (callippe 8), a margin of 9.1187.
 
-    Neither figure was wrong; the omission was which one it was. The thinner is the honest headline, and
-    0.4352 yd on a bound that governs 119 printed figures is thin.
+    Neither figure was wrong; the omission was which one it was. Both headlines used to be micke-grove
+    13's -- 8.7456 by the rule's own measure and 8.4352 by the suppression test's, since rounding 289.69
+    up to 290 costs 0.31 yd -- and that card stopped printing a carry when "the next sand" started
+    counting the greenside sand `total_yd - 40` drops. The thinner measure changed hands with it.
 
-    AND THREE KEPT WINDOWS ARE TIGHTER THAN 8.7456, which the sentence's word "worst" denies:
+    AND THREE KEPT WINDOWS ARE TIGHTER THAN 8.8428, which the sentence's word "worst" denies:
     copper-valley 17 (8.2538), merion 5 (8.5073), monarch-bay 2 (8.5827). All three are bounded by the
-    NEXT SAND rather than by the green, and the merge guarantees a sand-to-sand gap above
-    CARRY_MERGE_GAP_YD by construction -- so they are tautological and can never be dropped. That is
-    exactly why the qualification matters: 8.7456 is the worst of the 83 KEPT windows the green front
-    bounds and 8.2538 the worst of all 125 kept, and a reader cannot tell which claim was made.
+    NEXT MERGED WINDOW, and the merge guarantees a gap above CARRY_MERGE_GAP_YD between two merged
+    windows by construction -- so they are tautological and can never be dropped. Greenside sand gets no
+    such guarantee: it never entered the merge, which is why micke-grove 13 could sit at 6.1489. That is
+    exactly why the qualification matters: 8.8428 is the worst of the 82 KEPT windows the rule decides
+    and 8.2538 the worst of all 124 kept, and a reader cannot tell which claim was made.
 
     IT SAID FOUR, AND THE FOURTH WAS A PHANTOM. This test used to take every `golf=bunker` way on the
     course and apply only the along-line filters, skipping the corridor pre-filter that builds `bunkers`
@@ -6149,8 +6156,10 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     a junior's tee shot", which needs dispersion data this project does not have; inventing a number for
     it would put a guess in charge of 119 printed figures, which is the move this codebase refuses
     everywhere else. What the corpus CAN say is that the decision is insensitive to the value: every
-    green-front-bounded window sits at 3.4251 or below, or 8.7456 or above, so any bound in that 5.32 yd
-    gap produces the identical corpus outcome and 8.0 is not doing arithmetic anybody could tune. What
+    window the rule decides sits at 6.1489 or below, or 8.8428 or above, so any bound in that 2.6940 yd
+    gap produces the identical corpus outcome and 8.0 is not doing arithmetic anybody could tune. That
+    gap was 5.3205 yd wide before the greenside sand was counted, so the bound is MORE load-bearing than
+    it was, not less -- true either way, and it still decides no card. What
     was missing was not a better number but a graded one -- so all of them are derived here, and a
     re-fetch that lands a window inside the gap fails HERE instead of quietly picking a side.
     """
