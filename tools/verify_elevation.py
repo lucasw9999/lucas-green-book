@@ -96,9 +96,24 @@ sys.path.insert(0, ROOT)
 from geo import mlat, mlon      # noqa: E402 -- ROOT must be on sys.path first
 SAMPLE_HALF_M = 15.0        # fallback box, for a tee with no mapped ring. NOT "the same box
 # fetch_hole_elev samples at the tee" -- that comment was false on 5 of 11 courses, because TEE_R_M was
-# applied in raw CRS units there and so described a 9.1 m box, not a 30 m one. Both sides now sample the
-# same REGIONS: the green polygon and the mapped tee pad. Sampling a box against a polygon made this
-# tool's disagreement a measure of the region difference rather than of the data.
+# applied in raw CRS units there and so described a 9.1 m box, not a 30 m one.
+#
+# THE TWO SIDES DO NOT SAMPLE THE SAME TEE REGION, and this note said they did. The GREEN side does
+# match -- both read the green polygon. The TEE side does not: 9cc3bce established that the PRODUCER
+# samples the mapped pad INTERSECTED with a 15 m window at the anchor, while this tool samples the WHOLE
+# mapped ring (see check_course). That is a real difference on 55 of 177 mapped pads whose ring reaches
+# past that window on an axis -- up to 63.0 m, micke-grove 17 -- and the producer's own derivation
+# measures the median shift between the two regions at up to 1.87 ft, over 0.5 ft on 10 pads. TOL_FT is
+# 10 ft, so this tool can never flag it: the disagreement it reports at those tees is partly a region
+# difference, and the direction is known -- a wider region INFLATES it, so every |diff| this tool prints
+# for them is an upper bound.
+#
+# NOT changed to sample the window, deliberately. Which region an INDEPENDENT reference should read is a
+# real design question with a measured cost: the ring is what OSM actually maps, the window is what the
+# producer chose, and a checker quietly re-pointed at the producer's own choice is a weaker check rather
+# than a stronger one -- it would stop being able to disagree about region at all. Recorded as open, and
+# graded by test_the_independent_checker_says_which_region_each_side_of_it_samples, which fails if the
+# code starts clipping or if these counts drift.
 # A 1 m raster smooths a raised tee platform down, so it reads slightly BELOW the point cloud there:
 # measured -1.6 ft at monarch-bay's tees. The change carries that through, so residuals cluster a foot
 # or two positive. 10 ft is comfortably above the worst observed (3.14 ft, bay-view 16 -- pre-georeference-fix,
@@ -207,7 +222,9 @@ def _fetch_patch(w, s, e, n, px):
 def dem_median_m(lat, lon, half_m=SAMPLE_HALF_M, px=48):
     """Median 3DEP elevation in metres over a box about (lat, lon), or None. The FALLBACK sampler, for
     a tee anchor no mapped ring contains -- the ring sampler above is what the greens and mapped tees
-    use, so both sides of the comparison measure the same region."""
+    use. On the GREEN side that is the same region the pipeline reads. At the TEE it is not: this tool
+    reads the whole mapped ring where the pipeline reads the pad inside a 15 m window -- see
+    SAMPLE_HALF_M, which measures how far apart those two regions get."""
     dlat = half_m / mlat(lat)
     dlon = half_m / mlon(lat)
     got = _fetch_patch(lon-dlon, lat-dlat, lon+dlon, lat+dlat, px)
@@ -250,8 +267,10 @@ def check_course(slug):
             continue
         _meta = json.load(open(meta_p))
         gla, glo = _meta["green_center"]
-        # Sample the reference over the SAME regions the pipeline does -- the green polygon and the
-        # mapped tee pad -- so what is left is disagreement about the data. See dem_median_over_ring.
+        # The reference reads the green POLYGON, which IS the region the pipeline reads, so on the
+        # green side what is left is disagreement about the data. At the tee it reads the WHOLE mapped
+        # tee ring while the pipeline reads the pad inside a 15 m window, so there the difference also
+        # carries a region difference -- inflating it, never hiding it. See SAMPLE_HALF_M.
         _gp = np.asarray(_meta["polygon"], float)
         d_grn = dem_median_over_ring((_gp[:, 0], _gp[:, 1]))
         _ring = fhe.ring_containing(la, lo, tee_rings)

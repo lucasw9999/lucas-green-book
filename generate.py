@@ -306,8 +306,12 @@ def elev_phrase(hole):
     Under 3 ft reads as level rather than as a precise small number, and that floor is MEASURED, not
     just argued. tools/verify_elevation.py compares every recorded height against the 3DEP seamless
     DEM -- a different product, delivered in metres, fetched over the network rather than read off
-    disk, and now sampled over the SAME regions this pipeline samples: the green polygon and the mapped
-    tee pad. Across 171 holes the two disagree by a median 0.09 ft, a mean 0.27 ft and a worst 3.14 ft;
+    disk. It reads the green POLYGON this pipeline reads; at the tee it reads the whole mapped tee ring
+    where this pipeline reads the pad inside a 15 m window, so at the tee the comparison carries a
+    region difference too, on 55 of 177 pads. That inflates the spread rather than hiding it, which
+    makes every figure below an upper bound and this floor conservative -- the reason for trusting the
+    spread, not a reason to lower the floor.
+    Across 171 holes the two disagree by a median 0.09 ft, a mean 0.27 ft and a worst 3.14 ft;
     the worst any single course medians is 0.57 ft. Five holes exceed 2 ft and one exceeds 3. So a
     printed "green 2 ft above" would still sit inside the spread between two honest sources on those
     holes, and 22 of the 171 fall in the 2-4 ft band where that spread decides whether anything prints
