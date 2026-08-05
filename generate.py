@@ -300,11 +300,25 @@ def elev_phrase(hole):
 
 
 def carry_phrase(info):
-    """"carry 172 / 212 / 245" -- the near edge of each bunker window a tee shot must clear."""
+    """"carry 172 / 212 / 245" -- the near edge of each bunker window a tee shot must clear.
+
+    Plus the one thing the list could not say by ending: render_hole withdraws a carry wherever the sand
+    leaves no room to land short of the green (see its `no_landing` block), and on five of the eight
+    cards that fires on, an EARLIER carry survives -- so "carry 95 / 164" read as the whole story while a
+    closer, uncarryable cluster went unnamed. The mark states that refusal and prints NO number, because
+    both edges of the refused window are numbers a player would club against and be wrong: the near one
+    invites the lay-up the rule just withdrew, the far one is at or past the green front on all eight.
+
+    It needs no legend row and gets none. Measured in chrome-headless-shell under print media, adding a
+    50-character clause to the carry legrow overflows monarch-bay's guide card by 9.4 px (pocket) and
+    10.9 px (enlarged), clipping .abtxt -- the licence and warranty block this project has already
+    clipped twice. The phrase makes no measurement claim, so there is nothing for a legend to define.
+    """
     cs = info.get("carries") or []
-    if not cs:
-        return ""
-    return "carry <b>" + " / ".join(str(a) for a, _b in cs) + "</b>"
+    out = ("carry <b>" + " / ".join(str(a) for a, _b in cs) + "</b>") if cs else ""
+    if info.get("sand_to_green"):
+        out += (" &middot; " if out else "") + "<b>no carry: sand to the green</b>"
+    return out
 
 
 def playline_html(hole, info):

@@ -1190,11 +1190,25 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # Cost: 7 figures across 7 of 198 cards, 126 -> 119; three cards lose their only carry row
     # (philadelphia 1, micke-grove 3, callippe 12) and no course loses all of them. Nothing is hidden --
     # the bunkers stay drawn and stay counted in the footer's "NB". Only the false invitation goes.
-    kept = []
+    #
+    # AND THE CARD SAYS SO, because withdrawing the figure silently left a different fault. Eight windows
+    # in this corpus have no landing area, not seven: merion 1 is the eighth and it cost no printed
+    # figure only because that hole has FOUR merged windows and the [:3] below would have truncated the
+    # fourth anyway. On five of the eight (merion 1 and 10, castlewood-valley 8, copper-valley 3,
+    # monarch-bay 14) an EARLIER carry survives, so the printed list just ended before the sand did and
+    # nothing distinguished "no more sand" from "sand we declined to number".
+    #
+    # `sand_to_green` is that statement, and it carries no digit ON PURPOSE. Both edges are supported
+    # numbers and both are wrong to print: the near edge is the lay-up invitation this rule exists to
+    # withdraw, and the far edge is at or past the green front on all eight -- merion 10's is 284 with the
+    # front at 253, philadelphia 1's is 307 with the front at 299 -- so clubbing to "clear" it flies the
+    # green. Too long is the direction this file already calls the dangerous one (see the par3_straight
+    # note below). Measured with the greenside sand the `total_yd - 40` filter drops, every one of the
+    # eight reaches AT OR PAST the green front, which is what makes the wording true rather than a hedge.
+    kept, no_landing = [], []
     for i, (a, b) in enumerate(merged):
         beyond = min(merged[i+1][0], green_front_yd) if i+1 < len(merged) else green_front_yd
-        if beyond - b > CARRY_MERGE_GAP_YD:
-            kept.append((a, b))
+        (kept if beyond - b > CARRY_MERGE_GAP_YD else no_landing).append((a, b))
     carries = [(round(a), round(b)) for a, b in kept][:3]
     # A CARRY NEEDS AN ORIGIN THE GEOMETRY CORROBORATES. Every distance above is measured along the line
     # from where the line STARTS, shifted by tee_shift_yd. That shift only exists when tee_ok, fwd_tee or
@@ -1226,6 +1240,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     origin_known = bool(tee_ok or fwd_tee or past_tee)
     if not origin_known:
         carries = []
+        no_landing = []          # the same frame the mark would be measured in is the untrustworthy one
 
     # A CARRY IS A TEE-SHOT DECISION, AND A PAR 3 DOES NOT HAVE ONE. The figure answers "how far must
     # I fly to clear the sand and land on fairway short of the green" -- which is a real question on a
@@ -1255,6 +1270,11 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     par = config.HOLES[hnum][0] if hnum in config.HOLES else None
     if par == 3:
         carries = []
+        # ...and no mark either. The mark says "a carry was measured and refused for want of a landing
+        # area"; on a par 3 there was no carry decision to refuse, so it would answer a question the
+        # card does not raise. Four par-3 windows have no landing area (merion 3 and 13, monarch-bay 7,
+        # the-reserve 8) and all four are silent for this reason, not by oversight.
+        no_landing = []
 
     # `:g` on a rounded value, not `:.1f`: an un-widened box must print as the bare "100" it always
     # did, or all 12 pocket books change bytes for a purely cosmetic reason.
@@ -1292,7 +1312,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               start_at_tee_m=round(start_at_tee_m, 1),
               from_tee_rows=ft_rows,
               from_tee_floor_yd=ft_floor,
-              carries=carries)
+              carries=carries,
+              # "a further sand window was measured and refused" -- see the no_landing block above.
+              sand_to_green=bool(no_landing))
     return svg, info
 
 if __name__=="__main__":

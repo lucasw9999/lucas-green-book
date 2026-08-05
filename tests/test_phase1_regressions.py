@@ -5446,6 +5446,306 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
                           + "\n  ".join(problems[:8]))
 
 
+# The card's own words for a carry the landing rule refused to print. One spelling, shared by the
+# engine flag, the footer phrase and this test, so the three cannot drift into two idioms.
+CARRY_REFUSED_MARK = "no carry: sand to the green"
+
+
+@needs_corpus
+def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
+    """Suppressing the number was right. Ending the printed list without a word was not.
+
+    test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for withdraws a carry wherever the sand
+    leaves no room to land short of the green. That is correct and it is not the whole duty: on FIVE of
+    the eight cards it fires on, the card keeps an EARLIER carry and drops only the last window, so the
+    printed list simply ends before the sand does and nothing on the card says a further, closer sand
+    cluster was measured and declined. Re-derived over the 198 geometry cards (window, green front,
+    landing area by the rule's own metric, then the reach of every bunker inside that window):
+
+        merion 1          277.97-306.66  front 298.66   -8.00   reach 315.70  -17.04   keeps 172/212/245
+        merion 10         226.72-284.12  front 253.45  -30.67   reach 284.12  -30.67   keeps  95/164
+        castlewood-v 8    286.65-309.74  front 311.61   +1.87   reach 324.66  -13.04   keeps 195/250
+        copper-valley 3   293.56-312.39  front 315.69   +3.31   reach 316.17   -0.48   keeps 178
+        monarch-bay 14    273.28-283.35  front 286.78   +3.43   reach 287.63   -0.85   keeps 226
+        callippe 12       272.34-293.33  front 293.60   +0.27   reach 306.84  -13.24   keeps nothing
+        micke-grove 3     293.83-309.26  front 296.77  -12.49   reach 309.26  -12.49   keeps nothing
+        philadelphia 1    212.11-306.99  front 299.42   -7.57   reach 314.88  -15.46   keeps nothing
+
+    merion 1 is the eighth case and it was missing from the record: the landing rule cost it no printed
+    FIGURE, because it has four merged windows and `[:3]` would have truncated the fourth anyway -- but
+    the reader-facing defect is identical, and worse, since that card prints three carries above sand
+    that runs 17 yd past its green front.
+
+    The reach column is the load-bearing one. It includes the greenside sand the carry filter drops via
+    `near_yd > total_yd - 40`, and under it every one of the eight is NEGATIVE: the sand reaches at or
+    past the green front on all of them. That is what makes the words on the card true.
+
+    WHAT IS NOT PRINTED, AND WHY. The far edge is a supported number -- same projection, same chord,
+    same tee shift as every printed carry -- and printing it was rejected. On merion 10 it is 284 with
+    the green front at 253, on philadelphia 1 it is 307 with the front at 299: a reader who clubs to
+    "clear" it flies the green. render_hole already names too-long as the dangerous direction ("it tells
+    a player they have room they do not have"), so a figure that only becomes reachable past the putting
+    surface is the same fault the suppression removed, pointing the other way. The near edge is the
+    number the suppression exists to withhold. So the card states the finding and prints no digit for
+    it, and this test forbids the dropped window's edges from reappearing as carry numbers.
+
+    NO LEGEND ROW, and that is measured rather than preferred. The guide card has under one wrapped
+    legend line of headroom: injecting a 50-character clause into the carry legrow overflows monarch-bay
+    by 9.4 px (pocket) and 10.9 px (enlarged), and a 110-character one also overflows philadelphia's
+    enlarged card by 8.9 px -- clipping .abtxt, the licence and warranty block. This project has clipped
+    that block twice. The mark is plain English making no measurement claim, so there is nothing for a
+    legend to pin down, and the existing carry row already tells the reader N is where sand STARTS and
+    that it can run well past N.
+
+    Both editions, because playline_html is shared and both books are handed to a person.
+    """
+    import math
+    checked, problems, marked = 0, [], []
+    seen_courses = collections.Counter()
+    for ref in CORPUS:
+        editions = {}
+        for ed in ("greenbook.html", "greenbook_coach.html"):
+            p = os.path.join(ROOT, "courses", ref, ed)
+            if os.path.exists(p):
+                with open(p, encoding="utf-8") as fh:
+                    editions[ed] = _playline_text_by_hole(fh.read())
+        if not editions:
+            continue
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+
+            def em(la, lo):
+                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            perp = (uy, -ux)
+            # The same signed shift every printed carry is measured through, taken from what the engine
+            # published rather than from a second copy of its rule.
+            shift = ((info["card_yd"] - info["arc_yd"])
+                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+
+            def along_yd(la, lo):
+                e, n = em(la, lo)
+                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+
+            def off_m(la, lo):
+                e, n = em(la, lo)
+                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
+            total = info["card_yd"]
+            # The engine's own carry filters, re-derived from the OSM rings.
+            raw = []
+            for g in bunkers:
+                al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                if not al:
+                    continue
+                near, far = min(al), max(al)
+                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                    continue
+                if near > total - 40:
+                    continue
+                raw.append((near, far))
+            raw.sort()
+            merged = []
+            for a, b in raw:
+                if merged and a - merged[-1][1] <= rh.CARRY_MERGE_GAP_YD:
+                    merged[-1][1] = max(merged[-1][1], b)
+                else:
+                    merged.append([a, b])
+            refused = []
+            for i, (a, b) in enumerate(merged):
+                beyond = min(merged[i + 1][0], front) if i + 1 < len(merged) else front
+                if beyond - b <= rh.CARRY_MERGE_GAP_YD:
+                    refused.append((a, b))
+            par = cfg.HOLES[hn][0] if hn in cfg.HOLES else None
+            # The two gates that already null the carries null the mark too: with no corroborated
+            # origin the whole along-line frame is untrustworthy, and a par 3 has no lay-up decision
+            # to refuse in the first place.
+            want = bool(refused) and bool(info.get("carry_origin_known")) and par != 3
+            checked += 1
+            seen_courses[ref] += 1
+            for ed, byhole in editions.items():
+                txt = byhole.get(hn, "")
+                got = CARRY_REFUSED_MARK in txt
+                if want and not got:
+                    a, b = refused[-1]
+                    problems.append(
+                        f"{ref}/{ed} hole {hn}: the landing rule refused the sand at {a:.2f}-{b:.2f} "
+                        f"with the green front at {front:.2f}, and the card says nothing -- its "
+                        f"playline reads {txt.strip()!r}, so the printed list ends before the sand "
+                        f"does and reads as a gap rather than a refusal")
+                elif got and not want:
+                    problems.append(
+                        f"{ref}/{ed} hole {hn}: prints {CARRY_REFUSED_MARK!r} but no window was "
+                        f"refused for want of a landing area (refused={refused}, par={par}, "
+                        f"origin_known={info.get('carry_origin_known')})")
+                if want and got:
+                    # the withheld edges must not reappear as a number anyone can club against
+                    nums = {int(x) for x in re.findall(r"\d+", txt)}
+                    for a, b in refused:
+                        for edge, which in ((a, "near"), (b, "far")):
+                            assert round(edge) not in nums, (
+                                f"{ref}/{ed} hole {hn}: the refused window's {which} edge "
+                                f"{round(edge)} is printed on the card ({txt.strip()!r}). The mark "
+                                f"exists because neither edge is a carry: the near one invites a "
+                                f"lay-up the hole has no room for, the far one a shot past the green.")
+            if want:
+                # what makes the words true: the sand really does reach the green, measured with the
+                # greenside sand the carry filter drops
+                reach = max(b for _a, b in refused)
+                for g in bunkers:
+                    al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    if not al or min(of) > 30.0:
+                        continue
+                    for a, b in refused:
+                        if a - 2 <= min(al) <= b + 2:
+                            reach = max(reach, max(al))
+                marked.append((ref, hn, front - reach))
+                if front - reach > 0:
+                    problems.append(
+                        f"{ref} hole {hn}: the card says {CARRY_REFUSED_MARK!r} but the sand stops "
+                        f"{front - reach:.2f} yd SHORT of the green front ({reach:.2f} against "
+                        f"{front:.2f}) -- the words over-claim the geometry")
+    assert checked >= 150, f"only {checked} cards checked -- build the books first"
+    assert_no_course_skipped(
+        seen_courses, "test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green")
+    assert not problems, ("a card withholds a carry without saying so:\n  "
+                          + "\n  ".join(problems[:8]))
+    # the eight measured cases, so a change that stops the rule firing cannot leave this vacuous
+    assert len(marked) >= 8, (
+        f"only {len(marked)} card(s) print {CARRY_REFUSED_MARK!r}; eight windows in this corpus have "
+        f"no landing area (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14, "
+        f"callippe 12, micke-grove 3, philadelphia 1), so the rule or the frame has moved")
+
+
+def _playline_text_by_hole(html):
+    """{hole number: the tag-stripped text of every .playline on that hole's card(s)}.
+
+    Per HOLE rather than per panel because the enlarged edition gives a hole two panels -- the map card
+    carries the playline, the green card does not -- so a per-panel check would read the second as a
+    card that lost the row.
+    """
+    out = collections.defaultdict(str)
+    for blk in re.split(r'<div class="panel', html)[1:]:
+        m = re.search(r'class="hnum">(\d+)<', blk)
+        if not m:
+            continue
+        for pl in re.findall(r'<div class="playline">(.*?)</div>', blk, re.S):
+            out[int(m.group(1))] += " " + re.sub(r"<[^>]+>", "", pl)
+    return out
+
+
+def test_the_playline_is_never_clipped_by_its_own_nowrap():
+    """`.playline` is `white-space: nowrap; overflow: hidden`, so a line too long simply ENDS.
+
+    That is the same silent-truncation failure test_no_card_silently_clips_its_own_text was written for,
+    and that test cannot see this one: nowrap keeps the DIV inside the card box while the TEXT overflows
+    it, so every rect it walks stays in bounds. Measured -- the .playline element's own rect is inside
+    the card on every card of every book, in both editions, including the four that were deliberately
+    over-filled while writing this.
+
+    The row is the card's most crowded: it carries the measured tee-to-green height, up to three carry
+    figures, and (see carry_phrase) the refusal mark for a window with no landing area. Measured in the
+    same chrome-headless-shell tools/export_pdf.py exports with, under print media:
+
+        merion 10 enlarged   'green 5 ft above . carry 95 / 164 . no carry: sand to the green'   20.20 px
+        merion 10 pocket     same text                                                          40.81 px
+        monarch-bay 14 enl.  'green 3 ft above . carry 226 . no carry: sand to the green'        41.95 px
+
+    ~20 px is four characters at 8 pt. That is the headroom, and it is why this is measured rather than
+    eyeballed: the wording was chosen against this probe, and 'sand runs to the green, no carry' -- five
+    characters longer -- overflows merion 10's enlarged card by 5.28 px, cutting 'no carry' off the one
+    card in the corpus whose sand ends 31 yd PAST its green front.
+
+    Self-validating: it lengthens one real playline first and requires the probe to catch it, so a future
+    change that makes this blind fails here rather than passing quietly.
+    """
+    books = [f for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html")))
+             if not os.path.basename(os.path.dirname(f)).startswith("_")]
+    if not books:
+        pytest.skip("no book built")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+    exe = export_pdf._headless_shell()
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
+    import pathlib
+    # scrollWidth vs clientWidth is the clipping test for a nowrap box; a Range over the contents gives
+    # the slack, which is what says how close the tightest real line is rather than merely that it fits.
+    JS = """() => [...document.querySelectorAll('.playline')].map(p=>{
+      const card=p.closest('.panel'), hn=card&&card.querySelector('.hnum');
+      const r=document.createRange(); r.selectNodeContents(p);
+      return {hole: hn?hn.textContent.trim():'?', clip:+(p.scrollWidth-p.clientWidth).toFixed(2),
+              slack:+(p.clientWidth-r.getBoundingClientRect().width).toFixed(2),
+              txt:p.textContent.trim()};})"""
+    PROBE = """() => { const p=document.querySelector('.playline');
+      if(!p) return null; const old=p.innerHTML;
+      p.innerHTML = old + ' &middot; <b>' + 'x'.repeat(90) + '</b>';
+      const v = +(p.scrollWidth-p.clientWidth).toFixed(2); p.innerHTML = old; return v; }"""
+    clipped, tightest, checked = [], [], 0
+    with sync_playwright() as pw:
+        try:
+            b = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
+        except Exception:
+            pytest.skip("no browser available")
+        pg = b.new_page()
+        try:
+            for f in books:
+                pg.goto(pathlib.Path(f).resolve().as_uri())
+                pg.emulate_media(media="print")
+                rel = os.path.relpath(f, ROOT)
+                rows = pg.evaluate(JS)
+                if not rows:
+                    continue
+                probe = pg.evaluate(PROBE)
+                assert probe and probe > 0.5, (
+                    f"{rel}: 90 injected characters did not move scrollWidth past clientWidth "
+                    f"(got {probe}), so this probe cannot see the clipping it exists to catch")
+                for r in rows:
+                    checked += 1
+                    if r["clip"] > 0.5:
+                        clipped.append(f"{rel} hole {r['hole']}: {r['clip']:.1f} px of the playline is "
+                                       f"cut off by nowrap -- {r['txt']!r}")
+                    tightest.append((r["slack"], rel, r["hole"], r["txt"]))
+        finally:
+            b.close()
+    assert checked >= 150, f"only {checked} playlines measured -- build the books first"
+    assert not clipped, "a card's playline is silently truncated in print:\n  " + "\n  ".join(clipped[:6])
+    # ...and the headroom must stay real, not merely non-negative. 10 px is two characters.
+    worst = min(tightest)
+    assert worst[0] > 10.0, (
+        f"the tightest playline has only {worst[0]:.2f} px of slack -- {worst[1]} hole {worst[2]}, "
+        f"{worst[3]!r}. Under 10 px is two characters from silent truncation; shorten the row rather "
+        f"than shipping it one re-fetched carry figure away from cutting itself off.")
+
+
 @needs_corpus
 def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings():
     """The green's height must come from the GREEN, not from the patch the green sits in.
@@ -15486,9 +15786,9 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-04): micke-grove 4,325,510; castlewood-hill 4,476,546;
-    merion 5,870,072; monarch-bay 4,933,867; copper-valley 6,083,980; callippe 6,797,825;
-    castlewood-valley 5,835,713; philadelphia 4,604,280; the-reserve 5,109,777;
+    CURRENT SIZES (2026-08-04): micke-grove 4,325,572; castlewood-hill 4,476,546;
+    merion 5,870,160; monarch-bay 4,933,911; copper-valley 6,084,024; callippe 6,797,869;
+    castlewood-valley 5,835,757; philadelphia 4,604,342; the-reserve 5,109,777;
     bay-view 4,242,903; valley-hi 4,698,141; poppy-ridge 340,883.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
