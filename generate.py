@@ -338,6 +338,29 @@ def playline_html(hole, info):
     return f'<div class="playline">{extras}</div>' if extras else ''
 
 
+def depth_phrase(s):
+    """"37yd deep", plus the front bank where there is one -- for BOTH editions.
+
+    The depth and the 5-yd ladder are both measured from where the green polygon crosses the line of
+    play, and on nine of 198 greens that crossing sits on ground this same card's legend disowns: "over
+    10% is bank or bunker face, not putting surface". micke-grove 2 prints 22yd deep and rules rungs at
+    5/10/15/20 from a front edge with 5.33 yd of bank behind it, so its "5" is the top of the bank and
+    the puttable green runs from there to the back. Nothing on the card said so; the bank was visible
+    only as colour, which the legend explains as steepness and not as "this is not green".
+
+    The DATUM is deliberately not moved -- see render_green.front_bank_yd for the three alternatives and
+    what each measured -- so the printed depth still matches the drawn outline, its own geodesic check
+    and the hole map's green_front_yd. The card discloses instead.
+
+    Prints only at a rounded yard or more, which is the resolution the depth itself is printed at.
+    A shared helper because this footer has diverged between the two editions three times (green_honesty,
+    then the footer, then the playline) and each fix was a copy that reset the clock."""
+    yd = s.get("front_bank_yd") or 0.0
+    n = int(round(yd))
+    bank = f' &middot; front {n}yd is bank' if yd >= 1.0 else ''
+    return f'{s["depth_yd"]}yd deep{bank}'
+
+
 def hole_panel(hole, sheet_label):
     row = HOLES[hole]
     par, hcp = row[0], row[1]
@@ -365,7 +388,7 @@ def hole_panel(hole, sheet_label):
     if not _tree_markers(hole) and _course_has_trees():
         notrees = ' &middot; <b>no tree data</b>'
     foot = (f'<span>{lead}</span>'
-            f'<span>{s["depth_yd"]}yd deep &middot; {i["bunkers"]}B {i["waters"]}W{notrees}'
+            f'<span>{depth_phrase(s)} &middot; {i["bunkers"]}B {i["waters"]}W{notrees}'
             f' &middot; {esc(others)}</span>')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
@@ -1251,7 +1274,7 @@ def coach_green_card(hole):
   </div>
   <div class="cmap"><div class="minilab">{grnlab} &middot; approach at bottom</div>{gsvg}</div>
   <div class="foot"><span>{clead}</span>
-    <span>{s['depth_yd']}yd deep</span></div>
+    <span>{depth_phrase(s)}</span></div>
 </div>'''
 
 def coach_about_card():
