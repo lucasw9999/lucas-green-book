@@ -24602,17 +24602,29 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
     # wrong. CORRIDOR_M names EIGHT classes, and fc6b7cc's own diff replaced ELEVEN literals at eleven
     # selector call sites (water's 45 appeared four times, on ten lines). A count nothing grades is the
     # same shape of defect as the 45 the tool carried: nobody checks it until it is load-bearing.
+    #
+    # THE CLASS COUNT IS STATED IN TWO SHAPES AND ONLY ONE WAS READ. "N per-class radii" was graded;
+    # render_hole's own "Those eight numbers were eleven literals at eleven call sites" -- the sentence
+    # that INTRODUCES the set, three lines above the dict -- was not, because it spells the same count as
+    # a bare noun. Proven by mutation: retyped as "Those nineteen numbers", with the call-site half left
+    # correct, this test passed. Both shapes are read now, and each is counted separately so that
+    # deleting either sentence fails instead of passing.
     words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
              "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14}
 
     def _count(tok):
         return int(tok) if tok.isdigit() else words.get(tok.lower())
     reads = len(re.findall(r"(?<![A-Z_])CORRIDOR_M\s*\[", rh_code))
-    stale, seen_radii, seen_sites = [], 0, 0
+    stale, seen_radii, seen_sites, seen_intro = [], 0, 0, 0
     for rel, src in ((os.path.relpath(rh_path, ROOT), rh_src),
                      (os.path.relpath(tool, ROOT), tool_src)):
         for m in re.finditer(r"([A-Za-z]+|\d+)[ -]per-class radii", src):
             seen_radii += 1
+            if _count(m.group(1)) != len(radii):
+                stale.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} says {m.group(0)!r}; "
+                             f"CORRIDOR_M names {len(radii)}: {sorted(radii)}")
+        for m in re.finditer(r"Those ([A-Za-z]+|\d+) numbers\b", src):
+            seen_intro += 1
             if _count(m.group(1)) != len(radii):
                 stale.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} says {m.group(0)!r}; "
                              f"CORRIDOR_M names {len(radii)}: {sorted(radii)}")
@@ -24622,8 +24634,13 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
             if _count(m.group(1)) != reads or _count(m.group(2)) != reads:
                 stale.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} says {m.group(0)!r}; "
                              f"{reads} selector call sites read CORRIDOR_M")
+    assert seen_intro, (
+        f"render_hole no longer introduces CORRIDOR_M with a count of the classes it names ("
+        f"{seen_intro} mentions of the 'Those N numbers' form). That sentence published the count "
+        f"ungraded while its own second half was graded, so it is read here -- if the wording moved, "
+        f"move this pattern with it rather than dropping the claim.")
     assert seen_radii and seen_sites, (
-        f"the prose no longer states how many per-class radii there are ({seen_radii} mentions) or how "
+        f"the prose no longer states how many per-class radii there are ({seen_radii} mentions) or how"
         f"many call sites read them ({seen_sites}) -- both were published wrong, so both are graded, "
         f"and deleting the sentence must not be the way to pass")
     assert not stale, ("a published count of the corridor set is not what the set holds:\n  "
