@@ -23,8 +23,9 @@ filename collision is fixed in fetch_lidar.py and fetch_lidar_alameda.py; this m
 that would have caught the consequence regardless of the cause.
 
 A green with no returns is NOT an error -- bayside greens over water genuinely have none, and the
-1 m fallback plus the card's "1 m data" label is the honest outcome. So this reports rather than
-refuses. What it stops is the silent version.
+seamless-mosaic fallback plus the card's coarse-data caveat, which names the source cell measured off
+that green's own array, is the honest outcome. So this reports rather than refuses. What it stops is
+the silent version.
 
 The check uses each tile's HEADER bounding box, which records the extent of the points actually in
 the file, not the nominal grid cell -- that distinction is the whole point above.
@@ -32,7 +33,7 @@ the file, not the nominal grid cell -- that distinction is the whole point above
 But a header bbox is a RECTANGLE, and the points inside it are not. So this test can only ever prove
 a green is outside the data; it cannot prove one is inside it, and a green sitting in a hole within
 the rectangle reads as covered. Measured, which is why the wording below no longer claims otherwise:
-monarch-bay has SIX greens on the 1 m seamless fallback (holes 1, 9, 10, 16, 17, 18) and the bbox
+monarch-bay has SIX greens on the seamless fallback (holes 1, 9, 10, 16, 17, 18) and the bbox
 test flags only THREE of them (green ids 689151359, 689151368, 689165026). Holes 9, 10 and 16 --
 greens 689151373, 689151348, 689168293 -- fall inside a tile's header rectangle, have no ground
 returns under them, and were reported as covered. So the report also cross-checks the surfaces that
@@ -262,15 +263,16 @@ def report(course_dir):
         print(f"  !! {len(bad)} green(s) are NOT fully covered by the point data on disk:")
         for gid, out, tot in bad:
             print(f"       green {gid}: {out} of {tot} sampled node(s) have no returns over them")
-        print("     These greens will fall back to the 1 m seamless DEM and their cards will say\n"
-              "     '1 m data'. That is honest if the survey truly does not cover them -- bayside\n"
+        print("     These greens will fall back to the 3DEP seamless mosaic and their cards will carry\n"
+              "     a coarse-data caveat naming the source cell measured off their own arrays. That is\n"
+              "     honest if the survey truly does not cover them -- bayside\n"
               "     greens over water have no ground returns at all. But check first that a tile copy\n"
               "     is not simply missing: one geographic cell can exist in several sub-projects, each\n"
               "     holding only its own strip, and Castlewood Hill lost two greens' 0.4 m reads that\n"
               "     way. Re-run the fetch; it now keeps every sub-project copy under its own name.")
     # CROSS-CHECK against the surfaces actually built, which is the only evidence that answers the
-    # question the rectangle cannot. See fell_back(): monarch-bay has 6 greens on the 1 m fallback and
-    # the rectangle flags 3, so the three it misses (holes 9, 10 and 16) were reported covered.
+    # question the rectangle cannot. See fell_back(): monarch-bay has 6 greens on the seamless fallback
+    # and the rectangle flags 3, so the three it misses (holes 9, 10 and 16) were reported covered.
     fb = fell_back(course_dir)
     if fb:
         flagged = {gid for gid, _o, _t in bad}
@@ -283,9 +285,9 @@ def report(course_dir):
         if missed:
             print(f"     So the bbox test above accounts for {len(fb) - len(missed)} of the {len(fb)}; "
                   f"the other {len(missed)} sit in a hole INSIDE a tile's rectangle.\n"
-                  f"     Their cards print '1 m data', which is honest -- but the rectangle is not\n"
-                  f"     evidence that the survey reaches them, so do not read a clean bbox report as\n"
-                  f"     one. Check whether a sub-project copy of their cell is missing.")
+                  f"     Their cards print the coarse-data caveat, which is honest -- but the rectangle\n"
+                  f"     is not evidence that the survey reaches them, so do not read a clean bbox\n"
+                  f"     report as one. Check whether a sub-project copy of their cell is missing.")
     elif os.path.isdir(os.path.join(course_dir, "dem_hd")):
         print(f"  dem_hd cross-check: every built green surface came from the point cloud")
     return "checked", bad, holes

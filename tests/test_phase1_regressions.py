@@ -12256,7 +12256,8 @@ def test_the_information_carrying_greys_are_readable_on_paper():
     # DISCOVERED, not listed. This named three selectors -- .foot, .playline, .yalt -- and passed while
     # .minilab inked at #9a9a9a (2.81:1), .dcopy the same, and .gsmall and .dqrcap at #777 (4.48:1). The
     # worst of those is the worst possible place for it: .minilab carries "GREEN . pre-rebuild data" and
-    # "GREEN . 1 m data", the two marks whose whole job is to tell a junior to trust that green LESS. An
+    # the coarse-source mark, the two marks whose whole job is to tell a junior to trust that green
+    # LESS. An
     # allow-list can only ever cover what someone thought of, so this now sweeps every rule in both
     # stylesheets and exempts by name, with a reason, rather than including by name.
     EXEMPT = {
@@ -14650,13 +14651,14 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
 
 
 def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
-    """fetch_dem.py (1 m seamless) writes into the SAME dem_hd/ as fetch_dem_hd.py (0.4 m LiDAR) and
-    used to rewrite every hole it was given. So running it without ONLY= silently replaced every
-    0.4 m green with the coarse 1 m one, saying nothing about the better data it had just discarded.
+    """fetch_dem.py (the seamless mosaic) writes into the SAME dem_hd/ as fetch_dem_hd.py (0.4 m LiDAR)
+    and used to rewrite every hole it was given. So running it without ONLY= silently replaced every
+    0.4 m green with the coarse mosaic one, saying nothing about the better data it had just discarded.
 
-    The books stayed HONEST throughout -- each affected card prints "1 m data" -- but a whole course
-    quietly lost its precision, which is why no gate caught it. Found cold-building Monarch Bay:
-    3,889,124 bytes against the committed 4,973,620, with "1 m data" on greens that have real LiDAR.
+    The books stayed HONEST throughout -- each affected card carries the coarse-data caveat -- but a
+    whole course quietly lost its precision, which is why no gate caught it. Found cold-building
+    Monarch Bay: 3,889,124 bytes against the committed 4,973,620, with that caveat printing on greens
+    that have real LiDAR.
     Verified after the fix on a copy of that course: 12 LiDAR surfaces kept, only the 6 seamless
     holes rewritten.
 
@@ -15211,8 +15213,8 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
 
     The check reads each tile's HEADER bbox, which records the extent of the points actually in the
     file rather than the nominal grid cell -- that distinction is the whole bug. It reports rather
-    than refuses: a bayside green over water genuinely has no returns, and the 1 m fallback with a
-    "1 m data" label is the honest outcome. What it stops is the silent version."""
+    than refuses: a bayside green over water genuinely has no returns, and the seamless fallback with
+    its coarse-data caveat is the honest outcome. What it stops is the silent version."""
     pytest.importorskip("laspy")
     pytest.importorskip("pyproj")
     import lidar_coverage as lc
@@ -15436,8 +15438,8 @@ def test_project_choice_is_judged_on_the_greens_not_the_bounding_box(tmp_path):
 
     Coverage is now measured over the GREENS -- the thing the LiDAR exists to build -- and the gate
     is a substantial majority rather than near-completeness, because the two failure modes are not
-    symmetric: a green the survey misses falls back to the 1 m seamless DEM and its card says
-    "1 m data", whereas a decade-old survey silently prints stale slope as current.
+    symmetric: a green the survey misses falls back to the 3DEP seamless mosaic and its card carries
+    the coarse-data caveat, whereas a decade-old survey silently prints stale slope as current.
 
     Built from synthetic geometry so it does not need the network."""
     os.environ["COURSE"] = a_course()
@@ -19524,18 +19526,20 @@ def test_render_refuses_a_green_that_falls_metres_inside_its_own_outline(gate_co
 
 @needs_corpus
 def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path):
-    """fetch_dem_hd shares dem_hd/ with fetch_dem, and must not trade a working 1 m fill for a blank.
+    """fetch_dem_hd shares dem_hd/ with fetch_dem, and must not trade a working seamless fill for a blank.
 
     The two stages write the same directory. fetch_dem_hd builds 0.4 m surfaces from LiDAR ground
-    returns; fetch_dem fills the greens it gives up on from the seamless 1 m DEM, and those cards print a
-    real read labelled "1 m data". Re-running fetch_dem_hd ALONE -- an ordinary thing to do after
-    changing the point filter -- overwrote that fill with an insufficient=True record, and the green then
-    prints BLANK. A card silently loses information and the only symptom is the blank itself.
+    returns; fetch_dem fills the greens it gives up on from the 3DEP seamless mosaic, and those cards
+    print a real read under the coarse-data caveat. Re-running fetch_dem_hd ALONE -- an ordinary thing
+    to do after changing the point filter -- overwrote that fill with an insufficient=True record, and
+    the green then prints BLANK. A card silently loses information and the only symptom is the blank
+    itself.
 
-    Found by doing it: re-running the stage on monarch-bay turned hole 10 from "1 m data" into a refused
+    Found by doing it: re-running the stage on monarch-bay turned hole 10 from a real coarse-source read
+    into a refused
     green (its 0.4 m attempt reports nan 1.000, density 0.0 -- a bayside green with essentially no ground
     returns). It is the exact mirror of the fault fetch_dem.keeps_existing_surface was written for, on the
-    same course: that one replaced good 0.4 m greens with coarse 1 m ones and cost 1.1 MB of precision
+    same course: that one replaced good 0.4 m greens with coarse mosaic ones and cost 1.1 MB of precision
     without printing a dishonest word. Only one direction had been guarded.
 
     Checked on the ARTIFACTS rather than in the source, because the clobber has a signature there: it
@@ -27322,6 +27326,207 @@ def test_the_legal_record_publishes_the_measured_source_cell_and_the_right_hole_
                        cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 0, (f"legal/03 is stale against tools/gen_provenance.py:\n"
                                f"{r.stdout[-2000:]}{r.stderr[-2000:]}")
+
+
+# A green label as this project writes one: a resolution, then the word "data" --
+# "GREEN &middot; 2.7&times;3.4 m data". Deliberately narrow. "LiDAR data" and "public data" are not
+# resolution claims and must not be swept in; what must be swept in is any figure a reader would take
+# as the resolution a card prints.
+_CELL_LABEL_CLAIM = re.compile(
+    r"(?<![\d.])(\d[\d.]*(?:\s*(?:&times;|&#215;|×|x)\s*\d[\d.]*)?)\s*m\b[^\w<]{0,4}data\b", re.I)
+# The same clause rule the one-metre gate above uses: the unit is a CLAUSE, and a refutation inside it
+# clears the mention -- a record has to be able to say what it used to publish.
+_DEAD_LABEL_REFUTED = re.compile(
+    r"\bnot\b|\bno\b|never|nowhere|instead of|rather than|until|used to|overstat|wrong|false|"
+    r"both called|claimed|shipped|typed|\bwas\b|\bwere\b|\bsaid\b|for the life of the project|"
+    r"\bhad\b|absent|gone|replace", re.I)
+
+
+def _norm_label(s):
+    """"2.7&times;3.4 m data", "2.7x3.4 m data" and "2.7 × 3.4 m data" are one claim."""
+    for ent, ch in (("&times;", "x"), ("&#215;", "x"), ("×", "x")):
+        s = s.replace(ent, ch)
+    return re.sub(r"\s+", "", s).lower()
+
+
+def _prose_of_repo():
+    """[(where, text)] -- every comment BLOCK, docstring and user-facing doc in the repo.
+
+    Comments come out as blocks (consecutive `#` lines joined) because a sentence is written across
+    them, and the grader below judges a whole clause. Docstrings come from the AST rather than a regex
+    so a string that merely looks like one is not mistaken for prose.
+    """
+    out = []
+    files = (sorted(glob.glob(os.path.join(ROOT, "*.py")))
+             + sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))
+             + sorted(glob.glob(os.path.join(ROOT, "tests", "*.py"))))
+    for p in files:
+        rel = os.path.relpath(p, ROOT)
+        import ast
+        import tokenize
+        block, first = [], None
+        with open(p, "rb") as fh:
+            prev = None
+            for tok in tokenize.tokenize(fh.readline):
+                if tok.type != tokenize.COMMENT:
+                    continue
+                if prev is not None and tok.start[0] != prev + 1:
+                    out.append((f"{rel}:{first}", " ".join(block)))
+                    block, first = [], None
+                if first is None:
+                    first = tok.start[0]
+                block.append(tok.string.lstrip("#").strip())
+                prev = tok.start[0]
+        if block:
+            out.append((f"{rel}:{first}", " ".join(block)))
+        with open(p, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                doc = ast.get_docstring(node)
+                if doc:
+                    out.append((f"{rel}:{getattr(node, 'lineno', 1)} docstring", doc))
+    for d in ("README.md", "PIPELINE.md"):
+        with open(os.path.join(ROOT, d), encoding="utf-8") as fh:
+            out.append((d, fh.read()))
+    return out
+
+
+def _clauses(text):
+    """Split prose into clauses. HTML entities are decoded FIRST -- `&middot;` ends in a semicolon,
+    and splitting on it cut the one sentence in generate.py that states the correction in half."""
+    for ent, ch in (("&middot;", "·"), ("&times;", "×"), ("&ndash;", "–"),
+                    ("&mdash;", "—"), ("&nbsp;", " "), ("&#215;", "×")):
+        text = text.replace(ent, ch)
+    return re.split(r"(?<=[.;:])\s+|\s+—\s+|\s+--\s+|\n\s*\n", text)
+
+
+@needs_corpus
+def test_no_record_names_a_green_label_the_engine_does_not_print():
+    """The card label was relabelled and eight records went on quoting the label it replaced.
+
+    9f37857 measured the seamless six's source cell off their own arrays and the label became
+    `GREEN &middot; 2.7&times;3.4 m data`. `1 m data` was then still quoted, in the PRESENT TENSE, in two
+    runtime prints a user reads while running the pipeline (fetch_lidar's green-coverage NOTE,
+    lidar_coverage's uncovered-green report -- twice), in lidar_coverage's module docstring, in two
+    engine comments, in PIPELINE.md, and in four docstrings of this file. A repo that contradicts
+    itself about a printed label is the defect class this project keeps finding, and the fix for a
+    stale copy is never another copy.
+
+    So the label vocabulary is taken from the ENGINE -- `generate.green_honesty` driven with the cells
+    `render_green.source_lattice` measures off the arrays on disk -- and no prose anywhere in the repo
+    may name a resolution label outside it. The next relabel cannot strand these again: it moves this
+    set, and every record that still quotes the old figure fails here by name.
+
+    A clause carrying a REFUTATION is cleared, the same way the one-metre gate above clears one: the
+    records that describe `1 m data` as the defect that was fixed have to be able to say so.
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    slug = a_course()
+    os.environ["COURSE"] = slug
+    for m in ("config", "render_green", "render_hole", "generate"):
+        sys.modules.pop(m, None)
+    import generate
+
+    seam = [(v[0], v[1]) for v in cells.values() if v[3] and v[2]]
+    assert seam, ("no built green measures a source lattice, so the engine's coarse label carries no "
+                  "figure here and this test would grade nothing")
+    emitted = set()
+    for over in ([dict(source="USGS 3DEP seamless mosaic @0.5m sampling", source_cell_m=list(c))
+                  for c in seam]
+                 + [dict(), dict(_outdated=True),
+                    dict(source="USGS 3DEP seamless mosaic, source cell NOT MEASURED @0.5m sampling")]):
+        s = _fake_summary(**{k: v for k, v in over.items() if not k.startswith("_")})
+        hole = sorted(generate.HOLES)[0]
+        prev = generate.config.COURSE.get("greens_possibly_outdated")
+        if over.get("_outdated"):
+            generate.config.COURSE["greens_possibly_outdated"] = [hole]
+        try:
+            label, _slope = generate.green_honesty(hole, s)
+        finally:
+            if prev is None:
+                generate.config.COURSE.pop("greens_possibly_outdated", None)
+            else:
+                generate.config.COURSE["greens_possibly_outdated"] = prev
+        emitted.add(label)
+    live = {_norm_label(m.group(0)) for lab in emitted for m in _CELL_LABEL_CLAIM.finditer(lab)}
+    assert live, (f"generate.green_honesty prints no resolution figure on any label for a seamless "
+                  f"green ({sorted(emitted)}), so the caveat carries no measurement. Either the cell "
+                  f"stopped being measured or the label stopped naming it; both are the defect "
+                  f"9f37857 fixed.")
+
+    stale = []
+    for where, text in _prose_of_repo():
+        for clause in _clauses(text):
+            for m in _CELL_LABEL_CLAIM.finditer(clause):
+                if _norm_label(m.group(0)) in live or _DEAD_LABEL_REFUTED.search(clause):
+                    continue
+                stale.append(f"{where}: says {m.group(0)!r}; the engine prints "
+                             f"{sorted(emitted)} -- clause: {' '.join(clause.split())[:140]}")
+    assert not stale, (
+        f"a record names a green label the engine does not print. The label is the one mark whose job "
+        f"is to tell a junior to trust that green LESS, so a stale copy of it is not cosmetic. Say what "
+        f"the engine says, or mark the mention as history (a clause that refutes it is cleared):\n  "
+        + "\n  ".join(stale))
+
+
+@needs_corpus
+def test_no_course_record_claims_an_elevation_source_its_own_surfaces_deny():
+    """`sources.elevation` and `dem_source` are hand-typed, reproduced VERBATIM in legal/03, and four
+    of the twelve named a seamless 1 m fallback the artifacts deny.
+
+    monarch-bay's was FALSE -- its six seamless greens measure 2.70-2.73 x 3.42-3.43 m, not 1 m.
+    castlewood-hill's and castlewood-valley's were STALE: both courses build all 18 greens from 0.4 m
+    LiDAR and have never taken a green from the mosaic. copper-valley's `dem_source` said "USGS 3DEP
+    seamless 1 m (CA Sierra Nevada 2025 / Central Valley 2017)" for a course whose 18 greens are ALL
+    0.4 m ground returns from CA_SierraNevada_B22, flown 2021-12-02.
+
+    Nothing graded these. The row beside them in legal/03 is DERIVED from the same artifacts, so the
+    document stated both readings of one fact, four times, and agreed with itself nowhere.
+
+    Graded against the surfaces on disk, never against the derived row: two records that check each
+    other are how "1 m" survived six cards and two lines of that document.
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    problems, graded = [], 0
+    for slug in sorted(geometry_courses()):
+        mine = {h: v for (s, h), v in cells.items() if s == slug}
+        if not mine:
+            continue
+        graded += 1
+        seam = {h: v for h, v in mine.items() if v[3]}
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
+            cj = json.load(fh)
+        fields = [("dem_source", str(cj.get("dem_source") or "")),
+                  ("sources.elevation", str((cj.get("sources") or {}).get("elevation") or ""))]
+        for name, text in fields:
+            if not text:
+                continue
+            where = f"{slug}: {name}"
+            if not seam:
+                for clause in _clauses(text):
+                    if re.search(r"seamless|fallback|fill\b", clause, re.I) and \
+                            not re.search(r"\bnot\b|\bno\b|never|none", clause, re.I):
+                        problems.append(
+                            f"{where} names a seamless fallback; all {len(mine)} of this course's "
+                            f"greens are built from the point cloud and none has ever come from the "
+                            f"mosaic. Clause: {' '.join(clause.split())[:140]}")
+            problems += _unrefuted_one_metre_claims(where, text)
+            said_ew, said_ns = _axis_cells(text)
+            problems += _cells_off(where, said_ew, [v[0] for v in seam.values()], "E-W")
+            problems += _cells_off(where, said_ns, [v[1] for v in seam.values()], "N-S")
+            # `(?<![\d.])` because "0.4 m greens" is a RESOLUTION, not a count of four greens.
+            for n in re.findall(r"(?<![\d.])(\d+)\s+(?:\w+\s+)?(?:hole|green)s?\b", text):
+                if int(n) not in (len(seam), len(mine)):
+                    problems.append(f"{where} publishes a count of {n} greens; this course has "
+                                    f"{len(mine)} built surfaces, {len(seam)} of them from the mosaic")
+    assert graded >= 2, f"only {graded} course record(s) read; this graded almost nothing"
+    assert not problems, ("a course record claims an elevation source its own surfaces deny:\n  "
+                          + "\n  ".join(problems[:12]))
 
 
 def _reaches_the_drawing(lam_m, cell_m, px_m, gauss, sig_px=3.0, n=640, rows=23, nph=4):

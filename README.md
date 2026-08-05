@@ -46,7 +46,7 @@ Everything is built from open data anyone can use:
 | Layer | Source | License |
 |---|---|---|
 | Hole &amp; green geometry | [OpenStreetMap](https://www.openstreetmap.org) contributors | ODbL 1.0 |
-| Slope / contours / arrows | **USGS 3DEP** LiDAR — 0.4 m ground returns (1 m seamless DEM fallback) | U.S. public domain |
+| Slope / contours / arrows | **USGS 3DEP** LiDAR — 0.4 m ground returns (3DEP seamless mosaic where the point cloud has no returns; its source cell is measured per green, not assumed) | U.S. public domain |
 | Par / yardage / handicap | Facts from the published scorecard | facts (not copyrightable) |
 | Aerial tracing (2 greens OSM had not mapped) | **USDA NAIP** imagery | U.S. public domain |
 
@@ -62,9 +62,11 @@ fetch_osm.py            # OpenStreetMap geometry (greens, holes, fairways, bunke
 fetch_lidar.py          # download USGS 3DEP LiDAR tiles covering the course (via The National Map)
 fetch_lidar_alameda.py  #   Alameda County 2021 tile-name decoder (when TNM naming needs it)
 fetch_dem_hd.py         # 0.4 m green surfaces from the raw LiDAR ground returns
-                        #   (keeps an existing 1 m fill rather than blanking a green it now refuses;
-                        #    OVERWRITE=1 to blank it on purpose)
-fetch_dem.py            #   THEN USGS 3DEP seamless 1 m for the greens it refused (fills gaps;
+                        #   (keeps an existing seamless fill rather than blanking a green it now
+                        #    refuses; OVERWRITE=1 to blank it on purpose)
+fetch_dem.py            #   THEN the USGS 3DEP seamless MOSAIC for the greens it refused -- a
+                        #   multi-resolution service, so each patch records the source cell measured
+                        #   out of its own pixels instead of a tier (fills gaps;
                         #   OVERWRITE=1 to replace a good 0.4 m surface on purpose)
 fetch_trees.py          # trees from LiDAR returns 2.5-35 m above ground (never on greens/fairways/tees/bunkers)
 fetch_hole_elev.py      # tee-to-green height change from the same LiDAR -> hole_elev.json (--write)
@@ -97,7 +99,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. This file rebinds
-`COURSE` and drops modules from `sys.modules` at 94 sites, so a test can silently reconfigure the next
+`COURSE` and drops modules from `sys.modules` at 95 sites, so a test can silently reconfigure the next
 one, and file order alone will never show it — a real `IndexError` in `render_hole` hid behind that for
 its whole life and only appeared under shuffling:
 ```bash

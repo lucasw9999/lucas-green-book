@@ -220,8 +220,8 @@ def green_honesty(hole, s):
     a person -- printed none of them, and reported "0.0%" for a green the engine had declined to
     read. One rule, one implementation.
 
-    The middle one read `GREEN &middot; 1 m data` on all six of monarch-bay's seamless greens, and the
-    data is 2.72 m E-W x 3.43 m N-S -- 3DEP's seamless service is a multi-resolution mosaic and
+    The middle one used to read `GREEN &middot; 1 m data` on all six of monarch-bay's seamless greens,
+    and the data is 2.72 m E-W x 3.43 m N-S -- 3DEP's seamless service is a multi-resolution mosaic and
     fetch_dem.py had simply typed "1 m" into the `source` field. Overstating a resolution 2.7x and
     3.4x, about 9x in area, in the one mark whose entire job is to say trust this green LESS. So the
     figure is the one render_green.source_lattice measured off that green's own array, and a green

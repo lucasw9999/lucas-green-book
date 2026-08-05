@@ -90,22 +90,22 @@ reproduced here uncut, so a claim can always be traced to what was actually writ
 - **dem_source** — USGS 3DEP LiDAR CA_AlamedaCounty_2021_B21 (0.4 m greens); trees from LiDAR canopy returns
 
 ### Castlewood Country Club — Hill Course
-- **elevation** — USGS 3DEP LiDAR (Alameda County 2021) + seamless 1 m (public domain)
+- **elevation** — USGS 3DEP LiDAR (Alameda County 2021, public domain)
 - **geometry** — OpenStreetMap contributors (ODbL)
 - **scorecard** — BlueGolf detailed + standard scorecard (cross-checked with GolfLink & OSM par)
-- **dem_source** — USGS 3DEP LiDAR CA_AlamedaCounty_2021_B21 (0.4 m greens); 1 m seamless fallback where uncovered
+- **dem_source** — USGS 3DEP LiDAR CA_AlamedaCounty_2021_B21 (0.4 m greens); no green here falls back to the 3DEP seamless mosaic
 
 ### Castlewood Country Club — Valley Course
-- **elevation** — USGS 3DEP LiDAR (Alameda County 2021) + seamless 1 m (public domain)
+- **elevation** — USGS 3DEP LiDAR (Alameda County 2021) at 0.4 m (public domain)
 - **geometry** — OpenStreetMap contributors (ODbL)
 - **scorecard** — BlueGolf / NCGA detailed scorecard (cross-checked with GOLF.com course finder & GolfLink)
-- **dem_source** — USGS 3DEP LiDAR CA_AlamedaCounty_2021_B21 (0.4 m greens); 1 m seamless fallback where uncovered
+- **dem_source** — USGS 3DEP LiDAR CA_AlamedaCounty_2021_B21 ground returns (0.4 m greens, all 18); the seamless-mosaic fallback did not fire on this course
 
 ### The Golf Club at Copper Valley
-- **elevation** — USGS 3DEP 1 m (public domain)
+- **elevation** — USGS 3DEP LiDAR (CA SierraNevada B22, flown 2021-12-02) at 0.4 m (public domain)
 - **geometry** — OpenStreetMap contributors (ODbL)
 - **scorecard** — BlueGolf (Saddle Creek / Copper Valley), verified
-- **dem_source** — USGS 3DEP seamless 1 m (CA Sierra Nevada 2025 / Central Valley 2017)
+- **dem_source** — USGS 3DEP LiDAR CA_SierraNevada_B22 ground returns (0.4 m greens, all 18); no seamless-mosaic fallback fired on this course
 
 ### Merion Golf Club — East Course
 - **elevation** — USGS 3DEP LiDAR (public domain)
@@ -122,7 +122,7 @@ reproduced here uncut, so a claim can always be traced to what was actually writ
 - **dem_source** — USGS 3DEP LiDAR CA_FEMALevee_D23 (2023), NAD83(2011) UTM10N + NAVD88; 0.4 m green surfaces at ~9-15 pts/m^2. All 18 holes mapped in OSM (no digitizing needed).
 
 ### Monarch Bay Golf Club — Tony Lema Course
-- **elevation** — USGS 3DEP LiDAR (Alameda County 2021) + seamless 1 m (public domain)
+- **elevation** — USGS 3DEP LiDAR (Alameda County 2021) at 0.4 m + 3DEP seamless mosaic, source cell measured at 2.72 m E-W x 3.43 m N-S, on 6 bayside greens (public domain)
 - **geometry** — OpenStreetMap contributors (ODbL)
 - **scorecard** — Official Monarch Bay GC Tony Lema scorecard PDF + USGA NCRDB + BlueGolf (cross-checked)
 - **dem_source** — USGS 3DEP LiDAR CA_AlamedaCounty_2021_B21 (0.4 m, inland greens); 3DEP seamless mosaic for the 6 bayside holes with no LiDAR over water (1, 9, 10, 16, 17, 18) -- source cell MEASURED at 2.72 m E-W x 3.43 m N-S, which is 3DEP's 1/9 arc-second tier and not its 1 m tier; that raster's own acquisition date is not recorded anywhere in this build

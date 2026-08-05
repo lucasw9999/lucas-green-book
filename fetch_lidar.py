@@ -392,8 +392,9 @@ def choose_project(projects, cents=None):
                else "some project's tiles carry no boundingBox")
         print(f"  ({why} -- ranking projects on bbox coverage instead of greens)")
     best_cov = max(rank.values())
-    # A survey missing some greens is recoverable and disclosed: those greens fall back to the 1 m
-    # seamless DEM and the card prints "1 m data". A survey that is a decade stale is not -- it
+    # A survey missing some greens is recoverable and disclosed: those greens fall back to the 3DEP
+    # seamless mosaic and the card carries a coarse-data caveat naming the source cell measured off
+    # that green's own array. A survey that is a decade stale is not -- it
     # prints slope for a green that may since have been rebuilt. So the bar for preferring the newer
     # survey is a substantial majority of greens, not near-complete coverage.
     # The 2% slack is deliberate and predates the green-coverage change (d2b0d10: "recency only
@@ -585,8 +586,8 @@ def main():
     gc = _green_coverage(tiles, cents_now)
     if gc is not None and gc < 1.0:
         print(f"  NOTE {proj} reaches {gc*100:.0f}% of the {ngreens} greens "
-              f"({round(gc*ngreens)}/{ngreens}); the rest fall back to the 1 m seamless DEM and\n"
-              f"       their cards are labelled '1 m data'.")
+              f"({round(gc*ngreens)}/{ngreens}); the rest fall back to the 3DEP seamless mosaic and\n"
+              f"       their cards are labelled with the source cell measured off their own arrays.")
     elif gc is None and scored[proj] < COVERAGE_GOOD:
         print(f"  WARNING: {proj} covers only {scored[proj]*100:.0f}% of the course bbox; greens\n"
               f"           outside it will have no ground returns and will not be read.")

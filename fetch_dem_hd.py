@@ -413,15 +413,15 @@ def main():
         dens = round(dens_exact,1)
         # A green is only trustworthy if the surface was actually measured under it.
         insufficient = is_insufficient(nan_frac, dens_exact, uncovered)
-        # Do not trade a WORKING 1 m fallback for a refused 0.4 m attempt. This stage shares dem_hd/
+        # Do not trade a WORKING seamless fallback for a refused 0.4 m attempt. This stage shares dem_hd/
         # with fetch_dem.py, which fills the greens this one gives up on, and re-running this stage
         # alone -- an ordinary thing to do after changing the point filter -- overwrote that fill with
         # an insufficient=True record. The green then prints BLANK where it previously printed a real
-        # read labelled "1 m data": a card silently loses information, and the only symptom is the
-        # blank itself.
+        # read carrying the coarse-data caveat: a card silently loses information, and the only symptom
+        # is the blank itself.
         #
         # This is the exact mirror of the fault fetch_dem.keeps_existing_surface was written for, found
-        # on the same course: that one replaced good 0.4 m greens with the coarse 1 m ones, and cost
+        # on the same course: that one replaced good 0.4 m greens with the coarse mosaic ones, and cost
         # Monarch Bay 1.1 MB of precision without printing a dishonest word. Only one direction was
         # guarded. Same convention here, same escape hatch: OVERWRITE=1 to do it on purpose.
         #
