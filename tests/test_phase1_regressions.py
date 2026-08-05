@@ -15128,8 +15128,8 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
     OVERWRITE=false and OVERWRITE=no all armed it, in both stages that write dem_hd/.
 
     An explicit "off" turning a guard OFF is the worst direction for this pair of flags to fail in.
-    With OVERWRITE=false, fetch_dem_hd.py replaces a working 1 m fallback with a blank green, and
-    fetch_dem.py replaces a good 0.4 m LiDAR surface with the coarse 1 m one -- the two faults the
+    With OVERWRITE=false, fetch_dem_hd.py replaces a working seamless fallback with a blank green, and
+    fetch_dem.py replaces a good 0.4 m LiDAR surface with the coarse seamless one -- the two faults the
     keeps_existing_surface guards exist to prevent, re-armed by the word "false".
 
     fetch_trees.py already parses its two escape hatches correctly (`.lower() not in ("", "0",
@@ -15244,7 +15244,7 @@ def test_a_missing_green_surface_explains_itself(tmp_path):
     """render_green.render() died with a bare FileNotFoundError from json.load, several frames deep,
     naming a path and nothing else. The situation it describes is ordinary, not exotic:
     fetch_dem_hd.py builds only the greens with usable 0.4 m LiDAR ground returns, and the ones it
-    refuses need the 1 m seamless fallback from fetch_dem.py. Monarch Bay has six such holes, so
+    refuses need the seamless fallback from fetch_dem.py. Monarch Bay has six such holes, so
     running generate.py without fetch_dem.py hits this every time -- which is how it was found,
     cold-building that course.
 

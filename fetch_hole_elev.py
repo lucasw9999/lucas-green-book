@@ -759,7 +759,10 @@ def source_line(rows):
 
     The hand-written version said "USGS 3DEP LiDAR ground returns (class 2) vs the green's own 0.4 m
     surface" for every course, and it was false wherever a green's patch came from the 3DEP seamless
-    1 m DEM -- monarch-bay 9 and 16 in this corpus. Deriving it from `green_source` means the summary and
+    mosaic -- monarch-bay 9 and 16 in this corpus. (Said "the 3DEP seamless 1 m DEM" until this round:
+    that mosaic answered from a tier measuring 2.72 m E-W x 3.43 m N-S at every green this project has
+    taken from it, so the label overstated it by about 9x in area.) Deriving it from `green_source`
+    means the summary and
     the per-row field are one measurement rendered twice rather than two claims that can disagree, which
     is the fault this project keeps finding in pairs of records."""
     counts = collections.Counter(r.get("green_source") or "unrecorded" for r in rows.values())

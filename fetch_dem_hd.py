@@ -6,7 +6,7 @@
 """
 High-resolution green surfaces from RAW LiDAR ground returns.
 
-Upgrade over fetch_dem.py (which used the gridded 1 m DEM): here we read the
+Upgrade over fetch_dem.py (which used the gridded seamless DEM): here we read the
 course's USGS 3DEP point cloud (4.7-27.9 pts/m^2 over a green in this corpus),
 keep ONLY ground-classified points (class 2), and interpolate a 0.4 m surface
 over each green — sampled on the same lat/lon grid render_green.py expects, so
@@ -30,7 +30,11 @@ OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 # trace of the surface pair's rename window, and evidence a dead run also leaves is not evidence.
 surface_io.sweep_staged(OUT)
 RES = 0.4                                   # target metres/pixel
-# replace a working 1 m fallback with a blank green. Parsed the way fetch_trees.py parses its two
+# OVERWRITE=1 lets a refused 0.4 m attempt replace a working seamless fallback with a blank green --
+# see keeps_existing_surface, whose guard this flag is the escape hatch for. (The sentence lost its
+# subject when this was promoted from a trailing comment on the assignment to a block above it, so it
+# has read as a fragment beginning "replace a working..." since fd1f1ca.) Parsed the way
+# fetch_trees.py parses its two
 # escape hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
 # OVERWRITE=no all mean YES, so the word "false" armed the one path in this stage that can turn a card
 # that prints a real read into a blank one. An explicit off must be off.
@@ -288,7 +292,11 @@ def keeps_existing_surface(meta_path, overwrite=False):
     except (OSError, ValueError):
         return False                        # unreadable: rebuilding it is the repair
     # Any positively-sourced record that is not itself a refusal. Deliberately NOT is_seamless: a
-    # seamless 1 m surface and a good 0.4 m one are both real reads, and both beat a blank green.
+    # seamless surface and a good 0.4 m one are both real reads, and both beat a blank green. (Said
+    # "seamless 1 m" here until this round: the six greens this corpus takes from that mosaic have
+    # arrays measuring 2.72 m E-W x 3.43 m N-S, so "1 m" overstated the one mark whose job is to say
+    # trust this green LESS. a60fcae corrected the string literals and the legal records and stopped
+    # short of comments, naming this note as one of the two it stopped short of.)
     return bool(str((prev or {}).get("source", "")).strip()) and not prev.get("insufficient")
 
 
