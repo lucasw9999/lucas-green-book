@@ -5560,6 +5560,119 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
                           + "\n  ".join(problems[:8]))
 
 
+@needs_corpus
+def test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept():
+    """Every window the landing rule KEPT has to reach the card. `carries[:3]` truncated the fourth.
+
+    merion 15 is a 415 yd par 4 with FOUR kept windows -- 88.95-98.75, 171.84-204.32, 219.13-240.19 and
+    299.15-308.40, the last with 51.89 yd of fairway beyond it and a green front at 360.29. The rule kept
+    all four; `[:3]` printed three, and because nothing was refused there was no `sand_to_green` mark
+    either, so the card read "green 29 ft above * carry 89 / 172 / 219" with a reachable fairway bunker
+    unnamed. That is verbatim the defect be4da7e was written to fix -- "nothing distinguished 'no more
+    sand' from 'sand we declined to number'" -- on the one hole its own comment cites as having four.
+
+    THE CAP WENT RATHER THAN GAINING A MARK, because a mark would have to say something true and there
+    is nothing true to say: the sand does NOT run to the green there, it stops 52 yd short, so
+    CARRY_REFUSED_MARK would be a false claim. The fourth figure, by contrast, is supported by exactly
+    the same projection, chord and tee shift as the other three. Printing it adds no wrong number and
+    omits no reachable hazard, which is the only combination this book accepts.
+
+    Measured, because the cap was a space budget: merion 15 is the ONLY card in the corpus with more than
+    three kept windows, so the cap fired once in 198. Adding " / 299" costs the playline 25.96 px pocket
+    and 27.66 px enlarged, against 146.02 and 132.36 px of slack -- and the tightest playline in the
+    corpus is a different card entirely (merion 10 enlarged, 20.20 px). See
+    test_the_playline_is_never_clipped_by_its_own_nowrap, which is what would catch a re-fetch that made
+    a list too long, and which fails loudly rather than truncating.
+    """
+    import math
+    short, checked = [], 0
+    seen_courses = collections.Counter()
+    for ref in CORPUS:
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            par = cfg.HOLES[hn][0] if hn in cfg.HOLES else None
+            if par == 3 or not info.get("carry_origin_known"):
+                continue          # the two gates that null the whole carry row
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+
+            def em(la, lo):
+                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            perp = (uy, -ux)
+            shift = ((info["card_yd"] - info["arc_yd"])
+                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+
+            def along_yd(la, lo):
+                e, n = em(la, lo)
+                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+
+            def off_m(la, lo):
+                e, n = em(la, lo)
+                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
+            total = info["card_yd"]
+            raw, greenside = [], []
+            for g in _sand_the_engine_sees(rh, em, line, bunkers):
+                al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                if not al:
+                    continue
+                near, far = min(al), max(al)
+                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                    continue
+                (greenside if near > total - 40 else raw).append((near, far))
+            raw.sort()
+            merged = []
+            for a, b in raw:
+                if merged and a - merged[-1][1] <= rh.CARRY_MERGE_GAP_YD:
+                    merged[-1][1] = max(merged[-1][1], b)
+                else:
+                    merged.append([a, b])
+            kept = []
+            for i, (a, b) in enumerate(merged):
+                nxt = ([merged[i + 1][0]] if i + 1 < len(merged) else []) + [n for n, f in greenside
+                                                                            if f > b]
+                if min(nxt + [front]) - b > rh.CARRY_MERGE_GAP_YD:
+                    kept.append((a, b))
+            printed = info.get("carries") or []
+            checked += 1
+            seen_courses[ref] += 1
+            if len(printed) < len(kept):
+                short.append(
+                    f"{ref} hole {hn}: the landing rule kept {len(kept)} windows "
+                    f"({', '.join(f'{a:.2f}-{b:.2f}' for a, b in kept)}) and the card prints "
+                    f"{len(printed)} ({printed}) with no mark -- the list ends before the sand does, "
+                    f"and the dropped window has {min([n for n, f in greenside if f > kept[-1][1]] + [front]) - kept[-1][1]:.2f} yd "
+                    f"of landing area beyond it, so it is a carry the hole really has")
+    assert checked >= 100, f"only {checked} cards checked -- build the books first"
+    assert_no_course_skipped(
+        seen_courses, "test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept")
+    assert not short, ("a card's carry list is silently truncated:\n  " + "\n  ".join(short[:8]))
+
+
 # The card's own words for a carry the landing rule refused to print. One spelling, shared by the
 # engine flag, the footer phrase and this test, so the three cannot drift into two idioms.
 CARRY_REFUSED_MARK = "no carry: sand to the green"
@@ -5587,11 +5700,12 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         philadelphia 1    212.11-306.99  front 299.42   -7.57   reach 314.88  -15.46   keeps nothing
 
     merion 1 is one of the two cases that were missing from the record: the landing rule cost it no
-    printed FIGURE, because it has four merged windows and `[:3]` would have truncated the fourth anyway
-    -- but the reader-facing defect is identical, and worse, since that card prints three carries above
-    sand that runs 17 yd past its green front. micke-grove 13 is the other, and it was missing for a
-    different reason: its landing area was measured to the GREEN front alone (8.75 yd) rather than to the
-    greenside sand at 295.84 that comes first, so the rule kept a carry the hole has no room for.
+    printed FIGURE, because its fourth merged window is the refused one, so the three it prints are the
+    three it keeps -- but the reader-facing defect is identical, and worse, since that card prints three
+    carries above sand that runs 17 yd past its green front. micke-grove 13 is the other, and it was
+    missing for a different reason: its landing area was measured to the GREEN front alone (8.75 yd)
+    rather than to the greenside sand at 295.84 that comes first, so the rule kept a carry the hole has
+    no room for.
 
     The reach column is the load-bearing one. It includes the greenside sand the carry filter drops via
     `near_yd > total_yd - 40`, and it chains across any strip of grass narrower than CARRY_MERGE_GAP_YD,
@@ -5911,8 +6025,9 @@ def test_the_playline_is_never_clipped_by_its_own_nowrap():
     the card on every card of every book, in both editions, including the four that were deliberately
     over-filled while writing this.
 
-    The row is the card's most crowded: it carries the measured tee-to-green height, up to three carry
-    figures, and (see carry_phrase) the refusal mark for a window with no landing area. Measured in the
+    The row is the card's most crowded: it carries the measured tee-to-green height, one carry figure per
+    window the landing rule keeps (four, on merion 15), and (see carry_phrase) the refusal mark for a
+    window with no landing area. Measured in the
     same chrome-headless-shell tools/export_pdf.py exports with, under print media:
 
         merion 10 enlarged   'green 5 ft above . carry 95 / 164 . no carry: sand to the green'   20.20 px
@@ -16775,7 +16890,7 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
     CURRENT SIZES (2026-08-05): micke-grove 4,325,590; castlewood-hill 4,476,546;
-    merion 5,870,160; monarch-bay 4,933,911; copper-valley 6,084,024; callippe 6,797,869;
+    merion 5,870,166; monarch-bay 4,933,911; copper-valley 6,084,024; callippe 6,797,869;
     castlewood-valley 5,835,757; philadelphia 4,604,342; the-reserve 5,109,777;
     bay-view 4,242,903; valley-hi 4,698,141; poppy-ridge 340,883.
 

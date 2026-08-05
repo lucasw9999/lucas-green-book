@@ -1234,8 +1234,16 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # PER WINDOW, bounded by the next sand or the green, whichever comes first -- so a hole keeps the
     # carries that DO have somewhere to land. merion 10 keeps 95 and 164 (57 and 41 yd of fairway beyond
-    # them) and loses only 227. Evaluated before the [:3] truncation, because a fourth window is still
-    # sand a third window has to land short of (merion 1 and 15 each have four).
+    # them) and loses only 227.
+    #
+    # AND EVERY KEPT WINDOW IS PRINTED. This list used to end at `[:3]`, an unargued cap on a card whose
+    # carry row has room: merion 15 keeps FOUR windows and printed three, dropping 299.15-308.40 -- a
+    # reachable fairway bunker with 51.89 yd of fairway beyond it and the green front 52 yd further on.
+    # Nothing marked the omission, and nothing could: `sand_to_green` would have been a false claim,
+    # because that sand does not run to the green. So the cap went instead. It fired on ONE card in 198,
+    # the fourth figure costs merion 15's playline 25.96 px (pocket) / 27.66 px (enlarged) against 146.02
+    # and 132.36 px of slack, and a re-fetch that made a row too long fails loudly in
+    # test_the_playline_is_never_clipped_by_its_own_nowrap rather than truncating in silence.
     #
     # "THE NEXT SAND" HAS TO MEAN THE NEXT SAND, INCLUDING THE GREENSIDE SAND `total_yd - 40` DROPS. That
     # filter answers "is this a tee carry worth printing?", and its answer was being reused to decide
@@ -1259,15 +1267,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # N (the-reserve 16 prints "carry 177" for sand reaching 322). Refusing there would withdraw a
     # correct carry, which is the one thing this rule must not do.
     #
-    # Cost: 8 figures across 8 of 198 cards, 126 -> 118; four cards lose their only carry row
+    # Cost: 8 figures across 8 of 198 cards, 128 -> 119; four cards lose their only carry row
     # (philadelphia 1, micke-grove 3 and 13, callippe 12) and no course loses all of them. Nothing is
     # hidden -- the bunkers stay drawn and stay counted in the footer's "NB". Only the false invitation
     # goes.
     #
     # AND THE CARD SAYS SO, because withdrawing the figure silently left a different fault. Nine windows
     # in this corpus have no landing area: merion 1 is one of them and it cost no printed
-    # figure only because that hole has FOUR merged windows and the [:3] below would have truncated the
-    # fourth anyway. On five of the nine (merion 1 and 10, castlewood-valley 8, copper-valley 3,
+    # figure only because that hole's fourth merged window is the refused one, so the three it prints are
+    # the three it keeps. On five of the nine (merion 1 and 10, castlewood-valley 8, copper-valley 3,
     # monarch-bay 14) an EARLIER carry survives, so the printed list just ended before the sand did and
     # nothing distinguished "no more sand" from "sand we declined to number".
     #
@@ -1284,7 +1292,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         nxt = ([merged[i+1][0]] if i+1 < len(merged) else []) + [n for n, f in greenside if f > b]
         beyond = min(nxt + [green_front_yd])
         (kept if beyond - b > CARRY_MERGE_GAP_YD else no_landing).append((a, b))
-    carries = [(round(a), round(b)) for a, b in kept][:3]
+    carries = [(round(a), round(b)) for a, b in kept]
     # A CARRY NEEDS AN ORIGIN THE GEOMETRY CORROBORATES. Every distance above is measured along the line
     # from where the line STARTS, shifted by tee_shift_yd. That shift only exists when tee_ok, fwd_tee or
     # past_tee established where the back tee is. Two holes printed carries with no such evidence:
