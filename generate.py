@@ -303,11 +303,11 @@ def carry_phrase(info):
     """"carry 172 / 212 / 245" -- the near edge of each bunker window a tee shot must clear.
 
     Plus the one thing the list could not say by ending: render_hole withdraws a carry wherever the sand
-    leaves no room to land short of the green (see its `no_landing` block), and on five of the eight
+    leaves no room to land short of the green (see its `no_landing` block), and on five of the nine
     cards that fires on, an EARLIER carry survives -- so "carry 95 / 164" read as the whole story while a
     closer, uncarryable cluster went unnamed. The mark states that refusal and prints NO number, because
     both edges of the refused window are numbers a player would club against and be wrong: the near one
-    invites the lay-up the rule just withdrew, the far one is at or past the green front on all eight.
+    invites the lay-up the rule just withdrew, the far one is at or past the green front on all nine.
 
     It needs no legend row and gets none. Measured in chrome-headless-shell under print media, adding a
     50-character clause to the carry legrow overflows monarch-bay's guide card by 9.4 px (pocket) and

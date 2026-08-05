@@ -5520,15 +5520,30 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
                 return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             near, far = carries[-1]                    # the sand nearest the green
-            reach = far
-            for g in bunkers:
+            # THE WHOLE OBSTACLE, not the part the carry filters happened to admit. `reach` used to grow
+            # only over bunkers whose near edge fell INSIDE the printed window (+-2 yd), which stops at
+            # the first strip of grass wider than 2 yd -- and CARRY_MERGE_GAP_YD already says a strip
+            # narrower than 8 yd is not two decisions, it is one obstacle. So the reach chains: any
+            # in-corridor sand starting within the merge gap of where the reach has got to is part of the
+            # same obstacle. micke-grove 13 is the case -- printed window 206.71-289.69, then 6.15 yd of
+            # grass, then sand from 295.84 to 306.14, which is PAST the 298.44 green front. Under the old
+            # +-2 metric that card measured 8.44 yd of landing area and passed; under this one it has
+            # -7.70 and there is nowhere to lay up at all.
+            spans = []
+            for g in _sand_the_engine_sees(rh, em, line, bunkers):
                 al = [along_yd(q["lat"], q["lon"]) for q in g["geometry"]]
                 of = [abs((em(q["lat"], q["lon"])[0] - tee[0]) * perp[0]
                           + (em(q["lat"], q["lon"])[1] - tee[1]) * perp[1]) for q in g["geometry"]]
                 if not al or min(of) > 30.0:
                     continue
-                if near - 2 <= min(al) <= far + 2:     # a bunker inside the printed window
-                    reach = max(reach, max(al))
+                spans.append((min(al), max(al)))
+            reach, grew = far, True
+            while grew:
+                grew = False
+                for a0, b0 in spans:
+                    if (near - rh.CARRY_MERGE_GAP_YD <= a0 <= reach + rh.CARRY_MERGE_GAP_YD
+                            and b0 > reach):
+                        reach, grew = b0, True
             checked += 1
             seen_courses[ref] += 1
             if front - reach <= rh.CARRY_MERGE_GAP_YD:
@@ -5556,7 +5571,7 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
 
     test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for withdraws a carry wherever the sand
     leaves no room to land short of the green. That is correct and it is not the whole duty: on FIVE of
-    the eight cards it fires on, the card keeps an EARLIER carry and drops only the last window, so the
+    the nine cards it fires on, the card keeps an EARLIER carry and drops only the last window, so the
     printed list simply ends before the sand does and nothing on the card says a further, closer sand
     cluster was measured and declined. Re-derived over the 198 geometry cards (window, green front,
     landing area by the rule's own metric, then the reach of every bunker inside that window):
@@ -5568,16 +5583,22 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         monarch-bay 14    273.28-283.35  front 286.78   +3.43   reach 287.63   -0.85   keeps 226
         callippe 12       272.34-293.33  front 293.60   +0.27   reach 306.84  -13.24   keeps nothing
         micke-grove 3     293.83-309.26  front 296.77  -12.49   reach 309.26  -12.49   keeps nothing
+        micke-grove 13    206.71-289.69  front 298.44   +6.15   reach 306.14   -7.70   keeps nothing
         philadelphia 1    212.11-306.99  front 299.42   -7.57   reach 314.88  -15.46   keeps nothing
 
-    merion 1 is the eighth case and it was missing from the record: the landing rule cost it no printed
-    FIGURE, because it has four merged windows and `[:3]` would have truncated the fourth anyway -- but
-    the reader-facing defect is identical, and worse, since that card prints three carries above sand
-    that runs 17 yd past its green front.
+    merion 1 is one of the two cases that were missing from the record: the landing rule cost it no
+    printed FIGURE, because it has four merged windows and `[:3]` would have truncated the fourth anyway
+    -- but the reader-facing defect is identical, and worse, since that card prints three carries above
+    sand that runs 17 yd past its green front. micke-grove 13 is the other, and it was missing for a
+    different reason: its landing area was measured to the GREEN front alone (8.75 yd) rather than to the
+    greenside sand at 295.84 that comes first, so the rule kept a carry the hole has no room for.
 
     The reach column is the load-bearing one. It includes the greenside sand the carry filter drops via
-    `near_yd > total_yd - 40`, and under it every one of the eight is NEGATIVE: the sand reaches at or
-    past the green front on all of them. That is what makes the words on the card true.
+    `near_yd > total_yd - 40`, and it chains across any strip of grass narrower than CARRY_MERGE_GAP_YD,
+    because that constant already calls a strip that narrow one obstacle rather than two decisions.
+    Under it every one of the nine is NEGATIVE: the sand reaches at or past the green front on all of
+    them. That is what makes the words on the card true -- and on micke-grove 13 the chaining is what
+    makes it true, since 6.15 yd of grass at 289.69 separates the two bunkers.
 
     WHAT IS NOT PRINTED, AND WHY. The far edge is a supported number -- same projection, same chord,
     same tee shift as every printed carry -- and printing it was rejected. On merion 10 it is 284 with
@@ -5655,9 +5676,11 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
-            # The engine's own carry filters, re-derived from the OSM rings.
-            raw = []
-            for g in bunkers:
+            # The engine's own carry filters, re-derived from the OSM rings -- and from the engine's own
+            # sand (see _sand_the_engine_sees), which this loop did not start from either.
+            in_corr = _sand_the_engine_sees(rh, em, line, bunkers)
+            raw, greenside = [], []
+            for g in in_corr:
                 al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                 of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                 if not al:
@@ -5666,6 +5689,7 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 if near > total - 40:
+                    greenside.append((near, far))
                     continue
                 raw.append((near, far))
             raw.sort()
@@ -5677,7 +5701,12 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                     merged.append([a, b])
             refused = []
             for i, (a, b) in enumerate(merged):
-                beyond = min(merged[i + 1][0], front) if i + 1 < len(merged) else front
+                # The greenside sand `total_yd - 40` drops is a bound on a lay-up even though it is not
+                # a tee carry -- the same asymmetry the mark's own wording already relied on. micke-grove
+                # 13's window is bounded by sand at 295.84, not by its 298.44 green front.
+                nxt = ([merged[i + 1][0]] if i + 1 < len(merged) else []) + [n for n, f in greenside
+                                                                            if f > b]
+                beyond = min(nxt + [front])
                 if beyond - b <= rh.CARRY_MERGE_GAP_YD:
                     refused.append((a, b))
             par = cfg.HOLES[hn][0] if hn in cfg.HOLES else None
@@ -5714,16 +5743,26 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                                 f"lay-up the hole has no room for, the far one a shot past the green.")
             if want:
                 # what makes the words true: the sand really does reach the green, measured with the
-                # greenside sand the carry filter drops
-                reach = max(b for _a, b in refused)
-                for g in bunkers:
+                # greenside sand the carry filter drops, and chained across any strip of grass narrower
+                # than CARRY_MERGE_GAP_YD -- that constant already calls a strip that narrow one obstacle
+                # rather than two decisions, and it is why the card can say "sand to the green" over
+                # micke-grove 13's 6.15 yd of grass at 289.69-295.84. Stopping at a 2 yd tolerance made
+                # that card measure 8.75 yd SHORT of its green and read as an over-claim.
+                spans = []
+                for g in in_corr:
                     al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                     of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                     if not al or min(of) > 30.0:
                         continue
-                    for a, b in refused:
-                        if a - 2 <= min(al) <= b + 2:
-                            reach = max(reach, max(al))
+                    spans.append((min(al), max(al)))
+                reach, grew = max(b for _a, b in refused), True
+                lo = min(a for a, _b in refused)
+                while grew:
+                    grew = False
+                    for a0, b0 in spans:
+                        if (lo - rh.CARRY_MERGE_GAP_YD <= a0 <= reach + rh.CARRY_MERGE_GAP_YD
+                                and b0 > reach):
+                            reach, grew = b0, True
                 marked.append((ref, hn, front - reach))
                 if front - reach > 0:
                     problems.append(
@@ -5735,11 +5774,11 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         seen_courses, "test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green")
     assert not problems, ("a card withholds a carry without saying so:\n  "
                           + "\n  ".join(problems[:8]))
-    # the eight measured cases, so a change that stops the rule firing cannot leave this vacuous
-    assert len(marked) >= 8, (
-        f"only {len(marked)} card(s) print {CARRY_REFUSED_MARK!r}; eight windows in this corpus have "
+    # the nine measured cases, so a change that stops the rule firing cannot leave this vacuous
+    assert len(marked) >= 9, (
+        f"only {len(marked)} card(s) print {CARRY_REFUSED_MARK!r}; nine windows in this corpus have "
         f"no landing area (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14, "
-        f"callippe 12, micke-grove 3, philadelphia 1), so the rule or the frame has moved")
+        f"callippe 12, micke-grove 3 and 13, philadelphia 1), so the rule or the frame has moved")
 
 
 # The pre-migration spelling of the-reserve 8's shortfall, assembled rather than written, for the reason
@@ -6049,7 +6088,7 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
             in_corr = _sand_the_engine_sees(rh, em, line, bunkers)
-            raw = []
+            raw, greenside = [], []
             for g in in_corr:
                 al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                 of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
@@ -6059,6 +6098,7 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                 if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 if near > total - 40:
+                    greenside.append((near, far))   # not a tee carry; still a bound on a lay-up
                     continue
                 raw.append((near, far))
             raw.sort()
@@ -6070,20 +6110,37 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                     merged.append([a, b])
 
             def reach_of(a, b):
-                """Furthest sand inside a window, including greenside sand the carry filter drops."""
-                r = b
+                """The whole obstacle a printed window belongs to -- the suppression test's own metric.
+
+                Chains across any in-corridor sand starting within CARRY_MERGE_GAP_YD of where the reach
+                has got to, because that constant already declares a strip that narrow to be one obstacle
+                rather than two decisions. Seeded from the ROUNDED printed far edge, which is what makes
+                this measure differ from the rule's own.
+                """
+                r, grew = b, True
+                spans = []
                 for g in in_corr:
                     al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                     of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                     if not al or min(of) > 30.0:
                         continue
-                    if a - 2 <= min(al) <= b + 2:
-                        r = max(r, max(al))
+                    spans.append((min(al), max(al)))
+                while grew:
+                    grew = False
+                    for a0, b0 in spans:
+                        if (a - rh.CARRY_MERGE_GAP_YD <= a0 <= r + rh.CARRY_MERGE_GAP_YD and b0 > r):
+                            r, grew = b0, True
                 return r
             for i, (a, b) in enumerate(merged):
-                nxt = merged[i + 1][0] if i + 1 < len(merged) else None
-                beyond = front if nxt is None else min(nxt, front)
-                rec = (beyond - b, ref, hn, "green" if (nxt is None or front <= nxt) else "sand")
+                # THREE kinds of bound, and only one of them is tautological. The next MERGED window is
+                # more than CARRY_MERGE_GAP_YD away by construction; greenside sand and the green front
+                # are not, so those are the boundaries this rule actually decides.
+                cands = [(front, "green")]
+                if i + 1 < len(merged):
+                    cands.append((merged[i + 1][0], "mergenext"))
+                cands += [(n, "greenside") for n, f in greenside if f > b]
+                beyond, kind = min(cands)
+                rec = (beyond - b, ref, hn, kind)
                 (kept if beyond - b > rh.CARRY_MERGE_GAP_YD else dropped).append(rec)
                 seen_courses[ref] += 1
             # ...and the suppression test's own measure, on the window that is actually PRINTED
@@ -6101,35 +6158,40 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                                       "is built from sand the engine never puts on the card."})
     bound = 8.0
 
-    # (1) THE TAUTOLOGY, measured rather than asserted in prose: a window bounded by the next sand can
-    # never be dropped, because the merge already put more than CARRY_MERGE_GAP_YD between them.
-    sand_bound = [k for k in kept if k[3] == "sand"]
-    assert sand_bound, "no kept window is bounded by the next sand; the corpus cannot show the tautology"
-    assert all(k[0] > bound for k in sand_bound), (
-        "a sand-to-sand bounded window came in at or below the merge gap, which the merge makes "
-        "impossible -- the two uses of CARRY_MERGE_GAP_YD have come apart")
-    assert not [d for d in dropped if d[3] == "sand"], (
-        f"{len([d for d in dropped if d[3] == 'sand'])} dropped window(s) are sand-bounded, so the "
-        f"suppression is no longer only ever deciding the green-front boundary and the qualification "
-        f"published in render_hole.py is now false")
+    # (1) THE TAUTOLOGY, measured rather than asserted in prose: a window bounded by the NEXT MERGED
+    # WINDOW can never be dropped, because the merge already put more than CARRY_MERGE_GAP_YD between
+    # them. That argument covers only that one kind of bound -- greenside sand never entered the merge,
+    # so a greenside-bounded window can sit anywhere, and micke-grove 13 sits at 6.1489.
+    taut = [k for k in kept if k[3] == "mergenext"]
+    assert taut, ("no kept window is bounded by the next merged window; the corpus cannot show the "
+                  "tautology")
+    assert all(k[0] > bound for k in taut), (
+        "a window bounded by the next MERGED window came in at or below the merge gap, which the merge "
+        "makes impossible -- the two uses of CARRY_MERGE_GAP_YD have come apart")
+    assert not [d for d in dropped if d[3] == "mergenext"], (
+        f"{len([d for d in dropped if d[3] == 'mergenext'])} dropped window(s) are bounded by the next "
+        f"MERGED window, which the merge makes impossible, so the tautology published in render_hole.py "
+        f"is now false")
 
     # (2) THE FIGURES, derived, and each required in render_hole.py's prose to 4 dp.
-    green_bound = [k for k in kept if k[3] == "green"]
+    decidable = [k for k in kept if k[3] != "mergenext"]
     worst_kept_any = min(kept)
-    worst_kept_green = min(green_bound)
+    worst_kept_green = min(decidable)
     best_dropped = max(dropped)
     worst_printed = min(printed_last)
     tighter = [k for k in kept if k[0] < worst_kept_green[0]]
     figures = {
-        f"{worst_kept_green[0]:.4f}": f"worst KEPT green-bounded, rule metric ({worst_kept_green[1]} "
-                                     f"hole {worst_kept_green[2]})",
-        f"{worst_kept_any[0]:.4f}": f"worst KEPT of all, rule metric, sand-bounded and so tautological "
-                                   f"({worst_kept_any[1]} hole {worst_kept_any[2]})",
+        f"{worst_kept_green[0]:.4f}": f"worst KEPT that the rule decides, rule metric "
+                                     f"({worst_kept_green[1]} hole {worst_kept_green[2]}, "
+                                     f"{worst_kept_green[3]}-bounded)",
+        f"{worst_kept_any[0]:.4f}": f"worst KEPT of all, rule metric, bounded by the next merged window "
+                                   f"and so tautological ({worst_kept_any[1]} hole "
+                                   f"{worst_kept_any[2]})",
         f"{best_dropped[0]:.4f}": f"best DROPPED, rule metric ({best_dropped[1]} hole "
-                                  f"{best_dropped[2]})",
+                                  f"{best_dropped[2]}, {best_dropped[3]}-bounded)",
         f"{worst_printed[0]:.4f}": f"worst kept by the suppression test's metric ({worst_printed[1]} "
                                    f"hole {worst_printed[2]})",
-        f"{worst_printed[0] - bound:.4f}": "the thinnest real margin over the bound",
+        f"{worst_kept_green[0] - bound:.4f}": "the thinnest real margin over the bound",
     }
     missing = {v: k for k, v in figures.items() if k not in rh_src}
     assert not missing, (
@@ -6152,8 +6214,8 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     flat = " ".join(re.sub(r"(?m)^[ \t]*#[ \t]?", "", rh_src).split())
     m = re.search(r"(\d+) kept windows? (?:are|is) tighter than ([0-9]+\.[0-9]{4})", flat)
     assert m, (
-        f"render_hole.py no longer states how many kept windows are tighter than the worst green-bounded "
-        f"one, in a form that can be graded. Measured: {len(tighter)} tighter than "
+        f"render_hole.py no longer states how many kept windows are tighter than the worst window the "
+        f"rule can decide, in a form that can be graded. Measured: {len(tighter)} tighter than "
         f"{worst_kept_green[0]:.4f}. Write it as '<N> kept windows are tighter than <figure>'.")
     assert (int(m.group(1)), m.group(2)) == (len(tighter), f"{worst_kept_green[0]:.4f}"), (
         f"render_hole.py says {m.group(0)!r}; measured over this corpus it is {len(tighter)} kept "
@@ -6172,16 +6234,16 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     # counts of KEPT windows -- neither is a count of decidable windows and neither is a count of all --
     # and both came from the pre-filter-free superset. Four counts are in play and all four are derived
     # here, so the sentence cannot describe one and print another.
-    decidable = len([x for x in kept + dropped if x[3] == "green"])
+    dec_all = len([x for x in kept + dropped if x[3] != "mergenext"])
     allw = len(kept) + len(dropped)
-    for pat, want in ((r"worst of the (\d+) KEPT windows the green front bounds", (len(green_bound),)),
+    for pat, want in ((r"worst of the (\d+) KEPT windows the rule decides", (len(decidable),)),
                       (r"worst of all (\d+) kept", (len(kept),)),
-                      (r"(\d+) of the corpus's (\d+) windows are green-bounded", (decidable, allw))):
+                      (r"(\d+) of the corpus's (\d+) windows are decidable", (dec_all, allw))):
         got = re.search(pat, flat)
         assert got, (
             f"render_hole.py's landing-bound note no longer carries the population count matching "
-            f"{pat!r}. Measured: {len(green_bound)} kept green-bounded, {len(kept)} kept, {decidable} "
-            f"green-bounded of {allw} windows in all.")
+            f"{pat!r}. Measured: {len(decidable)} kept decidable, {len(kept)} kept, {dec_all} decidable "
+            f"of {allw} windows in all.")
         assert tuple(int(g) for g in got.groups()) == want, (
             f"render_hole.py says {got.group(0)!r}; measured over the engine's own sand population it "
             f"is {want}. These were published as 86 and 132, which were counts of KEPT windows wearing "
@@ -6192,17 +6254,17 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
             f"render_hole.py's landing-bound note does not name {phrase!r}, so a reader cannot tell "
             f"which of the two measures each published figure belongs to -- which is the whole defect")
 
-    # (3) THE GAP IS STILL A GAP. If a re-fetch puts a green-bounded window between the best dropped and
-    # the worst kept, the value of the bound starts deciding cards and has to be argued, not inherited.
+    # (3) THE GAP IS STILL A GAP. If a re-fetch puts a decidable window between the best dropped and the
+    # worst kept, the value of the bound starts deciding cards and has to be argued, not inherited.
     assert worst_kept_green[0] > best_dropped[0] + 1.0, (
-        f"the landing decision is no longer insensitive to the bound: the worst kept green-bounded "
-        f"window is {worst_kept_green[0]:.4f} yd ({worst_kept_green[1]} hole {worst_kept_green[2]}) and "
+        f"the landing decision is no longer insensitive to the bound: the worst kept window the rule "
+        f"decides is {worst_kept_green[0]:.4f} yd ({worst_kept_green[1]} hole {worst_kept_green[2]}) and "
         f"the best dropped {best_dropped[0]:.4f} ({best_dropped[1]} hole {best_dropped[2]}). "
         f"CARRY_MERGE_GAP_YD was chosen for readability and inherited here on the argument that the "
         f"corpus cannot tell one value in the gap from another. Re-argue it before shipping.")
     assert best_dropped[0] < bound < worst_kept_green[0], (
         f"the bound {bound} no longer sits between the best dropped ({best_dropped[0]:.4f}) and the "
-        f"worst kept green-bounded ({worst_kept_green[0]:.4f}) window")
+        f"worst kept decidable ({worst_kept_green[0]:.4f}) window")
     assert worst_printed[0] > bound, (
         f"the suppression test's own worst kept window is {worst_printed[0]:.4f} yd, at or below the "
         f"{bound} bound -- the two measures now disagree about a shipped card")
@@ -16712,7 +16774,7 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-04): micke-grove 4,325,572; castlewood-hill 4,476,546;
+    CURRENT SIZES (2026-08-05): micke-grove 4,325,590; castlewood-hill 4,476,546;
     merion 5,870,160; monarch-bay 4,933,911; copper-valley 6,084,024; callippe 6,797,869;
     castlewood-valley 5,835,757; philadelphia 4,604,342; the-reserve 5,109,777;
     bay-view 4,242,903; valley-hi 4,698,141; poppy-ridge 340,883.
