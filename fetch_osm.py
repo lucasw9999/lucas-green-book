@@ -111,7 +111,7 @@ def census(elements):
 
     `building` is tested FIRST and on its own. It was missing from the printout's key chain
     (`golf or natural or landuse or waterway`), so every building landed in `other` -- on
-    castlewood-hill all 145 of them, on callippe all 540, on the-reserve 1,529 of 1,530. That is
+    castlewood-hill all 182 of them, on callippe all 540, on the-reserve 1,529 of 1,530. That is
     precisely the number fetch_trees.py hard-stops on ("no building polygons in osm_course.json --
     this cache predates the way[building] query, so roofs would be drawn as trees", 53 markers on
     Merion's clubhouse), so the one figure that would have predicted that refusal was the one figure
@@ -119,6 +119,17 @@ def census(elements):
     asks `building not in (None, 'no')` before it looks at anything else, so counting a
     golf-tagged clubhouse as golf here would make this census disagree with the check it exists to
     anticipate.
+
+    `natural=water` AREAS and `waterway=*` LINES are counted APART, because the map and the card
+    footer have never merged them: render_hole draws the areas in `waters` -- the same filled blue as
+    golf=water_hazard -- and the lines in `creeks` as a blue polyline, and the footer reports them as
+    two separate numbers (`water_hazards` and `watercourses`). While both landed in one `water`
+    bucket, the shrink guard's unit was wider than any class a card draws, so a reply could delete
+    every pond a course had and replace them one for one with new stream ways without moving the
+    count. Measured on bay-view: 2 pond areas and 14 waterway lines, and dropping both ponds while
+    adding two streams was accepted in silence -- those two ponds are drawn inside the 45 m water
+    corridor of holes 7, 10 and 18 (22.7 m, 10.0 m and 1.5 m off the played line), all three of which
+    print a non-zero W in their footer.
     """
     c = Counter()
     for e in elements:
@@ -127,8 +138,10 @@ def census(elements):
             c['building'] += 1
         elif t.get('golf'):
             c[t['golf']] += 1
-        elif t.get('natural') == 'water' or t.get('waterway'):
+        elif t.get('natural') == 'water':
             c['water'] += 1
+        elif t.get('waterway'):
+            c['waterway'] += 1
         elif t.get('natural') or t.get('landuse'):
             c[t.get('natural') or t.get('landuse')] += 1
         else:
@@ -140,33 +153,44 @@ def census(elements):
 # MEASURES is derived from. A landcover polygon is split at a new path, a creek is re-segmented at a
 # road crossing (render_hole already has to de-duplicate that: one creek, many ways), a mapper adds
 # or deletes a handful of tree nodes. Everything NOT listed here -- green, hole, fairway, tee,
-# bunker, cartpath, rough, water_hazard, and any kind not yet seen -- keeps ZERO tolerance, because
-# losing one of those rebinds or re-draws a hole. Default-deny: a new kind is structural until
-# someone shows it churns.
+# bunker, cartpath, rough, driving_range, water, water_hazard, and any kind not yet seen -- keeps ZERO
+# tolerance, and gets no rarity exemption either, because losing one of those rebinds or re-draws a
+# hole. Default-deny: a new kind is structural until someone shows it churns.
 VOLATILE_KINDS = frozenset({
-    # observed in this corpus' caches: tree, tree_row, wood, water, building, wetland, rock
+    # observed in this corpus' caches: tree, tree_row, wood, waterway, building, rock
     # ...plus the other landcover kinds main()'s own queries ask for
     'tree', 'tree_row', 'wood', 'forest', 'scrub', 'wetland',
-    'water', 'building', 'bare_rock', 'rock', 'stone',
+    'waterway', 'building', 'bare_rock', 'rock', 'stone',
 })
 
 # Kinds whose loss removes drawn HAZARD ink from a card: sand and water, the tan and the blue, the two
 # things the footer counts as "NB" and "NW". These get NO rarity exemption and NO tolerance floor,
 # because rare is exactly when one loss matters most -- see the block in _check_response.
 #
-# `water` is in BOTH sets, and that is the point. It churns (a creek is re-segmented at a road
-# crossing, so a 60-way network legitimately becomes 59) and it is also the class a card draws to warn
-# a junior about a pond. So it keeps the PROPORTIONAL part of the churn tolerance and loses the floor
-# of 1: 2% of 60 is still one way, 2% of 3 is zero ponds.
-HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water'})
+# `waterway` is in BOTH sets, and that is the point. It churns (a creek is re-segmented at a road
+# crossing, so the-reserve's 53-way network legitimately becomes 52) and it is also drawn, in the same
+# blue as a pond, by render_hole's `creeks`. So it keeps the PROPORTIONAL part of the churn tolerance
+# and loses the floor of 1: 2% of 53 is still one way, 2% of 3 is zero.
+#
+# `water` -- the natural=water AREAS -- is a hazard kind and NOT a volatile one, which is where it
+# differs from the merged bucket these two were split out of. The re-segmentation that earns waterway
+# its tolerance is a property of LINES; an area mapped in several pieces arrives as a multipolygon
+# relation, which the baseline filter removes anyway. Areas are what `waters` draws, alongside
+# golf=water_hazard, and they now get exactly what golf=water_hazard already got: nothing. That costs
+# this corpus no silence -- the largest fetchable pond count in it is 6 (the-reserve), and 2% of 6 was
+# already 0 -- and it stops a course that maps 50 ponds from being handed a free one.
+HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water', 'waterway'})
 
 # 2%, floor 1. Chosen from what these counts actually are on this corpus (the-reserve 2,462 trees and
-# 1,530 buildings, micke-grove 532 trees, the-reserve 60 water ways, merion 8 wood) against what the
+# 1,530 buildings, micke-grove 532 trees, the-reserve 53 waterway ways, merion 8 wood) against what the
 # guard has to keep catching: every documented truncation lost 89-100% of a kind (fairway 18 -> 0,
 # 37 -> 1, 23 -> 4, and the remark replies that return nothing at all). So 2% sits an order of
 # magnitude below the smallest real failure while covering ordinary editing -- 49 trees at the-reserve,
 # 30 buildings. The floor of 1 is what the reproduced defect needed: one deleted natural=tree node out
-# of 2,462 hard-aborted the whole fetch, and without a floor a 4 -> 3 water shrink still would.
+# of 2,462 hard-aborted the whole fetch, and without a floor a 4 -> 3 tree shrink still would.
+# (Every count here is the FETCHABLE one, i.e. the baseline the guard really compares. the-reserve's
+# waterways were once published as "60 water ways"; 60 is the raw merged figure, of which 7 were pond
+# areas -- one of those carrying _from_relation -- leaving the 53 lines and 6 areas the guard sees.)
 CHURN_TOLERANCE = 0.02
 
 
@@ -174,8 +198,10 @@ def _churn_tolerance(old_count, kind=None):
     """How many features of `kind` may go missing without a human looking.
 
     The floor of 1 exists for the reproduced defect (one deleted tree node out of 2,462 hard-aborted a
-    whole fetch) and it is wrong for a HAZARD kind, where it hands a three-pond course a free pond.
-    Hazard kinds therefore get the proportional part only, which is zero below 50 features.
+    whole fetch) and it is wrong for a HAZARD kind, where it would hand a three-watercourse course a
+    free watercourse. Hazard kinds therefore get the proportional part only, which is zero below 50
+    features. (Only `waterway` is in both sets, so only `waterway` ever reads this branch; the other
+    hazard kinds are not volatile and _check_response gives them no tolerance at all.)
     """
     if kind in HAZARD_KINDS:
         return int(old_count * CHURN_TOLERANCE)
@@ -258,32 +284,51 @@ def _check_response(j, path, out):
         oc, nc = census(_fetchable(old)), census(j['elements'])
         # RARE IS NOT SAFE, and the `oc[k] < 4` floor below said it was. It exempted any kind with
         # fewer than four features ENTIRELY, and `water`'s max(1, 2%) tolerance gave the small ones
-        # one free loss on top. Measured on the caches now on disk:
+        # one free loss on top. Measured on the caches now on disk, as the guard sees them:
         #
-        #     castlewood-hill    water_hazard 1, water 3    -- draws water on 3 of 18 cards
-        #     castlewood-valley  water_hazard 2, lateral_water_hazard 1, water 7   -- 12 of 18
-        #     monarch-bay        water_hazard 1, water 1    -- 3 of 18
-        #     callippe water_hazard 1; merion lateral 1; philadelphia lateral 3; valley-hi water 4
+        #     castlewood-hill    water_hazard 1, waterway 3   -- draws water on 3 of 18 cards
+        #     castlewood-valley  water_hazard 2, lateral_water_hazard 1, waterway 7   -- 12 of 18
+        #     monarch-bay        water_hazard 1, waterway 1    -- 3 of 18
+        #     callippe water_hazard 1; merion lateral 1 + water 4; philadelphia lateral 3 + water 2;
+        #     valley-hi lateral 5 + water 1; bay-view water 2 + waterway 14
         #
-        # Reproduced against those counts: hill could lose ALL THREE of its water features, valley both
+        # Reproduced against those counts: hill could lose ALL THREE of its watercourses, valley both
         # its water_hazards, monarch-bay its only one, and every one of those replies was accepted
         # silently. A book that promises never to omit a hazard the golfer can reach had no floor at all
         # under the hazards a card actually draws.
         #
-        # THE BASELINE THAT WOULD SETTLE IT IS GONE. febbbba re-fetched exactly these courses and its
-        # message reports "ZERO upstream drift on all four". The pre-fetch caches no longer exist
-        # anywhere -- `courses/` is gitignored, so git never held them, and they are not in /tmp,
-        # /var/tmp or the home tree -- which makes that zero UNVERIFIABLE rather than established. It
-        # cannot even be ruled out that the new box is narrower on some side. Reconstruction is not
-        # determinate: a uniform-shrink model reproduces every published shortfall and then self-refutes,
-        # because under it hill 16's own green would have sat outside the old box and the book rendered
-        # hole 16. Read the zero as unchecked, and do not let this happen a second time -- which is what
-        # HAZARD_KINDS is for.
+        # The exemption is now confined to the kinds that actually CHURN, which is what its own
+        # justification always claimed and what fetch_trees.py cites it as. It had been reaching
+        # STRUCTURAL drawn kinds too, while VOLATILE_KINDS' comment denied it: monarch-bay's only
+        # fetchable golf=fairway way (1 -> 0), the-reserve's two (2 -> 0), philadelphia's single
+        # golf=rough (1 -> 0) and six courses' golf=driving_range (1 -> 0) were all free. A fairway is
+        # the largest feature on the card. Rare landcover keeps the exemption -- castlewood-hill's 2
+        # wood polygons, micke-grove's 3 tree_rows -- because nothing a card measures comes from them.
+        #
+        # THE CACHE-LEVEL BASELINE IS GONE, AND THE QUESTION IT WOULD HAVE ANSWERED IS NOT. febbbba
+        # re-fetched castlewood-hill, castlewood-valley, copper-valley and monarch-bay and its message
+        # reports "ZERO upstream drift on all four". The pre-fetch caches no longer exist anywhere --
+        # `courses/` is gitignored, so git never held them, and they are not in /tmp, /var/tmp or the
+        # home tree -- so that zero is UNVERIFIABLE at the level of ids, tags and geometry, and no
+        # reconstruction settles it: a uniform-shrink model reproduces every published shortfall and
+        # then self-refutes, because under it hill 16's own green would have sat outside the old box and
+        # the book rendered hole 16.
+        #
+        # But the question that MATTERS here -- did that re-fetch drop a hazard the book draws -- is
+        # answered, from the printed side. The 12 pre-re-fetch greenbook.html files survived and are
+        # kept at ~/greenbook-prefetch-evidence-2026-08-03. They authenticate against febbbba's own
+        # published pre-values (castlewood-hill 10,422 tree markers and 106 drawn tee polygons,
+        # castlewood-valley 9,238 and 60) and reproduce its published deltas exactly (hill -9 tree /
+        # +1 tee, valley -3 / +3; copper-valley identical in every drawn class). Counting the drawn ink
+        # then against now: the DRAWN WATER POLYGON count and the drawn watercourse polyline count are
+        # IDENTICAL on all 12, and the "NB NW" footer sequence is unchanged on hill, valley and copper.
+        # No water was lost. Read the cache-level zero as unchecked, read the hazard question as
+        # closed, and do not let the baseline go a second time -- which is what HAZARD_KINDS is for.
         lost, churn, hazard = {}, {}, {}
         for k in oc:
             if nc[k] >= oc[k]:
                 continue
-            if oc[k] < 4 and k not in HAZARD_KINDS:
+            if oc[k] < 4 and k in VOLATILE_KINDS and k not in HAZARD_KINDS:
                 continue
             # A hazard kind that also churns keeps the proportional tolerance and nothing else; one that
             # does not churn (golf-tagged sand and hazards are stable mapped polygons) gets none.

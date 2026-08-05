@@ -13146,18 +13146,22 @@ def test_waiving_churn_on_a_volatile_kind_does_not_waive_the_green_check(tmp_pat
         sys.modules.pop(m, None)
     import fetch_osm
 
-    # the-reserve-at-spanos-park, measured: 21 greens, 18 holes, 20 fairways, 2462 trees,
-    # 1530 buildings, 60 water
+    # the-reserve-at-spanos-park, measured as the guard sees it (fetchable): 21 greens, 18 holes,
+    # 20 fairways, 2462 trees, 1530 buildings, 53 waterway ways. The waterways were once written here
+    # as "60 water" natural=water areas -- 60 is the RAW count of a bucket that merged areas with
+    # lines, and the course has 53 lines and 6 fetchable areas. It is the LINE class that is
+    # re-segmented at a road crossing, so it is the line class that earns the proportional tolerance
+    # this test exercises.
     def el(i, tags):
         return {"type": "way", "id": i, "tags": dict(tags),
                 "geometry": [{"lat": 38.0, "lon": -121.0}]}
 
-    def corpus(greens=21, holes=18, fairways=20, trees=2462, buildings=1530, water=60):
+    def corpus(greens=21, holes=18, fairways=20, trees=2462, buildings=1530, waterways=53):
         els = []
         n = iter(range(1, 100000))
         for tags, count in (({"golf": "green"}, greens), ({"golf": "hole"}, holes),
                             ({"golf": "fairway"}, fairways), ({"natural": "tree"}, trees),
-                            ({"building": "yes"}, buildings), ({"natural": "water"}, water)):
+                            ({"building": "yes"}, buildings), ({"waterway": "stream"}, waterways)):
             els += [el(next(n), tags) for _ in range(count)]
         return {"version": 0.6, "elements": els}
 
@@ -13172,7 +13176,7 @@ def test_waiving_churn_on_a_volatile_kind_does_not_waive_the_green_check(tmp_pat
         check(full)                                  # unchanged -> accepted
         # 1. ordinary churn must not stop a build
         check(corpus(trees=2461))                    # the reproduced abort
-        check(corpus(buildings=1500, water=59, trees=2420))
+        check(corpus(buildings=1500, waterways=52, trees=2420))
         # ...but a collapse is still a collapse, on a volatile kind too
         with pytest.raises(SystemExit) as ei:
             check(corpus(trees=1900))
@@ -13212,14 +13216,16 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
     """The shrink guard exempted a kind for being RARE, and rare is when one loss matters most.
 
     Two holes, both on the courses that were actually re-fetched. `oc[k] < 4: continue` exempted every
-    kind with fewer than four features ENTIRELY, and `water` is VOLATILE with tolerance max(1, 2%), so
-    the floor of 1 gave a three-pond course a free pond. Measured on the adopted caches:
+    kind with fewer than four features ENTIRELY, and the blue class was VOLATILE with tolerance
+    max(1, 2%), so the floor of 1 gave a three-watercourse course a free watercourse. Measured on the
+    adopted caches (the counts below are per DRAWN class -- `water` is the natural=water areas and
+    `waterway` the lines, which the census merged into one bucket until they were split apart):
 
-        castlewood-hill      water_hazard 1, water 3, bunker 36   -- draws water on 3 of 18 cards
-        castlewood-valley    water_hazard 2, lateral_water_hazard 1, water 7, bunker 59  -- 12 of 18
-        monarch-bay          water_hazard 1, water 1, bunker 81    -- 3 of 18
-        callippe             water_hazard 1;  merion lateral_water_hazard 1
-        philadelphia         lateral_water_hazard 3;  valley-hi water 4 (tolerance 1)
+        castlewood-hill      water_hazard 1, waterway 3, bunker 36  -- draws water on 3 of 18 cards
+        castlewood-valley    water_hazard 2, lateral_water_hazard 1, waterway 7, bunker 59  -- 12 of 18
+        monarch-bay          water_hazard 1, waterway 1, bunker 81   -- 3 of 18
+        callippe             water_hazard 1;  merion lateral_water_hazard 1 + water 4
+        philadelphia         lateral_water_hazard 3 + water 2;  valley-hi lateral 5 + water 1
 
     Every count above is below the four-feature floor, or one churn tolerance away from it. So a single
     water hazard could have disappeared out of any of those caches and nothing -- not the guard, not a
@@ -13237,8 +13243,9 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
 
     Fixed by naming the kinds whose loss removes drawn HAZARD ink from a card -- sand and water, tan and
     blue, the two things the footer counts as "NB" and "NW" -- and giving them no rarity exemption and no
-    tolerance floor. The proportional part of the tolerance stays, because a 60-way creek network really
-    is re-segmented at road crossings; what goes is the floor that made 3 -> 2 and 1 -> 0 free.
+    tolerance floor. The proportional part of the tolerance stays, because the-reserve's 53-way creek
+    network really is re-segmented at road crossings; what goes is the floor that made 3 -> 2 and 1 -> 0
+    free.
 
     A THIRD waiver, for the reason this module already carries a second: a waiver granted for one
     judgement must not silently spend another. ALLOW_SHRINK is granted for a deleted tree stump and
@@ -13262,6 +13269,7 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
         els, n = [], iter(range(1, 100000))
         for kind, count in counts.items():
             tags = ({"natural": "water"} if kind == "water" else
+                    {"waterway": "stream"} if kind == "waterway" else
                     {"natural": "tree"} if kind == "tree" else
                     {"natural": "wood"} if kind == "wood" else
                     {"golf": kind})
@@ -13269,10 +13277,10 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
         return {"version": 0.6, "elements": els}
 
     # the three adopted caches this was measured on, as the guard sees them
-    HILL = dict(green=18, hole=18, fairway=18, bunker=36, water_hazard=1, water=3, wood=2)
+    HILL = dict(green=18, hole=18, fairway=18, bunker=36, water_hazard=1, waterway=3, wood=2)
     VALLEY = dict(green=19, hole=20, fairway=18, bunker=59, water_hazard=2,
-                  lateral_water_hazard=1, water=7)
-    MONARCH = dict(green=18, hole=18, fairway=18, bunker=81, water_hazard=1, water=1)
+                  lateral_water_hazard=1, waterway=7)
+    MONARCH = dict(green=18, hole=18, fairway=18, bunker=81, water_hazard=1, waterway=1)
 
     def cache_for(base, name):
         p = tmp_path / name
@@ -13292,7 +13300,7 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
 
             check()                                     # unchanged -> accepted
             # every hazard-class kind this cache holds, one feature lighter, must ABORT
-            for kind in ("bunker", "water_hazard", "lateral_water_hazard", "water"):
+            for kind in ("bunker", "water_hazard", "lateral_water_hazard", "water", "waterway"):
                 if kind not in base:
                     continue
                 with pytest.raises(SystemExit) as ei:
@@ -13312,14 +13320,21 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
             if "wood" in base:
                 check(wood=base["wood"] - 1)
 
-        # the proportional tolerance survives where it is earned: the-reserve's 60 water ways really are
-        # re-segmented at road crossings, so 2% of 60 is still one. This is the residual and it is
-        # deliberate -- a course with 60 of a kind is not a course where one loss is invisible.
-        big = dict(green=21, hole=18, fairway=20, bunker=76, water=60, lateral_water_hazard=9)
+        # the proportional tolerance survives where it is earned: the-reserve's 53 WATERWAY ways really
+        # are re-segmented at road crossings, so 2% of 53 is still one. This is the residual and it is
+        # deliberate -- a course with 53 of a kind is not a course where one loss is invisible. (Written
+        # here as "60 water" until the classes were counted apart: 60 is the raw merged figure, and the
+        # course has 53 lines plus 6 fetchable natural=water areas. The AREAS earn nothing, below.)
+        big = dict(green=21, hole=18, fairway=20, bunker=76, waterway=53, water=6,
+                   lateral_water_hazard=9)
         bigp = cache_for(big, "the-reserve.json")
-        fetch_osm._check_response(reply(**{**big, "water": 59}), bigp, "the-reserve/osm_course.json")
+        fetch_osm._check_response(reply(**{**big, "waterway": 52}), bigp, "the-reserve/osm_course.json")
         with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
-            fetch_osm._check_response(reply(**{**big, "water": 57}), bigp, "the-reserve/osm_course.json")
+            fetch_osm._check_response(reply(**{**big, "waterway": 51}), bigp,
+                                      "the-reserve/osm_course.json")
+        # 6 pond AREAS are not the class that re-segments, so they earn no tolerance at all
+        with pytest.raises(SystemExit, match="water 6 -> 5"):
+            fetch_osm._check_response(reply(**{**big, "water": 5}), bigp, "the-reserve/osm_course.json")
         # 9 lateral hazards are NOT volatile, so there is no tolerance to earn
         with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
             fetch_osm._check_response(reply(**{**big, "lateral_water_hazard": 8}), bigp,
@@ -13341,7 +13356,7 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
                 os.environ.pop(var, None)
         os.environ["ALLOW_HAZARD_SHRINK"] = "1"
         try:
-            hill(water_hazard=0, water=0, bunker=0)       # a real removal, waived by name
+            hill(water_hazard=0, waterway=0, bunker=0)    # a real removal, waived by name
             with pytest.raises(SystemExit, match="ALLOW_STRUCTURAL_SHRINK"):
                 hill(green=17)                            # ...and it does not spend the green check
         finally:
@@ -24934,3 +24949,528 @@ def test_the_template_says_which_of_its_fields_the_engine_never_reads():
         assert k in known, (
             f"{k} is hand-authored and was hidden from the template by a waiver claiming a fetch stage "
             f"writes it; the template must document it")
+
+
+# ---------------------------------------------------------------------------
+# fetch_osm.py's shrink guard: the unit it counts in, and the exemption it grants
+# ---------------------------------------------------------------------------
+def _osm_module():
+    """fetch_osm bound to a built course, or SKIP. Read-only: nothing below writes a cache.
+
+    No sys.modules surgery here on purpose. The autouse COURSE fixture has already bound this test to
+    CORPUS[0] and drops `config` on teardown, and none of what these tests call -- census,
+    _check_response, the two kind sets -- reads config at all; it is only the module-level
+    `config.COURSE["osm_bbox"]` that needs a course to exist for the import to succeed."""
+    a_course()                      # skips a fresh clone, where `import config` cannot succeed
+    import fetch_osm
+    return fetch_osm
+
+
+_OSM_WAIVERS = ("ALLOW_SHRINK", "ALLOW_STRUCTURAL_SHRINK", "ALLOW_HAZARD_SHRINK")
+
+
+def _osm_el(i, tags):
+    return {"type": "way", "id": i, "tags": dict(tags),
+            "geometry": [{"lat": 37.7, "lon": -122.1}]}
+
+
+def _osm_reply(**counts):
+    """A synthetic Overpass reply with the given census: kind -> count.
+
+    The tag each census kind is spelled with matters here and did not before: `water` and `waterway`
+    used to land in the SAME bucket, so a stub could reach the water branch either way."""
+    els, n = [], iter(range(1, 200000))
+    for kind, count in counts.items():
+        tags = ({"natural": "water"} if kind == "water" else
+                {"waterway": "stream"} if kind == "waterway" else
+                {"building": "yes"} if kind == "building" else
+                {"natural": kind} if kind in ("tree", "tree_row", "wood", "scrub") else
+                {"golf": kind})
+        els += [_osm_el(next(n), tags) for _ in range(count)]
+    return {"version": 0.6, "elements": els}
+
+
+def test_a_drained_pond_cannot_hide_behind_a_new_stream_in_the_shrink_guard(tmp_path):
+    """The shrink guard's UNIT was a census bucket, and one bucket held two different drawn classes.
+
+    `census` merged `natural=water` AREAS with `waterway=*` LINES into a single `water` key. The
+    engine has never merged them: render_hole draws the areas in `waters` (the same list as
+    golf=water_hazard, same filled blue) and the lines in `creeks` (a blue polyline), and the card
+    footer reports them as two numbers, `water_hazards` and `watercourses`. So a reply could delete
+    every pond a course has and replace them, one for one, with new stream ways -- and the bucket
+    would not move.
+
+    Measured on the caches as the guard sees them (fetchable, i.e. less the flattened relation rings
+    and the hand-digitized greens):
+
+        bay-view          natural=water 2, waterway 14   -- prints water on 11 of its 18 cards
+        philadelphia      natural=water 2, waterway 16
+        copper-valley     natural=water 4, waterway 25
+        merion            natural=water 4, waterway 20
+        the-reserve       natural=water 6, waterway 53
+        valley-hi         natural=water 1, waterway 3
+        callippe 0/21, castlewood-hill 0/3, castlewood-valley 0/7, micke-grove 0/15, monarch-bay 0/1
+
+    Deleting BOTH of bay-view's ponds while the same reply carries two more stream ways was accepted
+    SILENTLY. This is the defect 60b9eb2 fixed one level up -- it gave `water` no rarity exemption and
+    no tolerance floor -- reappearing inside the bucket that check counts in.
+
+    The fix is to count the two classes separately, and it changes no bound: `waterway` inherits
+    exactly what the merged `water` key had (hazard AND volatile, so the proportional tolerance a
+    re-segmented creek network earns -- the-reserve's 53 lines give 2% == 1), while `water` areas join
+    the other things `waters` draws and get what golf=water_hazard already had, which is nothing.
+    """
+    fetch_osm = _osm_module()
+
+    # the two classes must be DISTINGUISHABLE at all, or nothing below can be checked
+    mixed = _osm_reply(water=2, waterway=14)
+    c = fetch_osm.census(mixed["elements"])
+    assert c["water"] == 2 and c["waterway"] == 14, (
+        "census merges natural=water areas with waterway lines into one bucket, so the shrink guard "
+        "cannot see one replaced by the other: %s" % dict(c))
+
+    # bay-view, as the guard sees it
+    BAYVIEW = dict(green=16, hole=18, fairway=4, tee=28, bunker=25, cartpath=15,
+                   water_hazard=6, water=2, waterway=14, building=7)
+    cache = tmp_path / "bay-view.json"
+    cache.write_text(json.dumps(_osm_reply(**BAYVIEW)))
+
+    def check(**delta):
+        got = dict(BAYVIEW); got.update(delta)
+        return fetch_osm._check_response(_osm_reply(**got), str(cache),
+                                        "bay-view-golf-club/osm_course.json")
+
+    for var in _OSM_WAIVERS:
+        os.environ.pop(var, None)
+    try:
+        check()                                        # unchanged -> silent
+        # THE REPRODUCED DEFECT: both ponds gone, two stream ways arrive, bucket total unmoved
+        with pytest.raises(SystemExit) as ei:
+            check(water=0, waterway=16)
+        msg = str(ei.value)
+        assert "water 2 -> 0" in msg, (
+            "a reply that deleted both of bay-view's ponds and added two stream ways was accepted, or "
+            "aborted without naming the loss: %s" % msg)
+        assert "ALLOW_HAZARD_SHRINK" in msg, (
+            "the loss of a drawn pond must abort under the HAZARD waiver, not another check's: %s" % msg)
+        # one pond, not both
+        with pytest.raises(SystemExit, match="water 2 -> 1"):
+            check(water=1, waterway=99)
+        # ...and the same in the other direction: a lost stream is not covered by a new pond
+        with pytest.raises(SystemExit) as ei:
+            check(waterway=13, water=9)
+        assert "waterway 14 -> 13" in msg or "waterway 14 -> 13" in str(ei.value), (
+            "a lost watercourse was hidden by an added pond: %s" % ei.value)
+        assert "ALLOW_HAZARD_SHRINK" in str(ei.value), str(ei.value)
+
+        # THE PROPORTIONAL TOLERANCE IS UNCHANGED AND STILL EARNED, on the line class that earns it.
+        # the-reserve: 53 waterway ways, 2% == 1, so one re-segmentation at a road crossing is free
+        # and two are not; its 6 pond areas get nothing, exactly like a golf=water_hazard.
+        RESERVE = dict(green=21, hole=18, fairway=2, tee=78, bunker=76, cartpath=8,
+                       lateral_water_hazard=9, water=6, waterway=53,
+                       tree=2462, tree_row=9, building=1530, driving_range=1)
+        rpath = tmp_path / "the-reserve.json"
+        rpath.write_text(json.dumps(_osm_reply(**RESERVE)))
+
+        def reserve(**delta):
+            got = dict(RESERVE); got.update(delta)
+            return fetch_osm._check_response(_osm_reply(**got), str(rpath),
+                                            "the-reserve-at-spanos-park/osm_course.json")
+
+        reserve()                                      # unchanged -> silent
+        reserve(waterway=52)                           # 2% of 53 -> one free re-segmentation
+        with pytest.raises(SystemExit, match="waterway 53 -> 51"):
+            reserve(waterway=51)
+        with pytest.raises(SystemExit, match="water 6 -> 5"):
+            reserve(water=5)                           # a pond area earns no tolerance at all
+
+        # the hazard waiver still covers a real drainage, and still does not spend another check
+        os.environ["ALLOW_HAZARD_SHRINK"] = "1"
+        try:
+            check(water=0, waterway=0)
+            with pytest.raises(SystemExit, match="ALLOW_STRUCTURAL_SHRINK"):
+                check(water=0, green=15)
+        finally:
+            os.environ.pop("ALLOW_HAZARD_SHRINK", None)
+        # ...and the churn waiver does not cover either half of the water
+        os.environ["ALLOW_SHRINK"] = "1"
+        try:
+            with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
+                check(water=0, waterway=16)
+            with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
+                check(waterway=10)
+        finally:
+            os.environ.pop("ALLOW_SHRINK", None)
+    finally:
+        for var in _OSM_WAIVERS:
+            os.environ.pop(var, None)
+
+    # the two kinds must be in the sets that give them their treatment, by NAME -- a future edit that
+    # drops either from HAZARD_KINDS puts the free loss straight back
+    assert "water" in fetch_osm.HAZARD_KINDS and "waterway" in fetch_osm.HAZARD_KINDS, \
+        "both classes the map draws in blue must be hazard kinds: %s" % sorted(fetch_osm.HAZARD_KINDS)
+    assert "waterway" in fetch_osm.VOLATILE_KINDS, \
+        "waterway lines are the class that is re-segmented at road crossings; they keep the churn part"
+
+
+def test_the_rarity_exemption_reaches_only_the_kinds_that_churn(tmp_path):
+    """`oc[k] < 4` exempted a kind for being RARE, and it reached STRUCTURAL DRAWN kinds.
+
+    VOLATILE_KINDS' own comment said otherwise: "green, hole, fairway, tee, bunker, cartpath, rough,
+    water_hazard, and any kind not yet seen -- keeps ZERO tolerance, because losing one of those
+    rebinds or re-draws a hole." Measured false against the caches on disk, as the guard sees them:
+
+        monarch-bay    its only fetchable golf=fairway way, 1 -> 0     accepted silently
+        the-reserve    fairway 2 -> 0                                  accepted silently
+        philadelphia   rough 1 -> 0                                    accepted silently
+        callippe, merion, micke-grove, monarch-bay, philadelphia, the-reserve
+                       driving_range 1 -> 0                            accepted silently
+
+    (monarch-bay's 36 fairways and the-reserve's 18 are multipolygon rings, which the baseline filter
+    correctly removes -- so what the guard compares really is 1 and 2, and both were free.)
+
+    A fairway is the largest feature on the card; `rough` decides where the pale band is drawn. Losing
+    one of those is not churn, and the exemption is for churn. So it now applies only to kinds listed
+    as volatile -- which is what its own justification always said, and what fetch_trees.py's
+    TREE_HOLE_FLOOR cites it as."""
+    fetch_osm = _osm_module()
+
+    # the real fetchable censuses of the three courses, trimmed to what this check reads
+    MONARCH = dict(green=20, hole=18, fairway=1, tee=55, bunker=81, cartpath=7, rough=20,
+                   water_hazard=1, waterway=1, building=99, driving_range=1)
+    RESERVE = dict(green=21, hole=18, fairway=2, tee=78, bunker=76, cartpath=8,
+                   lateral_water_hazard=9, water=6, waterway=53, tree=2462, tree_row=9,
+                   building=1530, driving_range=1)
+    PHILLY = dict(green=30, hole=18, fairway=24, tee=67, bunker=131, cartpath=41, rough=1,
+                  lateral_water_hazard=3, water=2, waterway=16, tree=1, wood=4,
+                  building=175, driving_range=1)
+    # ...and two whose only rare kinds ARE volatile: the exemption must survive for them
+    HILL = dict(green=20, hole=18, fairway=24, tee=68, bunker=36, cartpath=24,
+                water_hazard=1, waterway=3, wood=2, building=182)
+    MICKE = dict(green=19, hole=18, fairway=4, tee=35, bunker=41, cartpath=8, water_hazard=8,
+                 waterway=15, tree=532, tree_row=3, building=153, driving_range=1)
+
+    def guard(base, name):
+        p = tmp_path / (name + ".json")
+        p.write_text(json.dumps(_osm_reply(**base)))
+
+        def check(**delta):
+            got = dict(base); got.update(delta)
+            return fetch_osm._check_response(_osm_reply(**got), str(p), f"{name}/osm_course.json")
+        return check
+
+    for var in _OSM_WAIVERS:
+        os.environ.pop(var, None)
+    try:
+        # 1. a rare STRUCTURAL kind has no exemption, and says which waiver it needs
+        for name, base, rare in (("monarch-bay", MONARCH, ("fairway", "driving_range")),
+                                 ("the-reserve", RESERVE, ("fairway", "driving_range")),
+                                 ("philadelphia", PHILLY, ("rough", "driving_range"))):
+            check = guard(base, name)
+            check()                                    # unchanged -> silent
+            for kind in rare:
+                assert base[kind] < 4, f"{name} {kind} is not in the rare band this tests"
+                with pytest.raises(SystemExit) as ei:
+                    check(**{kind: 0})
+                msg = str(ei.value)
+                assert f"{kind} {base[kind]} -> 0" in msg, (
+                    f"{name}: losing all {base[kind]} {kind} feature(s) was accepted, or aborted "
+                    f"without naming the loss: {msg}")
+                assert "ALLOW_STRUCTURAL_SHRINK" in msg, (
+                    f"{name}: a {kind} is drawn from the cache, so its loss belongs to the structural "
+                    f"waiver: {msg}")
+                assert "ALLOW_SHRINK=1" not in msg, (
+                    f"{name}: the structural abort must not prescribe the churn flag: {msg}")
+
+        # 2. the exemption SURVIVES for the churning kinds it was written for -- this fix is not a
+        #    general tightening. castlewood-hill 2 wood polygons and micke-grove 3 tree_rows may
+        #    still go, because nothing a card measures comes from them.
+        guard(HILL, "castlewood-hill")(wood=0)
+        guard(MICKE, "micke-grove")(tree_row=0)
+        guard(PHILLY, "philadelphia2")(tree=0)          # philadelphia's single natural=tree node
+
+        # 3. every kind census can emit that is NOT volatile must be zero-tolerance at every count in
+        #    the rare band, or the comment is false again for some other kind
+        for kind in ("green", "hole", "fairway", "tee", "bunker", "cartpath", "rough",
+                     "water_hazard", "lateral_water_hazard", "driving_range", "other"):
+            assert kind not in fetch_osm.VOLATILE_KINDS, f"{kind} is listed as churning"
+            for n in (1, 2, 3):
+                base = dict(green=18, hole=18)
+                base[kind] = n
+                check = guard(base, f"rare-{kind}-{n}")
+                with pytest.raises(SystemExit) as ei:
+                    check(**{kind: n - 1})
+                assert f"{kind} {n} -> {n - 1}" in str(ei.value), (
+                    f"a {kind} count of {n} lost one feature unremarked: {ei.value}")
+    finally:
+        for var in _OSM_WAIVERS:
+            os.environ.pop(var, None)
+
+
+def test_the_shrink_guard_is_silent_on_every_layer_this_corpus_already_stores(tmp_path):
+    """The guard must not refuse a LEGITIMATE re-fetch, so replay every stored cache through it.
+
+    A real Overpass reply carries exactly the FETCHABLE elements: not the hand-digitized greens
+    (merged in after this check runs) and not the rings flattened out of multipolygon relations. So
+    the faithful no-change simulation is `reply = _fetchable(cache)` against the cache itself, for
+    every layer of every course -- osm_geom.json, osm_course.json and osm_relations.json.
+
+    This is the same proof 60b9eb2 recorded for its own change, repeated because a guard that fires on
+    an unchanged re-fetch trains you to switch it off, and both flags in reach then waive the checks
+    that matter. It also grades the split of the water bucket and the withdrawal of the rarity
+    exemption from structural kinds: neither may cost a single stored layer its silence.
+
+    Then the other half, which the trivial direction cannot show: on every layer, dropping ONE
+    feature of a kind the cards are DRAWN from must abort. That is measured per course from the
+    layer's own census rather than from a list written here, so a course added later is graded too."""
+    if not CORPUS:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    fetch_osm = _osm_module()
+    for var in _OSM_WAIVERS:
+        os.environ.pop(var, None)
+
+    layers = 0
+    graded = 0
+    try:
+        for slug in CORPUS:
+            for fn in ("osm_geom.json", "osm_course.json", "osm_relations.json"):
+                path = os.path.join(ROOT, "courses", slug, fn)
+                if not os.path.exists(path):
+                    continue
+                cached = json.load(open(path)).get("elements") or []
+                fetchable = [e for e in cached
+                             if "_digitized" not in (e.get("tags") or {})
+                             and e.get("_from_relation") is None]
+                # 1. THE NO-CHANGE RE-FETCH: silent, or this guard cannot be lived with
+                fetch_osm._check_response({"version": 0.6, "elements": list(fetchable)}, path, fn)
+                layers += 1
+
+                # 2. ...and one feature lighter, for each kind no card may quietly lose
+                cen = fetch_osm.census(fetchable)
+                for kind, n in sorted(cen.items()):
+                    if kind in fetch_osm.VOLATILE_KINDS and kind not in fetch_osm.HAZARD_KINDS:
+                        continue        # trees, buildings, landcover: churn, nothing measured from it
+                    tol = (int(n * fetch_osm.CHURN_TOLERANCE)
+                           if kind in fetch_osm.VOLATILE_KINDS else 0)
+                    if tol >= 1:
+                        continue        # a re-segmented creek network legitimately loses one
+                    drop = next(e for e in fetchable
+                                if fetch_osm.census([e]).most_common(1)[0][0] == kind)
+                    short = [e for e in fetchable if e is not drop]
+                    with pytest.raises(SystemExit) as ei:
+                        fetch_osm._check_response({"version": 0.6, "elements": short}, path, fn)
+                    assert f"{kind} {n} -> {n - 1}" in str(ei.value), (
+                        f"{slug}/{fn}: losing one of {n} {kind} feature(s) did not abort by name: "
+                        f"{ei.value}")
+                    graded += 1
+    finally:
+        for var in _OSM_WAIVERS:
+            os.environ.pop(var, None)
+
+    assert layers >= 3 * len(CORPUS), (
+        f"only {layers} stored layers were replayed for {len(CORPUS)} courses -- a course missing a "
+        f"cache file is a corpus this proof did not cover")
+    assert graded >= 8 * len(CORPUS), (
+        f"only {graded} single-feature losses were graded across {layers} layers; the proof that the "
+        f"guard still BITES has to cover every drawn kind of every course")
+
+
+def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_path):
+    """Every count fetch_osm.py quotes from this corpus, re-measured against the caches.
+
+    Two had gone stale and neither was graded by anything:
+
+      * `census`'s building example said "on castlewood-hill all 145 of them". It is 182. febbbba
+        widened that course's osm_bbox to cover the drawing corridor and re-fetched it -- its own
+        message reports the 9 tree markers that landed on two newly-fetched houses -- and the figure
+        beside the census was not re-measured with it.
+      * CHURN_TOLERANCE and HAZARD_KINDS both said "the-reserve 60 water ways". 60 is the RAW count
+        and it merged two classes; the number the guard actually compares is the fetchable one, and
+        after the classes are separated it is 53 waterway ways and 6 pond areas (one pond carries
+        _from_relation, which is the whole of the 60/59 difference).
+
+    A figure in a comment that no test reads is a figure that drifts. These are the guard's own
+    calibration: they are the evidence for a 2% tolerance and for buildings being counted first."""
+    if not CORPUS:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    fetch_osm = _osm_module()
+    src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+
+    SLUG = {"castlewood-hill": "castlewood-hill-course",
+            "callippe": "callippe-preserve-golf-course",
+            "the-reserve": "the-reserve-at-spanos-park",
+            "micke-grove": "micke-grove-golf-links",
+            "merion": "merion-golf-club"}
+
+    def fetchable_census(short):
+        slug = SLUG[short]
+        if slug not in CORPUS:
+            return None
+        els = json.load(open(os.path.join(ROOT, "courses", slug, "osm_course.json")))["elements"]
+        return fetch_osm.census([e for e in els
+                                 if "_digitized" not in (e.get("tags") or {})
+                                 and e.get("_from_relation") is None])
+
+    def num(s):
+        return int(s.replace(",", ""))
+
+    # (regex, short slug, census kind) -- every figure fetch_osm.py publishes about a named course
+    CLAIMS = [
+        (r"castlewood-hill all ([\d,]+) of them", "castlewood-hill", "building"),
+        (r"callippe all ([\d,]+)", "callippe", "building"),
+        (r"the-reserve [\d,]+ of ([\d,]+)", "the-reserve", "building"),
+        (r"the-reserve ([\d,]+) trees", "the-reserve", "tree"),
+        (r"the-reserve [\d,]+ trees and[\s#]*([\d,]+) buildings", "the-reserve", "building"),
+        (r"micke-grove ([\d,]+) trees", "micke-grove", "tree"),
+        (r"the-reserve ([\d,]+) waterway ways", "the-reserve", "waterway"),
+        (r"merion ([\d,]+) wood", "merion", "wood"),
+    ]
+    checked = 0
+    for pat, short, kind in CLAIMS:
+        m = re.search(pat, src)
+        assert m, (
+            f"fetch_osm.py no longer carries the figure /{pat}/. These counts are the calibration for "
+            f"the churn tolerance and for the census's key order; if the claim moved, move this test "
+            f"with it rather than dropping the grading.")
+        cen = fetchable_census(short)
+        if cen is None:
+            continue
+        assert num(m.group(1)) == cen[kind], (
+            f"fetch_osm.py publishes {short} {kind} {m.group(1)}; the cache the guard compares holds "
+            f"{cen[kind]}. Re-measure the comment, not the cache.")
+        checked += 1
+
+    # the-reserve's 1,529-in-`other`: the ONE building that also carries a golf tag is why it is not
+    # 1,530, and that is the census's whole reason for testing `building` first
+    m = re.search(r"the-reserve ([\d,]+) of ([\d,]+)", src)
+    assert m, "fetch_osm.py no longer records how many of the-reserve's buildings landed in `other`"
+    if SLUG["the-reserve"] in CORPUS:
+        els = json.load(open(os.path.join(ROOT, "courses", SLUG["the-reserve"],
+                                          "osm_course.json")))["elements"]
+        blds = [e for e in els if (e.get("tags") or {}).get("building") not in (None, "no")]
+        in_other = sum(1 for e in blds if not any((e.get("tags") or {}).get(k)
+                                                 for k in ("golf", "natural", "landuse", "waterway")))
+        assert (num(m.group(1)), num(m.group(2))) == (in_other, len(blds)), (
+            f"fetch_osm.py says {m.group(1)} of {m.group(2)} the-reserve buildings fell into `other` "
+            f"under the old key chain; measured {in_other} of {len(blds)}")
+        checked += 1
+    assert checked >= 6, f"only {checked} of fetch_osm.py's published corpus figures were graded"
+
+
+def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
+    """fetch_osm.py disclaimed a question that has since been ANSWERED, and left it as unanswerable.
+
+    The comment beside the hazard guard is right that the pre-febbbba OSM caches are gone and
+    unrecoverable -- courses/ is gitignored, so git never held them. But the question it exists to
+    disclaim is narrower than the caches: did that re-fetch drop a hazard the book DRAWS? The printed
+    side survived. The 12 pre-re-fetch greenbook.html files were preserved outside the repo, and the
+    drawn ink can be counted in both:
+
+        castlewood-hill    pre-book tree 10,422 / tee 106  -- febbbba's own published pre-values
+        castlewood-valley  pre-book tree  9,238 / tee  60  -- likewise
+        drawn water polygons (fill #a9d3ef): IDENTICAL on all 12 preserved books
+        drawn watercourse polylines (stroke #5b9bd0 width 1.8): IDENTICAL on all 12
+
+    So no water was lost, and the module must say that rather than leaving a reader to conclude the
+    opposite from a comment that only says the caches are gone. The evidence is named by path because
+    a claim whose evidence is not locatable is the thing this whole comment was written about."""
+    src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+    EV = "greenbook-prefetch-evidence-2026-08-03"
+    assert EV in src, (
+        "fetch_osm.py must name where the pre-re-fetch books are kept. Without the path this is "
+        "another unlocatable claim, which is exactly what the surrounding comment complains of.")
+    low = src.lower()
+    for want, why in (("greenbook.html", "say which artifact settled it"),
+                      ("water", "say what was compared")):
+        assert want in low, f"fetch_osm.py must {why}"
+    m = re.search(r"(\d+) pre-re-fetch greenbook\.html files", src)
+    assert m and int(m.group(1)) == 12, (
+        "fetch_osm.py must say how many pre-re-fetch books survived; 12 were preserved")
+
+    # ...and where BOTH sides are on this machine, re-measure rather than trusting the comment. The
+    # source half above is the part that always runs; this half needs the preserved books (which live
+    # outside the repo, so a fresh clone has none) AND the rebuilt ones (courses/ is gitignored).
+    ev = os.path.join(os.path.expanduser("~"), EV)
+    PAT = {"water polygon": 'fill="#a9d3ef"',
+           "watercourse line": 'stroke="#5b9bd0" stroke-width="1.8"'}
+    have = []
+    if os.path.isdir(ev):
+        for slug in sorted(os.listdir(ev)):
+            old = os.path.join(ev, slug, "greenbook.html")
+            new = os.path.join(ROOT, "courses", slug, "greenbook.html")
+            if os.path.exists(old) and os.path.exists(new):
+                have.append((slug, old, new))
+    for slug, old, new in have:
+        o = open(old, encoding="utf-8").read()
+        n = open(new, encoding="utf-8").read()
+        for what, needle in PAT.items():
+            assert o.count(needle) == n.count(needle), (
+                f"{slug}: drawn {what} count {o.count(needle)} before the re-fetch, "
+                f"{n.count(needle)} now -- fetch_osm.py claims these are identical")
+    # anti-vacuous, but only where the corpus that backs the claim is actually built
+    if len(CORPUS) >= 11:
+        assert len(have) >= 11, (
+            f"only {len(have)} preserved books could be compared against a corpus of {len(CORPUS)} "
+            f"courses; the claim in fetch_osm.py covers all of them, so either the evidence at {ev} "
+            f"has been moved or the books have not been rebuilt")
+
+
+def test_the_tree_hole_floors_smallest_per_hole_count_is_the_one_the_corpus_shows():
+    """TREE_HOLE_FLOOR's justification quoted a per-hole minimum that does not reproduce.
+
+    fetch_trees.py said "the smallest per-hole count in this corpus outside monarch-bay's three
+    survey-edge holes is 15". Measured over the eleven stored tree layers: monarch-bay holes 1, 17 and
+    18 are the three zeros, and the smallest count above them is 16 (monarch-bay 16), then 19
+    (monarch-bay 7). Outside monarch-bay entirely the smallest is 47 (philadelphia 11).
+
+    The figure is the whole argument for the floor: a hole with fewer than four markers is a filter
+    edge case, and the failures the guard has to catch take a hole from tens or hundreds to zero. A
+    floor of 4 against a real minimum of 16 leaves a clear gap; a floor of 4 quoted against a made-up
+    15 does not tell the next reader whether it still does."""
+    layers = {}
+    for slug in sorted(os.listdir(os.path.join(ROOT, "courses"))):
+        if slug.startswith("_"):
+            continue
+        p = os.path.join(ROOT, "courses", slug, "trees_lidar.json")
+        if not os.path.exists(p):
+            continue
+        j = json.load(open(p))
+        layers[slug] = {h: len(v) for h, v in j.items() if isinstance(v, list)}
+    if not layers:
+        pytest.skip("per-course tree layers are gitignored; nothing to measure")
+
+    counts = sorted((n, slug, h) for slug, c in layers.items() for h, n in c.items())
+    zeros = [(slug, h) for n, slug, h in counts if n == 0]
+    nonzero = [t for t in counts if t[0] > 0]
+    assert nonzero, "every stored tree layer is empty; there is no minimum to grade"
+    smallest = nonzero[0]
+    outside_mb = next((t for t in nonzero if t[1] != "monarch-bay-golf-club"), None)
+
+    src = open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8").read()
+    m = re.search(r"the smallest per-hole count above them is (\d+)", src)
+    assert m, (
+        "fetch_trees.py no longer states the smallest per-hole marker count it derives TREE_HOLE_FLOOR "
+        "from. That figure is the whole argument for the floor; if the wording moved, move this test "
+        "with it rather than leaving the number ungraded.")
+    assert int(m.group(1)) == smallest[0], (
+        "fetch_trees.py publishes a smallest per-hole count of %s outside monarch-bay's zero holes; "
+        "the stored layers hold %d, on %s hole %s. The three zeros are %s."
+        % (m.group(1), smallest[0], smallest[1], smallest[2],
+           ", ".join(f"{s.split('-')[0]} {h}" for s, h in zeros) or "none"))
+
+    m2 = re.search(r"outside monarch-bay entirely it is (\d+)", src)
+    assert m2, "fetch_trees.py must also say what the smallest count is once monarch-bay is excluded"
+    if outside_mb is not None:
+        assert int(m2.group(1)) == outside_mb[0], (
+            "fetch_trees.py publishes %s as the smallest per-hole count outside monarch-bay; measured "
+            "%d, on %s hole %s" % (m2.group(1), outside_mb[0], outside_mb[1], outside_mb[2]))
+
+    # ...and the floor itself must sit below that minimum, or "had canopy and lost it" is not what it
+    # measures. The module is imported rather than source-scraped so the live constant is the one graded;
+    # the autouse COURSE fixture drops it again afterwards.
+    a_course()
+    import fetch_trees
+    assert fetch_trees.TREE_HOLE_FLOOR < smallest[0], (
+        "TREE_HOLE_FLOOR is %d and the smallest per-hole count that is not zero is %d -- the floor is "
+        "meant to sit BELOW every real corridor, so that losing every marker on a hole that had them "
+        "is a loss and not churn" % (fetch_trees.TREE_HOLE_FLOOR, smallest[0]))
