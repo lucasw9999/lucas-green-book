@@ -3410,6 +3410,27 @@ def test_no_tree_marker_sits_on_a_playing_surface():
         return c
 
     total, offenders, seen = 0, [], collections.Counter()
+    # THE VOCABULARY BELOW IS A SECOND COPY of fetch_trees.py's, and this scan reads the STORED
+    # artifact -- built by whatever vocabulary was live when it was written. So the engine can drop a
+    # kind and this test stays green until someone re-fetches. Measured: deleting 'bunker' from
+    # fetch_trees.py leaves the whole suite at its baseline (303 passed, 1 skipped, unchanged), while
+    # 784 of the corpus's 799 bunker polygons stop being protected -- the other 15 have a centroid
+    # inside a green, fairway or tee and are still excluded by that -- across ALL 11 courses,
+    # philadelphia 129 down to bay-view 25. The next fetch_trees run would draw tree dots in bunkers,
+    # which is exactly what the README sentence above says cannot happen. So cross-check the two
+    # copies here: it is the one direction an artifact scan structurally cannot see.
+    SURFACE_KINDS = ("green", "fairway", "tee", "bunker")
+    with open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8") as fh:
+        ft_src = fh.read()
+    m = re.search(r"t\.get\('golf'\)\s+in\s+\(([^)]*)\)", ft_src)
+    assert m, ("fetch_trees.py's playing-surface golf vocabulary could not be read; if the expression "
+               "moved, move this cross-check with it rather than dropping it")
+    engine_kinds = {s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()}
+    assert engine_kinds == set(SURFACE_KINDS), (
+        f"fetch_trees.py excludes markers on golf={sorted(engine_kinds)} but this scan tests "
+        f"{sorted(SURFACE_KINDS)}. The scan reads a STORED layer, so a kind the engine has stopped "
+        f"excluding is invisible here until the next re-fetch, and a kind the engine has ADDED is one "
+        f"this scan never looks for.")
     for ref in CORPUS:
         tp = os.path.join(ROOT, "courses", ref, "trees_lidar.json")
         cp = os.path.join(ROOT, "courses", ref, "osm_course.json")
@@ -3422,7 +3443,7 @@ def test_no_tree_marker_sits_on_a_playing_surface():
         surfaces = []
         for e in elements:
             kind = (e.get("tags") or {}).get("golf")
-            if kind in ("green", "fairway", "tee", "bunker") and e.get("geometry"):
+            if kind in SURFACE_KINDS and e.get("geometry"):
                 surfaces.append((kind, [(q["lon"], q["lat"]) for q in e["geometry"]]))
         if not surfaces:
             continue
@@ -14631,6 +14652,14 @@ def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
         dict(type="way", id=2, tags={"golf": "green"},         geometry=box(0.004, 0.0)),
         dict(type="way", id=3, tags={"building": "no"},        geometry=box(0.008, 0.0)),
         dict(type="way", id=4, tags={"leisure": "pitch"},      geometry=box(0.012, 0.0)),
+        # ...and the three golf kinds the filter also names. Only `green` was ever driven here, so the
+        # other three were covered by nothing that runs before a re-fetch: the corpus scan reads a
+        # STORED layer built by the old vocabulary, and deleting 'bunker' from fetch_trees.py left the
+        # whole suite at its baseline while 784 of the corpus's 799 bunker polygons stopped being
+        # protected.
+        dict(type="way", id=5, tags={"golf": "fairway"},       geometry=box(0.016, 0.0)),
+        dict(type="way", id=6, tags={"golf": "tee"},           geometry=box(0.020, 0.0)),
+        dict(type="way", id=7, tags={"golf": "bunker"},        geometry=box(0.024, 0.0)),
     ]
     # prev is read BEFORE the try. Assigned inside it -- as it was -- any raise from the three
     # json.dump calls below made the finally clause die with UnboundLocalError, replacing the real
@@ -14652,12 +14681,18 @@ def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
         import fetch_trees
 
         surfaces = fetch_trees.load_playing_surfaces()
-        kinds = sorted(k for *_rest, k in surfaces)
-        assert kinds == ["building", "golf"], f"expected one building + one green, got {kinds}"
+        kinds = collections.Counter(k for *_rest, k in surfaces)
+        assert kinds == collections.Counter({"golf": 4, "building": 1}), (
+            f"expected one building plus one polygon of each of the four golf kinds the filter names, "
+            f"got {dict(kinds)}")
 
         at = lambda dx: fetch_trees.on_playing_surface(lon0 + dx, lat0, surfaces)
         assert at(0.000) == "building", "a roof must report 'building', not 'golf'"
-        assert at(0.004) == "golf", "a green must report 'golf'"
+        for dx, kind in ((0.004, "green"), (0.016, "fairway"), (0.020, "tee"), (0.024, "bunker")):
+            assert at(dx) == "golf", (
+                f"a golf={kind} polygon must report 'golf'. A marker standing there is an edge-tree "
+                f"clipped in or a cart, mower, person or flagstick, and the README promises none of "
+                f"them is drawn as a tree")
         assert at(0.008) is False, "building=no means NOT a building -- not a surface at all"
         assert at(0.012) is False, "a non-golf, non-building polygon is not a playing surface"
         assert at(0.050) is False, "outside every polygon"
