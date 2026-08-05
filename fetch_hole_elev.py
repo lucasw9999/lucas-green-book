@@ -17,10 +17,15 @@ confident-but-unsupported number this project refuses. The player brings the jud
 measurement.
 
 Method, per hole:
-  tee   -- median Z of ground-classified returns over the hole's BACK TEE PAD
+  tee   -- median Z of ground-classified returns over the hole's BACK TEE PAD, within TEE_R_M of the
+           anchor. The window is not incidental: a mapped `golf=tee` polygon is often a whole tee
+           complex, so the pad beyond it can be a different teeing ground several feet away. See
+           tee_elevations, which measures both.
   green -- median Z of the GREEN INTERIOR of its own built surface (dem_hd/holeNN.npy, masked by the
            same polygon render_green draws the card from), which is already gated for density and
-           coverage, so it inherits that honesty check for free
+           coverage, so it inherits that honesty check for free. Six of the corpus's 198 surfaces come
+           from the 3DEP seamless mosaic rather than from LiDAR, because no tile covers those greens;
+           each row records WHICH, because the payload used to claim 0.4 m LiDAR for all of them.
 Both are medians, not means: a mean is dragged by a single mis-classified return, and a tee box is
 flat enough that the median is the tee's height.
 
@@ -33,9 +38,10 @@ guessed one, and the card simply omits the line, when ANY of these holds:
     rasterises to nothing (green_elevation);
   * the tee sample holds too few ground returns (MIN_RING_PTS on a mapped pad, MIN_TEE_PTS in the
     fallback box);
-  * the mapped tee pad spans more height than MAX_TEE_RELIEF_FT, so a median over it does not stand
-    for a tee height -- 6 of 177 holes, and a cause of its own rather than a variant of the two above
-    it: merion h1 holds 3839 ground returns on a pad it fails by relief, over a usable green surface;
+  * the sampled tee ground spans more height than MAX_TEE_RELIEF_FT, so a median over it does not stand
+    for a tee height -- 6 of the 172 sampled pads, and a cause of its own rather than a variant of the
+    two above it: merion h1 holds 3851 ground returns on a pad it fails by relief, over a usable green
+    surface;
   * the change exceeds MAX_PLAUSIBLE_FT and can only be a units or datum fault.
 
 Every refusal is PRINTED as it happens, with its reason. It is not RECORDED: hole_elev.json holds only
@@ -53,6 +59,7 @@ change under 3 ft as level (elev_phrase), so the corpus's 171 measured holes pri
 Run:  COURSE=<slug> python3 fetch_hole_elev.py [--write]
       --write records hole_elev.json in COURSE_DIR.
 """
+import collections
 import glob
 import json
 import math
@@ -67,7 +74,13 @@ from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re
 import render_hole                 # for par3_exact_from_tee: one definition of "straight par 3"
 
 DIR = config.COURSE_DIR
-TEE_R_M = 15.0          # half-width of the box sampled around the tee point
+TEE_R_M = 15.0          # half-width of the square window sampled around the tee anchor
+# TWO roles, and the second one went undocumented for as long as the ring sampler has existed: this is
+# the fallback BOX when no mapped tee ring holds the anchor, AND -- because tee_elevations applies it
+# BEFORE the ring test -- the WINDOW the mapped-pad sample is confined to. So on the pads whose ring
+# reaches past it, the sample is pad INTERSECT window and both the height and the relief the gate bounds
+# are measured over that window, not over the whole pad. That is the right sample and it is now derived
+# from a measurement rather than inherited from the box: see tee_elevations.
 MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached the tee at all
 # When the sample is the mapped TEE RING, "few points" no longer means "we probably missed the tee" --
 # every point is inside the pad by construction, so the only question left is whether the median is
@@ -89,13 +102,13 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # shipped ring sampler: 4.30 and 6.22 ft.)
 #
 # What the figure needs is that the sampled ground IS a tee: a mown, near-level pad whose median stands
-# for the whole of it. So bound the spread directly. 2.5 ft of relief across a pad admits a real teeing
-# ground with a slight fall and rejects the cases where the box has walked off the pad onto a bank --
+# for the whole of it. So bound the spread directly. 2.5 ft of relief across the sampled ground admits a
+# real teeing ground with a slight fall and rejects a pad that steps or falls away under the window --
 # it refuses castlewood-hill 18 and philadelphia 18, the two the SE gate waved through.
-# 2.5 ft, tied to the thing it protects: the card suppresses any height under 3 ft as level, so a pad
-# whose own sampled ground spans MORE than that cannot anchor a figure quoted to the nearest foot --
-# the datum would be ambiguous by more than the smallest quantity the book is willing to print. Costs
-# 6 of 177 holes their printed height (bay-view h3, castlewood-hill h9 and h18,
+# 2.5 ft, tied to the thing it protects: the card suppresses any height under 3 ft as level, so ground
+# whose own spread is MORE than that cannot anchor a figure quoted to the nearest foot -- the datum would
+# be ambiguous by more than the smallest quantity the book is willing to print. Costs
+# 6 of the 172 sampled pads their printed height (bay-view h3, castlewood-hill h9 and h18,
 # merion h1 and h11, philadelphia h18). Printing nothing is the honest outcome for those.
 # The corpus leaves an EMPTY BAND around the threshold, which is the evidence that it separates two
 # populations rather than cutting through one: the flattest pad it refuses is castlewood-hill 9 at
@@ -105,8 +118,29 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # moving this number: the gate itself was exercised by NOTHING for as long as it existed, and deleting
 # it left the whole suite green while merion h11 started printing "green 35.3 ft below the tee" off a
 # pad spanning 3.1 ft.
-MAX_TEE_RELIEF_FT = 2.5   # p5-p95 spread of the ring sample; a tee is level or it is not a tee
+# THAT BAND IS A STATEMENT ABOUT THE PAD BRANCH ALONE. It was offered as evidence for the threshold
+# without saying so, and the threshold sits inside a predicate with a second branch that never reaches
+# it: the box fallback gates on COUNT only and accepts bay-view 16, whose box spans 31.9 ft. See
+# tee_median_is_trustworthy, which now states that cost instead of leaving it to be discovered.
+# NOR IS IT A STATEMENT ABOUT THE WHOLE MAPPED PAD. 7 pads span more than MAX_TEE_RELIEF_FT over the
+# whole ring while the sampled window is level -- callippe-preserve 11, merion 14, merion 16,
+# micke-grove 8, philadelphia 4, philadelphia 11 and philadelphia 15 -- and all but micke-grove 8 print
+# a height today. Gating on the whole ring
+# instead would refuse all seven, and that is the wrong call on the evidence rather than the safe one:
+# a `golf=tee` polygon is not reliably one teeing ground (see tee_elevations), so on those seven the
+# beyond-window part of the ring is a different tee. The window's own answer holds up where it can be
+# tested -- an anchor displaced 10 m moves those seven medians by a median 0.85 ft and at most 1.44 ft
+# (merion 14), inside the 3 ft floor the book prints above. Both figures are graded against the LiDAR by
+# test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives, and the pad-wide spread is
+# recorded per row as `tee_pad_relief_ft` so this is auditable from the artifact and not only from here.
+MAX_TEE_RELIEF_FT = 2.5   # p5-p95 spread of the SAMPLE; a tee is level or it is not a tee
 MIN_RING_PTS = 30         # and enough points for that spread to mean anything
+PRINT_FLOOR_FT = 3.0      # generate.elev_phrase suppresses any smaller change as level
+# Spelled here as well as in generate.py and tools/gen_provenance.py -- three copies of one threshold,
+# for the reason gen_provenance gives about its own: generate.py binds ONE course at import, so nothing
+# upstream of the book can ask it. check_rows needs the number because a row can cross this floor and
+# silently drop its card's line while keeping its key; the three spellings are pinned together by
+# test_the_elevation_loss_guard_sees_a_height_that_stops_printing.
 GROUND = 2              # LAS classification for bare earth
 # A tee-to-green change beyond this is not a golf hole, it is a units or datum fault. The largest real
 # figure in the corpus is 151 ft (castlewood-hill 7, a genuinely hilly Pleasanton course), so this
@@ -229,14 +263,24 @@ def _tee_pads(anchors, crs):
     """{hole: (vx, vy)} -- the mapped `golf=tee` ring, in LAZ CRS units, that contains each anchor.
 
     The tee height was a median over an AXIS-ALIGNED BOX of half-width TEE_R_M around the anchor, and
-    that box is mostly not tee. Measured over the corpus, a mapped tee covers about 13% of it on the six
-    metric courses -- the same pathology as the green end, pointing the other way, because a box centred
-    on a raised tee pad reaches down the surrounding ground and reads LOW. The two errors partly cancel
-    in the printed CHANGE, which is why neither was visible in the figure: correcting only the green end
-    would have shifted every height in the book by +0.47 ft.
+    that box is mostly not tee. Measured over the corpus by rasterising every ring against its own box,
+    a mapped tee covers a median 12.6% and a mean 13.6% of it across all 177 mapped pads (per-course
+    medians 4.9% on valley-hi to 23.6% on merion) -- the same pathology as the green end, pointing the
+    other way, because a box centred on a raised tee pad reaches down the surrounding ground and reads
+    LOW. The two errors partly cancel in the printed CHANGE, which is why neither was visible in the
+    figure: correcting only the green end would have shifted every height in the book by +0.47 ft.
+
+    That share was published as "about 13% on the six metric courses", and the qualifier was a leftover:
+    it dates from when TEE_R_M was applied in raw CRS units and the box really was 9.1 m square on the
+    five US-survey-foot courses, so only the metric six had a 30 m box to compare against.
+    _crs_units_per_m fixed that, and a corpus figure printed under a six-course label is a figure nobody
+    can check -- the six-metric-course median is 9.8%, not 13%.
 
     The rings are in osm_course.json and were never loaded. Refusing to guess when the anchor lands in
-    none of them (8 of 177 holes): those fall back to the box, which is at least centred on the tee.
+    none of them (5 of the 182 anchors this corpus resolves -- bay-view 16, castlewood-hill 4, merion 3,
+    merion 9 and merion 15): those fall back to the box, which is at least centred on the tee. Published
+    as 8 of 177 until c7a4f65 corrected geo.mlat/mlon; three of those anchors moved onto a mapped ring
+    and nothing re-derived the count.
     """
     from pyproj import Transformer
     T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
@@ -320,18 +364,44 @@ def _tee_points(anchors):
 
 
 def tee_elevations(anchors):
-    """{hole: (median_z, n_points, basis)} from ground returns over each hole's TEE PAD.
+    """{hole: (median_z, n_points, basis, on_pad, relief)} from ground returns at each hole's TEE.
 
-    Over the mapped `golf=tee` ring where the anchor lands in one, and over a true 15 m box where it
-    does not. Both changes matter and they are independent:
+    Over the part of the mapped `golf=tee` ring that lies inside a TEE_R_M window at the anchor where the
+    anchor lands in a ring, and over a true TEE_R_M box where it does not. Three things matter here and
+    they are independent:
 
       * the RING, not a box. A box centred on a raised tee pad also samples the ground it is raised
-        above, so it reads the tee low -- measured at a median 0.20 ft and a mean 0.72 ft low over the
-        169 holes whose anchor lands inside a mapped tee, and up to 1.90 ft on copper-valley. On the six
-        metric courses the mapped tee is only about 13% of the box.
-      * a true 15 m box in the FALLBACK, because TEE_R_M was applied in raw CRS units. See
+        above, so it reads the tee low -- measured at a median 1.00 ft and a mean 1.10 ft low over the
+        172 mapped pads that carry ground returns, worst 5.45 ft (philadelphia 16). Copper Valley is the
+        worst course at a median 1.90 ft and a worst 3.43 ft (hole 6). (Published as a median 0.20 and a
+        mean 0.72 ft over 169 holes, and "up to 1.90 ft on copper-valley" -- which was that course's
+        MEDIAN quoted as a worst case, the same mistake this project has already fixed once elsewhere.
+        Both averages predate the true-metre box, which grew the five ftUS courses' sampled area 10.8x
+        and so pulled their box medians further down.) How little of the box is tee at all is in
+        _tee_pads.
+      * the WINDOW. The box is applied BEFORE the ring test, so the accumulated sample is ring INTERSECT
+        window on 57 of the 177 mapped pads -- rings reaching up to 65.7 m from the anchor
+        (philadelphia 16) -- and 51 pads lose ground returns to it. The comment inside the loop used to
+        describe the box as a prefilter a ring test would merely reach more slowly, as though the window
+        changed nothing; it changes the sample on those 51, and 7 pads span more than MAX_TEE_RELIEF_FT
+        over the whole ring while the sampled window is level.
+        The window is nonetheless the RIGHT sample, and that is measured rather than asserted. Widening
+        it from 10 m to 15 m moves the median by a corpus median 0.000 ft (mean 0.035, worst 0.89 ft on
+        micke-grove 8, over 0.5 ft on 2 of the 172): it has converged. Going on to the WHOLE ring
+        moves it by up to 1.87 ft
+        (philadelphia 4), over 0.5 ft on 10 of them -- because a `golf=tee` polygon is not reliably one
+        teeing ground. This corpus maps 28 rings over bay-view's 18 holes and 83 over copper-valley's,
+        so on the merged-complex courses the ring reaches a DIFFERENT tee box, several feet from the one
+        the book is built on, and a median over that is a blend of two tees rather than this tee's
+        height. So the window stays, the label says window (see the `tee_region` recorded per row), and
+        the pad-wide spread is recorded beside it.
+      * a true TEE_R_M box in the FALLBACK, because TEE_R_M was applied in raw CRS units. See
         _crs_units_per_m: on the five US-survey-foot courses that made the box 9.1 m square instead of
         30 m, a 10.8x difference in sampled area for the same nominal measurement.
+
+    `relief` is the p95-p5 spread of the SAMPLE -- the region the median came from, which is what
+    tee_median_is_trustworthy bounds. `pad_relief` beside it is the same spread over the WHOLE mapped
+    ring, measured but not gated on, so a reader can see the seven pads above from the artifact.
     """
     targets, crs = _tee_points(anchors)
     if not targets:
@@ -343,13 +413,21 @@ def tee_elevations(anchors):
     upm = _crs_units_per_m(crs, _la, _lo)
     R = TEE_R_M * upm                          # the box, now genuinely TEE_R_M metres in every CRS
     acc = {hn: [] for hn in targets}
+    pad_acc = {hn: [] for hn in targets}       # the WHOLE ring, recorded rather than gated on
+    # Per hole, how far the sample has to reach: the window, or the whole ring where that is wider. Only
+    # the pad-wide spread needs the wider reach; the median and the gate still see the window.
+    reach = {}
+    for hn, (tx, ty) in targets.items():
+        ring = pads.get(hn)
+        reach[hn] = (R if ring is None else
+                     max(R, float(np.max(np.abs(ring[0] - tx))), float(np.max(np.abs(ring[1] - ty)))))
     for path in sorted(glob.glob(f"{DIR}/laz/*.laz")):
         with laspy.open(path) as f:
             hb = f.header
-            # skip a tile that cannot contain any tee box at all
-            if all(x + R < hb.x_min or x - R > hb.x_max or
-                   y + R < hb.y_min or y - R > hb.y_max
-                   for x, y in targets.values()):
+            # skip a tile that cannot contain any tee sample at all
+            if all(x + reach[hn] < hb.x_min or x - reach[hn] > hb.x_max or
+                   y + reach[hn] < hb.y_min or y - reach[hn] > hb.y_max
+                   for hn, (x, y) in targets.items()):
                 continue
             for chunk in f.chunk_iterator(3_000_000):
                 cl = np.asarray(chunk.classification)
@@ -360,30 +438,59 @@ def tee_elevations(anchors):
                 y = np.asarray(chunk.y)[g]
                 z = np.asarray(chunk.z)[g]
                 for hn, (tx, ty) in targets.items():
-                    # the box is still the PREFILTER even when a ring is used -- a ring test over every
-                    # ground point in a 3 M-point chunk would be the slow way to get the same answer
-                    m = (np.abs(x - tx) < R) & (np.abs(y - ty) < R)
+                    # A box test over a 3 M-point chunk is the cheap way in; a ring test over all of it
+                    # would not be affordable. But this box is the WINDOW as well as the prefilter --
+                    # it CLIPS the ring on 51 of the corpus's mapped pads, which the comment here used
+                    # to deny -- so the wider `reach` is filtered separately for the pad-wide spread.
+                    h = reach[hn]
+                    m = (np.abs(x - tx) < h) & (np.abs(y - ty) < h)
                     if not m.any():
                         continue
+                    xm, ym, zm = x[m], y[m], z[m]
+                    win = (np.abs(xm - tx) < R) & (np.abs(ym - ty) < R)
                     ring = pads.get(hn)
                     if ring is None:
-                        acc[hn].append(z[m])
+                        if win.any():
+                            acc[hn].append(zm[win])
                         continue
-                    inr = _mask_in_ring(x[m], y[m], ring[0], ring[1])
+                    inr = _mask_in_ring(xm, ym, ring[0], ring[1])
                     if inr.any():
-                        acc[hn].append(z[m][inr])
+                        pad_acc[hn].append(zm[inr])
+                        if (inr & win).any():
+                            acc[hn].append(zm[inr & win])
     out = {}
     for hn, parts in acc.items():
         if not parts:
             continue
         zs = np.concatenate(parts)
         on_pad = hn in pads
-        basis = ("the mapped tee pad" if on_pad else
-                 f"a {TEE_R_M:.0f} m box at the tee anchor (no mapped tee ring contains it)")
-        rel = (float(np.percentile(zs, 95) - np.percentile(zs, 5)) if len(zs) >= 20
-               else float(zs.max() - zs.min()) if len(zs) else float("inf"))
-        out[hn] = (float(np.median(zs)), int(zs.size), basis, on_pad, rel)
+        pad_zs = np.concatenate(pad_acc[hn]) if pad_acc[hn] else None
+        out[hn] = (float(np.median(zs)), int(zs.size), tee_sample_region(on_pad), on_pad,
+                   _spread(zs), None if pad_zs is None else _spread(pad_zs))
     return out
+
+
+def _spread(zs):
+    """p95-p5 of a sample, in its own vertical units. Peak-to-peak below 20 points, where percentiles
+    interpolate between too few order statistics to mean anything; `inf` on nothing, so an empty sample
+    can only be refused."""
+    if not len(zs):
+        return float("inf")
+    if len(zs) >= 20:
+        return float(np.percentile(zs, 95) - np.percentile(zs, 5))
+    return float(zs.max() - zs.min())
+
+
+def tee_sample_region(on_pad):
+    """WHERE the tee median was taken, named as the region it is -- the `tee_region` recorded per row.
+
+    This said "the mapped tee pad" for every pad row, and on the 57 pads whose ring reaches past the
+    window that names a region several times the one sampled. It is a field whose whole job is to let a
+    reader audit one card, and tools/verify_elevation.py samples its reference over the WHOLE ring on the
+    stated grounds that both sides measure the same place -- so the label being loose is how a checker
+    ends up measuring a different region and calling the difference data."""
+    return (f"the mapped tee pad within the {TEE_R_M:.0f} m window at the tee anchor" if on_pad else
+            f"a {TEE_R_M:.0f} m box at the tee anchor (no mapped tee ring contains it)")
 
 
 def tee_median_is_trustworthy(n, relief_raw, on_pad, vscale):
@@ -391,10 +498,24 @@ def tee_median_is_trustworthy(n, relief_raw, on_pad, vscale):
 
     * RING: every point is inside the mapped tee, so the doubt is not whether the median is PRECISE --
       it always is, at these sample sizes -- but whether the ground under it is a tee at all. A median
-      over a pad that falls 5 ft is stable and meaningless. Gate on the spread.
+      over a pad that falls 5 ft is stable and meaningless. Gate on the spread OF THE SAMPLE: `relief_raw`
+      is the p95-p5 of the very returns the median came from, which is the pad inside a TEE_R_M window at
+      the anchor and NOT always the whole pad (see tee_elevations). The whole pad's spread is measured
+      too, and recorded rather than gated on; the derivation beside MAX_TEE_RELIEF_FT says why.
     * BOX: no containment guarantee. A handful of points there means the box barely reached the tee, and
       a tight median over five returns on a cart path is stable and wrong. The count is the only signal,
-      so the original 200 floor stands.
+      so the original 200 floor stands -- AND THE RELIEF CHECK IS NEVER REACHED ON THIS BRANCH. That is
+      deliberate: the box legitimately reaches off a raised tee onto the ground below it, so its spread
+      measures the sampling region and not the tee. What it costs is real and is stated here rather than
+      left to be discovered: bay-view 16's box spans 31.9 ft on 10,532 returns and is accepted, and that
+      median sits 1.90 ft BELOW the ground at its own anchor (514.65, 514.66, 514.61 and 514.42 ft at
+      r = 2.5, 5, 7.5 and 10 m against 512.75 ft at 15 m), so its card prints "green 46 ft below the
+      tee" where the near-anchor ground supports 48 -- and bay-view 16 is the corpus's worst disagreement
+      against the 3DEP seamless DEM. Five holes take this branch (bay-view 16, castlewood-hill 4,
+      merion 3, merion 9 and merion 15) and all five print a height. Applying the relief gate here
+      instead would silence all five for a spread that is an artifact of the region, so the fix is not
+      that; it is to sample the fallback the way the pad branch is sampled, which moves five printed
+      figures and is not in this change.
 
     Split out as a predicate because the two branches are easy to conflate and a loosened gate is the
     failure mode this project is most exposed to. The first version of this function gated the ring on
@@ -407,7 +528,7 @@ def tee_median_is_trustworthy(n, relief_raw, on_pad, vscale):
         if n < MIN_RING_PTS:
             return False, f"only {n} ground returns on the mapped tee pad (need {MIN_RING_PTS})"
         if relief_ft > MAX_TEE_RELIEF_FT:
-            return False, (f"the mapped tee pad spans {relief_ft:.1f} ft of height (limit "
+            return False, (f"the sampled tee ground spans {relief_ft:.1f} ft of height (limit "
                            f"{MAX_TEE_RELIEF_FT}) -- that is not a level teeing ground, so a median "
                            f"over it does not stand for a tee height")
         return True, ""
@@ -467,6 +588,33 @@ def green_elevation(hole):
     return float(np.nanmedian(a[mask]))
 
 
+def green_source(hole):
+    """The dem_hd patch's OWN `source` for this hole, or None -- what the green height was measured on.
+
+    Read here rather than assumed, because it is not one thing. 192 of the corpus's 198 surfaces are 0.4 m
+    LiDAR ground returns; 6 come from the 3DEP seamless mosaic, because no LAZ tile covers those greens
+    (monarch-bay 1, 9, 10, 16, 17 and 18). What is recorded is the patch's OWN `source` verbatim, not a
+    reading of it -- fetch_dem.py has since stopped asserting a resolution it did not measure and now
+    writes the source cell it measures per green, so the string will change under those six when they are
+    rebuilt, and a row must follow its patch rather than a constant. The payload published "the green's
+    own 0.4 m surface" for EVERY row regardless, and two of those six carry a row -- monarch-bay 9
+    (suppressed under the print floor) and monarch-bay 16, whose card prints "green 8 ft above the tee".
+
+    It is not only a wrong label. tools/verify_elevation.py checks each recorded height against the 3DEP
+    seamless service, so on those two rows it compares that service against a patch BUILT FROM it and
+    returns +0.0 -- indistinguishable from agreement, on the two greens whose surface has no independent
+    check at all. Recording the real source per row is what lets the checker (and a reader) tell the
+    difference. Kept out of green_elevation so that function's return type stays one number."""
+    mp = f"{DIR}/dem_hd/hole{hole:02d}.json"
+    if not os.path.isfile(mp):
+        return None
+    try:
+        with open(mp, encoding="utf-8") as f:
+            return json.load(f).get("source")
+    except (OSError, ValueError):
+        return None
+
+
 def is_plausible_change(change_ft):
     """False when a tee-to-green figure can only be a units or datum fault. See MAX_PLAUSIBLE_FT.
 
@@ -494,7 +642,9 @@ def _env_on(name):
 
     Parsed the way fetch_trees._env_on parses its two, NOT for truthiness: bool(os.environ.get(..))
     makes ALLOW_ELEV_LOSS=0 and =false mean YES, and this one waives the guard that stands between a
-    survey that came back thinner and a book that quietly stops printing a height it used to.
+    survey that came back thinner and a book that quietly stops printing a height it used to. It now
+    really does waive that -- check_rows watched only for a row DISAPPEARING, so a row that survived and
+    crossed the print floor took the line off its card with nothing to waive.
     """
     return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
 
@@ -542,22 +692,80 @@ def check_rows(rows, path):
 
     PER HOLE, not a total, for the reason fetch_trees.check_layer is: a course can hold its count while
     one hole trades places with another, and it is the named hole whose card silently loses its height.
+
+    AND A ROW CAN SURVIVE AND STILL STOP PRINTING. The comparison was over KEY SETS alone, and
+    generate.elev_phrase suppresses any measured change under PRINT_FLOOR_FT as level -- so a hole going
+    3.05 -> 2.95 ft keeps its key, passes this guard, and drops the line off its card with nothing raised
+    and nothing printed. That is the same silent partial loss, through the one door this function did not
+    watch, and it is live rather than hypothetical: 5 rows sit within 0.15 ft of it -- copper-valley 4 at
+    +3.14, micke-grove 6 at +2.96, micke-grove 9 at -3.03, micke-grove 13 at -3.05 and the-reserve 10 at
+    -2.95. So both kinds are refused, and ALLOW_ELEV_LOSS waives both, which is what _env_on's docstring
+    has always claimed it waives.
     """
     prev = stored_rows(path)
     lost = sorted(int(h) for h in prev if h not in rows)
-    if not lost:
+    silenced = sorted(int(h) for h, r in prev.items()
+                      if h in rows and prints_a_height(r) and not prints_a_height(rows[h]))
+    if not lost and not silenced:
         return
-    detail = ", ".join(f"{h} ({prev[str(h)].get('change_ft')} ft)" for h in lost)
+    bits = []
+    if lost:
+        bits.append("dropped: " + ", ".join(f"{h} ({prev[str(h)].get('change_ft')} ft)" for h in lost))
+    if silenced:
+        # the EXACT figures, both sides. `change_ft` is stored to 0.1 ft, so a row crossing the floor
+        # reads "3.0 -> 3.0" there and the message would name a hole and then show it not moving.
+        bits.append("fell under the %g ft print floor: " % PRINT_FLOOR_FT
+                    + ", ".join(f"{h} ({_ft_str(prev[str(h)])} -> {_ft_str(rows[str(h)])} ft)"
+                                for h in silenced))
+    detail = "; ".join(bits)
     if not _env_on("ALLOW_ELEV_LOSS"):
         raise SystemExit(
-            "REFUSING to write %s: hole(s) %s had a measured height in the stored file and this run\n"
-            "  produced none. Those cards would drop the elevation line with nothing to show a\n"
+            "REFUSING to write %s: hole(s) that printed a height in the stored file would print\n"
+            "  none after this run -- %s.\n"
+            "  Those cards would drop the elevation line with nothing to show a\n"
             "  measurement was lost -- the book stays self-consistent and legal/03's \"measured on N\n"
             "  of 18\" follows the loss down. Check that every laz/ tile is still on disk, that the\n"
             "  first tile's CRS still reads the same, and read the per-hole refusals printed above.\n"
             "  Set ALLOW_ELEV_LOSS=1 if the loss is real (a green rebuilt, a tee re-mapped)."
             % (path, detail))
-    print("WARNING: ALLOW_ELEV_LOSS set -- hole(s) %s lose the height they had" % detail)
+    print("WARNING: ALLOW_ELEV_LOSS set -- hole(s) lose the height they had -- %s" % detail)
+
+
+def prints_a_height(row):
+    """Does this row put a height on a card? The floor generate.elev_phrase applies, on the UNROUNDED
+    figure for the reason change_ft_exact exists: comparing a threshold against a value already rounded
+    to 0.1 ft is how 2.956 ft once printed as "green 3 ft" under a gate that forbids anything under 3."""
+    ft = _exact_ft(row)
+    return ft is not None and abs(ft) >= PRINT_FLOOR_FT
+
+
+def _exact_ft(row):
+    """The unrounded change in feet, falling back to the 0.1 ft field for a row written before it
+    existed -- the same order generate._hole_elev reads them in, so the two cannot disagree about which
+    number a threshold sees."""
+    ft = row.get("change_ft_exact")
+    return row.get("change_ft") if ft is None else ft
+
+
+def _ft_str(row):
+    """`_exact_ft` for a message. A row can legitimately carry no figure at all -- that is what a hole
+    losing its height looks like -- so this must not be a format string on None."""
+    ft = _exact_ft(row)
+    return "no figure" if ft is None else f"{ft:+.2f}"
+
+
+def source_line(rows):
+    """The payload's one-line `source`, BUILT from the rows so it cannot name a surface none of them used.
+
+    The hand-written version said "USGS 3DEP LiDAR ground returns (class 2) vs the green's own 0.4 m
+    surface" for every course, and it was false wherever a green's patch came from the 3DEP seamless
+    1 m DEM -- monarch-bay 9 and 16 in this corpus. Deriving it from `green_source` means the summary and
+    the per-row field are one measurement rendered twice rather than two claims that can disagree, which
+    is the fault this project keeps finding in pairs of records."""
+    counts = collections.Counter(r.get("green_source") or "unrecorded" for r in rows.values())
+    greens = "; ".join(f"{n} row(s) over {s}" for s, n in sorted(counts.items()))
+    return ("USGS 3DEP LiDAR ground returns (class 2) at the tee, against the green's own built "
+            f"surface -- {greens}")
 
 
 def write_hole_elev(path, payload):
@@ -678,7 +886,18 @@ def main():
                          # WHERE the tee height was sampled, not just how the anchor was found. Both are
                          # auditable failure points and they fail independently: a correct anchor sampled
                          # over the wrong region is the fault this field exists to expose.
-                         "tee_region": tee_region}
+                         "tee_region": tee_region,
+                         # The spread of the sample the median came from, and the spread of the WHOLE
+                         # mapped pad beside it. The gate bounds the first; the second is what an audit
+                         # of "is that really a tee?" needs, and it was measurable only by re-running
+                         # the sampler by hand. 7 pads differ across MAX_TEE_RELIEF_FT -- see the
+                         # derivation beside that constant.
+                         "tee_relief_ft": round(tz_n[4] * vscale * 3.28084, 3),
+                         "tee_pad_relief_ft": (None if tz_n[5] is None else
+                                               round(tz_n[5] * vscale * 3.28084, 3)),
+                         # WHAT the green height was measured on, per row. The payload used to publish
+                         # "the green's own 0.4 m surface" for all of them; see green_source.
+                         "green_source": green_source(hn)}
         d_ft = d_m * 3.28084
         word = "above" if d_ft > 0 else "below"
         print(f"  hole {hn:2d}: green {abs(d_ft):5.1f} ft {word} the tee   "
@@ -692,9 +911,20 @@ def main():
         # LAST GATE BEFORE THE BYTES LAND, like fetch_trees.check_layer: everything above measures the
         # tiles, and this asks whether the measurement is one the book may be rebuilt on.
         check_rows(rows, p)
-        write_hole_elev(p, {"tee_radius_m": TEE_R_M, "min_tee_points": MIN_TEE_PTS,
-                            "source": "USGS 3DEP LiDAR ground returns (class 2) vs the green's own "
-                                      "0.4 m surface",
+        # WHAT WAS MEASURED, AND WHAT ACTUALLY GATED IT. This published
+        # {"tee_radius_m": 15.0, "min_tee_points": 200} beside a source line naming a 0.4 m surface, and
+        # all three were claims rather than records: nothing in the repo reads any of them, MIN_TEE_PTS
+        # gated 5 of the corpus's 171 rows (the other 166 came off a mapped pad, where the gates are
+        # MIN_RING_PTS and MAX_TEE_RELIEF_FT and 200 is never consulted), and 2 rows are measured over a
+        # patch built from the 3DEP seamless mosaic. So the gate set is published in full, and the
+        # source line is BUILT from the rows -- one derivation, not a second copy to drift.
+        write_hole_elev(p, {"tee_window_m": TEE_R_M,
+                            "gates": {"min_pad_points": MIN_RING_PTS,
+                                      "max_sample_relief_ft": MAX_TEE_RELIEF_FT,
+                                      "min_box_points": MIN_TEE_PTS,
+                                      "max_change_ft": MAX_PLAUSIBLE_FT,
+                                      "print_floor_ft": PRINT_FLOOR_FT},
+                            "source": source_line(rows),
                             "holes": rows})
         print(f"  wrote {os.path.relpath(p, config.ROOT)}")
     return 0

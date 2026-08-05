@@ -16609,36 +16609,45 @@ def test_hole_elev_refuses_to_drop_a_hole_it_measured_before():
             json.dump({"holes": {str(h): {"change_ft": 4.0 + h} for h in holes}}, f)
         return p
 
+    # The rows a run PRODUCES, carrying the same figures the stored file holds. They used to be `{}`,
+    # contents being irrelevant to a guard that compared key sets -- and the contents are no longer
+    # irrelevant, because check_rows also refuses a row that SURVIVES and stops printing (a hole going
+    # 3.05 -> 2.95 ft keeps its key and loses its card's line). A figureless row is that same loss, so
+    # `{}` would now be refused here for a reason this test is not about; every key set and every
+    # assertion below is unchanged. The figure-crossing branch is driven by
+    # test_the_elevation_loss_guard_sees_a_height_that_stops_printing.
+    same = lambda *hs: {str(h): {"change_ft": 4.0 + h, "change_ft_exact": 4.0 + h} for h in hs}
+
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         p = stored(td, [1, 2, 3])
-        three = {"1": {}, "2": {}, "3": {}}
+        three = same(1, 2, 3)
 
         # the same set, and a bigger one, pass
         fhe.check_rows(three, p)
-        fhe.check_rows(dict(three, **{"4": {}}), p)
+        fhe.check_rows(same(1, 2, 3, 4), p)
 
         # a hole that HAD a figure and now has none is refused, and the hole is NAMED
         prev = os.environ.pop("ALLOW_ELEV_LOSS", None)
         try:
             with pytest.raises(SystemExit) as e:
-                fhe.check_rows({"1": {}, "3": {}}, p)
+                fhe.check_rows(same(1, 3), p)
             assert "2" in str(e.value), f"the refusal must name the hole that was lost: {e.value}"
             # a swap that keeps the COUNT is still a loss, which is why the guard is per hole
             with pytest.raises(SystemExit) as e2:
-                fhe.check_rows({"1": {}, "2": {}, "9": {}}, p)
+                fhe.check_rows(same(1, 2, 9), p)
             assert "3" in str(e2.value), f"a same-count swap must still be refused: {e2.value}"
 
             # the waiver lets a real loss through, loudly, and =0 does not read as yes
             os.environ["ALLOW_ELEV_LOSS"] = "0"
             with pytest.raises(SystemExit):
-                fhe.check_rows({"1": {}, "3": {}}, p)
+                fhe.check_rows(same(1, 3), p)
             os.environ["ALLOW_ELEV_LOSS"] = "1"
             import contextlib
             import io
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                fhe.check_rows({"1": {}, "3": {}}, p)
+                fhe.check_rows(same(1, 3), p)
             assert "WARNING" in buf.getvalue() and "2" in buf.getvalue(), \
                 f"a waived loss must still be reported: {buf.getvalue()!r}"
         finally:
@@ -16649,11 +16658,11 @@ def test_hole_elev_refuses_to_drop_a_hole_it_measured_before():
         # a FIRST run has nothing to compare against, and an unreadable baseline is not a hard stop --
         # the same call fetch_trees._stored_layer makes, for the same reason: this file is derived
         with tempfile.TemporaryDirectory() as td2:
-            fhe.check_rows({"1": {}}, os.path.join(td2, "hole_elev.json"))
+            fhe.check_rows(same(1), os.path.join(td2, "hole_elev.json"))
             bad = os.path.join(td2, "hole_elev.json")
             with open(bad, "w", encoding="utf-8") as f:
                 f.write("{not json")
-            fhe.check_rows({"1": {}}, bad)
+            fhe.check_rows(same(1), bad)
 
     # and it has to be the LAST GATE BEFORE THE BYTES LAND, or it is a guard nobody runs
     src = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
@@ -16914,6 +16923,30 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
         "pad-relief refusal is the one legal/03 was misled by")
 
 
+# The corpus's real tee samples, as {(course, hole): (ground returns, sample relief in ft, on a pad)}.
+#
+# ONE record of these numbers. They used to be literals typed into the assertions below, and by the time
+# this table was written four of them no longer reproduced -- merion 1 read 3839 against a live 3851,
+# merion 11 3917 against 3923, bay-view 3 4569/3.568 against 4581/3.572, philadelphia 18 967/6.224
+# against 970/6.219 -- because c7a4f65 corrected geo.mlat/mlon and every anchor moved a little. Nothing
+# failed: the test calls a PURE PREDICATE, so a stale input is still a valid input, and that is exactly
+# the shape this project's standing lesson describes. So the values live here once, the pure test reads
+# them (staying LiDAR-free, which is what makes a gate on the elevation pipeline affordable to watch),
+# and test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives re-measures every row of
+# this table against the point cloud.
+TEE_SAMPLES_MEASURED = {
+    ("bay-view", 3): (4581, 3.572, True),
+    ("bay-view", 16): (10532, 31.915, False),
+    ("callippe-preserve", 11): (5068, 2.000, True),
+    ("castlewood-hill", 9): (838, 2.755, True),
+    ("castlewood-hill", 18): (150, 4.302, True),
+    ("merion", 1): (3851, 2.953, True),
+    ("merion", 11): (3923, 3.117, True),
+    ("philadelphia", 3): (1298, 2.133, True),
+    ("philadelphia", 18): (970, 6.219, True),
+}
+
+
 @needs_corpus
 def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
     """MAX_TEE_RELIEF_FT decides whether a hole PRINTS a height, and nothing exercised it.
@@ -16932,36 +16965,34 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
     with the next test anyone adds. tee_median_is_trustworthy was called zero times in this suite, because
     every corpus test reads a hole_elev.json already on disk and the one test that re-runs the stage is
     behind both @pytest.mark.network and a cold-build flag. What the deletion buys: merion h11 starts
-    printing "green 35.3 ft below the tee (-10.7 m, 3917 tee returns)" off a pad spanning 3.1 ft, and
-    philadelphia h18 "green 33.2 ft above the tee" off a pad spanning 6.2 ft -- a datum ambiguous by
-    twice the smallest height the book will print.
+    printing "green 35.3 ft below the tee" off a pad spanning 3.1 ft, and philadelphia h18
+    "green 33.2 ft above the tee" off a pad spanning 6.2 ft -- a datum ambiguous by twice the smallest
+    height the book will print.
 
-    So this calls the predicate directly, with the REAL ring samples from the corpus on both sides of
-    the threshold. The corpus leaves an empty band there, and that band is the evidence the constant is
-    a boundary between two populations rather than a cut through one:
+    So this calls the predicate directly, with the REAL samples from the corpus on both sides of the
+    threshold, read from TEE_SAMPLES_MEASURED above rather than typed in here. The corpus leaves an empty
+    band there, and that band is the evidence the constant is a boundary between two populations rather
+    than a cut through one:
 
-        steepest pad ACCEPTED    philadelphia  3   2.13 ft   (1298 returns)
+        steepest pad ACCEPTED    philadelphia 3
         --------------------------------- 2.5 ---------------------------------
-        flattest pad REFUSED     castlewood-hill 9 2.75 ft   (838 returns)
-                                 merion 1          2.95 ft   (3839 returns)
-                                 merion 11         3.12 ft   (3917 returns)
-                                 bay-view 3        3.57 ft   (4569 returns)
-                                 castlewood-hill 18 4.30 ft  (150 returns)
-                                 philadelphia 18   6.22 ft   (967 returns)
+        flattest pad REFUSED     castlewood-hill 9, then merion 1, merion 11, bay-view 3,
+                                 castlewood-hill 18, philadelphia 18
 
-    Measured over all 177 holes that get a tee sample (169 on a mapped pad, 8 in the box fallback) by
-    running the shipped sampler; so the two rows either side of the line pin the constant into
-    (2.13, 2.75] and this test fails if the gate is deleted, stubbed out, or the number is moved out of
-    that band. It calls a PURE PREDICATE with recorded numbers -- it reads no LiDAR and re-runs no
-    stage, which is what makes a gate on the elevation pipeline affordable to watch at all. (It carries
-    @needs_corpus only because fetch_hole_elev imports config, which resolves a course directory at
-    import and exits without one; nothing below reads a course file.)
+    Measured over all 177 anchors that land on a mapped pad (172 of them carry ground returns; 5 more
+    anchors land in no ring and take the box) by running the shipped sampler; so the two rows either side
+    of the line pin the constant into (2.13, 2.75] and this test fails if the gate is deleted, stubbed
+    out, or the number is moved out of that band. It calls a PURE PREDICATE with recorded numbers -- it
+    reads no LiDAR and re-runs no stage, which is what makes a gate on the elevation pipeline affordable
+    to watch at all. (It carries @needs_corpus only because fetch_hole_elev imports config, which
+    resolves a course directory at import and exits without one; nothing below reads a course file.)
 
     The BOX branch is asserted too, and asserted to be DIFFERENT: it gates on the count only, because
     there is no containment guarantee and the box legitimately reaches off the pad onto the ground a
-    raised tee sits above -- bay-view 16's box spans 31.2 ft and is right to be accepted on 10,429
-    returns. Applying the relief gate there would cost 8 more holes their height for a spread that is
-    an artifact of the sampling region, not a property of the tee.
+    raised tee sits above -- bay-view 16's box spans 31.9 ft and is accepted on 10,532 returns. Applying
+    the relief gate there would cost five more holes their height for a spread that is an artifact of the
+    sampling region, not a property of the tee. What THAT costs is stated in
+    tee_median_is_trustworthy's own docstring and graded off the LiDAR.
     """
     sys.modules.pop("fetch_hole_elev", None)
     _config, _rh = _engine(a_course())
@@ -16972,60 +17003,74 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
         """`ft` of measured pad relief expressed back in the CRS vertical units the gate is handed."""
         return ft / (3.28084 * vscale)
 
-    # (1) merion h1 -- 3839 class-2 returns on a mapped pad over a usable green surface, refused for
-    # relief and nothing else. This is the hole legal/03 published a wrong reason for.
-    ok, why = fhe.tee_median_is_trustworthy(3839, raw(2.953), True, 1.0)
+    def sample(course, hole):
+        """(n, relief_ft) for one real corpus sample. Fails loudly rather than silently substituting a
+        default, because a missing row would turn an assertion about the corpus into one about zero."""
+        assert (course, hole) in TEE_SAMPLES_MEASURED, (
+            f"{course} {hole} is no longer in TEE_SAMPLES_MEASURED, so this assertion has nothing real "
+            f"to run against")
+        n, ft, _on_pad = TEE_SAMPLES_MEASURED[(course, hole)]
+        return n, ft
+
+    # (1) merion h1 -- thousands of class-2 returns on a mapped pad over a usable green surface, refused
+    # for relief and nothing else. This is the hole legal/03 published a wrong reason for.
+    n1, ft1 = sample("merion", 1)
+    ok, why = fhe.tee_median_is_trustworthy(n1, raw(ft1), True, 1.0)
     assert not ok, (
-        "merion h1's real tee pad spans 2.95 ft of height and the gate accepts it, so the hole would "
-        "print a height off ground whose own spread is nearly the smallest figure the card prints. "
-        f"MAX_TEE_RELIEF_FT is {getattr(fhe, 'MAX_TEE_RELIEF_FT', 'GONE')}")
+        f"merion h1's real tee sample spans {ft1} ft of height and the gate accepts it, so the hole "
+        f"would print a height off ground whose own spread is nearly the smallest figure the card "
+        f"prints. MAX_TEE_RELIEF_FT is {getattr(fhe, 'MAX_TEE_RELIEF_FT', 'GONE')}")
     assert "not a level teeing ground" in why, (
         f"the refusal no longer says what is wrong with the pad, so the run log stops being the only "
         f"record of why this hole prints nothing: {why!r}")
-    assert "spans 3.0 ft" in why, (
+    assert f"spans {ft1:.1f} ft" in why, (
         f"the refusal must quote the spread it MEASURED, not just the limit it failed -- that number "
         f"is the only record of how far off a level tee this pad is: {why!r}")
 
     # (2) the two rows either side of the empty band, which is what pins the constant.
-    assert not fhe.tee_median_is_trustworthy(838, raw(2.755), True, 1.0)[0], (
-        "castlewood-hill 9 is the FLATTEST pad the corpus refuses, at 2.75 ft; accepting it means the "
-        "threshold has risen past the whole refused population")
-    assert fhe.tee_median_is_trustworthy(1298, raw(2.133), True, 1.0)[0], (
-        "philadelphia 3 is the STEEPEST pad the corpus accepts, at 2.13 ft, and it prints a height "
-        "today; refusing it means the threshold has fallen into the accepted population")
-    assert 2.133 < fhe.MAX_TEE_RELIEF_FT < 2.755, (
+    nc, ftc = sample("castlewood-hill", 9)
+    np_, ftp = sample("philadelphia", 3)
+    assert not fhe.tee_median_is_trustworthy(nc, raw(ftc), True, 1.0)[0], (
+        f"castlewood-hill 9 is the FLATTEST pad the corpus refuses, at {ftc} ft; accepting it means the "
+        f"threshold has risen past the whole refused population")
+    assert fhe.tee_median_is_trustworthy(np_, raw(ftp), True, 1.0)[0], (
+        f"philadelphia 3 is the STEEPEST pad the corpus accepts, at {ftp} ft, and it prints a height "
+        f"today; refusing it means the threshold has fallen into the accepted population")
+    assert ftp < fhe.MAX_TEE_RELIEF_FT < ftc, (
         f"MAX_TEE_RELIEF_FT = {fhe.MAX_TEE_RELIEF_FT} is no longer inside the band the corpus leaves "
-        f"empty (2.13, 2.75). Re-measure both ends before moving it; the two assertions above say "
+        f"empty ({ftp}, {ftc}). Re-measure both ends before moving it; the two assertions above say "
         f"which holes decide it")
     assert fhe.MAX_TEE_RELIEF_FT < 3.0, (
         "the limit must stay below the 3 ft floor generate.elev_phrase suppresses under, which is what "
         "ties it to something: a pad ambiguous by more than the smallest height the book prints cannot "
         "anchor that height")
 
-    # (3) the other five refusals, so no single edit can quietly re-admit them
-    for slug, hn, n, ft in (("merion", 11, 3917, 3.117), ("bay-view", 3, 4569, 3.568),
-                            ("castlewood-hill", 18, 150, 4.302),
-                            ("philadelphia", 18, 967, 6.224)):
+    # (3) the other four refusals, so no single edit can quietly re-admit them
+    for course, hn in (("merion", 11), ("bay-view", 3), ("castlewood-hill", 18), ("philadelphia", 18)):
+        n, ft = sample(course, hn)
         assert not fhe.tee_median_is_trustworthy(n, raw(ft), True, 1.0)[0], (
-            f"{slug} {hn}'s pad spans {ft} ft and is being accepted; it would print a height off "
+            f"{course} {hn}'s pad spans {ft} ft and is being accepted; it would print a height off "
             f"ground that is not level")
 
     # (4) the CRS axis scale is applied, so the five US-survey-foot courses are gated on feet and not
     # on raw ftUS read as metres. callippe 11 spans 2.00 ft and prints a height; drop the scale and it
     # reads 6.6 ft and the hole goes silent.
-    assert fhe.tee_median_is_trustworthy(5058, raw(2.000, FT_US), True, FT_US)[0], (
-        "callippe 11's pad spans 2.00 ft and is being refused -- the gate is reading raw ftUS as if it "
-        "were metres, which makes it 3.28x stricter on 5 of the 11 courses")
-    assert not fhe.tee_median_is_trustworthy(5058, raw(3.568, FT_US), True, FT_US)[0], \
-        "a 3.57 ft spread on a ftUS course is accepted; the scale is being applied the wrong way"
+    nk, ftk = sample("callippe-preserve", 11)
+    assert fhe.tee_median_is_trustworthy(nk, raw(ftk, FT_US), True, FT_US)[0], (
+        f"callippe 11's pad spans {ftk} ft and is being refused -- the gate is reading raw ftUS as if it "
+        f"were metres, which makes it 3.28x stricter on 5 of the 11 courses")
+    _nb, ftb = sample("bay-view", 3)
+    assert not fhe.tee_median_is_trustworthy(nk, raw(ftb, FT_US), True, FT_US)[0], \
+        f"a {ftb} ft spread on a ftUS course is accepted; the scale is being applied the wrong way"
 
     # (5) enough points for the spread to mean anything, and the BOX branch, which is a different
     # question with a different answer -- see this test's docstring.
     assert not fhe.tee_median_is_trustworthy(29, raw(0.2), True, 1.0)[0], \
         "a 29-point pad is accepted; a spread over that many returns is not a measurement of the pad"
-    assert fhe.tee_median_is_trustworthy(10429, raw(31.245), False, 1.0)[0], (
-        "bay-view 16's 15 m BOX spans 31.2 ft and is being refused: the box is not the pad, so its "
-        "spread is the ground around a raised tee and the count is the only signal there")
+    nbx, ftbx = sample("bay-view", 16)
+    assert fhe.tee_median_is_trustworthy(nbx, raw(ftbx), False, 1.0)[0], (
+        f"bay-view 16's 15 m BOX spans {ftbx} ft and is being refused: the box is not the pad, so its "
+        f"spread is the ground around a raised tee and the count is the only signal there")
     assert not fhe.tee_median_is_trustworthy(150, raw(0.2), False, 1.0)[0], (
         "a 150-point box is accepted; with no containment guarantee a small sample may not be the tee "
         "at all, which is what MIN_TEE_PTS is for")
@@ -17035,10 +17080,786 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
     # as the reason for the threshold -- so the derivation could not be checked against the code.
     cmt = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
     cmt = cmt.split("MAX_TEE_RELIEF_FT = ")[0]
-    assert "4.3 ft of relief" in cmt and "6.2 ft of relief" in cmt, (
-        "the comment deriving MAX_TEE_RELIEF_FT no longer quotes castlewood-hill 18's 4.3 ft and "
-        "philadelphia 18's 6.2 ft -- the p95-p5 spreads this gate measures, re-measured through the "
-        "shipped ring sampler and pinned in (3) above")
+    for course, hn in (("castlewood-hill", 18), ("philadelphia", 18)):
+        _n, ft = sample(course, hn)
+        assert f"{ft:.1f} ft of relief" in cmt, (
+            f"the comment deriving MAX_TEE_RELIEF_FT no longer quotes {course} {hn}'s {ft:.1f} ft -- the "
+            f"p95-p5 spread this gate measures, re-measured through the shipped ring sampler and pinned "
+            f"in TEE_SAMPLES_MEASURED")
+
+
+# ---------------------------------------------------------------------------
+# The tee sample: WHERE it is taken, and every figure published about it.
+#
+# fetch_hole_elev.py derives a print/no-print gate from a dozen corpus measurements and writes three
+# more into hole_elev.json. Every one of them was a literal typed into a comment, and by the time this
+# block was written eleven of them no longer reproduced -- the anchors moved when geo.mlat/mlon was
+# corrected, and the tee box became a true 15 m box in every CRS, and neither change touched the prose
+# that quoted the old answers. So the figures are GRADED against a live measurement here rather than
+# copied: nothing below hardcodes a value the module also states.
+# ---------------------------------------------------------------------------
+_TEE_GEOM = None
+_TEE_LIDAR = None
+
+
+def _elev_bind(fhe, slug):
+    """Point an already-imported fetch_hole_elev at `slug`, and return that course's config.
+
+    fetch_hole_elev binds `DIR = config.COURSE_DIR` at import and holds module references to config and
+    render_hole, so a cached copy keeps reading the FIRST course's files -- the fault
+    test_recorded_green_height_matches_the_built_surface dropped the module per course to avoid.
+    Rebinding those three attributes is equivalent, because they are the whole of this module's
+    course-bound state, and it keeps the eleven-course loops below from adding `sys.modules.pop` sites
+    to the figure README publishes about this suite (see
+    test_the_suite_reports_its_own_module_drop_count_correctly, which pins README against the count)."""
+    cfg, rh = _engine(slug)
+    fhe.config = cfg
+    fhe.render_hole = rh
+    fhe.DIR = os.path.join(ROOT, "courses", slug)
+    return cfg
+
+
+def _tee_geometry():
+    """WHERE fetch_hole_elev samples each tee, from OSM geometry alone -- no point cloud, so this is
+    cheap enough for a plain corpus test.
+
+    Per course: every anchor tee_anchor resolves, which of those land inside a mapped `golf=tee` ring,
+    how far that ring's farthest vertex is from the anchor, and what fraction of the TEE_R_M box the
+    ring covers. The share is rasterised rather than clipped analytically; it is stable to 0.01
+    percentage point from 0.30 m cells down to 0.05 m, so the 0.10 m grid used here is not a tuning
+    knob.
+
+    Cached, because two graders read it and every anchor costs a pyproj transform."""
+    global _TEE_GEOM
+    if _TEE_GEOM is not None:
+        return _TEE_GEOM
+    import numpy as np
+    import geo
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    out = {}
+    for slug in CORPUS:
+        cfg = _elev_bind(fhe, slug)
+        if cfg.BUILD_MODE == "yardage" or not glob.glob(os.path.join(fhe.DIR, "laz", "*.laz")):
+            continue
+        with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        loc = cfg.COURSE.get("location") or {}
+        holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        anchors = {}
+        for hn in sorted(holes):
+            la, lo, _basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+            if la is not None:
+                anchors[hn] = (la, lo)
+        targets, crs = fhe._tee_points(anchors)
+        pads = fhe._tee_pads(targets, crs)
+        la0, lo0 = next(iter(anchors.values()))
+        upm = fhe._crs_units_per_m(crs, la0, lo0)
+        R = fhe.TEE_R_M * upm
+        g = (np.arange(300) + 0.5) / 300.0 * 2 * R - R
+        GX, GY = np.meshgrid(g, g)
+        share, reach = {}, {}
+        for hn, (vx, vy) in pads.items():
+            tx, ty = targets[hn]
+            share[hn] = float(fhe._mask_in_ring((GX + tx).ravel(), (GY + ty).ravel(), vx, vy).mean())
+            reach[hn] = float(np.max(np.hypot(vx - tx, vy - ty)) / upm)
+        out[slug] = {"anchors": sorted(targets), "pads": sorted(pads), "share": share,
+                     "reach_m": reach, "upm": upm, "nrings": len(fhe.tee_rings_latlon())}
+    _elev_bind(fhe, a_course())
+    _TEE_GEOM = out
+    return out
+
+
+def _tee_samples():
+    """Every tee's ground returns measured five ways, in ONE pass over each course's LAZ.
+
+    Per (slug, hole): the SAMPLE the shipped code takes (the mapped pad inside the TEE_R_M window, or
+    the whole window in the box fallback), the WHOLE mapped ring, the whole BOX, the pad median at
+    smaller radii, and how far the pad median moves when the anchor is displaced 10 m in each of four
+    directions. Feet throughout -- the CRS vertical scale is applied here, as tee_median_is_trustworthy
+    applies it, so no figure below is a raw ftUS number read as metres.
+
+    One pass, ~45 s over the corpus's 11.6 GiB, because every LiDAR-derived figure fetch_hole_elev
+    publishes is graded off it and re-reading the tiles per figure would not be affordable."""
+    global _TEE_LIDAR
+    if _TEE_LIDAR is not None:
+        return _TEE_LIDAR
+    import laspy
+    import numpy as np
+    import geo
+    FT = 3.28084
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    out = {}
+    for slug in CORPUS:
+        cfg = _elev_bind(fhe, slug)
+        tiles = sorted(glob.glob(os.path.join(fhe.DIR, "laz", "*.laz")))
+        if cfg.BUILD_MODE == "yardage" or not tiles:
+            continue
+        with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        loc = cfg.COURSE.get("location") or {}
+        holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        anchors = {}
+        for hn in sorted(holes):
+            la, lo, _basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+            if la is not None:
+                anchors[hn] = (la, lo)
+        targets, crs = fhe._tee_points(anchors)
+        pads = fhe._tee_pads(targets, crs)
+        la0, lo0 = next(iter(anchors.values()))
+        upm = fhe._crs_units_per_m(crs, la0, lo0)
+        vscale = geo.vertical_scale(cfg.COURSE.get("lidar_crs") or
+                                    geo.sole_laz_crs(os.path.join(fhe.DIR, "laz")))
+        # prefilter half-width per hole: the window OR the whole ring, whichever reaches further, so
+        # this measurement can see the returns the shipped window drops
+        half = {}
+        for hn, (tx, ty) in targets.items():
+            h = fhe.TEE_R_M * upm
+            ring = pads.get(hn)
+            if ring is not None:
+                h = max(h, float(np.max(np.abs(ring[0] - tx))),
+                        float(np.max(np.abs(ring[1] - ty)))) + 1e-6
+            half[hn] = h
+        keep = {hn: [] for hn in targets}
+        for path in tiles:
+            with laspy.open(path) as f:
+                hb = f.header
+                if all(x + half[hn] < hb.x_min or x - half[hn] > hb.x_max or
+                       y + half[hn] < hb.y_min or y - half[hn] > hb.y_max
+                       for hn, (x, y) in targets.items()):
+                    continue
+                for chunk in f.chunk_iterator(3_000_000):
+                    g = np.asarray(chunk.classification) == fhe.GROUND
+                    if not g.any():
+                        continue
+                    x = np.asarray(chunk.x)[g]
+                    y = np.asarray(chunk.y)[g]
+                    z = np.asarray(chunk.z)[g]
+                    for hn, (tx, ty) in targets.items():
+                        h = half[hn]
+                        m = (np.abs(x - tx) < h) & (np.abs(y - ty) < h)
+                        if not m.any():
+                            continue
+                        xm, ym, zm = x[m], y[m], z[m]
+                        ring = pads.get(hn)
+                        inr = (fhe._mask_in_ring(xm, ym, ring[0], ring[1]) if ring is not None
+                               else np.zeros(len(xm), bool))
+                        keep[hn].append(np.stack([(xm - tx) / upm, (ym - ty) / upm, zm,
+                                                  inr.astype(float)], 1))
+        for hn, parts in keep.items():
+            if not parts:
+                continue
+            a = np.concatenate(parts)
+            dx, dy, z, inr = a[:, 0], a[:, 1], a[:, 2], a[:, 3] > 0.5
+            win = (np.abs(dx) < fhe.TEE_R_M) & (np.abs(dy) < fhe.TEE_R_M)
+            on_pad = hn in pads
+
+            def stat(m):
+                if not m.any():
+                    return None
+                zz = z[m]
+                rel = (float(np.percentile(zz, 95) - np.percentile(zz, 5)) if zz.size >= 20
+                       else float(zz.max() - zz.min()))
+                return {"n": int(zz.size), "med_ft": float(np.median(zz)) * vscale * FT,
+                        "rel_ft": rel * vscale * FT}
+
+            row = {"on_pad": on_pad,
+                   "sample": stat((inr & win) if on_pad else win),
+                   "ring": stat(inr) if on_pad else None,
+                   "box": stat(win)}
+            near = inr if on_pad else np.ones(len(dx), bool)
+            for rad in (2.5, 5.0, 7.5, 10.0):
+                m = (np.abs(dx) < rad) & (np.abs(dy) < rad) & near
+                row[f"med_{rad}"] = float(np.median(z[m])) * vscale * FT if m.any() else None
+            shifted = []
+            for ox, oy in ((10.0, 0.0), (-10.0, 0.0), (0.0, 10.0), (0.0, -10.0)):
+                m = (np.abs(dx - ox) < fhe.TEE_R_M) & (np.abs(dy - oy) < fhe.TEE_R_M) & inr
+                if m.sum() >= fhe.MIN_RING_PTS:
+                    shifted.append(float(np.median(z[m])) * vscale * FT)
+            row["shift_spread_ft"] = (max(shifted) - min(shifted)) if len(shifted) >= 2 else None
+            out[(slug, hn)] = row
+    _elev_bind(fhe, a_course())
+    _TEE_LIDAR = out
+    return out
+
+
+def _fhe_src():
+    with open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _fhe_prose():
+    """fetch_hole_elev.py as ONE line of prose: line-leading `#` removed, all whitespace collapsed.
+
+    The figures graded below live in wrapped comments and docstrings, so a pattern written against the
+    sentence would fail on where the author happened to break the line -- which makes the grader a
+    formatting test instead of a figure test. Flattening first means the sentence is what is matched."""
+    return re.sub(r"\s+", " ", re.sub(r"(?m)^[ \t]*#[ \t]?", "", _fhe_src()))
+
+
+def _published(src, pattern, what, live):
+    """The numbers fetch_hole_elev.py publishes for `what`, or a failure that states the live ones.
+
+    A figure nothing can parse is the same defect as a figure that is wrong -- it is the state every
+    drifted number in this module was in -- so an unmatched pattern fails here and reports the
+    measurement, rather than being skipped over."""
+    m = re.search(pattern, src)
+    assert m, (f"fetch_hole_elev.py no longer publishes {what} in a form this test can read.\n"
+               f"  pattern : {pattern}\n"
+               f"  measured: {live}")
+    return m
+
+
+def _short(slug):
+    """The short course name fetch_hole_elev.py's comments use ('merion', 'bay-view', ...)."""
+    for suffix in ("-golf-club", "-golf-course", "-golf-links", "-country-club", "-course",
+                   "-at-spanos-park"):
+        slug = slug.replace(suffix, "")
+    return slug
+
+
+@needs_corpus
+def test_the_tee_sample_is_named_and_counted_as_the_region_the_sampler_reaches():
+    """The tee height is measured over the mapped pad INSIDE a 15 m window, and three records said pad.
+
+    `tee_elevations` applies the TEE_R_M box BEFORE the ring test, so the accumulated sample is ring
+    INTERSECT window. The comment beside that line called the box a prefilter that gets "the same
+    answer" as a ring test; hole_elev.json recorded `"tee_region": "the mapped tee pad"`; and
+    tools/verify_elevation.py samples its reference over the WHOLE ring on the stated grounds that both
+    sides measure the same region. None of the three is true for a pad that reaches past the window,
+    and this corpus has 57 of them, one reaching 65.7 m from its anchor.
+
+    The window is the right sample -- see the derivation in tee_elevations, graded by
+    test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives -- so what was wrong is what
+    the three records SAY. A region label that overstates its region is how a reader (and a checker)
+    ends up comparing two different places and calling the difference data.
+
+    Everything here is graded against a live geometric measurement of the anchors and the rings. No
+    figure is copied from the module it checks."""
+    geom = _tee_geometry()
+    src = _fhe_prose()
+    assert geom, "no green-mode course with LiDAR on disk; nothing to measure"
+
+    anchors = sum(len(g["anchors"]) for g in geom.values())
+    pads = sum(len(g["pads"]) for g in geom.values())
+    box = anchors - pads
+    box_holes = sorted((_short(s), h) for s, g in geom.items()
+                       for h in g["anchors"] if h not in g["pads"])
+
+    # 1. the fallback count and WHICH holes take it. Published as "8 of 177 holes" -- that predates
+    #    c7a4f65, which corrected geo.mlat/mlon and moved three of those anchors onto a mapped ring.
+    m = _published(src, r"anchor lands in none of them \((\d+) of the (\d+) anchors",
+                   "how many anchors fall back to the box", f"{box} of {anchors}")
+    assert (int(m.group(1)), int(m.group(2))) == (box, anchors), (
+        f"_tee_pads says {m.group(1)} of {m.group(2)} anchors fall back to the box; measured {box} of "
+        f"{anchors}. The fallback holes are {box_holes}")
+    for slug, hn in box_holes:
+        assert re.search(rf"{re.escape(slug)}[^)]*\b{hn}\b", m.string[m.end():m.end() + 200]), (
+            f"the box-fallback list beside that count does not name {slug} {hn}; measured "
+            f"{box_holes}")
+
+    # 2. how much of the box is mapped tee at all. Published as "about 13% ... on the six metric
+    #    courses" -- a scope left over from when TEE_R_M was applied in raw CRS units and the box
+    #    really was 9.1 m on the five ftUS ones. _crs_units_per_m fixed that, so the share is a
+    #    corpus-wide figure now, and quoting a corpus number under a six-course label is how it was
+    #    read as 13% when those six median 9.8%.
+    shares = sorted(v for g in geom.values() for v in g["share"].values())
+    med = shares[len(shares) // 2] if len(shares) % 2 else (
+        (shares[len(shares) // 2 - 1] + shares[len(shares) // 2]) / 2)
+    mean = sum(shares) / len(shares)
+    metric = sorted(_short(s) for s, g in geom.items() if abs(g["upm"] - 1.0) < 0.01)
+    per_course = {}
+    for s, g in geom.items():
+        v = sorted(g["share"].values())
+        per_course[_short(s)] = (v[len(v) // 2] if len(v) % 2 else
+                                 (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2)
+    six = sorted(per_course[c] for c in metric)
+    six_med = (six[len(six) // 2] if len(six) % 2 else
+               (six[len(six) // 2 - 1] + six[len(six) // 2]) / 2)
+    live = (f"median {med*100:.1f}% mean {mean*100:.1f}% over {len(shares)} pads; the "
+            f"{len(metric)} metric courses median {six_med*100:.1f}%")
+    m = _published(src,
+                   r"a mapped tee covers a median ([\d.]+)% and a mean ([\d.]+)% of it across all "
+                   r"(\d+) mapped pads", "the mapped tee's share of the box", live)
+    assert abs(float(m.group(1)) - med * 100) < 0.1 and abs(float(m.group(2)) - mean * 100) < 0.1 \
+        and int(m.group(3)) == len(shares), (
+        f"_tee_pads publishes median {m.group(1)}% / mean {m.group(2)}% over {m.group(3)} pads; "
+        f"measured {live}")
+    m2 = _published(src, r"six-metric-course median is ([\d.]+)%",
+                    "the six-metric-course median it used to be quoted as", live)
+    assert abs(float(m2.group(1)) - six_med * 100) < 0.1, (
+        f"the six-metric-course median is published as {m2.group(1)}%; measured {six_med*100:.1f}% "
+        f"over {metric}")
+
+    # 3. the window DOES clip: how many pads reach past it, and how far the worst reaches.
+    reach = [(g["reach_m"][h], _short(s), h) for s, g in geom.items() for h in g["pads"]]
+    past = [r for r in reach if r[0] > 15.0]
+    worst = max(reach)
+    assert past, ("no mapped ring reaches past TEE_R_M of its anchor, so this test can no longer tell "
+                  "a window from a pad -- re-derive it before deleting it")
+    m = _published(src, r"(\d+) of the (\d+) mapped pads -- rings reaching up to ([\d.]+) m from the "
+                        r"anchor \((\S+) (\d+)\)",
+                   "how many mapped pads reach past the window",
+                   f"{len(past)} of {len(reach)}, worst {worst[0]:.1f} m on {worst[1]} {worst[2]}")
+    assert (int(m.group(1)), int(m.group(2))) == (len(past), len(reach)), (
+        f"tee_elevations says {m.group(1)} of {m.group(2)} mapped pads reach past the window; "
+        f"measured {len(past)} of {len(reach)}")
+    assert abs(float(m.group(3)) - worst[0]) < 0.1 and (m.group(4), int(m.group(5))) == worst[1:], (
+        f"the farthest ring vertex is published as {m.group(3)} m on {m.group(4)} {m.group(5)}; "
+        f"measured {worst[0]:.1f} m on {worst[1]} {worst[2]}")
+
+    # 4. and the retired claim must be gone. It is the sentence that made the clipping invisible.
+    assert "the same answer" not in src, (
+        "fetch_hole_elev.py still calls the box a prefilter that gets \"the same answer\" as a ring "
+        "test. It clips the sample on 51 of the corpus's mapped pads")
+
+    # 5. the ARTIFACT. Every row whose ring reaches past the window recorded a region it did not
+    #    sample. Read off what was written, so regenerating the corpus is what clears this.
+    wrong = []
+    for slug, g in geom.items():
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            rows = json.load(fh)["holes"]
+        for hn, row in rows.items():
+            if int(hn) not in g["pads"] or g["reach_m"][int(hn)] <= 15.0:
+                continue
+            region = row.get("tee_region") or ""
+            if "window" not in region:
+                wrong.append(f"{_short(slug)} {hn}: recorded {region!r} for a ring that reaches "
+                             f"{g['reach_m'][int(hn)]:.1f} m from an anchor the sampler never reads "
+                             f"more than {15.0:.0f} m from")
+    assert not wrong, ("%d row(s) name a region wider than the one their height was measured over:\n  "
+                       % len(wrong)) + "\n  ".join(wrong[:8])
+
+
+@needs_corpus
+def test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives():
+    """MAX_TEE_RELIEF_FT decides whether a card prints a height, and its whole derivation was literals.
+
+    test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height exercises the PREDICATE with
+    recorded numbers, which is what makes it affordable to run. Nothing measured whether those recorded
+    numbers were still the corpus's. They were not: merion h1 reads 3851 class-2 returns and not the
+    3839 published in three places, bay-view 3 4581 and not 4569, philadelphia 18 970 and not 967 --
+    all of them drifted when c7a4f65 corrected geo.mlat/mlon and every anchor moved a little -- and the
+    "median 0.20 ft" the ring sampler is justified by is now 1.00 ft, five times the published figure,
+    because the fallback box grew to a true 30 m on five courses.
+
+    So this re-measures the corpus's tee samples from the LAZ and grades the module's own prose against
+    them. It is the cross-check the standing lesson asks for: two records publishing one figure, and
+    only one of them derived, is how every number above went stale.
+
+    It also pins the two things the gate's derivation cannot state for itself:
+      * the 15 m window is where the pad median has CONVERGED -- widening 10 m -> 15 m moves it by a
+        corpus median of zero -- while the whole ring overshoots by up to 1.87 ft, because a `golf=tee`
+        polygon is not reliably one teeing ground;
+      * the seven pads that span more than the limit over their WHOLE ring while the sampled window is
+        level. Those are the holes an audit will find; their printed heights survive an anchor displaced
+        10 m, and that is the evidence, recorded here so the next reader does not have to take it on
+        trust."""
+    S = _tee_samples()
+    src = _fhe_prose()
+    assert S, "no green-mode course with LiDAR on disk; nothing to measure"
+    seen = collections.Counter()
+    for (slug, _hn) in S:
+        seen[slug] += 1
+    assert_no_course_skipped(seen,
+                             "test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives")
+
+    def median(v):
+        v = sorted(v)
+        return v[len(v) // 2] if len(v) % 2 else (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2
+
+    pads = {k: r for k, r in S.items() if r["on_pad"] and r["sample"]}
+    boxes = {k: r for k, r in S.items() if not r["on_pad"] and r["box"]}
+    import fetch_hole_elev as fhe
+    LIMIT = fhe.MAX_TEE_RELIEF_FT
+
+    # 1. why a ring at all: how far below the pad the BOX reads. Published as a median 0.20 ft and a
+    #    mean 0.72 ft over 169 holes, with "up to 1.90 ft on copper-valley" -- and 1.90 turned out to
+    #    be copper-valley's MEDIAN, the median-quoted-as-worst mistake this project has fixed before.
+    low = {k: r["sample"]["med_ft"] - r["box"]["med_ft"] for k, r in pads.items()}
+    worst = max(low, key=low.get)
+    cv = {k: v for k, v in low.items() if _short(k[0]) == "copper-valley"}
+    cv_worst = max(cv, key=cv.get)
+    live = (f"median {median(low.values()):+.2f} mean {sum(low.values())/len(low):+.2f} over "
+            f"{len(low)} pads, worst {low[worst]:+.2f} on {_short(worst[0])} {worst[1]}; "
+            f"copper-valley median {median(cv.values()):+.2f} worst {cv[cv_worst]:+.2f} "
+            f"(hole {cv_worst[1]})")
+    m = _published(src, r"a median ([\d.]+) ft and a mean ([\d.]+) ft low over the (\d+) mapped pads "
+                        r"that carry ground returns, worst ([\d.]+) ft \((\S+) (\d+)\)",
+                   "how far below the pad the box reads", live)
+    assert abs(float(m.group(1)) - median(low.values())) < 0.01, (
+        f"tee_elevations publishes a median {m.group(1)} ft; measured {median(low.values()):.3f}. {live}")
+    assert abs(float(m.group(2)) - sum(low.values()) / len(low)) < 0.01, (
+        f"it publishes a mean {m.group(2)} ft; measured {sum(low.values())/len(low):.3f}. {live}")
+    assert int(m.group(3)) == len(low), (
+        f"it publishes {m.group(3)} pads; measured {len(low)}. {live}")
+    assert abs(float(m.group(4)) - low[worst]) < 0.02 and \
+        (m.group(5), int(m.group(6))) == (_short(worst[0]), worst[1]), (
+        f"it publishes a worst {m.group(4)} ft on {m.group(5)} {m.group(6)}; measured "
+        f"{low[worst]:.2f} on {_short(worst[0])} {worst[1]}")
+    m = _published(src, r"median ([\d.]+) ft and a worst ([\d.]+) ft \(hole (\d+)\)",
+                   "copper-valley's own box-vs-pad figures", live)
+    assert abs(float(m.group(1)) - median(cv.values())) < 0.02, (
+        f"copper-valley's median is published as {m.group(1)} ft; measured {median(cv.values()):.2f}")
+    assert abs(float(m.group(2)) - cv[cv_worst]) < 0.02 and int(m.group(3)) == cv_worst[1], (
+        f"copper-valley's worst is published as {m.group(2)} ft on hole {m.group(3)}; measured "
+        f"{cv[cv_worst]:.2f} on hole {cv_worst[1]}")
+
+    # 2. WHICH pads the gate refuses, and the empty band that is offered as evidence for the limit.
+    refused = sorted((r["sample"]["rel_ft"], _short(k[0]), k[1]) for k, r in pads.items()
+                     if r["sample"]["rel_ft"] > LIMIT)
+    accepted = sorted((r["sample"]["rel_ft"], _short(k[0]), k[1]) for k, r in pads.items()
+                      if r["sample"]["rel_ft"] <= LIMIT)
+    live = (f"{len(refused)} of {len(pads)} refused: "
+            + ", ".join(f"{s} {h} {v:.3f}" for v, s, h in refused)
+            + f"; steepest accepted {accepted[-1][1]} {accepted[-1][2]} {accepted[-1][0]:.3f}; "
+              f"gap {refused[0][0] - accepted[-1][0]:.3f} ft")
+    m = _published(src, r"Costs (\d+) of the (\d+) sampled pads their printed height \(([^)]*)\)",
+                   "what the relief limit costs", live)
+    assert (int(m.group(1)), int(m.group(2))) == (len(refused), len(pads)), (
+        f"the derivation says the limit costs {m.group(1)} of {m.group(2)} sampled pads; measured "
+        f"{live}")
+    named = m.group(3)
+    for _v, s, h in refused:
+        assert re.search(rf"{re.escape(s)}[^,]*\bh?{h}\b", named), (
+            f"the refused list {named!r} does not name {s} {h}; measured {live}")
+    m = _published(src, r"the flattest pad it refuses is (\S+) (\d+) at ([\d.]+) ft and the steepest "
+                        r"it accepts is (\S+) (\d+) at ([\d.]+) ft, so [\d.]+ sits inside a ([\d.]+) ft "
+                        r"gap", "the band around the limit", live)
+    assert (m.group(1), int(m.group(2))) == refused[0][1:] and \
+        abs(float(m.group(3)) - refused[0][0]) < 0.01, (
+        f"the flattest refused pad is published as {m.group(1)} {m.group(2)} at {m.group(3)} ft; "
+        f"measured {refused[0][1]} {refused[0][2]} at {refused[0][0]:.3f}")
+    assert (m.group(4), int(m.group(5))) == accepted[-1][1:] and \
+        abs(float(m.group(6)) - accepted[-1][0]) < 0.01, (
+        f"the steepest accepted pad is published as {m.group(4)} {m.group(5)} at {m.group(6)} ft; "
+        f"measured {accepted[-1][1]} {accepted[-1][2]} at {accepted[-1][0]:.3f}")
+    assert abs(float(m.group(7)) - (refused[0][0] - accepted[-1][0])) < 0.01, (
+        f"the gap is published as {m.group(7)} ft; measured "
+        f"{refused[0][0] - accepted[-1][0]:.3f}")
+
+    # 3. merion h1, the hole the module docstring names as the pad-relief refusal with a big sample.
+    m1 = S.get(("merion-golf-club", 1))
+    if m1 and m1["sample"]:
+        m = _published(src, r"merion h1 holds (\d+) ground returns on a pad it fails by relief",
+                       "merion h1's sample size", f"{m1['sample']['n']}")
+        assert int(m.group(1)) == m1["sample"]["n"], (
+            f"the docstring says merion h1 holds {m.group(1)} ground returns; measured "
+            f"{m1['sample']['n']} in the sampled window ({m1['ring']['n']} over the whole pad)")
+
+    # 4. the window is where the median has converged, and the whole ring overshoots. This is the
+    #    derivation the 15 m had none of -- it was inherited from the fallback box's half-width.
+    conv = {k: abs(r[f"med_{10.0}"] - r["sample"]["med_ft"]) for k, r in pads.items()
+            if r[f"med_{10.0}"] is not None}
+    over = {k: abs(r["ring"]["med_ft"] - r["sample"]["med_ft"]) for k, r in pads.items() if r["ring"]}
+    cw, ow = max(conv, key=conv.get), max(over, key=over.get)
+    live = (f"10->15 m: median {median(conv.values()):.3f} mean {sum(conv.values())/len(conv):.3f} "
+            f"worst {conv[cw]:.2f} on {_short(cw[0])} {cw[1]}, over 0.5 ft on "
+            f"{sum(1 for v in conv.values() if v > 0.5)} of {len(conv)}; whole ring: worst "
+            f"{over[ow]:.2f} on {_short(ow[0])} {ow[1]}, over 0.5 ft on "
+            f"{sum(1 for v in over.values() if v > 0.5)}")
+    m = _published(src, r"a corpus median ([\d.]+) ft \(mean ([\d.]+), worst ([\d.]+) ft on (\S+) "
+                        r"(\d+), over 0\.5 ft on (\d+) of the (\d+)\)",
+                   "how little the median moves between a 10 m and a 15 m window", live)
+    assert abs(float(m.group(1)) - median(conv.values())) < 0.005 and \
+        abs(float(m.group(2)) - sum(conv.values()) / len(conv)) < 0.005, (
+        f"the window derivation publishes median {m.group(1)} / mean {m.group(2)}; measured {live}")
+    assert abs(float(m.group(3)) - conv[cw]) < 0.02 and \
+        (m.group(4), int(m.group(5))) == (_short(cw[0]), cw[1]), (
+        f"it publishes a worst {m.group(3)} ft on {m.group(4)} {m.group(5)}; measured {live}")
+    assert (int(m.group(6)), int(m.group(7))) == \
+        (sum(1 for v in conv.values() if v > 0.5), len(conv)), (
+        f"it publishes {m.group(6)} of {m.group(7)} pads over 0.5 ft; measured {live}")
+    m = _published(src, r"moves it by up to ([\d.]+) ft \((\S+) (\d+)\), over 0\.5 ft on "
+                        r"(\d+) of them", "how far the whole ring moves the median", live)
+    assert abs(float(m.group(1)) - over[ow]) < 0.02 and \
+        (m.group(2), int(m.group(3))) == (_short(ow[0]), ow[1]) and \
+        int(m.group(4)) == sum(1 for v in over.values() if v > 0.5), (
+        f"the overshoot is published as {m.group(1)} ft on {m.group(2)} {m.group(3)}, over 0.5 ft on "
+        f"{m.group(4)}; measured {live}")
+
+    # 5. the seven pads that are NOT level over their whole ring while the window is. These are the
+    #    holes the window costs, and the module has to name them and to state the evidence that their
+    #    printed heights stand: how far the median moves when the anchor is displaced 10 m.
+    uneven = sorted((_short(k[0]), k[1], r["ring"]["rel_ft"], r["shift_spread_ft"])
+                    for k, r in pads.items()
+                    if r["ring"] and r["ring"]["rel_ft"] > LIMIT and r["sample"]["rel_ft"] <= LIMIT)
+    shifts = [u[3] for u in uneven if u[3] is not None]
+    live = ("; ".join(f"{s} {h} ring {v:.3f} shift {d:.2f}" for s, h, v, d in uneven)
+            + f"  (median shift {median(shifts):.2f}, worst {max(shifts):.2f})")
+    m = _published(src, r"(\d+) pads span more than MAX_TEE_RELIEF_FT over the whole ring while the "
+                        r"sampled window is level", "the pads whose whole ring is not level", live)
+    assert int(m.group(1)) == len(uneven), (
+        f"the note says {m.group(1)} pads span more than the limit over the whole ring; measured "
+        f"{len(uneven)}: {live}")
+    for s, h, _v, _d in uneven:
+        assert re.search(rf"{re.escape(s)}\s+h?{h}\b", src), (
+            f"{s} {h} spans more than the limit over its whole mapped ring and fetch_hole_elev.py does "
+            f"not name it; measured {live}")
+    m = _published(src, r"displaced 10 m moves those seven medians by a median ([\d.]+) ft and at most "
+                        r"([\d.]+) ft \((\S+) (\d+)\)",
+                   "the anchor-displacement evidence for those seven", live)
+    worst_shift = max((u for u in uneven if u[3] is not None), key=lambda u: u[3])
+    assert abs(float(m.group(1)) - median(shifts)) < 0.02 and \
+        abs(float(m.group(2)) - worst_shift[3]) < 0.02 and \
+        (m.group(3), int(m.group(4))) == (worst_shift[0], worst_shift[1]), (
+        f"the displacement evidence is published as median {m.group(1)} / worst {m.group(2)} ft on "
+        f"{m.group(3)} {m.group(4)}; measured median {median(shifts):.2f} / worst "
+        f"{worst_shift[3]:.2f} on {worst_shift[0]} {worst_shift[1]}")
+
+    # 6. the BOX branch, which never reaches the relief check. That is deliberate and pinned by
+    #    test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height; what was missing is that
+    #    the cost is real, so the module has to state it rather than leave the reader to find it.
+    bv = S.get(("bay-view-golf-club", 16))
+    assert bv and not bv["on_pad"], (
+        "bay-view 16 no longer takes the box fallback; the box-branch note names it")
+    live = (f"relief {bv['box']['rel_ft']:.2f} ft over {bv['box']['n']} returns; medians "
+            + ", ".join(f"{bv[f'med_{r}']:.2f}" for r in (2.5, 5.0, 7.5, 10.0))
+            + f" at r = 2.5/5/7.5/10 m against {bv['box']['med_ft']:.2f} at 15 m, so the printed tee "
+              f"is {bv['med_2.5'] - bv['box']['med_ft']:.2f} ft below its own near-anchor ground")
+    m = _published(src, r"bay-view 16's box spans ([\d.]+) ft on ([\d,]+) returns",
+                   "bay-view 16's box spread", live)
+    assert abs(float(m.group(1)) - bv["box"]["rel_ft"]) < 0.05 and \
+        int(m.group(2).replace(",", "")) == bv["box"]["n"], (
+        f"the box-branch note says bay-view 16's box spans {m.group(1)} ft on {m.group(2)} returns; "
+        f"measured {live}")
+    m = _published(src, r"([\d.]+), ([\d.]+), ([\d.]+) and ([\d.]+) ft at r = 2\.5, 5, 7\.5 and 10 m "
+                        r"against ([\d.]+) ft at 15 m", "bay-view 16's near-anchor medians", live)
+    for i, rad in enumerate((2.5, 5.0, 7.5, 10.0)):
+        assert abs(float(m.group(i + 1)) - bv[f"med_{rad}"]) < 0.02, (
+            f"the r = {rad} m median is published as {m.group(i+1)} ft; measured "
+            f"{bv[f'med_{rad}']:.2f}. {live}")
+    assert abs(float(m.group(5)) - bv["box"]["med_ft"]) < 0.02, (
+        f"the 15 m median is published as {m.group(5)} ft; measured {bv['box']['med_ft']:.2f}")
+    m = _published(src, r"median sits ([\d.]+) ft BELOW the ground", "how far below its own near-anchor "
+                   "ground the box median sits", live)
+    assert abs(float(m.group(1)) - (bv["med_2.5"] - bv["box"]["med_ft"])) < 0.03, (
+        f"the offset is published as {m.group(1)} ft; measured "
+        f"{bv['med_2.5'] - bv['box']['med_ft']:.2f}. {live}")
+
+    # 7. and TEE_SAMPLES_MEASURED, the table the pure-predicate gate test runs on. That test cannot
+    #    check its own inputs -- a stale number is still a valid input to a pure function, which is why
+    #    four of them drifted unnoticed -- so the point cloud checks them here.
+    drifted = []
+    for (course, hn), (n, ft, on_pad) in sorted(TEE_SAMPLES_MEASURED.items()):
+        live_row = next((r for k, r in S.items() if _short(k[0]) == course and k[1] == hn), None)
+        if live_row is None:
+            drifted.append(f"{course} {hn}: no tee sample at all now")
+            continue
+        got = live_row["sample"]
+        if live_row["on_pad"] != on_pad:
+            drifted.append(f"{course} {hn}: table says on_pad={on_pad}, measured "
+                           f"{live_row['on_pad']}")
+        if got["n"] != n:
+            drifted.append(f"{course} {hn}: table says {n} ground returns, measured {got['n']}")
+        if abs(got["rel_ft"] - ft) > 0.005:
+            drifted.append(f"{course} {hn}: table says {ft} ft of relief, measured "
+                           f"{got['rel_ft']:.3f}")
+    assert not drifted, ("TEE_SAMPLES_MEASURED no longer matches the LiDAR, so "
+                         "test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height is "
+                         "exercising the gate with numbers the corpus does not produce:\n  "
+                         + "\n  ".join(drifted))
+
+
+@needs_corpus
+def test_the_elevation_loss_guard_sees_a_height_that_stops_printing(tmp_path):
+    """A card can lose its elevation line with every guard in the pipeline green.
+
+    `_env_on`'s docstring says ALLOW_ELEV_LOSS "waives the guard that stands between a survey that came
+    back thinner and a book that quietly stops printing a height it used to". No guard stood there for a
+    row that SURVIVES: check_rows compared KEY SETS only (`lost = sorted(int(h) for h in prev if h not
+    in rows)`), and generate.elev_phrase suppresses any measured change under 3 ft as level -- so a hole
+    going 3.05 -> 2.95 ft keeps its key, passes the guard, and drops the line off the card with nothing
+    printed and nothing raised. That is the same silent partial loss the guard was written for, arriving
+    through the one door it did not watch.
+
+    Not hypothetical: five of the corpus's rows sit within 0.15 ft of the floor. Both directions are
+    driven here -- a crossing must refuse, a move that stays above the floor must not -- and the floor
+    itself is cross-checked against the two other places this project spells it, because a third
+    spelling of a threshold is a third thing to drift."""
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+
+    floor = getattr(fhe, "PRINT_FLOOR_FT", None)
+    assert floor is not None, (
+        "fetch_hole_elev has no PRINT_FLOOR_FT, so check_rows cannot know which of its rows put a "
+        "height on a card")
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        gen = fh.read()
+    m = re.search(r"if ft is None or abs\(ft\) < (\d+(?:\.\d+)?)", gen)
+    assert m, "generate.py's elevation floor no longer looks like `abs(ft) < N`"
+    assert float(floor) == float(m.group(1)), (
+        f"fetch_hole_elev.PRINT_FLOOR_FT is {floor} but generate.py suppresses under {m.group(1)} ft; "
+        f"the loss guard would wave through a row whose card goes blank")
+    assert float(_gen_provenance().PRINT_FLOOR_FT) == float(floor), (
+        "fetch_hole_elev.PRINT_FLOOR_FT and gen_provenance.PRINT_FLOOR_FT disagree")
+
+    p = str(tmp_path / "hole_elev.json")
+    row = lambda ft: {"change_ft": round(ft, 1), "change_ft_exact": ft,
+                      "tee_basis": "tee end of the mapped hole line"}
+    fhe.write_hole_elev(p, {"holes": {"1": row(3.05), "2": row(20.0), "3": row(-3.02)}})
+
+    # (a) a row that crosses the floor downward must be refused, by name and with both figures.
+    with pytest.raises(SystemExit) as e:
+        fhe.check_rows({"1": row(2.95), "2": row(20.0), "3": row(-3.02)}, p)
+    msg = str(e.value)
+    assert "1" in msg and "3.05" in msg and "2.95" in msg, (
+        f"the refusal does not say which hole stopped printing or what it moved from and to:\n{msg}")
+    assert str(floor).rstrip("0").rstrip(".") in msg or "floor" in msg, (
+        f"the refusal does not mention the print floor that swallowed the height:\n{msg}")
+
+    # (b) the same crossing on the OTHER side of zero -- a card losing "green 3 ft below".
+    with pytest.raises(SystemExit):
+        fhe.check_rows({"1": row(3.05), "2": row(20.0), "3": row(-2.9)}, p)
+
+    # ...and a row that keeps its key while losing its figure entirely, which is the same loss wearing
+    # the shape the key-set comparison was written against.
+    with pytest.raises(SystemExit):
+        fhe.check_rows({"1": row(3.05), "2": {}, "3": row(-3.02)}, p)
+
+    # (c) a row that moves and still prints must NOT be refused, or every re-survey needs the waiver.
+    fhe.check_rows({"1": row(3.4), "2": row(24.0), "3": row(-9.0)}, p)
+    # ...nor a row that was already below the floor and stays there.
+    fhe.write_hole_elev(p, {"holes": {"1": row(1.0)}})
+    fhe.check_rows({"1": row(0.5)}, p)
+
+    # (d) ALLOW_ELEV_LOSS waives it -- that is what its docstring promises -- and says so.
+    fhe.write_hole_elev(p, {"holes": {"1": row(3.05)}})
+    keep = os.environ.get("ALLOW_ELEV_LOSS")
+    os.environ["ALLOW_ELEV_LOSS"] = "1"
+    try:
+        fhe.check_rows({"1": row(2.95)}, p)
+    finally:
+        if keep is None:
+            os.environ.pop("ALLOW_ELEV_LOSS", None)
+        else:
+            os.environ["ALLOW_ELEV_LOSS"] = keep
+
+    # (e) and the corpus really does sit on the floor, so this is a live exposure. The rows are named
+    #     in the module; the list is measured here.
+    near = sorted((abs(abs(ft) - float(floor)), _short(slug), int(hn), ft)
+                  for slug in CORPUS
+                  for hn, r in (json.load(open(os.path.join(ROOT, "courses", slug,
+                                                            "hole_elev.json"), encoding="utf-8"))
+                                ["holes"].items()
+                                if os.path.isfile(os.path.join(ROOT, "courses", slug,
+                                                               "hole_elev.json")) else [])
+                  for ft in [r.get("change_ft_exact") if r.get("change_ft_exact") is not None
+                             else r.get("change_ft")]
+                  if ft is not None and abs(abs(ft) - float(floor)) <= 0.15)
+    assert len(near) >= 3, (
+        f"only {len(near)} corpus row(s) sit within 0.15 ft of the {floor} ft floor; re-derive the "
+        f"exposure this guard is justified by before trusting the number in the source")
+    src = _fhe_prose()
+    live = ", ".join(f"{s} {h} at {ft:+.2f}" for _d, s, h, ft in near)
+    m = _published(src, r"(\d+) rows sit within 0\.15 ft of it", "the rows sitting on the print floor",
+                   f"{len(near)}: {live}")
+    assert int(m.group(1)) == len(near), (
+        f"check_rows says {m.group(1)} rows sit within 0.15 ft of the floor; measured {len(near)}: "
+        f"{live}")
+    for _d, s, h, _ft in near:
+        assert re.search(rf"{re.escape(s)}[^.]{{0,80}}\b{h}\b", src), (
+            f"{s} {h} sits within 0.15 ft of the print floor and is not named; measured {live}")
+
+
+@needs_corpus
+def test_the_recorded_elevation_source_names_the_surface_each_row_was_measured_on():
+    """hole_elev.json published "the green's own 0.4 m surface" for every row. False for two of them.
+
+    Six of the corpus's 198 dem_hd patches are built from the 3DEP seamless mosaic rather than from
+    LiDAR, because no tile covers those greens (monarch-bay 1, 9, 10, 16, 17 and 18). Two of them carry
+    an elevation row, and monarch-bay 16's card prints its height. For those two,
+    tools/verify_elevation.py compares the 3DEP seamless service against a patch BUILT FROM that same
+    service and returns +0.0 -- indistinguishable from agreement, on the two rows where the green side
+    has no independent check at all.
+
+    The payload's other two keys were claims of the same kind. `"min_tee_points": 200` names the floor
+    that gated 5 of the 171 rows; the other 166 came off a mapped pad, where the gates are
+    MIN_RING_PTS and MAX_TEE_RELIEF_FT and 200 is never consulted. Nothing in the repo reads either
+    key, so they are published claims and nothing else -- which is exactly why they could be wrong for
+    a year.
+
+    Graded against the metas on disk, per row, so the summary line cannot say 0.4 m about a surface
+    that is not."""
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    checked, seen, bad = 0, collections.Counter(), []
+    for slug in CORPUS:
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        _elev_bind(fhe, slug)
+        with open(p, encoding="utf-8") as fh:
+            rec = json.load(fh)
+        rows = rec["holes"]
+
+        # 1. the SUMMARY may not name a surface no row was measured on.
+        srcline = rec.get("source") or ""
+        kinds = collections.Counter()
+        for hn in rows:
+            mp = os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{int(hn):02d}.json")
+            if not os.path.isfile(mp):
+                bad.append(f"{slug} h{hn}: a row with no dem_hd meta")
+                continue
+            with open(mp, encoding="utf-8") as fh:
+                kinds[json.load(fh).get("source") or "unrecorded"] += 1
+        for kind, n in kinds.items():
+            cell = re.search(r"@([\d.]+)m", kind)
+            if cell and f"{cell.group(1)} m" not in srcline and cell.group(1) not in srcline:
+                bad.append(f"{slug}: {n} row(s) measured over {kind!r} and the payload's source line "
+                           f"({srcline!r}) does not say so")
+        if len(kinds) > 1 and "seamless" not in srcline:
+            bad.append(f"{slug}: rows come off {len(kinds)} different green surfaces "
+                       f"({dict(kinds)}) and the payload publishes one: {srcline!r}")
+
+        # 2. and each ROW must record the surface it was measured over, so a reader auditing one card
+        #    does not have to infer it from a corpus-wide summary.
+        for hn, row in rows.items():
+            mp = os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{int(hn):02d}.json")
+            if not os.path.isfile(mp):
+                continue
+            with open(mp, encoding="utf-8") as fh:
+                want = json.load(fh).get("source")
+            if row.get("green_source") != want:
+                bad.append(f"{slug} h{hn}: row records green_source "
+                           f"{row.get('green_source')!r}; its surface says {want!r}")
+            checked += 1
+            seen[slug] += 1
+
+        # 3. the retired keys. A published gate that gated almost nothing is worse than none.
+        assert "min_tee_points" not in rec, (
+            f"{slug}: hole_elev.json still publishes min_tee_points as though it gated these rows; "
+            f"it applies only to the box fallback")
+    assert checked >= 100, f"only {checked} rows checked; expected the corpus"
+    assert not bad, ("%d recorded elevation source(s) do not match the surface measured:\n  " % len(bad)
+                     + "\n  ".join(bad[:10]))
+
+    # 4. and the module's own count of how many surfaces are NOT LiDAR, graded off the metas. This is
+    #    the figure the false summary line was built on, so a stale copy of it is the same defect again.
+    kinds = collections.Counter()
+    for mp in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        if os.path.basename(os.path.dirname(os.path.dirname(mp))).startswith("_"):
+            continue
+        with open(mp, encoding="utf-8") as fh:
+            kinds["lidar" if "@0.4m" in (json.load(fh).get("source") or "") else "seamless"] += 1
+    total = sum(kinds.values())
+    src = _fhe_prose()
+    m = _published(src, r"(\d+) of the corpus's (\d+) surfaces are 0\.4 m LiDAR ground returns; (\d+) "
+                        r"come from the 3DEP seamless mosaic",
+                   "how many green surfaces are not LiDAR",
+                   f"{kinds['lidar']} LiDAR of {total}, {kinds['seamless']} seamless")
+    assert (int(m.group(1)), int(m.group(2)), int(m.group(3))) == \
+        (kinds["lidar"], total, kinds["seamless"]), (
+        f"green_source publishes {m.group(1)} of {m.group(2)} LiDAR and {m.group(3)} seamless; measured "
+        f"{kinds['lidar']} of {total} and {kinds['seamless']}")
+    assert_no_course_skipped(
+        seen, "test_the_recorded_elevation_source_names_the_surface_each_row_was_measured_on")
 
 
 @needs_corpus
