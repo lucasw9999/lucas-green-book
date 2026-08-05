@@ -66,3 +66,10 @@ legal/04_INDEPENDENT_CREATION_DEFENSE.md
 # Esri imagery removed and rebuilt from public-domain NAIP -- is fully recorded in 07 and 01, which
 # stay public. What is local is the self-assessment, not the facts.
 legal/08_AUDIT_2026-07-13.md
+
+# Audit-campaign ledger. Local working state for the /perfect campaign: what was verified, fixed,
+# rejected and left open, so a re-run resumes instead of restarting. Not part of the engine and not
+# a published record -- legal/ is where durable claims live. Ignored because it was written while a
+# fixer held commit permission, and an untracked docs/ tree is exactly what a careless `git add -A`
+# sweeps in.
+docs/audit-greenbook/
