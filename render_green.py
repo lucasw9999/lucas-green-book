@@ -806,7 +806,7 @@ def render(hole, tournament=False):
             # keep the whole arrow (tip + a small head allowance) inside the green outline
             # This cull now asks the question it always meant to. It compares against `poly`, which is
             # in pixels, so while the tip was built from a bare (c,r) it was testing a point half a
-            # cell up-left of the arrow it was vetting: 24 of 12,161 arrows were kept or dropped on the
+            # cell up-left of the arrow it was vetting: 24 arrows were kept or dropped on the
             # wrong evidence.
             if not (point_in_poly(ex, ey, poly) and point_in_poly(ex+vx*0.28, ey+vy*0.28, poly)):
                 continue

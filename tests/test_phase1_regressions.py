@@ -2971,7 +2971,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
     Three placements, each meaningless or misleading if it strays outside the outline:
       * downhill ARROWS. One poking past the edge says the ball rolls that way off a surface that is
         not green -- a bank or a bunker face. render_green already tests the tip plus a forward head
-        allowance, so this re-tests the ARTIFACT: 12,161 drawn arrows, tips and all three arrowhead
+        allowance, so this re-tests the ARTIFACT: 12,146 drawn arrows, tips and all three arrowhead
         vertices, against the outline drawn beside them.
       * the HOLE map's pin ring, placed at the green's CENTROID. A centroid is not guaranteed to lie
         inside its own polygon -- a strongly kidney-shaped green can put it on the apron -- so this is
@@ -3169,8 +3169,25 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
         slope    swatch (was)      map cell        nearest swatch to that map cell
         0.0%     150,205,150       190,224,190     flat   -- correct
         2.5%     206,170,60        225,202,134     FLAT   -- amber ground matched the flat key
-        5.0%     150, 40, 32       191,122,117     AMBER  -- the reddest cell the card can draw
+        5.0%     150, 40, 32       190,122,117     AMBER  -- the reddest cell the card can draw
                                                             matched the 2.5% swatch, 2.5 points flat
+
+    THAT 5% CELL WAS PUBLISHED ONE GREY LEVEL HIGH IN R, and inconsistently with its own table:
+    150,205,150 and 150,40,32 share R = 150, so both composite to exactly 189.90, and the 0% row
+    rounded that to 190 while the 5% row rounded the same number up one further. The map-cell column is
+    the analytic composite `255 - HEAT_OPACITY*(255 - c)`, rounded, and all three are derived below
+    rather than typed -- the same triples appear in generate._heat_swatches and here, which is the
+    two-records shape this suite keeps finding. The wrong value is not written out anywhere in this
+    function: the scan below reads this function's own prose, and quoting the defect would flag it.
+
+    MEASURED IN CHROMIUM, the two opacity paths do not agree with each other and neither is exactly the
+    analytic value. The map draws its cells inside `<g opacity="0.62">` -- GROUP opacity -- while the
+    key gives each rect its own `opacity="0.62"`; screenshotted over white under print media, every
+    channel of all three map cells comes out ONE level below the corresponding key swatch, and the key
+    matches the analytic rounding exactly. One level, on bands 35 to 90 levels apart, so not one
+    nearest-swatch assignment in this table changes and the fix this test exists for still holds. The
+    analytic figure is what is published because it is what can be derived; no browser reading is
+    written down here, because a third record nothing grades is how the 5% cell went wrong.
 
     That is the failure the ramp fix was written for ("a 3.6% cell matched the FLAT swatch") re-entering
     through the compositing instead of through the hues, and it survived this test because the test
@@ -3184,7 +3201,8 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
 
     NOT asserted, having measured it: that "longer = steeper" holds for every arrow. Length is
     2.2 + 3.4*min(slope/smax, 1) against a 92nd-percentile smax, so the steepest arrows share one
-    length -- 7.3% of 12,161 arrows sit at their green's cap, median 7.4% per green, worst 13.3%. The cap
+    length -- 7.4% of 12,146 arrows sit at their green's cap, median 7.6% per green, worst per green
+    14.9% (monarch-bay 9). The cap
     is right rather than wrong: without it a single outlier pixel would shrink every other arrow to
     nothing. The card also carries slope numbers and colour, so the tail is not unreadable -- just not
     distinguishable by length. What the legend DOES have to say, and now does, is that the length is
@@ -3224,6 +3242,40 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
     assert render_green.heat_color(5.0) == render_green.heat_color(50.0), \
         "the legend says red at >=5% but the ramp keeps changing above 5"
 
+    # THE COMPOSITED TRIPLES, derived. The three "map cell" colours are quoted in this docstring and in
+    # generate._heat_swatches, and the 5% one was high by one level in R in both -- contradicting its
+    # own 0% row, which composites from the same R = 150 to the same 189.90. They are
+    # the figures that carry the argument for drawing the key at the map's opacity, so they are computed
+    # from the ramp and HEAT_OPACITY and required wherever they are stated.
+    op = render_green.HEAT_OPACITY
+    composited = []
+    for c in want:
+        rgbv = [int(x) for x in c[c.index("(") + 1:-1].split(",")]
+        composited.append(tuple(round(255 - op * (255 - v)) for v in rgbv))
+    assert len(set(composited)) == 3, f"the composited ramp is no longer three colours: {composited}"
+    stale, seen = [], 0
+    stops = [tuple(int(x) for x in c[c.index("(") + 1:-1].split(",")) for c in want]
+    for rel, fn in ((os.path.join("tests", "test_phase1_regressions.py"),
+                     "test_the_colour_legend_shows_the_colours_the_map_actually_uses"),
+                    ("generate.py", "_heat_swatches")):
+        prose = _func_prose(os.path.join(ROOT, rel), fn)
+        for m in re.finditer(r"\(?(\d{3}),\s*(\d{2,3}),\s*(\d{2,3})\)?", prose):
+            trip = tuple(int(g) for g in m.groups())
+            if trip in composited:
+                seen += 1
+            elif trip not in stops:
+                # NOT tolerated to within a level: the wrong 5% cell was high by exactly one, so any
+                # tolerance here would have accepted it. A triple in these two passages is either the
+                # ramp's own stop or the composite of one.
+                stale.append(f"{rel}/{fn} states {trip} as a composited map colour; measured from the "
+                             f"ramp at HEAT_OPACITY={op} the three are {composited}")
+    assert seen >= 4, (
+        f"only {seen} of the composited map-cell colours are still stated across this docstring and "
+        f"generate._heat_swatches. They are the measurement that says the key must be drawn at the "
+        f"map's opacity, so deleting them must not be how this passes; measured: {composited}")
+    assert not stale, ("a published composited map colour is not what the ramp composites to:\n  "
+                       + "\n  ".join(stale))
+
 
 # Phrases that scope "longer = steeper" to ONE green. A list rather than one string because the
 # legend is prose that gets re-edited for space, and the requirement is the SCOPE, not the sentence.
@@ -3242,7 +3294,7 @@ def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
 
         smax runs 2.885% (philadelphia 16) to 9.028% (bay-view 8), a 3.13x range
         EVERY book has an internal spread: 1.50x (monarch-bay) ... 3.13x (philadelphia); merion 2.93x
-        192 of 198 greens draw an arrow within 0.05 view units of the 5.6 cap, 186 exactly at it
+        193 of 198 greens draw an arrow within 0.05 view units of the 5.6 cap, 190 exactly at it
         the printed tilt barely tracks it, r = 0.658 over 198 greens: philadelphia 18 prints 2.6%
         with its arrows calibrated to 9.03%, philadelphia 6 prints 4.9% with 7.64% -- the graphic and
         the number rank those two greens OPPOSITELY, in the same book
@@ -3274,6 +3326,7 @@ def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
     # Walks _green_surfaces() through _engine() rather than dropping sys.modules by hand: this suite
     # publishes its own count of module-drop sites in README, and an extra one here would falsify it.
     per_book, seen = collections.defaultdict(list), collections.Counter()
+    arrows = []
     for slug, hole, meta, H, W in _green_surfaces():
         _engine(slug)
         import render_green as rg
@@ -3281,7 +3334,8 @@ def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
         x0, y0, x1, y1 = meta["bbox"]
         px_x = (x1-x0)*_mlon(meta["green_center"][0])/W
         px_y = (y1-y0)*_mlat(meta["green_center"][0])/H
-        mask = mask_of(rg.poly_to_px(meta["polygon"], meta["bbox"], W, H), W, H)
+        poly_px = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+        mask = mask_of(poly_px, W, H)
         if mask.sum() < 50:
             continue
         arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)
@@ -3293,6 +3347,32 @@ def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
         # IS that rule, so re-deriving it is the measurement, not a duplicate of the code.
         smax = max(float(np.percentile(S["slope"][putt], 92)), 1.0)
         per_book[slug].append((smax, hole))
+        # ...and the arrow POPULATION and how much of it sits at the length cap. Four figures about
+        # this were published across two docstrings and none was derived: the corpus total was 12,161
+        # against a real 12,146, the per-green median and worst capped fractions were both low, and the
+        # count of greens reaching the cap was 186 against 190. Emitting is mirrored exactly, including
+        # the point_in_poly cull, because the percentages are OF the arrows that reach paper.
+        n = nc = n5 = 0
+        for r in range(3, H-3, 6):
+            for c in range(3, W-3, 6):
+                if not putt[r, c]:
+                    continue
+                mm = S["slope"][r, c]
+                if mm < 0.4:
+                    continue
+                L = 2.2 + 3.4*min(mm/smax, 1.0)
+                vx, vy = S["dcol"][r, c], S["drow"][r, c]
+                nn = math.hypot(vx, vy) or 1
+                vx, vy = vx/nn*L, vy/nn*L
+                ex, ey = c+0.5+vx, r+0.5+vy
+                if not (rg.point_in_poly(ex, ey, poly_px)
+                        and rg.point_in_poly(ex+vx*0.28, ey+vy*0.28, poly_px)):
+                    continue
+                n += 1
+                nc += mm >= smax
+                n5 += L >= 5.6 - 0.05
+        if n:
+            arrows.append((n, nc, n5))
         seen[slug] += 1
     assert_no_course_skipped(seen, "test_the_arrow_legend_says_the_length_is_scaled_to_that_green")
     spreads = {}
@@ -3334,6 +3414,53 @@ def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
         f"grade")
     assert not problems, ("the arrow legend does not say the length is scaled per green:\n  "
                           + "\n  ".join(problems[:6]))
+
+    # --- and every published figure about that cap, derived -----------------------------------------
+    # Four of them, across this docstring and the colour legend's, and not one was graded: the corpus
+    # arrow total (12,161 published, 12,146 measured -- and 12,161 was also the denominator of a THIRD
+    # passage), the per-green median and worst capped fractions (7.4% and 13.3% published, 7.6% and
+    # 14.9% measured) and the number of greens reaching the cap (186 published, 190 measured).
+    #
+    # ON THE UNROUNDED L, not on the shipped SVG's coordinates. The SVG writes x2/y2 at one decimal,
+    # which moves a length by up to 0.07 -- more than the 0.05 band one of these figures is about -- so
+    # the artifact cannot answer it. The TOTAL is the one figure both agree on, and it does: 12,146
+    # counted off the shipped `<line>` elements and 12,146 re-derived here.
+    import statistics
+    tot = sum(n for n, _c, _5 in arrows)
+    cap_n = sum(c for _n, c, _5 in arrows)
+    fr = [c/n for n, c, _5 in arrows]
+    facts = {
+        "arrow total": (tot, re.compile(r"(\d{2},\d{3}) (?:drawn )?arrows")),
+        "capped share of all arrows": (round(100*cap_n/tot, 1),
+                                       re.compile(r"([\d.]+)% of \d{2},\d{3} arrows sit at their")),
+        "median per-green capped share": (round(100*statistics.median(fr), 1),
+                                          re.compile(r"median ([\d.]+)% per green")),
+        "worst per-green capped share": (round(100*max(fr), 1),
+                                         re.compile(r"worst per green\s+([\d.]+)%")),
+        "greens within 0.05 of the cap": (sum(1 for _n, _c, n5 in arrows if n5),
+                                          re.compile(r"(\d+) of \d+ greens draw an arrow within")),
+        "greens at the cap": (sum(1 for _n, c, _5 in arrows if c),
+                              re.compile(r"within 0\.05 view units of the [\d.]+ cap, (\d+) exactly")),
+    }
+    stale, hits = [], collections.Counter()
+    for fn in ("test_the_arrow_legend_says_the_length_is_scaled_to_that_green",
+               "test_the_colour_legend_shows_the_colours_the_map_actually_uses",
+               "test_nothing_is_drawn_off_the_putting_surface"):
+        prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
+        for label, (real, pat) in facts.items():
+            for m in pat.finditer(prose):
+                hits[label] += 1
+                said = float(m.group(1).replace(",", ""))
+                if said != float(real):
+                    stale.append(f"{fn} says {m.group(0)!r}; measured over {len(arrows)} greens the "
+                                 f"{label} is {real}")
+    missing = [k for k in facts if not hits[k]]
+    assert not missing, (
+        f"the arrow-cap figures {missing} are no longer stated anywhere. They are what says 'longer = "
+        f"steeper' saturates, which is the premise of the legend wording this test requires, so "
+        f"deleting one must not be how it passes. Measured: { {k: v[0] for k, v in facts.items()} }")
+    assert not stale, ("a published figure about the arrow length cap is not what it measures:\n  "
+                       + "\n  ".join(stale))
 
 
 @needs_corpus

@@ -760,8 +760,14 @@ def _heat_swatches():
     legend drew them at full strength. So every swatch was a deeper, more saturated colour than any
     cell on the map it explains, and matching a patch to the key read one band too FLAT: measured in
     Rec.709 grey, a 2.5% map cell (225,202,134) sat nearest the FLAT swatch and a 5% cell
-    (191,122,117) -- the reddest thing the card can draw -- sat nearest the 2.5% swatch. That is the
+    (190,122,117) -- the reddest thing the card can draw -- sat nearest the 2.5% swatch. That is the
     same misread the ramp fix was written for, re-entering through the compositing.
+
+    That 5% figure read one level higher in R here and in
+    test_the_colour_legend_shows_the_colours_the_map_actually_uses, which was the whole population of
+    records holding it. `255 - 0.62*(255 - 150)` is 189.90 for both the flat and the red stop, since
+    both have R = 150, so the two rows of that table rounded one number two different ways. Both are
+    now derived from heat_color and HEAT_OPACITY by that test and cannot drift again.
 
     Emitting the opacity keeps both sides on one number: change HEAT_OPACITY and the key follows the
     map. Do not replace it with the pre-composited RGB -- the point is that the key and the map are
