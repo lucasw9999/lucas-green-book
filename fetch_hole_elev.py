@@ -400,8 +400,16 @@ def tee_elevations(anchors):
         and so pulled their box medians further down.) How little of the box is tee at all is in
         _tee_pads.
       * the WINDOW. The box is applied BEFORE the ring test, so the accumulated sample is ring INTERSECT
-        window on 57 of the 177 mapped pads -- rings reaching up to 65.7 m from the anchor
-        (philadelphia 16) -- and 51 pads lose ground returns to it. The comment inside the loop used to
+        window wherever the ring reaches past the window ON AN AXIS -- 55 of the 177 mapped pads, the
+        farthest reaching 63.0 m from its anchor (micke-grove 17) -- and 51 of those actually lose
+        ground returns to it.
+        THE AXIS COUNT IS THE ONE THAT CLIPS, and this sentence used to quote the RADIAL one against it:
+        57 rings reach past 15 m radially, up to 65.7 m (philadelphia 16), but the window is applied as
+        `abs(x - tx) < R and abs(y - ty) < R`, so a ring can reach 18 m diagonally and still sit wholly
+        inside it. 57 overstates the clipping by 2 pads. ba34e52 drew exactly this distinction and
+        corrected it in tools/verify_elevation.py and generate.py, and did not reach the producer that
+        does the clipping. All three counts are now graded against the predicate each one names.
+        The comment inside the loop used to
         describe the box as a prefilter a ring test would merely reach more slowly, as though the window
         changed nothing; it changes the sample on those 51, and 7 pads span more than MAX_TEE_RELIEF_FT
         over the whole ring while the sampled window is level.

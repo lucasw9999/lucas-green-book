@@ -17945,22 +17945,47 @@ def test_the_tee_sample_is_named_and_counted_as_the_region_the_sampler_reaches()
         f"the six-metric-course median is published as {m2.group(1)}%; measured {six_med*100:.1f}% "
         f"over {metric}")
 
-    # 3. the window DOES clip: how many pads reach past it, and how far the worst reaches.
-    reach = [(g["reach_m"][h], _short(s), h) for s, g in geom.items() for h in g["pads"]]
-    past = [r for r in reach if r[0] > 15.0]
-    worst = max(reach)
-    assert past, ("no mapped ring reaches past TEE_R_M of its anchor, so this test can no longer tell "
-                  "a window from a pad -- re-derive it before deleting it")
-    m = _published(src, r"(\d+) of the (\d+) mapped pads -- rings reaching up to ([\d.]+) m from the "
-                        r"anchor \((\S+) (\d+)\)",
-                   "how many mapped pads reach past the window",
-                   f"{len(past)} of {len(reach)}, worst {worst[0]:.1f} m on {worst[1]} {worst[2]}")
-    assert (int(m.group(1)), int(m.group(2))) == (len(past), len(reach)), (
-        f"tee_elevations says {m.group(1)} of {m.group(2)} mapped pads reach past the window; "
-        f"measured {len(past)} of {len(reach)}")
-    assert abs(float(m.group(3)) - worst[0]) < 0.1 and (m.group(4), int(m.group(5))) == worst[1:], (
-        f"the farthest ring vertex is published as {m.group(3)} m on {m.group(4)} {m.group(5)}; "
-        f"measured {worst[0]:.1f} m on {worst[1]} {worst[2]}")
+    # 3. the window DOES clip -- and BY WHICH CRITERION. Three different counts describe this and they
+    #    are not interchangeable: the AXIS half-extent is what the window actually applies
+    #    (`abs(x-tx) < R and abs(y-ty) < R`), the RADIAL reach is the farthest vertex, and a ring can
+    #    reach 18 m diagonally while sitting wholly inside the window. The module quoted the radial
+    #    count (57) against a CLIPPING claim, where the criterion that clips gives 55. ba34e52 drew this
+    #    distinction in the checker and in generate.py and never reached the producer. So each figure is
+    #    graded against the predicate the sentence attaches it to, which is the only way this stops
+    #    being self-consistent-and-wrong.
+    radial = [(g["reach_m"][h], _short(s), h) for s, g in geom.items() for h in g["pads"]]
+    axis = [(g["axis_m"][h], _short(s), h) for s, g in geom.items() for h in g["pads"]]
+    r_past, a_past = [r for r in radial if r[0] > 15.0], [a for a in axis if a[0] > 15.0]
+    r_worst, a_worst = max(radial), max(axis)
+    assert a_past, ("no mapped ring reaches past the window ON AN AXIS, so nothing is clipped and this "
+                    "test can no longer tell a window from a pad -- re-derive it before deleting it")
+    assert len(a_past) <= len(r_past), (
+        f"more rings clip on an axis ({len(a_past)}) than reach past 15 m radially ({len(r_past)}), "
+        f"which is geometrically impossible -- one of the two measurements is wrong")
+    live = (f"axis: {len(a_past)} of {len(axis)}, worst {a_worst[0]:.1f} m on {a_worst[1]} "
+            f"{a_worst[2]}; radial: {len(r_past)} of {len(radial)}, worst {r_worst[0]:.1f} m on "
+            f"{r_worst[1]} {r_worst[2]}")
+    m = _published(src, r"ON AN AXIS -- (\d+) of the (\d+) mapped pads, the farthest reaching "
+                        r"([\d.]+) m from its anchor \((\S+) (\d+)\)",
+                   "how many mapped pads the window actually CLIPS", live)
+    assert (int(m.group(1)), int(m.group(2))) == (len(a_past), len(axis)), (
+        f"tee_elevations says the window clips {m.group(1)} of {m.group(2)} mapped pads; by the "
+        f"criterion that clips, measured {live}")
+    assert abs(float(m.group(3)) - a_worst[0]) < 0.1 and (m.group(4), int(m.group(5))) == a_worst[1:], (
+        f"the farthest CLIPPING ring is published as {m.group(3)} m on {m.group(4)} {m.group(5)}; "
+        f"measured {a_worst[0]:.1f} m on {a_worst[1]} {a_worst[2]}. {live}")
+    m = _published(src, r"(\d+) rings reach past 15 m radially, up to ([\d.]+) m \((\S+) (\d+)\)",
+                   "how many rings reach past the window RADIALLY", live)
+    assert int(m.group(1)) == len(r_past), (
+        f"tee_elevations says {m.group(1)} rings reach past 15 m radially; measured {live}")
+    assert abs(float(m.group(2)) - r_worst[0]) < 0.1 and (m.group(3), int(m.group(4))) == r_worst[1:], (
+        f"the farthest ring vertex is published as {m.group(2)} m on {m.group(3)} {m.group(4)}; "
+        f"measured {r_worst[0]:.1f} m on {r_worst[1]} {r_worst[2]}. {live}")
+    m = _published(src, r"overstates the clipping by (\d+) pads",
+                   "by how much the radial count overstates the clipping", live)
+    assert int(m.group(1)) == len(r_past) - len(a_past), (
+        f"the module says the radial count overstates the clipping by {m.group(1)} pads; measured "
+        f"{len(r_past) - len(a_past)}. {live}")
 
     # 4. and the retired claim must be gone. It is the sentence that made the clipping invisible.
     assert "the same answer" not in src, (
@@ -18451,6 +18476,52 @@ def test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives():
         f"{m.group(3)} {m.group(4)}; measured median {median(shifts):.2f} / worst "
         f"{worst_shift[3]:.2f} on {worst_shift[0]} {worst_shift[1]}")
 
+    # ...and WHICH of the seven actually put a height on a card, which is a different question from
+    # which are refused and was answered wrong once. 9cc3bce's message said gating on the whole ring
+    # "would refuse seven holes that print today"; six print. micke-grove 8 measures +1.79 ft and is
+    # suppressed by the 3 ft floor, so refusing it costs no printed figure at all. The module comment
+    # gets this right ("all but micke-grove 8") and NOTHING graded it, which is how the message and the
+    # comment could disagree about the same seven holes. Measured off the artifact, against the floor.
+    floor = float(fhe.PRINT_FLOOR_FT)
+    silent = []
+    for s, h, _v, _d in uneven:
+        row = next((r for slug in CORPUS
+                    for r in [(json.load(open(os.path.join(ROOT, "courses", slug, "hole_elev.json"),
+                                              encoding="utf-8"))["holes"].get(str(h))
+                               if os.path.isfile(os.path.join(ROOT, "courses", slug,
+                                                              "hole_elev.json")) else None)]
+                    if _short(slug) == s), None)
+        ft = None if not row else (row.get("change_ft_exact") if row.get("change_ft_exact") is not None
+                                   else row.get("change_ft"))
+        if ft is None or abs(ft) < floor:
+            silent.append((s, h, ft))
+    live = (f"{len(uneven) - len(silent)} of the {len(uneven)} print; silent: "
+            + (", ".join(f"{s} {h} at {0.0 if f is None else f:+.2f} ft" for s, h, f in silent)
+               or "none"))
+    m = _published(src, r"all but ([a-z-]+) (\d+) print a height today",
+                   "which of those pads print no height today", live)
+    assert [(m.group(1), int(m.group(2)))] == [(s, h) for s, h, _f in silent], (
+        f"the note says all but {m.group(1)} {m.group(2)} print a height today; measured {live}. "
+        f"9cc3bce's message called all seven holes that print, and the count that matters is how many "
+        f"printed figures gating on the whole ring would actually cost.")
+
+    # ...and the RETURNS the window really takes away, which is the third of the three counts that
+    # describe the clipping and the only one that needs the point cloud. Published TWICE in
+    # fetch_hole_elev.py -- once in the docstring, once in the loop comment -- and graded by nothing,
+    # which is the two-records-one-figure shape that produced this whole campaign.
+    lost = sorted((_short(k[0]), k[1], r["ring"]["n"] - r["sample"]["n"]) for k, r in pads.items()
+                  if r["ring"] and r["ring"]["n"] > r["sample"]["n"])
+    live = f"{len(lost)} of {len(pads)} sampled pads lose returns, worst {max(lost, key=lambda t: t[2])}"
+    assert lost, ("no sampled pad loses a ground return to the window, so the window clips nothing and "
+                  "both figures below are describing something that has stopped happening")
+    for pattern, what in ((r"(\d+) of those actually lose ground returns to it",
+                           "how many clipped pads lose ground returns (docstring)"),
+                          (r"it CLIPS the ring on (\d+) of the corpus's mapped pads",
+                           "how many clipped pads lose ground returns (loop comment)")):
+        m = _published(src, pattern, what, live)
+        assert int(m.group(1)) == len(lost), (
+            f"fetch_hole_elev.py publishes {m.group(1)} for {what}; measured {live}")
+
     # 6. the BOX branch, which never reaches the relief check. That is deliberate and pinned by
     #    test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height; what was missing is that
     #    the cost is real, so the module has to state it rather than leave the reader to find it.
@@ -18503,6 +18574,105 @@ def test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives():
                          "test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height is "
                          "exercising the gate with numbers the corpus does not produce:\n  "
                          + "\n  ".join(drifted))
+
+
+@needs_corpus
+def test_both_relief_figures_recorded_per_row_are_the_ones_the_lidar_gives():
+    """9cc3bce added two figures to every row of hole_elev.json and graded neither.
+
+    `tee_relief_ft` and `tee_pad_relief_ft` are published on all 171 rows. The commit that added them
+    said of its own eleven re-derived numbers "Every one of those is now GRADED, not copied" -- and a
+    grep for either field name across the whole tree hits fetch_hole_elev.py and nothing else. No test,
+    no tool and no document reads either one. So they are exactly the shape this project's standing
+    lesson describes, inside the commit that cited it: a figure written into a record with nothing able
+    to check it against the ground.
+
+    They are not decoration. `tee_relief_ft` is the quantity MAX_TEE_RELIEF_FT is compared against, so
+    a row's copy of it is the only per-card evidence that the gate deciding whether a height prints saw
+    what it should have. `tee_pad_relief_ft` is the whole reason the seven pads whose ring is not level
+    are auditable from the artifact rather than only from a comment -- fetch_hole_elev.py's own docstring
+    says so ("recorded per row as `tee_pad_relief_ft` so this is auditable from the artifact and not
+    only from here"), which is a promise about a field nothing verified.
+
+    Graded off the point cloud, per row, against the SAME p95-p5 the sampler computes and over the same
+    two regions: the sample the median came from, and the whole mapped ring beside it. Nothing here is
+    copied from the module -- `_tee_samples()` re-measures both from the LAZ, and the third assertion
+    re-derives the seven audited holes from the ARTIFACT instead of from the prose that names them.
+    """
+    S = _tee_samples()
+    assert S, "no green-mode course with LiDAR on disk; nothing to measure"
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    LIMIT = fhe.MAX_TEE_RELIEF_FT
+    ND = 3                          # the module writes both fields as round(.., 3)
+    tol = 0.5 * 10 ** -ND + 1e-9
+    bad, seen, uneven = [], collections.Counter(), []
+    pad_rows = box_rows = 0
+    for slug in CORPUS:
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            rows = json.load(fh)["holes"]
+        for hn, row in rows.items():
+            live = S.get((slug, int(hn)))
+            if live is None:
+                bad.append(f"{_short(slug)} {hn}: a row with no tee sample in the point cloud at all")
+                continue
+            seen[slug] += 1
+            if live["on_pad"]:
+                pad_rows += 1
+            else:
+                box_rows += 1
+
+            # (a) the SAMPLE's spread -- the number the print/no-print gate is compared against.
+            got, want = row.get("tee_relief_ft"), live["sample"]["rel_ft"]
+            if got is None:
+                bad.append(f"{_short(slug)} {hn}: no tee_relief_ft recorded; measured {want:.4f} ft")
+            elif abs(got - want) > tol:
+                bad.append(f"{_short(slug)} {hn}: records tee_relief_ft {got}; the LiDAR gives "
+                           f"{want:.4f} ft over the region the median came from")
+            elif got > LIMIT and live["on_pad"]:
+                bad.append(f"{_short(slug)} {hn}: a PAD row records {got} ft of sample relief, above "
+                           f"the {LIMIT} ft limit -- this row should not exist, the gate refuses it")
+
+            # (b) the WHOLE MAPPED RING's spread, and `null` on exactly the rows that have no ring.
+            gotp = row.get("tee_pad_relief_ft")
+            wantp = live["ring"]["rel_ft"] if live["ring"] else None
+            if wantp is None and gotp is not None:
+                bad.append(f"{_short(slug)} {hn}: records tee_pad_relief_ft {gotp} for an anchor that "
+                           f"is in no mapped ring, so there is no pad to have measured")
+            elif wantp is not None and gotp is None:
+                bad.append(f"{_short(slug)} {hn}: records no tee_pad_relief_ft though its ring spans "
+                           f"{wantp:.4f} ft -- the seven audited pads are unauditable without it")
+            elif wantp is not None and abs(gotp - wantp) > tol:
+                bad.append(f"{_short(slug)} {hn}: records tee_pad_relief_ft {gotp}; the LiDAR gives "
+                           f"{wantp:.4f} ft over the whole mapped ring")
+            if gotp is not None and got is not None and gotp > LIMIT >= got:
+                uneven.append((_short(slug), int(hn)))
+
+    assert not bad, ("%d row(s) publish a relief figure the point cloud does not give:\n  " % len(bad)
+                     + "\n  ".join(bad[:12]))
+    assert pad_rows > 100 and box_rows, (
+        f"only {pad_rows} pad row(s) and {box_rows} box row(s) were graded; this corpus writes both "
+        f"kinds and a run that saw one kind would not have checked the `null` half at all")
+    assert_no_course_skipped(seen, "test_both_relief_figures_recorded_per_row_are_the_ones_the_lidar_gives")
+
+    # (c) and the FIELD must reproduce the audit it exists for, from the artifact alone: the pads whose
+    #     whole ring is not level while the sampled window is. Derived from the two recorded numbers
+    #     here, and from the LiDAR in
+    #     test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives -- two derivations of
+    #     one set, which is the cross-check the fields were missing.
+    from_lidar = sorted((_short(k[0]), k[1]) for k, r in S.items()
+                        if r["on_pad"] and r["ring"] and r["sample"]
+                        and r["ring"]["rel_ft"] > LIMIT >= r["sample"]["rel_ft"])
+    assert sorted(uneven) == from_lidar, (
+        f"the recorded pair of relief figures no longer picks out the pads whose whole ring is not "
+        f"level: the artifact says {sorted(uneven)}, the LiDAR says {from_lidar}. That set is the only "
+        f"thing tee_pad_relief_ft is published for.")
+    assert from_lidar, ("no pad's whole ring exceeds the relief limit while its window is level, so "
+                        "tee_pad_relief_ft now records nothing a reader could not infer -- re-derive "
+                        "the note in fetch_hole_elev.py before trusting this")
 
 
 @needs_corpus
