@@ -17355,7 +17355,11 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
 # ONE record of these numbers. They used to be literals typed into the assertions below, and by the time
 # this table was written four of them no longer reproduced -- merion 1 read 3839 against a live 3851,
 # merion 11 3917 against 3923, bay-view 3 4569/3.568 against 4581/3.572, philadelphia 18 967/6.224
-# against 970/6.219 -- because c7a4f65 corrected geo.mlat/mlon and every anchor moved a little. Nothing
+# against 970/6.219 -- because c7a4f65 corrected geo.mlat/mlon and the window those returns are counted
+# in changed size with it. NOT because the anchors moved: _crs_units_per_m derives the window's
+# half-width in CRS units through mlat, so it came out 0.2570% wider at merion, and merion h1's own
+# anchor is bit-identical across the correction. Both halves are measured by
+# test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors. Nothing
 # failed: the test calls a PURE PREDICATE, so a stale input is still a valid input, and that is exactly
 # the shape this project's standing lesson describes. So the values live here once, the pure test reads
 # them (staying LiDAR-free, which is what makes a gate on the elevation pipeline affordable to watch),
@@ -17894,8 +17898,10 @@ def test_the_tee_sample_is_named_and_counted_as_the_region_the_sampler_reaches()
     box_holes = sorted((_short(s), h) for s, g in geom.items()
                        for h in g["anchors"] if h not in g["pads"])
 
-    # 1. the fallback count and WHICH holes take it. Published as "8 of 177 holes" -- that predates
-    #    c7a4f65, which corrected geo.mlat/mlon and moved three of those anchors onto a mapped ring.
+    # 1. the fallback count and WHICH holes take it. Published as "8 of 177 holes" at 4b19d2f, and the
+    #    change to 5 of 182 was febbbba's widened OSM fetch box, not c7a4f65 -- see
+    #    test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors, which
+    #    re-derives every anchor on both earth models and finds the ring membership identical.
     m = _published(src, r"anchor lands in none of them \((\d+) of the (\d+) anchors",
                    "how many anchors fall back to the box", f"{box} of {anchors}")
     assert (int(m.group(1)), int(m.group(2))) == (box, anchors), (
@@ -17982,6 +17988,291 @@ def test_the_tee_sample_is_named_and_counted_as_the_region_the_sampler_reaches()
                        % len(wrong)) + "\n  ".join(wrong[:8])
 
 
+# The retired figure of the Earth c7a4f65 replaced. NOT SPELLED HERE:
+# test_no_module_re_declares_the_horizontal_earth_model forbids that constant in code in every module
+# INCLUDING this file, and it is right to -- a second copy of a ground scale is how the first one stayed
+# wrong through two audits. (Measured: writing it as a literal here turned that test red, and the
+# fresh-clone gate red behind it.) geo.py documents the retired pair at length and prose is exempt from
+# that rule, so this parses the one copy that exists rather than making a second, and it fails loudly if
+# geo.py ever stops recording what it replaced.
+def _retired_earth_pair():
+    """(mlat, mlon) as the retired model computed them, read out of geo.py's own note about it."""
+    import inspect
+    import geo
+    note = re.sub(r"\s+", " ", re.sub(r"(?m)^[ \t]*#[ \t]?", "", inspect.getsource(geo)))
+    m = re.search(r"R_LAT\s*=\s*([\d.]+)`?\s*with a longitude scale of\s*([\d.]+)\s*\*\s*cos", note)
+    assert m, ("geo.py no longer records the retired earth model in a form this can read, so the "
+               "attribution grader below has nothing to compare the live scales against. Its note used "
+               "to name the constant pair and the cos(lat) longitude scale in one sentence.")
+    r_lat, r_lon = float(m.group(1)), float(m.group(2))
+    assert r_lat == r_lon and r_lat > 1e4, (
+        f"geo.py's note reads the retired pair as {r_lat} / {r_lon}; it was ONE constant used for both "
+        f"axes, which is the whole reason it was wrong on both.")
+    return (lambda la: r_lat, lambda la: r_lon * math.cos(math.radians(la)))
+
+
+def _anchors_on_both_earths():
+    """{slug: {"live": snap, "retired": snap}} -- every anchor, its ring, and the window scale, twice.
+
+    The only difference between the two passes is geo.mlat/geo.mlon: the live WGS84 scales against the
+    constant pair c7a4f65 retired. Everything else -- the OSM cache, the card yardages, the ring
+    geometry, pyproj -- is the tree on disk. That is what makes this a CAUSAL test rather than a
+    historical one: it isolates the change being blamed instead of re-running an old revision, and it
+    needs no LiDAR and no network.
+
+    fetch_hole_elev does `from geo import mlat, mlon`, so the module-level names in BOTH modules have to
+    be swapped; geo.hole_lines and geo.match_green read geo's own. Restored in a finally, because a
+    leaked monkeypatch here would silently re-measure the rest of this suite on a wrong Earth.
+    """
+    import geo
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    live_pair = (geo.mlat, geo.mlon)
+    retired_pair = _retired_earth_pair()
+    out = {}
+    try:
+        for slug in CORPUS:
+            cfg = _elev_bind(fhe, slug)
+            if cfg.BUILD_MODE == "yardage" or not glob.glob(os.path.join(fhe.DIR, "laz", "*.laz")):
+                continue
+            with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+                els = json.load(fh)["elements"]
+            greens = [e for e in els
+                      if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+            loc = cfg.COURSE.get("location") or {}
+            out[slug] = {}
+            for label, pair in (("live", live_pair), ("retired", retired_pair)):
+                geo.mlat, geo.mlon = pair
+                fhe.mlat, fhe.mlon = pair
+                holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+                anchors = {}
+                for hn in sorted(holes):
+                    la, lo, _basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+                    if la is not None:
+                        anchors[hn] = (la, lo)
+                targets, crs = fhe._tee_points(anchors)
+                pads = fhe._tee_pads(targets, crs) if targets else {}
+                la0, lo0 = next(iter(anchors.values()))
+                out[slug][label] = {"anchors": anchors, "pads": sorted(pads),
+                                    "upm": fhe._crs_units_per_m(crs, la0, lo0)}
+    finally:
+        geo.mlat, geo.mlon = live_pair
+        fhe.mlat, fhe.mlon = live_pair
+        _elev_bind(fhe, a_course())
+    return out
+
+
+# A SENTENCE that blames an earth-model change for moving an anchor onto or off a mapped tee ring.
+# Both halves are required and the pairing is the point: c7a4f65 really did move five anchors (by under
+# a tenth of a metre) and really did change the sampled window's size, so prose may say either of
+# those. What it may not say is that the correction changed which RING holds an anchor, or the count
+# that follows from it. Cleared by a refutation in the same sentence, the way every other prose gate in
+# this file clears one -- and DELIBERATELY a tight marker set: a loose one (\bnot\b, \bwas\b) clears a
+# live false claim on any coincidence of wording, which is the trap measured in 7d8d131.
+#
+# SENTENCES, not the `_clauses` unit the label gates use, and that is not a style choice: the retired
+# sentence names its cause before a SEMICOLON and its effect after it, so a clause-level rule split the
+# claim in half and could not see it. The mutation check inside the test is what found that.
+_EARTH_MODEL_NAMED = re.compile(r"c7a4f65|geo\.mlat|mlat/mlon|figure of the Earth|earth[- ]model", re.I)
+_RING_MOVE_TARGET = r"(?:onto|off|out of|into)\s+(?:a |the |those |its )?(?:mapped\s+)?(?:tee\s+)?rings?"
+_EARTH_MOVED_A_RING = re.compile(
+    # both word orders, because the two retired sentences use one each: "three of those anchors MOVED
+    # onto a mapped ring" and "which MOVED their anchors onto mapped tee rings".
+    r"anchors?.{0,40}?(?:moved?|moves|moving|shifted).{0,40}?" + _RING_MOVE_TARGET
+    + r"|(?:moved?|moves|moving|shifted)\s+(?:\w+[\s,]+){0,4}?anchors?.{0,90}?" + _RING_MOVE_TARGET
+    + r"|every anchor moved", re.I)
+_EARTH_CLAIM_REFUTED = re.compile(
+    r"did not|does not|do not|cannot|never|no anchor|none of|none crosses|not c7a4f65|"
+    r"measured false|(?:is|was) false|refut", re.I)
+
+
+def _sentences(prose):
+    """`prose` split into sentences: a full stop followed by space, or a blank line.
+
+    Not `_clauses`, and not `[^.]*` inside a pattern -- this module's prose is full of `geo.mlat`,
+    `0.4 m` and `2.5 ft`, and every one of those dots would end a clause that no reader would."""
+    return [" ".join(s.split()) for s in re.split(r"(?<=\.)\s+|\n\s*\n", prose) if s.strip()]
+
+
+def _earth_ring_attributions(prose):
+    """[sentence] -- every sentence in `prose` blaming the earth-model correction for a ring change."""
+    return [s for s in _sentences(prose)
+            if _EARTH_MODEL_NAMED.search(s) and _EARTH_MOVED_A_RING.search(s)
+            and not _EARTH_CLAIM_REFUTED.search(s)]
+
+
+@needs_corpus
+def test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors():
+    """An attribution is a claim about CAUSE, and nothing in this repo checked one.
+
+    9cc3bce blamed c7a4f65 -- the earth-model correction -- for two things, in `_tee_pads`'s docstring
+    and in its own commit message:
+
+      * the box-fallback count going 8 of 177 to 5 of 182, "three of those anchors moved onto a mapped
+        ring and nothing re-derived the count";
+      * two stale card values, castlewood-valley 7 (card 8) and 14 (card 30), "stale from c7a4f65's
+        geo.mlat/mlon correction, which moved their anchors onto mapped tee rings".
+
+    BOTH ARE FALSE, and this measures it instead of arguing it. Every anchor is re-derived from the tree
+    on disk under the retired figure of the Earth (a constant 111320.0 m/deg of latitude and
+    111320.0*cos(lat) of longitude) and under the live WGS84 scales, with nothing else changed. The two
+    earths agree on the anchor count, on the fallback count, and on which ring holds every single
+    anchor. Five anchors move at all -- the four that come from a par-3 extrapolation or a walk-back,
+    which are the only paths that arithmetic touches -- and all five move by well under a metre. A
+    `tee end of the mapped hole line` anchor is a raw OSM vertex and is bit-identical across it, which
+    is why castlewood-valley 7 and 14 (both of them that basis) cannot have moved.
+
+    THE REAL CAUSE IS febbbba, which widened four courses' OSM fetch box and re-derived only the tree
+    layer. Three former box anchors now sit inside `golf=tee` ways that fetch had never asked for, and
+    this test resolves the holding ring's OSM id straight out of osm_course.json: they are exactly the
+    three ways febbbba's own message names as newly reachable drawn features. febbbba asserted "No
+    printed FIGURE moved", which was true only because it never re-ran this stage.
+
+    WHAT c7a4f65 DID CAUSE, and what must therefore stay attributed to it: `_crs_units_per_m` derives
+    the sampled window's size in CRS units through mlat, so the window really did change size. That is
+    the whole of merion h1's 3839 -> 3851 and h11's 3917 -> 3923 ground-return drift -- off anchors that
+    do not move. So this grades the DISTINCTION, not just the refutation: the window scale must differ
+    between the two earths and the ring membership must not.
+
+    The prose rule is mutation-checked in place. The retired sentence is fed to the same helper the
+    assertion uses and must come back as a hit, because a forbidden-phrase gate that cannot fire is the
+    failure mode this suite has already shipped twice.
+    """
+    both = _anchors_on_both_earths()
+    assert both, "no green-mode course with LiDAR on disk; nothing to measure"
+
+    # 1. THE REFUTATION. Same corpus, two earths, nothing else different.
+    counts, ring_moves, displaced = {}, [], []
+    for label in ("live", "retired"):
+        counts[label] = (sum(len(s[label]["anchors"]) for s in both.values()),
+                         sum(len(s[label]["pads"]) for s in both.values()))
+    for slug, s in both.items():
+        if set(s["live"]["pads"]) != set(s["retired"]["pads"]):
+            ring_moves.append(f"{_short(slug)}: {sorted(set(s['live']['pads']) ^ set(s['retired']['pads']))}")
+        for hn in sorted(set(s["live"]["anchors"]) | set(s["retired"]["anchors"])):
+            a, b = s["live"]["anchors"].get(hn), s["retired"]["anchors"].get(hn)
+            if a is None or b is None:
+                ring_moves.append(f"{_short(slug)} {hn}: anchor resolves on one earth only")
+                continue
+            d = math.hypot((a[1] - b[1]) * _mlon(a[0]), (a[0] - b[0]) * _mlat(a[0]))
+            if d > 0:
+                displaced.append((d, _short(slug), hn))
+    live_n = (f"{counts['live'][0]} anchors / {counts['live'][0] - counts['live'][1]} fallbacks on the "
+              f"live earth, {counts['retired'][0]} / {counts['retired'][0] - counts['retired'][1]} on "
+              f"the retired one; {len(displaced)} anchor(s) move, worst "
+              f"{max(displaced)[0]:.3f} m on {max(displaced)[1]} {max(displaced)[2]}")
+    assert counts["live"] == counts["retired"], (
+        f"the earth-model correction DOES change the anchor or fallback count with today's cache, so "
+        f"9cc3bce's attribution may be right after all and this whole test has to be re-derived: "
+        f"{live_n}")
+    assert not ring_moves, (
+        "the earth-model correction changes which mapped tee ring holds an anchor, so the attribution "
+        "9cc3bce made is live and the prose below must go back to naming it:\n  "
+        + "\n  ".join(ring_moves))
+    assert displaced, (
+        "no anchor moves at all between the two earths, which cannot be right -- a par-3 anchor is "
+        "extrapolated through mlat/mlon. The retired pair is not being applied; this test would then "
+        "pass on nothing.")
+    assert max(displaced)[0] < 1.0, (
+        f"an anchor moves {max(displaced)[0]:.2f} m between the two earths. That is far enough to "
+        f"cross a small tee ring, so 'it cannot have changed the ring' stops following from the "
+        f"measurement: {live_n}")
+
+    # 2. THE DISTINCTION. What c7a4f65 really did move is the WINDOW, through _crs_units_per_m, and
+    #    that mechanism has to be live or the retained attribution is as ungrounded as the two removed.
+    wider = {_short(s): v["live"]["upm"] / v["retired"]["upm"] - 1.0 for s, v in both.items()}
+    assert all(r > 0 for r in wider.values()), (
+        f"the live earth no longer makes the sampled window WIDER in CRS units than the retired pair "
+        f"did, so merion h1's 3839 -> 3851 drift cannot be attributed to c7a4f65 either: {wider}")
+    m = _published(_fhe_prose(), r"at merion it is ([\d.]+)% wider in CRS units",
+                   "how much wider c7a4f65 made the sampled window",
+                   f"{wider['merion']*100:.4f}%")
+    assert abs(float(m.group(1)) - wider["merion"] * 100) < 0.0005, (
+        f"_tee_pads says the window is {m.group(1)}% wider at merion; measured "
+        f"{wider['merion']*100:.4f}%. That figure is the mechanism behind the ONE attribution to "
+        f"c7a4f65 this module keeps.")
+    for hn in (1, 11):
+        a = both["merion-golf-club"]["live"]["anchors"][hn]
+        b = both["merion-golf-club"]["retired"]["anchors"][hn]
+        assert a == b, (
+            f"merion h{hn}'s anchor is NOT bit-identical across the earth model ({a} vs {b}), so its "
+            f"return-count drift can no longer be attributed to the window alone")
+
+    # 3. THE REAL CAUSE, read out of the OSM cache. Which `golf=tee` way holds each of the three
+    #    anchors that stopped falling back? The ids are resolved here, never typed.
+    import numpy as np
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    import geo
+    holders = {}
+    for slug, want in (("castlewood-hill-course", (1,)), ("castlewood-valley-course", (7, 14))):
+        cfg = _elev_bind(fhe, slug)
+        with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        loc = cfg.COURSE.get("location") or {}
+        holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        with open(os.path.join(fhe.DIR, "osm_course.json"), encoding="utf-8") as fh:
+            course = json.load(fh).get("elements") or []
+        for hn in want:
+            la, lo, basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+            assert la is not None and basis.startswith("tee end"), (
+                f"{_short(slug)} {hn} no longer anchors on a raw mapped vertex ({basis!r}), so it is "
+                f"no longer immune to an arithmetic change and this case proves nothing")
+            for e in course:
+                g = e.get("geometry") or []
+                if (e.get("tags") or {}).get("golf") != "tee" or len(g) < 4:
+                    continue
+                k, kla = geo.mlon(la), geo.mlat(la)
+                if fhe._point_in_ring(lo * k, la * kla,
+                                      np.asarray([p["lon"] for p in g], float) * k,
+                                      np.asarray([p["lat"] for p in g], float) * kla):
+                    holders[(_short(slug), hn)] = e.get("id")
+                    break
+    _elev_bind(fhe, a_course())
+    assert len(holders) == 3, (
+        f"only {len(holders)} of the three anchors febbbba's widened box put on a mapped tee ring is "
+        f"still on one: {holders}. The attribution below names those three ways.")
+    src = _fhe_prose()
+    for (course, hn), wid in sorted(holders.items()):
+        assert re.search(rf"way/{wid}\b[^.]{{0,60}}{re.escape(course)}[^.]{{0,10}}\b{hn}\b"
+                         rf"|{re.escape(course)}\s+h?{hn}\b[^.]{{0,60}}way/{wid}\b", src), (
+            f"{course} {hn}'s anchor sits inside way/{wid}, one of the `golf=tee` polygons febbbba's "
+            f"widened OSM box made reachable, and _tee_pads does not name that way beside that hole. "
+            f"Measured holders: {holders}")
+    assert "febbbba" in src, (
+        "_tee_pads does not name febbbba, so the box-fallback count's cause is once again unattributed "
+        "-- and the last time it was attributed by guess it named the wrong commit for a year")
+
+    # 4. THE PROSE RULE, and proof it can fire. The module may say the correction moved anchors (it
+    #    moved five) and may say it resized the window (it did). It may not say it changed a ring.
+    stale = _earth_ring_attributions(_fhe_src())
+    assert not stale, (
+        "fetch_hole_elev.py still blames the earth-model correction for moving an anchor onto or off a "
+        f"mapped tee ring. Measured on today's cache: {live_n}, and ring membership is IDENTICAL on "
+        f"every anchor. The cause is febbbba's widened OSM box:\n  " + "\n  ".join(stale))
+    # BOTH retired sentences, verbatim, in the two word orders they use -- one from _tee_pads and one
+    # from 9cc3bce's message. A forbidden-phrase gate that cannot fire is the failure mode this suite
+    # has already shipped twice, and the first draft of this rule missed the docstring one entirely
+    # (its cause sat before a semicolon) and then missed both (it required MOVED before ANCHORS).
+    for retired in (
+            "Published as 8 of 177 until c7a4f65 corrected geo.mlat/mlon; three of those anchors "
+            "moved onto a mapped ring and nothing re-derived the count.",
+            "castlewood-valley 7 (8.5 -> 7.5 ft, card 8 -> 7) and 14 (-29.5 -> -32.0 ft, card 30 -> 32) "
+            "were stale from c7a4f65's geo.mlat/mlon correction, which moved their anchors onto mapped "
+            "tee rings and which nothing re-derived."):
+        assert _earth_ring_attributions(retired), (
+            f"the prose rule does not fire on a sentence it was written against, so assertion 4 above "
+            f"passes on anything: {retired!r}")
+    for ok in ("c7a4f65 did not move any anchor onto a mapped ring; febbbba's widened box did.",
+               "What c7a4f65 DID move is the sampled window's size, through _crs_units_per_m.",
+               "febbbba widened the fetch box and three anchors that used to fall back now sit inside "
+               "`golf=tee` ways that fetch had never asked for."):
+        assert not _earth_ring_attributions(ok), (
+            f"the prose rule flags a sentence that is true, so the corrected wording cannot be written "
+            f"down and the rule would be switched off: {ok!r}")
+
+
 @needs_corpus
 def test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives():
     """MAX_TEE_RELIEF_FT decides whether a card prints a height, and its whole derivation was literals.
@@ -17990,7 +18281,9 @@ def test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives():
     recorded numbers, which is what makes it affordable to run. Nothing measured whether those recorded
     numbers were still the corpus's. They were not: merion h1 reads 3851 class-2 returns and not the
     3839 published in three places, bay-view 3 4581 and not 4569, philadelphia 18 970 and not 967 --
-    all of them drifted when c7a4f65 corrected geo.mlat/mlon and every anchor moved a little -- and the
+    all of them drifted when c7a4f65 corrected geo.mlat/mlon and the sampled window changed size with
+    it (0.2570% wider at merion, through _crs_units_per_m; the anchors themselves did not move, which
+    test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors measures) -- and the
     "median 0.20 ft" the ring sampler is justified by is now 1.00 ft, five times the published figure,
     because the fallback box grew to a true 30 m on five courses.
 

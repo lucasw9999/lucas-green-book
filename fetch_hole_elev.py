@@ -278,9 +278,29 @@ def _tee_pads(anchors, crs):
 
     The rings are in osm_course.json and were never loaded. Refusing to guess when the anchor lands in
     none of them (5 of the 182 anchors this corpus resolves -- bay-view 16, castlewood-hill 4, merion 3,
-    merion 9 and merion 15): those fall back to the box, which is at least centred on the tee. Published
-    as 8 of 177 until c7a4f65 corrected geo.mlat/mlon; three of those anchors moved onto a mapped ring
-    and nothing re-derived the count.
+    merion 9 and merion 15): those fall back to the box, which is at least centred on the tee.
+
+    Published as 8 of 177 holes at 4b19d2f. THE CHANGE WAS febbbba AND NOT c7a4f65, which 9cc3bce
+    credited: febbbba widened four courses' OSM fetch box, and three anchors that used to fall back now
+    sit inside `golf=tee` ways that fetch had never asked for -- way/692110589 (castlewood-hill 1),
+    way/690850042 (castlewood-valley 7) and way/690831855 (castlewood-valley 14), the exact three its own
+    message names as newly reachable drawn features -- while it re-derived only the tree layer, so
+    nothing re-ran this stage. Its "No printed FIGURE moved" held only for that reason: castlewood-valley
+    7 and 14 went on printing card 8 and card 30 off a 15 m box (+8.478 and -29.520 ft) until 9cc3bce
+    regenerated the artifact and read +7.458 and -31.980 ft off the newly mapped pads.
+    The earth-model correction did not do it, and that is measured rather than argued: re-derive every
+    anchor from today's cache under the retired constant pair (111320.0 m/deg of latitude and
+    111320.0*cos(lat) of longitude) and under the live WGS84 scales, changing nothing else, and the
+    anchor count, the fallback count and the holding ring of every single anchor come out identical.
+    Only 5 anchors differ at all -- the ones a par-3 extrapolation or a walk-back computes, the only
+    paths that arithmetic touches -- and by under 0.1 m; a `tee end of the mapped hole line` anchor is a
+    raw OSM vertex and is bit-identical across it, which is the basis both castlewood-valley holes use.
+    What c7a4f65 DID move is the sampled window's SIZE, through _crs_units_per_m: at merion it is
+    0.2570% wider in CRS units, and that is the whole of merion h1's 3839 -> 3851 and h11's
+    3917 -> 3923 ground-return drift, off anchors that do not move. That third attribution stands.
+    All of it is graded by
+    test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors, because an
+    attribution is a claim about cause and this repo graded none until then.
     """
     from pyproj import Transformer
     T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
