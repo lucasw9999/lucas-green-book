@@ -23722,6 +23722,9 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
       2. DRAW_CORRIDOR_M really is the maximum of the named set, and the treenode radius is what sets it;
       3. no feature selector in render_hole is called with a bare numeric buffer -- a new class added
          with a literal is exactly how the 45 got left behind, and it would not raise the derived max.
+      4. ...and no selector DECLARES one as a default either. Check 3 reads call sites only, and two
+         defaults outlived it: `in_corridor(g, buf=45)` and `in_corr_pt(lat, lon, buf=48)`. The 45 is
+         the number this whole guard is about -- the tool's own literal was named after this default.
 
     The set is read out of the source with ast rather than imported, so a stranger with no course data
     still gets this check: importing render_hole binds config, which needs a course.json. Where a corpus
@@ -23778,6 +23781,37 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
         + "\n  Every half-width belongs in CORRIDOR_M, because DRAW_CORRIDOR_M is the max of that set "
           "and tools/check_osm_bbox.py sizes the fetch box from it. A literal here is a corridor the "
           "pre-flight cannot see.")
+
+    # 4. ...and no selector may carry a numeric half-width as a DEFAULT. Check 3 reads call sites, so a
+    # default is invisible to it -- and two survived it: `in_corridor(g, buf=45)` and
+    # `in_corr_pt(lat, lon, buf=48)`. The 45 is the very number this whole guard is about: it is the
+    # figure tools/check_osm_bbox.py carried, "render_hole.in_corridor's drawing buffer", named after
+    # this function's default. Both call sites pass CORRIDOR_M explicitly today, so neither default is
+    # reachable -- which is exactly the state the 45 in the tool was in until a class was widened past
+    # it. A default is a half-width spelled in a second place, DRAW_CORRIDOR_M cannot see it, and the
+    # next selector added without an explicit buffer silently inherits it.
+    defaults = []
+    for node in ast.walk(ast.parse(rh_src)):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if node.name not in ("edge_within", "in_corridor", "frac_in", "any_within", "in_corr_pt",
+                             "corridor_pts"):
+            continue
+        for arg, dflt in zip(node.args.args[len(node.args.args) - len(node.args.defaults):],
+                             node.args.defaults):
+            if isinstance(dflt, ast.Constant) and isinstance(dflt.value, (int, float)):
+                defaults.append(f"render_hole.py:{node.lineno} def {node.name}(... "
+                                f"{arg.arg}={dflt.value})")
+        for arg, dflt in zip(node.args.kwonlyargs, node.args.kw_defaults):
+            if isinstance(dflt, ast.Constant) and isinstance(dflt.value, (int, float)):
+                defaults.append(f"render_hole.py:{node.lineno} def {node.name}(*, "
+                                f"{arg.arg}={dflt.value})")
+    assert not defaults, (
+        "a feature selector in render_hole declares a numeric corridor buffer as a DEFAULT:\n  "
+        + "\n  ".join(defaults)
+        + "\n  That is a half-width named in a second place, and DRAW_CORRIDOR_M -- the figure the "
+          "fetch-box pre-flight sizes itself from -- is the max of CORRIDOR_M only. Take the default "
+          "away so every caller must name the class it is selecting.")
 
 
 @needs_corpus

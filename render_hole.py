@@ -454,7 +454,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     def dist_to_line(pe,pn):
         return min(dist_pt_seg(pe,pn,line_em[i][0],line_em[i][1],line_em[i+1][0],line_em[i+1][1])
                    for i in range(len(line_em)-1))
-    def in_corridor(g, buf=45):
+    def in_corridor(g, buf):
         gla,glo=centroid(g); pe,pn=em(gla,glo)
         return dist_to_line(pe,pn) < buf
     def frac_in(g, buf):
@@ -649,7 +649,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     woods   =[g for g in course if (g.get('tags',{}).get('natural') in ('wood','scrub') or g.get('tags',{}).get('landuse')=='forest')
               and g.get('geometry') and frac_in(g, CORRIDOR_M['wood'])>=0.35]
     treerows=[g for g in course if g.get('tags',{}).get('natural')=='tree_row' and g.get('geometry') and frac_in(g, CORRIDOR_M['treerow'])>=0.35]
-    def in_corr_pt(lat, lon, buf=48):
+    def in_corr_pt(lat, lon, buf):
         pe, pn = em(lat, lon)
         return min(dist_pt_seg(pe, pn, line_em[i][0], line_em[i][1], line_em[i+1][0], line_em[i+1][1])
                    for i in range(len(line_em)-1)) < buf
