@@ -7530,42 +7530,85 @@ def test_the_worst_straight_rows_ratio_is_a_rounding_artefact_and_the_docstring_
         "thing that makes that figure and the geometry agree")
 
 
-FRONT_BANK_NOTE_MIN_YD = 1.0
+BANK_NOTE_MIN_YD = 1.0
+
+# The four figures that carry the argument for NOT moving the depth datum, as render_green.bank_run_yd
+# and the test below each spell them. Both records had the same two wrong (median 2.75 for 2.7399, and
+# 23 both-ends movers for 28), so both are read. Deliberately case-sensitive on "both ends": the same
+# passages say "trims 1.2 m of collar off BOTH ends of every green", which is a different statement.
+_DATUM_ALL = re.compile(r"(?:ALL|all) (\d+) printed depths")
+_DATUM_MEDIAN = re.compile(r"median (\d+\.\d+) yd")
+_DATUM_FRONT = re.compile(r"moves (\d+) (?:printed )?depths")
+_DATUM_BOTH = re.compile(r"both ends[:,]?\s+(?:moves\s+)?(\d+)")
 
 
 @needs_corpus
-def test_a_card_whose_front_edge_is_bank_says_so_beside_the_depth():
-    """"22yd deep" with a 5-yd bank at the front is 17 yd of green, and the card has to say which.
+def test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth():
+    """"30yd deep" with a 6-yd bank at the BACK is 24 yd of green, and the card has to say which.
 
-    The depth and the 5-yd ladder are both measured from where the OSM green polygon crosses the line
-    of play, and on nine of 198 greens that crossing is on ground the same card's legend disowns:
-    "over 10% is bank or bunker face, not putting surface". Walked down the play line at 0.01 view-unit
-    steps, the leading run steeper than SLOPE_LABEL_MAX_PCT is:
+    The depth and the 5-yd ladder are both measured between the two points where the OSM green polygon
+    crosses the line of play, and at EITHER end that crossing can be on ground the same card's legend
+    disowns: "over 10% is bank or bunker face, not putting surface". Walked down the play line at 0.01
+    view-unit steps, the leading run steeper than SLOPE_LABEL_MAX_PCT is:
 
-        micke-grove 2       5.33 yd of a printed 22    24% of the depth
-        copper-valley 6     3.58 of 24                 15%
-        castlewood-valley 16  3.21 of 30               11%
-        castlewood-hill 10  3.15 of 28                 11%
-        castlewood-valley 12  2.64 of 40                7%
-        merion 6            2.32 of 34                  7%
-        philadelphia 18     2.28 of 37                  6%
-        bay-view 13         1.31 of 22                  6%
-        bay-view 5          1.13 of 27                  4%
+        BACK EDGE -- 14 greens, and the dangerous end
+        copper-valley 3       6.51 yd of a printed 30   21.6% of the depth
+        castlewood-valley 5   3.91 of 27                14.5%
+        bay-view 5            3.06 of 27                11.2%   (also 1.13 at the front)
+        copper-valley 6       2.51 of 24                10.4%   (also 3.58 at the front)
+        bay-view 16           2.08 of 27                 7.6%
+        castlewood-hill 14    2.03 of 24                 8.6%
+        castlewood-valley 10  1.86 of 39                 4.8%
+        merion 13             1.68 of 22                 7.7%
+        castlewood-valley 11  1.55 of 32                 4.9%
+        copper-valley 18      1.46 of 18                 8.1%
+        the-reserve 1         1.45 of 30                 4.9%
+        castlewood-hill 11    1.12 of 18                 6.1%
+        castlewood-valley 3   1.09 of 34                 3.2%
+        merion 10             1.06 of 29                 3.7%
 
-    Nine are >= 1.0 yd, seven >= 2.0, and the median green is 0.00 -- a tail, not a corpus-wide bias.
-    micke-grove 2 is the worked case: the ladder rules rungs at 5, 10, 15, 20 from that crossing, so
-    its "5" sits at the top of a 5.33 yd bank and the puttable green runs from the 5 rung to the back.
+        FRONT EDGE -- 9 greens
+        micke-grove 2         5.33 of 22                  24%
+        copper-valley 6       3.58 of 24                  15%
+        castlewood-valley 16  3.21 of 30                  11%
+        castlewood-hill 10    3.15 of 28                  11%
+        castlewood-valley 12  2.64 of 40                   7%
+        merion 6              2.32 of 34                   7%
+        philadelphia 18       2.28 of 37                   6%
+        bay-view 13           1.31 of 22                   6%
+        bay-view 5            1.13 of 27                   4%
+
+    21 distinct greens of 198 carry a note; the median green is 0.00 at either end -- a tail, not a
+    corpus-wide bias. copper-valley 3 is the worked case for the back and micke-grove 2 for the front:
+    micke-grove 2's ladder rules rungs at 5, 10, 15, 20 from the front crossing, so its "5" sits at the
+    top of a 5.33 yd bank and the puttable green runs from the 5 rung back.
+
+    THE BACK EDGE IS THE MORE DANGEROUS OF THE TWO, AND IT WAS DISCLOSED SECOND. 41bde68 fixed the
+    front and said honestly that it was leaving the back out as outside its subject. A front bank makes
+    the depth and the ladder start early, so it overstates the green IN FRONT of the pin -- a junior
+    clubs short, which this project's governing rule calls the safe direction. A back bank overstates
+    how far BACK the pin can be: copper-valley 3 prints 30yd deep when 6.51 of those yards are bank, so
+    a reader placing a back pin clubs LONG into it. render_hole already names too-long as the dangerous
+    direction. Two greens carry both notes (copper-valley 6, bay-view 5), and bay-view 5's card was
+    already disclosing its 1.13 yd front bank while saying nothing about 3.06 yd at the back.
 
     THE DATUM IS NOT MOVED, and that is a measured decision rather than a preference. Three candidates,
     all measured over the 198 shipped greens:
 
-      * re-base on `S['putt']` (the natural suggestion): moves ALL 198 printed depths, median 2.75 yd,
+      * re-base on `S['putt']` (the natural suggestion): moves ALL 198 printed depths, median 2.74 yd,
         worst 9.64 (copper-valley 3, 30 -> 20). Most of that is not bank at all -- `putt` is
         `erode(mask, 3) & (slope <= 10)`, so it also trims 1.2 m of collar off BOTH ends of every
         green, which is a statistical device for fitting a plane and not a claim about where the green
         stops.
       * trim only the leading steep run: moves 12 printed depths, worst 5.33.
-      * trim both ends: moves 23, worst 6.51.
+      * trim both ends: moves 28, worst 6.51.
+
+    ALL FOUR OF THOSE FIGURES ARE DERIVED BELOW, because two of them were wrong in both records at
+    once. The median re-basing shift was published as 2.75; it is 2.7399. The both-ends trim was
+    published as 23 movers; it is 28 -- and that one understated the case AGAINST the trim this
+    paragraph exists to reject, which is the argument's own side, since the whole point is "look how
+    many printed depths this would move". No threshold variant yields 23. Two records, one figure,
+    nothing comparing either to the corpus.
 
     Either trim breaks two things this suite already guards. The drawn OUTLINE runs through that same
     bank -- it is the polygon, and test_no_printed_words_fall_outside_the_card... plus the blank-card
@@ -7578,20 +7621,31 @@ def test_a_card_whose_front_edge_is_bank_says_so_beside_the_depth():
     stop being an independent measurement of the earth.
 
     So the polygon stays the datum -- it is also the datum render_hole projects `green_front_yd` from --
-    and the CARD discloses the bank, on the cards where it is more than the printed depth's own 1-yard
-    resolution. The reader then has both true statements: the mapped green is 22 yd front to back, and
-    the front 5 of those are bank, so the pin can only be from the 5 rung back.
+    and the CARD discloses the bank, at whichever end has one, on the cards where it is more than the
+    printed depth's own 1-yard resolution. The reader then has both true statements: the mapped green is
+    30 yd front to back, and the back 7 of those are bank, so the pin can only be short of that.
 
-    FRONT_BANK_NOTE_MIN_YD is 1.0 rather than 0.5 deliberately. 0.5 is where the bank starts moving the
-    rounded depth, but callippe 7 measures 0.5013 yd -- 0.13 inch from that boundary -- and pinning two
-    independent implementations against each other across a cliff that thin is a flake, not a guard. At
-    1.0 the nearest greens are bay-view 5 at 1.133 above and callippe 3 at 0.854 below. The cost is
-    stated: callippe 3 and philadelphia 11 carry ~0.8 yd of unannounced bank, under the yard the card
-    prints to.
+    BANK_NOTE_MIN_YD is 1.0 rather than 0.5, and the ORIGINAL reason for that has since been measured
+    away. It was a flake argument: 0.5 is where a bank starts moving the rounded depth, callippe 7's
+    front run measures 0.5013 yd -- 0.13 inch from that boundary -- and two independent implementations
+    pinned across a cliff that thin would flake. Measured since, they cannot: the engine's scanline
+    rasteriser and this test's point-in-pixel one produce BIT-IDENTICAL masks on all 198 greens, so the
+    two walks agree to 0.000000 yd at both ends and no floor here is a flake. 1.0 is kept for the reason
+    that survives -- it is the resolution the depth itself is printed at -- and it is shared by both ends
+    rather than split, because a yard of bank is a yard of bank whichever edge it is on.
+
+    THE COST IS STATED, and it is longer at the back. Runs under the floor go unannounced: front
+    callippe 3 (0.854) and philadelphia 11 (0.767); back castlewood-valley 12 (0.995), copper-valley 15
+    (0.730), the-reserve 4 (0.685), copper-valley 13 (0.629), castlewood-hill 12 (0.620), merion 4
+    (0.588), valley-hi 16 (0.542). castlewood-valley 12 sits 0.005 yd under the floor, which is
+    deliberate rather than overlooked: both implementations round it identically, so it is a stable
+    omission and not a coin toss, and it is disclosed here instead of being papered over by moving the
+    floor to catch one green.
 
     Measured here independently of the renderer: this walks its own rasterised mask and its own play
     line, so a bug in the engine's own measurement cannot satisfy it.
     """
+    import statistics
     import numpy as np
 
     def mask_of(poly, W, H):
@@ -7604,7 +7658,7 @@ def test_a_card_whose_front_edge_is_bank_says_so_beside_the_depth():
             j = i
         return inside
 
-    want, seen = {}, collections.Counter()
+    want, seen, alt = {}, collections.Counter(), {}
     for slug, hole, meta, H, W in _green_surfaces():
         _engine(slug)
         import render_green as rg
@@ -7622,29 +7676,116 @@ def test_a_card_whose_front_edge_is_bank_says_so_beside_the_depth():
         _mx, my = rg.screen_m_per_unit(theta, px_x, px_y)
         rp = [rg.rot(x, y, cx, cy, theta) for x, y in rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)]
         fy, by, midx = rg.play_line_span(rp)
-        span = fy - by
-        steps = max(2, int(span/0.01))
-        run = 0.0
+
+        def bank_from(edge_y, toward_y):
+            """The leading over-10% run inward from one mapped edge, walked here rather than called.
+
+            Both ends from one local function, for the same reason the engine has one walk: two copies
+            would be two things to keep in step, and the point of this check is that it is an
+            INDEPENDENT re-derivation -- its own rasterised mask, its own play line, its own steps.
+            """
+            span = abs(edge_y - toward_y)
+            sgn = 1.0 if toward_y > edge_y else -1.0
+            steps = max(2, int(span/0.01))
+            run = 0.0
+            for i in range(steps+1):
+                yy = edge_y + sgn*span*i/steps
+                px, py = rg.rot(midx, yy, cx, cy, -theta)
+                ri, ci = int(py), int(px)
+                if not (0 <= ri < H and 0 <= ci < W):
+                    break
+                if slope[ri, ci] <= rg.SLOPE_LABEL_MAX_PCT:
+                    break
+                run = span*i/steps
+            return run*my/0.9144
+
+        want[(slug, hole)] = {"front": bank_from(fy, by), "back": bank_from(by, fy)}
+        # ...and the three REJECTED alternatives, so the paragraph that rejects them is measured too:
+        # two of its four figures were wrong. The putt re-base is the extent of `putt` along this same
+        # play line; the two trims are just this green's own runs taken off the printed depth.
+        steps = max(2, int((fy-by)/0.01))
+        pys = []
         for i in range(steps+1):
-            yy = fy - span*i/steps
+            yy = by + (fy-by)*i/steps
             px, py = rg.rot(midx, yy, cx, cy, -theta)
             ri, ci = int(py), int(px)
-            if not (0 <= ri < H and 0 <= ci < W):
-                break
-            if slope[ri, ci] <= rg.SLOPE_LABEL_MAX_PCT:
-                break
-            run = span*i/steps
-        want[(slug, hole)] = run*my/0.9144
+            if 0 <= ri < H and 0 <= ci < W and S["putt"][ri, ci]:
+                pys.append(yy)
+        alt[(slug, hole)] = dict(
+            depth=(fy-by)*my/0.9144,
+            putt=((max(pys)-min(pys))*my/0.9144) if pys else None,
+            front=want[(slug, hole)]["front"], back=want[(slug, hole)]["back"])
         seen[slug] += 1
-    assert_no_course_skipped(seen, "test_a_card_whose_front_edge_is_bank_says_so_beside_the_depth")
+    assert_no_course_skipped(seen, "test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth")
     assert len(want) >= 180, f"only {len(want)} greens walked of the corpus's 198"
 
-    flagged = {k: v for k, v in want.items() if v >= FRONT_BANK_NOTE_MIN_YD}
-    assert flagged, (
-        f"no green in the corpus begins with {FRONT_BANK_NOTE_MIN_YD} yd of bank on its play line, so "
-        f"this disclosure never prints. Nine did (micke-grove 2 worst, 5.33 yd). If the outlines or the "
-        f"surfaces changed that is good news, but verify it -- an unreachable caveat is one that will "
-        f"not fire when it is next needed.")
+    # THE FLOOR IS THE ENGINE'S OWN, not a second copy of it. This constant and generate.py's
+    # BANK_NOTE_MIN_YD are one figure in two records, which is the defect this suite keeps finding
+    # elsewhere -- so the engine's is read out of its source and required to match. On the AST rather
+    # than by regex, because that is what makes "at MODULE scope" part of the claim: a floor buried in
+    # the phrase builder is exactly the shape that drifts.
+    import ast
+    engine_floor = [n.value.value
+                    for n in ast.parse(open(os.path.join(ROOT, "generate.py"),
+                                            encoding="utf-8").read()).body
+                    if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+                    for t in n.targets
+                    if isinstance(t, ast.Name) and t.id == "BANK_NOTE_MIN_YD"]
+    assert engine_floor, (
+        "generate.py no longer assigns BANK_NOTE_MIN_YD at module scope. It is the yard at which the "
+        "bank caveat prints, this test carries its own copy of it, and an unnamed literal buried in "
+        "the phrase builder is how those two would drift apart.")
+    assert engine_floor[0] == BANK_NOTE_MIN_YD, (
+        f"generate.py prints the bank caveat at {engine_floor[0]} yd and this test grades it at "
+        f"{BANK_NOTE_MIN_YD}. One figure, two records: make the engine's the one that moves.")
+
+    for end in ("front", "back"):
+        flagged = {k: v[end] for k, v in want.items() if v[end] >= BANK_NOTE_MIN_YD}
+        assert flagged, (
+            f"no green in the corpus has {BANK_NOTE_MIN_YD} yd of bank at its {end} edge on the play "
+            f"line, so that half of this disclosure never prints. Nine did at the front (micke-grove 2 "
+            f"worst, 5.33 yd) and fourteen at the back (copper-valley 3 worst, 6.51). If the outlines "
+            f"or the surfaces changed that is good news, but verify it -- an unreachable caveat is one "
+            f"that will not fire when it is next needed.")
+
+    # THE THREE REJECTED ALTERNATIVES, graded in both places that publish them. The argument for
+    # leaving the datum alone IS these numbers, and two of the four were wrong in both records at once:
+    # the median re-basing shift (2.75 published, 2.7399 measured) and the both-ends trim (23 published,
+    # 28 measured). The second understated the case against the trim, which is the argument's own side.
+    shifts = [abs(a["depth"] - a["putt"]) for a in alt.values() if a["putt"] is not None]
+    rebased = sum(1 for a in alt.values()
+                  if a["putt"] is not None and round(a["depth"]) != round(a["putt"]))
+    n_front = sum(1 for a in alt.values() if round(a["depth"] - a["front"]) != round(a["depth"]))
+    n_both = sum(1 for a in alt.values()
+                 if round(a["depth"] - a["front"] - a["back"]) != round(a["depth"]))
+    assert rebased == len(shifts), (
+        f"re-basing on S['putt'] would move {rebased} of {len(shifts)} rounded printed depths, not all "
+        f"of them -- the docstring above says ALL, so re-read it before editing")
+    facts = {"all N printed depths": (len(shifts), _DATUM_ALL),
+             "median shift yd": (round(statistics.median(shifts), 2), _DATUM_MEDIAN),
+             "front-trim movers": (n_front, _DATUM_FRONT),
+             "both-ends-trim movers": (n_both, _DATUM_BOTH)}
+    stale, hits = [], collections.Counter()
+    for path, fn in ((os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                      "test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth"),
+                     (os.path.join(ROOT, "render_green.py"), "bank_run_yd")):
+        prose = _func_prose(path, fn)
+        rel = os.path.relpath(path, ROOT)
+        for label, (real, pat) in facts.items():
+            for m in pat.finditer(prose):
+                hits[label] += 1
+                said = float(m.group(1)) if "." in m.group(1) else int(m.group(1))
+                if said != real:
+                    stale.append(f"{rel}/{fn} says {m.group(0)!r}; measured over {len(shifts)} greens "
+                                 f"the {label} is {real}")
+    missing = [k for k in facts if not hits[k]]
+    assert not missing, (
+        f"the rejected-datum figures {missing} are no longer stated in either place. They ARE the "
+        f"argument for not moving the datum -- 'look how many printed depths each alternative would "
+        f"move' -- so deleting one must not be how this passes. Measured: "
+        f"{ {k: v[0] for k, v in facts.items()} }")
+    assert not stale, ("a published figure for a rejected depth datum is not what it measures:\n  "
+                       + "\n  ".join(stale))
 
     problems, checked = [], 0
     for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
@@ -7663,29 +7804,31 @@ def test_a_card_whose_front_edge_is_bank_says_so_beside_the_depth():
             if (ref, hole) not in want:
                 continue
             checked += 1
-            flat = re.sub(r"<[^>]+>", "", blk).replace("&middot;", "-")
-            said = re.search(r"front\s+(\d+)\s*yd[^.<]{0,24}bank", flat)
-            yd = want[(ref, hole)]
-            if yd >= FRONT_BANK_NOTE_MIN_YD:
-                if not said:
+            flat = re.sub(r"<[^>]+>", " ", blk).replace("&middot;", "-")
+            for end in ("front", "back"):
+                said = re.search(rf"\b{end}\s+(\d+)\s*yd\s+is\s+bank", flat)
+                yd = want[(ref, hole)][end]
+                where = "begins with" if end == "front" else "ends with"
+                if yd >= BANK_NOTE_MIN_YD:
+                    if not said:
+                        problems.append(
+                            f"{ref}/{os.path.basename(p)} hole {hole}: the play line {where} "
+                            f"{yd:.2f} yd steeper than {rg.SLOPE_LABEL_MAX_PCT:.0f}% -- bank, by this "
+                            f"card's own legend -- and the footer states its depth and rules a 5-yd "
+                            f"ladder through it without saying so")
+                    elif int(said.group(1)) != int(round(yd)):
+                        problems.append(
+                            f"{ref}/{os.path.basename(p)} hole {hole}: the card says the {end} "
+                            f"{said.group(1)} yd is bank; measured down the play line it is "
+                            f"{yd:.2f} -> {int(round(yd))}")
+                elif said:
                     problems.append(
-                        f"{ref}/{os.path.basename(p)} hole {hole}: the play line begins with "
-                        f"{yd:.2f} yd steeper than {rg.SLOPE_LABEL_MAX_PCT:.0f}% -- bank, by this "
-                        f"card's own legend -- and the footer states its depth and rules a 5-yd "
-                        f"ladder from it without saying so")
-                elif int(said.group(1)) != int(round(yd)):
-                    problems.append(
-                        f"{ref}/{os.path.basename(p)} hole {hole}: the card says the front "
-                        f"{said.group(1)} yd is bank; measured down the play line it is "
-                        f"{yd:.2f} -> {int(round(yd))}")
-            elif said:
-                problems.append(
-                    f"{ref}/{os.path.basename(p)} hole {hole}: the card says the front "
-                    f"{said.group(1)} yd is bank, but the play line has only {yd:.2f} yd over "
-                    f"{rg.SLOPE_LABEL_MAX_PCT:.0f}% -- a caveat with no ground under it")
+                        f"{ref}/{os.path.basename(p)} hole {hole}: the card says the {end} "
+                        f"{said.group(1)} yd is bank, but the play line has only {yd:.2f} yd over "
+                        f"{rg.SLOPE_LABEL_MAX_PCT:.0f}% there -- a caveat with no ground under it")
     assert checked >= expected_geometry_holes() - 18, (
         f"only {checked} green cards checked of {expected_geometry_holes()} holes with geometry")
-    assert not problems, ("a printed depth starts on ground the same card calls bank:\n  "
+    assert not problems, ("a printed depth is measured through ground the same card calls bank:\n  "
                           + "\n  ".join(problems[:8]))
 
 
@@ -17493,10 +17636,10 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-05): micke-grove 4,325,679; castlewood-hill 4,476,635;
-    merion 5,870,255; monarch-bay 4,933,973; copper-valley 6,084,113; callippe 6,797,931;
-    castlewood-valley 5,835,873; philadelphia 4,604,431; the-reserve 5,109,839;
-    bay-view 4,243,019; valley-hi 4,698,203; poppy-ridge 340,883.
+    CURRENT SIZES (2026-08-05): micke-grove 4,325,682; castlewood-hill 4,476,696;
+    merion 5,870,316; monarch-bay 4,933,973; copper-valley 6,084,200; callippe 6,797,931;
+    castlewood-valley 5,835,995; philadelphia 4,604,434; the-reserve 5,109,868;
+    bay-view 4,243,080; valley-hi 4,698,203; poppy-ridge 340,883.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a

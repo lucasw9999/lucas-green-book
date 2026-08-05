@@ -346,26 +346,62 @@ def playline_html(hole, info):
 
 
 def depth_phrase(s):
-    """"37yd deep", plus the front bank where there is one -- for BOTH editions.
+    """"37yd deep" -- for BOTH editions. The bank caveat that goes with it is `bank_span`.
 
-    The depth and the 5-yd ladder are both measured from where the green polygon crosses the line of
-    play, and on nine of 198 greens that crossing sits on ground this same card's legend disowns: "over
-    10% is bank or bunker face, not putting surface". micke-grove 2 prints 22yd deep and rules rungs at
-    5/10/15/20 from a front edge with 5.33 yd of bank behind it, so its "5" is the top of the bank and
-    the puttable green runs from there to the back. Nothing on the card said so; the bank was visible
-    only as colour, which the legend explains as steepness and not as "this is not green".
+    A shared helper because this footer has diverged between the two editions three times
+    (green_honesty, then the footer, then the playline) and each fix was a copy that reset the clock."""
+    return f'{s["depth_yd"]}yd deep'
 
-    The DATUM is deliberately not moved -- see render_green.front_bank_yd for the three alternatives and
-    what each measured -- so the printed depth still matches the drawn outline, its own geodesic check
-    and the hole map's green_front_yd. The card discloses instead.
 
-    Prints only at a rounded yard or more, which is the resolution the depth itself is printed at.
-    A shared helper because this footer has diverged between the two editions three times (green_honesty,
-    then the footer, then the playline) and each fix was a copy that reset the clock."""
-    yd = s.get("front_bank_yd") or 0.0
-    n = int(round(yd))
-    bank = f' &middot; front {n}yd is bank' if yd >= 1.0 else ''
-    return f'{s["depth_yd"]}yd deep{bank}'
+# The rounded yard at which a bank is worth a line on the card, for BOTH ends and BOTH editions.
+# Named, and cross-checked against the test's own copy, because it is now applied in four places
+# (two ends x two editions) and the suite carries an independent re-derivation of it.
+#
+# 1.0 rather than 0.5: 0.5 is where the bank starts moving the ROUNDED depth, but callippe 7's front
+# run measures 0.5013 yd -- 0.13 inch from that boundary -- and the two implementations of this walk
+# would then be pinned against each other across a cliff that thin. Measured since, and it is a
+# stronger reason than the original: the engine's scanline rasteriser and the test's point-in-pixel
+# one produce BIT-IDENTICAL masks on all 198 greens, so the two walks agree to 0.000000 yd at both
+# ends and no floor is a flake. 1.0 is kept because it is the resolution the depth itself is printed
+# at. The stated cost is the runs just under it going unannounced: front callippe 3 (0.854) and
+# philadelphia 11 (0.767); back castlewood-valley 12 (0.995), copper-valley 15 (0.730),
+# the-reserve 4 (0.685), copper-valley 13 (0.629), castlewood-hill 12 (0.620), merion 4 (0.588) and
+# valley-hi 16 (0.542). castlewood-valley 12 at 0.995 is 0.005 yd under, which is deliberate rather
+# than overlooked -- both implementations round it the same way, so it is a stable omission and not a
+# coin toss.
+BANK_NOTE_MIN_YD = 1.0
+
+
+def bank_span(s):
+    """The footer's bank caveat -- "front 4yd is bank &middot; back 3yd is bank" -- or "".
+
+    ONE definition for both ends and both editions. The depth and the 5-yd ladder are measured from
+    where the green polygon crosses the line of play, and at either end that crossing can sit on
+    ground this same card's legend disowns: "over 10% is bank or bunker face, not putting surface".
+    micke-grove 2 prints 22yd deep and rules rungs at 5/10/15/20 from a front edge with 5.33 yd of
+    bank behind it; copper-valley 3 prints 30yd deep with 6.51 yd of bank at the BACK. Nothing on
+    either card said so; the bank was visible only as colour, which the legend explains as steepness
+    and not as "this is not green".
+
+    THE BACK NOTE MATTERS MORE THAN THE FRONT ONE. A front bank overstates how much green lies in
+    front of the pin; a back bank overstates how far back the pin can BE, so a junior clubs long into
+    it -- and render_hole already names too-long as the dangerous direction. 21 of 198 greens carry a
+    note (9 front, 14 back, 2 both), and the datum itself is deliberately not moved: see
+    render_green.bank_run_yd for the three alternatives and what each measured.
+
+    ITS OWN SPAN, and that is measured rather than styled. `.foot` is a wrapping flex row whose spans
+    are `white-space: nowrap`, so a span wider than the row does not wrap -- it overflows and the trim
+    line cuts it. Appending the back note to the depth span costs 19 characters, and the two cards that
+    need BOTH notes have nowhere near that: copper-valley 6 carries the widest footer span in the
+    corpus at 296.00 px of 323.00 available (27 px, about six characters) and bay-view 5 has 77. As its
+    own span it wraps to a footer line instead, which the green sizing already reserves three of
+    (render_green: `3 * 0.125 + 0.125` in) and which HEIGHT binds on 0 of 198 greens, so no green is
+    resized. This is why the caveat is not simply concatenated onto depth_phrase.
+    """
+    notes = [f'{end} {int(round(yd))}yd is bank'
+             for end in ("front", "back")
+             for yd in (s.get(f"{end}_bank_yd") or 0.0,) if yd >= BANK_NOTE_MIN_YD]
+    return f'<span>{" &middot; ".join(notes)}</span>' if notes else ''
 
 
 def hole_panel(hole, sheet_label):
@@ -396,7 +432,8 @@ def hole_panel(hole, sheet_label):
         notrees = ' &middot; <b>no tree data</b>'
     foot = (f'<span>{lead}</span>'
             f'<span>{depth_phrase(s)} &middot; {i["bunkers"]}B {i["waters"]}W{notrees}'
-            f' &middot; {esc(others)}</span>')
+            f' &middot; {esc(others)}</span>'
+            f'{bank_span(s)}')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
   <div class="hhead">
@@ -1281,7 +1318,7 @@ def coach_green_card(hole):
   </div>
   <div class="cmap"><div class="minilab">{grnlab} &middot; approach at bottom</div>{gsvg}</div>
   <div class="foot"><span>{clead}</span>
-    <span>{depth_phrase(s)}</span></div>
+    <span>{depth_phrase(s)}</span>{bank_span(s)}</div>
 </div>'''
 
 def coach_about_card():

@@ -226,46 +226,64 @@ def play_line_span(rp):
     return hi, lo, midx                   # approach edge is at the bottom, so front = max
 
 
-def front_bank_yd(front_y, back_y, midx, cx, cy, theta, slope, my, step=0.01):
-    """Yards of the play line, from the mapped front edge inward, that are NOT putting surface.
+def bank_run_yd(from_y, to_y, midx, cx, cy, theta, slope, my, step=0.01):
+    """Yards of the play line, from the mapped edge at `from_y` inward toward `to_y`, that are NOT
+    putting surface. ONE walk, called at BOTH ends of every green.
 
     The depth and the 5-yd ladder both zero at where the OSM green polygon crosses the line of play,
-    and on nine of 198 greens that crossing is on ground steeper than SLOPE_LABEL_MAX_PCT -- which this
+    and at either end that crossing can be on ground steeper than SLOPE_LABEL_MAX_PCT -- which this
     module and the card's own legend both call "bank or bunker face, not putting surface". So the card
-    stated "22yd deep", ruled rungs at 5/10/15/20 from that edge, and said nothing about the 5.33 yd of
-    bank the first rung sits on top of. Worst nine, as the leading run over 10%:
+    stated "22yd deep", ruled rungs at 5/10/15/20 from that edge, and said nothing about the bank the
+    first rung sits on top of. Walked at 0.01 view-unit steps, the leading run over 10%:
 
-        micke-grove 2 5.33 of 22 yd (24%), copper-valley 6 3.58 of 24, castlewood-valley 16 3.21 of 30,
-        castlewood-hill 10 3.15 of 28, castlewood-valley 12 2.64 of 40, merion 6 2.32 of 34,
-        philadelphia 18 2.28 of 37, bay-view 13 1.31 of 22, bay-view 5 1.13 of 27.
-        Median green: 0.00. It is a tail, not a corpus-wide bias.
+        FRONT, 9 of 198 >= 1 yd: micke-grove 2 5.33 of 22 yd (24%), copper-valley 6 3.58 of 24,
+        castlewood-valley 16 3.21 of 30, castlewood-hill 10 3.15 of 28, castlewood-valley 12 2.64 of
+        40, merion 6 2.32 of 34, philadelphia 18 2.28 of 37, bay-view 13 1.31 of 22, bay-view 5 1.13
+        of 27.
+
+        BACK, 14 of 198 >= 1 yd: copper-valley 3 6.51 of 30 (22%), castlewood-valley 5 3.91 of 27,
+        bay-view 5 3.06 of 27, copper-valley 6 2.51 of 24, bay-view 16 2.08 of 27, castlewood-hill 14
+        2.03 of 24, castlewood-valley 10 1.86 of 39, merion 13 1.68 of 22, castlewood-valley 11 1.55
+        of 32, copper-valley 18 1.46 of 18, the-reserve 1 1.45 of 30, castlewood-hill 11 1.12 of 18,
+        castlewood-valley 3 1.09 of 34, merion 10 1.06 of 29.
+
+        Median green at either end: 0.00. It is a tail, not a corpus-wide bias.
+
+    THE BACK END IS THE MORE DANGEROUS ONE and it was disclosed second, which is the wrong order. A
+    front bank makes the printed depth and the ladder start early -- it OVERSTATES how much green
+    there is in front of the pin. A back bank overstates how far BACK the pin can be, and this file
+    already names too-long as the dangerous direction: a junior reading "30yd deep" on copper-valley
+    3 clubs for a pin up to 30 yd deep when the last 6.51 of those yards are a bank the ball will not
+    hold. Two of the 21 affected greens have BOTH (copper-valley 6, bay-view 5).
 
     THIS DOES NOT MOVE THE DATUM, and that is measured rather than preferred. Re-basing depth on
-    S['putt'] -- the obvious fix -- moves all 198 printed depths by a median 2.75 yd and up to 9.64,
+    S['putt'] -- the obvious fix -- moves all 198 printed depths by a median 2.74 yd and up to 9.64,
     because `putt` is `erode(mask, 3) & (slope <= 10)` and the erosion trims 1.2 m of collar off BOTH
     ends of every green: a device for fitting a plane, not a statement about where the green stops.
-    Trimming just the leading steep run moves 12 depths, both ends 23. Either would put the printed
+    Trimming just the leading steep run moves 12 depths, both ends 28. Either would put the printed
     depth off the drawn OUTLINE, which runs through that same bank because it IS the polygon, and would
     cost the depth its independent check -- tests grade every printed depth against the true WGS84
     geodesic of its own chord to 1e-4 yd, and that only works while depth is a pure function of the
     polygon. The polygon is also what render_hole projects green_front_yd from, so one datum serves the
     hole map and the green card.
 
-    So the geometry is unchanged and the CARD says the bank is there. generate.py prints it beside the
-    depth when it rounds to a yard or more; below that it is under the resolution the depth is printed
-    at (callippe 3 at 0.85 yd and philadelphia 11 at 0.77 go unannounced, which is the stated cost).
+    So the geometry is unchanged and the CARD says the bank is there, at both ends, from one walk and
+    one phrase (generate.bank_span) so the two editions and the two ends cannot drift into four
+    idioms. generate.py prints each end when it rounds to a yard or more; below that it is under the
+    resolution the depth is printed at.
 
     No mask test in the walk. `play_line_span` returns the longest INTERIOR run of the centre line, so
-    every sample between back_y and front_y is inside the polygon by construction, while the rasterised
+    every sample between the two edges is inside the polygon by construction, while the rasterised
     mask needs a pixel CENTRE inside and so drops pixels along the boundary: testing it made merion 6
     read 0.35 yd instead of 2.32, stopping the run on a rasterisation artifact one third of a yard in.
     """
     H, W = slope.shape
-    span = front_y - back_y
+    span = abs(from_y - to_y)
+    sgn = 1.0 if to_y > from_y else -1.0        # walk INWARD, whichever edge we started from
     n = max(2, int(span/step))
     run = 0.0
     for i in range(n+1):
-        yy = front_y - span*i/n
+        yy = from_y + sgn*span*i/n
         px, py = rot(midx, yy, cx, cy, -theta)
         ri, ci = int(py), int(px)
         if not (0 <= ri < H and 0 <= ci < W):
@@ -384,7 +402,8 @@ def _blank_green(meta, tournament, rebuilt=False):
     return svg, dict(relief_ft=0.0, median_slope=0.0, tilt_pct=0.0,
                      feeds=("rebuilt since survey" if rebuilt else "not surveyed"),
                      undul_ft=0.0, conf="no data", depth_yd=depth_yd, width_yd=width_yd,
-                     front_bank_yd=0.0, scale_max_in=None, insufficient=True)
+                     front_bank_yd=0.0, back_bank_yd=0.0,
+                     scale_max_in=None, insufficient=True)
 
 
 # Render-time gate. Deliberately looser than fetch_dem_hd.py's producer gate (NAN_FRAC_MAX=0.02):
@@ -844,10 +863,12 @@ def render(hole, tournament=False):
     front_y, back_y, midx = play_line_span(rp)
     depth_yd = (front_y-back_y)*my/0.9144
     width_yd = (max(rxs)-min(rxs))*mx/0.9144
-    # ...and how much of that depth, at the front, is bank rather than green. Measured, not trimmed:
+    # ...and how much of that depth, at EACH end, is bank rather than green. Measured, not trimmed:
     # the datum stays on the polygon so the number still matches the drawing and its own geodesic
-    # check, and the CARD discloses the bank instead. See front_bank_yd.
-    fb_yd = front_bank_yd(front_y, back_y, midx, cx, cy, theta, slope, my)
+    # check, and the CARD discloses the bank instead. Back as well as front, because a back bank is
+    # the more dangerous of the two -- it overstates how far back a pin can be. See bank_run_yd.
+    fb_yd = bank_run_yd(front_y, back_y, midx, cx, cy, theta, slope, my)
+    bb_yd = bank_run_yd(back_y, front_y, midx, cx, cy, theta, slope, my)
     def xspans(yy):
         """The green's x-extent(s) at screen-y yy, as inside/outside PAIRS.
 
@@ -996,7 +1017,7 @@ def render(hole, tournament=False):
                    source=meta.get('source',''),
                    tilt_pct=round(tilt_pct,1), feeds=best, undul_ft=round(undul_ft,1),
                    conf=conf, depth_yd=int(round(depth_yd)), width_yd=int(round(width_yd)),
-                   front_bank_yd=fb_yd, scale_max_in=scale_max_in)
+                   front_bank_yd=fb_yd, back_bank_yd=bb_yd, scale_max_in=scale_max_in)
     return svg, summary
 
 
