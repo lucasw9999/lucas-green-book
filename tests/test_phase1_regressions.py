@@ -2804,7 +2804,7 @@ def test_every_printed_caveat_matches_the_data_behind_it():
             if refused and not no_slope:
                 problems.append(f"{ref} hole {hn}: the gate refused this surface but the card still "
                                 f"prints a slope -- a number the data does not support")
-            if no_slope and re.search(r"&middot; \d+\.\d%", blk):
+            if no_slope and re.search(r"&middot; (?:[a-z]+ )?\d+\.\d%", blk):
                 problems.append(f"{ref} hole {hn}: card says no slope printed, yet prints one")
     assert checked >= expected_geometry_holes() - 18, (
         f"only {checked} cards checked of {expected_geometry_holes()} holes with geometry -- a course is being "
@@ -3296,6 +3296,421 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
 # legend is prose that gets re-edited for space, and the requirement is the SCOPE, not the sentence.
 _PER_GREEN_SCOPE = ("on that green", "on this green", "that green only", "each green",
                     "per green", "within one green", "one green at a time")
+
+
+def _cards_of(path):
+    """[(hole, card html)] for every hole/green card in one built book."""
+    with open(path, encoding="utf-8") as fh:
+        html = fh.read()
+    out = []
+    for blk in re.split(r'(?=<div class="panel (?:hole|green)[^"]*")', html)[1:]:
+        hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
+        if hn:
+            out.append((int(hn.group(1)), blk))
+    return out
+
+
+def _footer_and_slope_labels():
+    """{(book, hole): (footer pct, [black slope numbers], footer text)} off the SHIPPED books.
+
+    Both figures as a reader meets them: the footer percentage `green_honesty` prints and the per-cell
+    slope numbers `render_green` draws on the map. They are DIFFERENT quantities -- a least-squares
+    plane over the whole putting surface against the slope at one cell -- and the books contained only
+    one definition of "slope %".
+    """
+    out = {}
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        if os.path.basename(os.path.dirname(p)).startswith("_"):
+            continue
+        rel = os.path.join(os.path.basename(os.path.dirname(p)), os.path.basename(p))
+        for hole, blk in _cards_of(p):
+            fm = re.search(r'<div class="foot"><span>(.*?)</span>', blk, re.S)
+            if not fm:
+                continue
+            pm = re.search(r'&middot;\s*(?:[a-z]+\s+)?([\d.]+)%', fm.group(1))
+            if not pm:
+                continue
+            gm = re.search(r'<div class="grn">(.*?)</div>\s*</div>', blk, re.S)
+            seg = gm.group(1) if gm else blk
+            blacks = sorted(int(x) for x in
+                            re.findall(r'font-size="4\.6"[^>]*>(\d+)</text>', seg))
+            out[(rel, hole)] = (float(pm.group(1)), blacks, fm.group(1))
+    return out
+
+
+@needs_corpus
+def test_the_footer_percentage_is_not_read_as_the_legend_s_slope_number():
+    """Every green footer prints a percentage that no legend row in any of the 15 books defines.
+
+    29 distinct legend rows ship across the corpus. The only ones containing "%" are the two "Black
+    numbers = slope % there" variants, "Colour = steepness ... (>=5%)", and `_no_fall_note` on two
+    books -- which references the figure ("The measured slope % still prints") without defining it. So
+    the card's ONLY definition of a slope percentage is per-cell slope at a labelled point, and the
+    footer figure is a least-squares plane over the whole putting surface: a different quantity, from a
+    different derivation, printed in the same units two lines away.
+
+    They disagree in the direction that reads as flatter. Measured over all 198 greens by parsing the
+    shipped SVGs: the footer sits BELOW every black number on the same card on 134 of them, median
+    0.5 pp, worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black numbers of
+    6,7,8,8,10,10,10 whose own median local slope is 4.8%. On 106 of the 170 greens carrying no (faint)
+    and no no-clear-fall qualifier, so nothing on the card warns the reader either. A junior applying
+    the card's only definition reads copper-valley 6 as dead flat.
+
+    Fixed with one word rather than a legend row, because card space is the binding constraint here and
+    monarch-bay's guide card has 1.19 px of clearance: the figure now prints as "overall N%", which is
+    self-defining beside "slope % there" and costs no row. Graded three ways -- the word is present on
+    every footer, the legend still defines the black numbers, and the disagreement figures that justify
+    the change are re-derived from the shipped SVGs rather than quoted.
+    """
+    rows = _footer_and_slope_labels()
+    if not rows:
+        pytest.skip("no book built")
+    unlabelled = [k for k, v in rows.items()
+                  if not re.search(r"&middot;\s+[a-z]+\s+[\d.]+%", v[2])]
+    assert not unlabelled, (
+        f"{len(unlabelled)} green footer(s) print a bare percentage, and the only definition of a "
+        f"slope percentage on the card is the legend's per-cell 'slope % there'. A reader applying it "
+        f"to a whole-surface plane fit reads a green with 10% faces as nearly flat: "
+        f"{sorted(unlabelled)[:6]}")
+
+    # the legend must still define the black numbers, or the word above distinguishes nothing
+    defined = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        if "<b>Black numbers</b> = slope % there" in html:
+            defined += 1
+    assert defined >= 13, (
+        f"only {defined} of the built books still define the black numbers as 'slope % there'; the "
+        f"footer's own label is only meaningful against that definition")
+
+    # ...and the figures that justify it, re-derived from the shipped SVGs rather than quoted
+    pocket = {k: v for k, v in rows.items() if k[0].endswith("greenbook.html")}
+    gaps = {k: min(v[1]) - v[0] for k, v in pocket.items() if v[1]}
+    below = {k: g for k, g in gaps.items() if g > 0}
+    ordered = sorted(gaps.values())
+    med = ordered[len(ordered) // 2] if len(ordered) % 2 else \
+        (ordered[len(ordered) // 2 - 1] + ordered[len(ordered) // 2]) / 2
+    worst = max(below.values())
+    noqual = {k: v for k, v in pocket.items()
+              if "(faint)" not in v[2] and "no clear fall" not in v[2]}
+    nq_below = [k for k, v in noqual.items() if v[1] and v[0] < min(v[1])]
+    src = _func_prose(os.path.join(ROOT, "generate.py"), "green_honesty")
+    problems = []
+    for pat, got, label in (
+            (r"below every black number on the same card on (\d+) of them", len(below),
+             "greens whose footer is below every black number"),
+            (r"median\s+([\d.]+) pp", med, "the median gap over all 198"),
+            (r"worst ([\d.]+) pp", worst, "the worst gap"),
+            (r"On (\d+) of the \d+ greens that carry no", len(nq_below),
+             "unqualified greens whose footer is below every black number"),
+            (r"On \d+ of the (\d+) greens that carry no", len(noqual), "unqualified greens")):
+        said = _published_figures(src, pat, "green_honesty's comment")
+        if abs(said[0] - got) > 0.06:
+            problems.append(f"green_honesty publishes {label} as {said[0]:g}; measured {got:.4g}")
+    assert not problems, ("the figures that justify labelling the footer percentage are not the ones "
+                          "the shipped cards give:\n  " + "\n  ".join(problems))
+
+
+# The colour a WORD names, in sRGB. CSS named colours where one exists; "amber" is the standard
+# traffic amber, which is not a CSS name. Every word is graded on HUE, and additionally on LIGHTNESS
+# when it carries an explicit lightness modifier -- "dark", "light", "pale", "deep", "bright" -- because
+# that modifier is the part of the word that makes a claim the ink can contradict. "dark red" named ink
+# 30 L* away from darkred; plain "red" is 4.9 L* away, so dropping the modifier was the whole fix.
+_COLOUR_WORDS = {"green": (0, 128, 0), "red": (255, 0, 0), "yellow": (255, 255, 0),
+                 "amber": (255, 191, 0), "orange": (255, 165, 0), "brown": (165, 42, 42),
+                 "tan": (210, 180, 140), "blue": (0, 0, 255), "grey": (128, 128, 128),
+                 "dark red": (139, 0, 0), "dark green": (0, 100, 0), "light green": (144, 238, 144),
+                 "pale yellow": (255, 255, 224), "deep red": (139, 0, 0)}
+_LIGHTNESS_MODIFIER = re.compile(r"\b(dark|light|pale|deep|bright)\b", re.I)
+# Tolerances, set from the measurement rather than guessed. The three shipped inks sit 0.0, 0.1 and
+# 4.1 degrees of hue from the words that now name them; "yellow" sat 15.2 degrees from the 2.5% ink.
+# 10 clears the worst pass by 2.4x and refuses the failure by 1.5x.
+_HUE_TOL, _LSTAR_TOL = 10.0, 10.0
+
+
+def _srgb_lstar(rgb):
+    """CIE L* of an sRGB triple. Perceived lightness, which is what a lightness WORD claims."""
+    def lin(c):
+        c /= 255.0
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    y = 0.2126729 * lin(rgb[0]) + 0.7151522 * lin(rgb[1]) + 0.0721750 * lin(rgb[2])
+    f = y ** (1 / 3) if y > 216 / 24389 else (841 / 108) * y + 4 / 29
+    return 116 * f - 16
+
+
+def _hue_deg(rgb):
+    r, g, b = rgb
+    mx, mn = max(rgb), min(rgb)
+    if mx == mn:
+        return 0.0
+    d = mx - mn
+    h = ((g - b) / d) % 6 if mx == r else ((b - r) / d + 2 if mx == g else (r - g) / d + 4)
+    return h * 60.0
+
+
+@needs_corpus
+def test_the_colour_words_name_the_ink_the_page_actually_carries():
+    """fcec32c moved the legend SWATCHES onto the composited ink and left the WORDS on the ramp.
+
+    The map draws its heat cells at HEAT_OPACITY over white, so no cell is ever the ramp's own RGB --
+    which is why the swatches are now drawn at that opacity. The sentence beside them was not moved.
+    Measured in chrome-headless-shell under print media at device_scale_factor=4, reading the centre
+    pixel of each shipped swatch:
+
+        stop     declared ramp    ink on the page   hue    L*
+        0%       150,205,150      190,224,190       120.0  86.0
+        2.5%     206,170,60       225,202,134        44.8  81.8
+        >=5%     150, 40, 32      190,122,117         4.1  58.2
+
+    "amber" (pocket) was already EXACT -- amber is hue 44.9, L* 81.0. The other two were not. The
+    enlarged deck said "yellow" for ink 15.2 degrees of hue and 15.3 L* away from yellow; the ink only
+    reaches hue 60 at about 1.5% slope, not at the 2.5% stop, and coach_about_card emits no
+    _heat_swatches() at all, so the enlarged reader has no key to correct the word against. The pocket
+    said "dark red" for ink 30.1 L* lighter than darkred -- between indianred (53.4) and rosybrown
+    (63.6) -- so a junior hunting a dark red patch to find >=5% ground would not find one.
+
+    Both fixed by taking the false part out rather than adding words: "yellow" -> "amber" (measured
+    exact, same length) and "dark red" -> "red" (SHORTER, and drops a lightness claim the ink cannot
+    support -- plain red is 4.1 degrees and 4.9 L* away). Graded from the ramp and HEAT_OPACITY, so a
+    retuned ramp fails here rather than shipping a word that no longer describes the page.
+    """
+    import render_green as rg
+    op = rg.HEAT_OPACITY
+    ink = {}
+    for pct in (0.0, 2.5, 5.0):
+        c = [int(x) for x in re.findall(r"\d+", rg.heat_color(pct))]
+        ink[pct] = tuple(round(255 - op * (255 - v)) for v in c)
+
+    books = [p for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html")))
+             if not os.path.basename(os.path.dirname(p)).startswith("_")]
+    problems, graded = [], 0
+    for p in books:
+        rel = os.path.join(os.path.basename(os.path.dirname(p)), os.path.basename(p))
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        m = re.search(r"([a-z]+(?: [a-z]+)?)\s+flat\s*&rarr;\s*([a-z]+(?: [a-z]+)?)\s*&rarr;\s*"
+                      r"([a-z]+(?: [a-z]+)?)\s*\(&ge;5%\)", html)
+        if not m:
+            continue                      # a yardage-mode book prints no colour row
+        graded += 1
+        for word, pct in zip(m.groups(), (0.0, 2.5, 5.0)):
+            word = " ".join(word.split()).lower()
+            if word not in _COLOUR_WORDS:
+                problems.append(f"{rel}: the colour legend names {word!r} at the {pct:g}% stop and "
+                                f"nothing here knows what colour that word means, so the claim cannot "
+                                f"be checked against the ink. Add it to _COLOUR_WORDS with a source.")
+                continue
+            ref = _COLOUR_WORDS[word]
+            dh = abs(_hue_deg(ref) - _hue_deg(ink[pct]))
+            dh = min(dh, 360 - dh)
+            if dh > _HUE_TOL:
+                problems.append(f"{rel}: the {pct:g}% stop is called {word!r} (hue "
+                                f"{_hue_deg(ref):.1f}) and the ink on the page is hue "
+                                f"{_hue_deg(ink[pct]):.1f} -- {dh:.1f} degrees apart")
+            if _LIGHTNESS_MODIFIER.search(word):
+                dl = abs(_srgb_lstar(ref) - _srgb_lstar(ink[pct]))
+                if dl > _LSTAR_TOL:
+                    problems.append(
+                        f"{rel}: the {pct:g}% stop is called {word!r}, which claims a lightness of "
+                        f"L* {_srgb_lstar(ref):.1f}; the ink on the page is L* "
+                        f"{_srgb_lstar(ink[pct]):.1f} -- {dl:.1f} apart. A reader looking for that "
+                        f"shade will not find it on any card.")
+    assert graded >= 13, f"only {graded} colour legends graded -- build the books first"
+    assert not problems, ("a colour WORD in the legend does not describe the ink the page carries:\n  "
+                          + "\n  ".join(problems))
+
+
+@needs_corpus
+def test_the_gutter_legend_does_not_deny_a_sum_the_engine_computes_exactly():
+    """The legend said the two gutter numbers "do not add up", and on every straight par 3 they do.
+
+    render_hole sets `ft_exact = float(total_yd - yd)` on a straight par 3 precisely so they sum to the
+    card, and `par3_exact_from_tee`'s docstring says the opposite of the legend: "tee, tick and green
+    are collinear and the two numbers MUST sum to the card ... A par 4 or 5 is excluded because
+    (card - to_green) would mix a walked measure with a straight-line one."
+
+    Measured off the shipped SVGs against each course's card yardage for the tee the book is built on:
+    72 of the 74 printed par-3 gutter pairs sum exactly to the card, on 43 of 44 holes, across 11 of 11
+    slope courses. The two that do not are both on copper-valley 13, the corpus's one non-straight par 3
+    (arc/chord 1.0237), which `par3_exact_from_tee`'s straightness guard refuses on purpose -- so the
+    exceptions are the guard working, not the claim holding. Of the 743 par-4 and par-5 pairs the sum
+    runs card-54 to card+12, median -3. The warning was right on the rows the engine scales
+    proportionally and wrong on exactly the rows it computes exactly.
+
+    Scoped rather than deleted, and the scoped sentence is SHORTER than the one it replaces: "on a par 4
+    or 5 they need not add up". "need not" rather than "do not" because 62 sum exactly by coincidence on
+    those 743, and a card should not make a claim about its own arithmetic that its own arithmetic
+    breaks.
+    """
+    p3, p3_exact, p3_holes, courses, other, other_exact = 0, 0, set(), set(), [], 0
+    p3_all_holes = set()
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+        slug = os.path.basename(os.path.dirname(p))
+        cfg = _engine(slug)[0]
+        if cfg.BUILD_MODE != "full":
+            continue
+        for hole, blk in _cards_of(p):
+            i, j = blk.find('<div class="lay">'), blk.find('<div class="grn">')
+            if i < 0:
+                continue
+            rows = {}
+            for mm in re.finditer(r'<text x="[\d.]+" y="([\d.]+)"[^>]*'
+                                  r'fill="(#2f5a26|#7a4a12)"[^>]*>(\d+)</text>', blk[i:j]):
+                rows.setdefault(round(float(mm.group(1)), 1), {})[mm.group(2)] = int(mm.group(3))
+            card, par = cfg.HOLES[hole][cfg.BACK_I], cfg.HOLES[hole][0]
+            for d in rows.values():
+                if len(d) < 2:
+                    continue
+                tot = d["#2f5a26"] + d["#7a4a12"]
+                if par == 3:
+                    p3 += 1
+                    p3_all_holes.add((slug, hole))
+                    if tot == card:
+                        p3_exact += 1
+                        p3_holes.add((slug, hole))
+                        courses.add(slug)
+                else:
+                    other.append(tot - card)
+                    other_exact += bool(tot == card)
+    assert p3_exact and other, (f"only {p3_exact} exact par-3 and {len(other)} par-4/5 gutter pairs "
+                                f"found; both kinds are needed or this test cannot tell the legend is "
+                                f"over-broad")
+
+    problems = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        rel = os.path.join(os.path.basename(os.path.dirname(p)), os.path.basename(p))
+        with open(p, encoding="utf-8") as fh:
+            txt = re.sub(r"<[^>]+>", "", fh.read())
+        txt = " ".join(txt.split())
+        for m in re.finditer(r"[^.]*\badd up\b[^.]*\.", txt):
+            s = m.group(0)
+            if not re.search(r"par 4 or 5|par 4s and 5s|except on a par 3|not on a par 3", s, re.I):
+                problems.append(f"{rel}: the gutter legend claims the two numbers do not add up "
+                                f"without excluding the par 3s, and {p3_exact} printed par-3 pairs on "
+                                f"{len(p3_holes)} holes across {len(courses)} courses sum to the card "
+                                f"exactly, by construction: {s.strip()[:140]}")
+    doc = test_the_gutter_legend_does_not_deny_a_sum_the_engine_computes_exactly.__doc__
+    for pat, got, label in (
+            (r"(\d+) of the (\d+) printed par-3 gutter pairs sum exactly", p3_exact,
+             "the exact-sum par-3 pairs"),
+            (r"\d+ of the (\d+) printed par-3 gutter pairs", p3, "the printed par-3 pairs"),
+            (r"on (\d+) of (\d+) holes", len(p3_holes), "the holes carrying them"),
+            (r"on \d+ of (\d+) holes", len(p3_all_holes), "the par-3 holes with printed pairs"),
+            (r"across (\d+) of \d+ slope courses", len(courses), "the courses"),
+            (r"Of the (\d+) par-4 and par-5 pairs", len(other), "the par-4/5 pairs"),
+            (r"because (\d+) sum exactly by coincidence", other_exact, "the coincidental sums"),
+            (r"card-(\d+) to card\+\d+", -min(other), "the largest shortfall"),
+            (r"card-\d+ to card\+(\d+)", max(other), "the largest overshoot")):
+        said = _published_figures(doc, pat, "this test's docstring")
+        if abs(said[0] - got) > 0.5:
+            problems.append(f"this test's docstring publishes {label} as {said[0]:g}; measured {got}")
+    assert not problems, ("the gutter legend denies a sum the engine computes exactly, or the "
+                          "measurement behind it has drifted:\n  " + "\n  ".join(problems))
+
+
+@needs_corpus
+def test_the_enlarged_about_block_does_not_name_a_product_its_own_greens_deny():
+    """The enlarged deck credited every printed surface figure to "public-domain USGS 3DEP LiDAR".
+
+    The SAME CARD's guide row says 6 of monarch-bay's greens "had no usable point cloud" and come from
+    the seamless mosaic instead -- so on the one enlarged book where it matters, the About block named a
+    product its own greens deny, in the direction that OVERSTATES data quality. The pocket twin already
+    carried the correct product-neutral wording ("USGS 3DEP elevation (a U.S. Government work)"), which
+    makes this the third instance of the two-edition drift green_honesty's docstring records.
+
+    Graded both ways: no book may credit a specific 3DEP PRODUCT while any of its own greens is
+    seamless-sourced, and the two editions must use ONE phrase, because that is what stops the next
+    edit from fixing one and leaving the other.
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    NEUTRAL = "<b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work)"
+    problems, phrases, graded = [], {}, 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        slug = os.path.basename(os.path.dirname(p))
+        if slug.startswith("_"):
+            continue
+        rel = os.path.join(slug, os.path.basename(p))
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        # Bounded to the clause, and NOT stopped at the first ";" -- "&nbsp;" carries one, which cut
+        # the captured phrase to "<b>public-domain USGS&nbsp" and made this grade nothing.
+        m = re.search(r"are computed by the\s+maker from\s+(.{0,140}?);\s*par\b", html, re.S)
+        if not m:
+            continue
+        graded += 1
+        phrase = " ".join(m.group(1).split())
+        phrases.setdefault(phrase, []).append(rel)
+        seam = sorted(h for (s, h), v in cells.items() if s == slug and v[3])
+        if seam and re.search(r"\bLiDAR\b|point cloud", phrase):
+            problems.append(f"{rel} credits every computed figure to {phrase!r}, and holes {seam} of "
+                            f"this course come from the seamless mosaic instead -- the same card says "
+                            f"so two rows above")
+    assert graded >= 13, f"only {graded} About blocks graded -- build the books first"
+    if len(phrases) > 1:
+        problems.append(f"the two editions credit the elevation source differently, which is how one "
+                        f"gets corrected and the other does not: "
+                        f"{ {k: len(v) for k, v in phrases.items()} }")
+    assert NEUTRAL in " ".join(phrases), (
+        f"no book carries the product-neutral wording any more; the phrase(s) in use are "
+        f"{sorted(phrases)}")
+    assert not problems, ("an About block names an elevation product its own greens deny:\n  "
+                          + "\n  ".join(problems))
+
+
+@needs_corpus
+def test_the_yardage_legend_names_the_tee_the_big_number_comes_from():
+    """The yardage book said "The big number is the featured tee" and it is the BACK tee.
+
+    `yardage_hole_panel` headlines `row[BACK_I]` labelled `BACK_NAME`. `config.FEATURED` is a different
+    thing: whichever tee course.json happens to name first. On poppy-ridge -- the only yardage-mode
+    course, so the only book that ships this sentence -- FEATURED is White at 6022 yd while BACK_NAME is
+    Orange at 7010 yd, and hole 1 headlines "610 Orange". The sentence named a tee 988 yd shorter than
+    the one the card is built on, for a junior deciding which row of the table is theirs.
+
+    scorecard_panel's own comment already records why the engine abandoned the term everywhere else:
+    "FEATURED is only whichever of the pair course.json happens to name first: on 6 of 12 courses it is
+    the FORWARD tee". Graded against the card rather than against the word: the tee the legend names must
+    be the tee whose yardage is actually in the big number.
+    """
+    graded = 0
+    problems = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+        slug = os.path.basename(os.path.dirname(p))
+        cfg = _engine(slug)[0]
+        if cfg.BUILD_MODE != "yardage":
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        m = re.search(r"The big number is the <b>([^<]+)</b>", html)
+        assert m, f"{slug}: the yardage legend no longer says what the big number is"
+        graded += 1
+        said = m.group(1).strip().lower()
+        # what the card ACTUALLY headlines
+        heads = {(int(re.search(r'<div class="hnum">(\d+)</div>', blk).group(1)),
+                  re.search(r'class="ymain"[^>]*>(\d+)</span><span class="ylab"[^>]*>([^<]+)<',
+                            blk).group(1),
+                  re.search(r'class="ymain"[^>]*>(\d+)</span><span class="ylab"[^>]*>([^<]+)<',
+                            blk).group(2))
+                 for _h, blk in _cards_of(p)
+                 if re.search(r'class="ymain"', blk)}
+        names = {h[2] for h in heads}
+        assert names == {cfg.BACK_NAME}, (
+            f"{slug}: the hole cards headline {sorted(names)}; config.BACK_NAME is {cfg.BACK_NAME!r}")
+        for hole, yd, name in sorted(heads):
+            want = cfg.HOLES[hole][cfg.BACK_I]
+            if int(yd) != want:
+                problems.append(f"{slug} hole {hole} headlines {yd} {name}; row[BACK_I] is {want}")
+        if "back tee" not in said:
+            problems.append(
+                f"{slug}: the legend calls the big number the {said!r} while every card headlines "
+                f"{cfg.BACK_NAME} = row[BACK_I]. config.FEATURED is {cfg.FEATURED!r}, a different tee "
+                f"on this course by {abs(sum(cfg.HOLES[h][cfg.BACK_I] for h in cfg.HOLES) - sum(cfg.HOLES[h][cfg.FI] for h in cfg.HOLES))} yd")
+    assert graded, "no yardage-mode book built, so this legend row was not graded"
+    assert not problems, ("the yardage legend names a tee the big number does not come from:\n  "
+                          + "\n  ".join(problems))
 
 
 @needs_corpus
@@ -7215,8 +7630,12 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     (The ratio read 1.0003 here, in the caveat's failure message and in the commit that added
     both. 1.0003 is chord/arc, 551.181/551 -- the reciprocal of the published figure, and reading a
     chord/arc as an arc/chord is what turns a straightness measure into a bend. It was the one figure in
-    this docstring nothing asserted.) It is not a dogleg phenomenon at all, and the legend now names
-    the cause instead: two different measures. (The mismatch is not even one-signed -- 125 of 1046 rows
+    this docstring nothing asserted.) It is not a dogleg phenomenon at all. The legend named the cause
+    instead -- two different measures -- and that was the SECOND wrong version of one sentence: on a
+    straight par 3 render_hole computes the from-tee number AS card minus to-green, so those two are the
+    same measure and DO sum exactly, on 72 of the 74 printed par-3 pairs. It is now scoped to a par 4 or
+    5, where the two measures really do differ, and is shorter than either version it replaces. (The
+    mismatch is not even one-signed -- 125 of 1046 rows
     sum HIGH, 750 low, 171 exactly. 18 of the 125 high rows sit on holes bent past 1.02, including
     philadelphia 17 above, so "straight holes overshoot" is false too.)
 
@@ -7291,11 +7710,17 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         # Whitespace-insensitive: the enlarged edition's source wraps this sentence across lines, so a
         # literal regex could only ever have matched the pocket copy -- which is half the reason the
         # enlarged edition went ungraded.
-        assert re.search(r"different\s+measures,\s+so\s+they\s+do\s+<b>not</b>\s+add\s+up",
-                         " ".join(html.split()) or html), (
+        # SCOPED, and that is the third correction to this one sentence. It blamed the dogleg, then it
+        # said the two measures never add up -- and on a straight par 3 render_hole computes
+        # ft_exact = card - to_green precisely so they DO, exactly, on 72 of the 74 printed par-3 pairs.
+        # See test_the_gutter_legend_does_not_deny_a_sum_the_engine_computes_exactly. So what is
+        # required here is the explanation AND the par-4-or-5 scope, not a fixed string.
+        flat = " ".join(html.split()) or html
+        assert re.search(r"from the tee \(walked\)[^.]*par 4 or 5[^.]*add\s+up", flat), (
             f"{os.path.basename(bf)} ({ref}): the guide card no longer explains why the two gutter "
-            f"numbers do not sum -- a reader who adds them finds up to 54 yd of unexplained "
-            f"discrepancy. It must not blame the DOGLEG either: "
+            f"numbers need not sum on a par 4 or 5 -- a reader who adds them finds up to 54 yd of "
+            f"unexplained discrepancy, and an UNSCOPED denial is false on every straight par 3, where "
+            f"they sum exactly by construction. It must not blame the DOGLEG either: "
             + (f"{said_str.group(2)} of the {said_str.group(1)}" if said_str else "most of the")
             + f" pairs on holes this engine calls straight do not add up, worst "
             + (f"{said_worst.group(1)} yd on a hole of arc/chord {said_worst.group(4)}"
@@ -18728,10 +19153,10 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-05): micke-grove 4,326,007; castlewood-hill 4,477,021;
-    merion 5,870,641; monarch-bay 4,934,424; copper-valley 6,084,525; callippe 6,798,256;
-    castlewood-valley 5,836,320; philadelphia 4,604,759; the-reserve 5,110,193;
-    bay-view 4,243,405; valley-hi 4,698,528; poppy-ridge 341,208.
+    CURRENT SIZES (2026-08-05): micke-grove 4,326,134; castlewood-hill 4,477,148;
+    merion 5,870,768; monarch-bay 4,934,551; copper-valley 6,084,652; callippe 6,798,383;
+    castlewood-valley 5,836,447; philadelphia 4,604,886; the-reserve 5,110,320;
+    bay-view 4,243,532; valley-hi 4,698,655; poppy-ridge 341,204.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -19093,8 +19518,12 @@ def test_the_printed_read_is_fitted_to_putting_surface_only():
             # so when the card stopped printing "(firm)" on every green the parse silently returned
             # None for 195 of 198 holes and the comparison below had nothing left to compare -- a test
             # that would have gone quiet rather than red if the format had drifted the other way.
+            # The label is OPTIONAL to the pattern for the same reason the qualifier is: the footer
+            # figure is a whole-surface plane fit, not the legend's per-cell "slope % there", so it
+            # prints as "overall N%" -- and a parser that required the bare form returned None for all
+            # 198 holes and compared nothing, which is how the "(firm)" drift went quiet here before.
             rd = re.search(r'(?:feeds <b>[^<]*</b>|<b>no clear fall</b>)(?: \(faint\))?'
-                           r' &middot; ([\d.]+)%', blk)
+                           r' &middot; (?:[a-z]+ )?([\d.]+)%', blk)
             if hn and rd:
                 printed[int(hn.group(1))] = float(rd.group(1))
             elif hn and 'class="gwrap"' in blk and 'GREEN' in blk:
@@ -19180,7 +19609,7 @@ def test_a_green_whose_plane_and_arrows_conflict_names_no_direction():
                     f"{ref} hole {hn.group(1)} prints 'feeds {render_green.NO_CLEAR_FALL}', which "
                     f"reads as a compass direction -- the whole point is to name none")
                 # the measured tilt is still true and must still be shown
-                assert re.search(r'&middot; [\d.]+%', blk), (
+                assert re.search(r'&middot; (?:[a-z]+ )?[\d.]+%', blk), (
                     f"{ref} hole {hn.group(1)} refuses the direction AND drops the measured tilt; "
                     f"the percentage is still a fact and the card should keep it")
     assert_no_course_skipped(seen, "test_a_green_whose_plane_and_arrows_conflict_names_no_direction")
@@ -24378,8 +24807,8 @@ def test_the_engine_names_every_printed_tilt_that_appears_both_marked_and_unmark
     seen = collections.Counter()
     # Per HOLE PANEL, so a footer is attributed to the card it sits on -- the comment under test names
     # cards, not just percentages.
-    FEED = re.compile(r"feeds <b>[^<]+</b>( \(faint\))? &middot; (\d+\.\d+)%")
-    SENTINEL = re.compile(r"<b>no clear fall</b> &middot; (\d+\.\d+)%")
+    FEED = re.compile(r"feeds <b>[^<]+</b>( \(faint\))? &middot; (?:[a-z]+ )?(\d+\.\d+)%")
+    SENTINEL = re.compile(r"<b>no clear fall</b> &middot; (?:[a-z]+ )?(\d+\.\d+)%")
     for slug in BOOKS:
         p = os.path.join(ROOT, "courses", slug, "greenbook.html")
         with open(p, encoding="utf-8") as fh:

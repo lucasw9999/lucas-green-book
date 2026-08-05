@@ -89,19 +89,19 @@ ran green over them on every merge because it only ever asked about one CSS clas
 > A free, independent green book. Hole & green shapes, and the carry distances measured from
 > them, are a Produced Work from OpenStreetMap data (© OpenStreetMap contributors, ODbL 1.0,
 > osm.org/copyright); slope, contours, arrows & elevation change are computed by the maker from
-> public-domain USGS 3DEP LiDAR; par, yardage & handicap (HCP = men’s stroke index) are facts
-> from the published scorecard. Every map is independently created: no proprietary data, image,
-> symbol set, layout or trade dress of any commercial green-reading product was used, copied,
-> referenced or reverse-engineered, and this book is no substitute for any product. Built
-> entirely from remote public data, without entering any club or course. Not affiliated with,
-> endorsed or sponsored by any course, club, association or product; names & trademarks belong
-> to their owners and identify the course only — contact the maker for removal. Provided free
-> and as-is, with no warranty of any kind (accuracy, fitness or rules conformance): maps show
-> general tilt & tiers, not exact break, and may contain errors — use at your own risk and
-> trust your own read. To the fullest extent permitted by law the maker is not liable for any
-> loss, penalty, damage, ruling or disqualification from use of this book. lucasgreenbook.org ·
-> contact info@lucasgreenbook.org. © 2026 Lucas Wu · Lucas Green Book™. This book: free to
-> share, not for sale — CC BY-NC-ND 4.0.
+> public-domain USGS 3DEP elevation (a U.S. Government work); par, yardage & handicap (HCP =
+> men’s stroke index) are facts from the published scorecard. Every map is independently
+> created: no proprietary data, image, symbol set, layout or trade dress of any commercial
+> green-reading product was used, copied, referenced or reverse-engineered, and this book is no
+> substitute for any product. Built entirely from remote public data, without entering any club
+> or course. Not affiliated with, endorsed or sponsored by any course, club, association or
+> product; names & trademarks belong to their owners and identify the course only — contact the
+> maker for removal. Provided free and as-is, with no warranty of any kind (accuracy, fitness
+> or rules conformance): maps show general tilt & tiers, not exact break, and may contain
+> errors — use at your own risk and trust your own read. To the fullest extent permitted by law
+> the maker is not liable for any loss, penalty, damage, ruling or disqualification from use of
+> this book. lucasgreenbook.org · contact info@lucasgreenbook.org. © 2026 Lucas Wu · Lucas
+> Green Book™. This book: free to share, not for sale — CC BY-NC-ND 4.0.
 
 ## C. Pocket edition back cover -- copyright, trademark & licence
 ### Variant C1 -- printed on 11 book(s): bay-view-golf-club, callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park, valley-hi-country-club

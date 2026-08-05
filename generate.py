@@ -129,7 +129,7 @@ def yardage_guide_panel():
     return '''<div class="panel guide">
   <div class="gtitle">How to use this book</div>
   <div class="legrow"><span><b>Yardages</b> to the green for every tee are on each hole card &mdash;
-    from the official scorecard. The big number is the <b>featured tee</b>.</span></div>
+    from the official scorecard. The big number is the <b>back tee</b>.</span></div>
   <div class="legrow"><span>Use the <b>Read &amp; notes</b> lines to jot the pin, the slope you see, and how the
     ball rolls. Pair this with the printed <b>course aerial</b> to see fairways, bunkers, trees, greens &amp; tees.</span></div>
   <div class="legrow"><span>Green break arrows aren&rsquo;t printed &mdash; see &ldquo;About&rdquo; below for why (this course was
@@ -241,7 +241,20 @@ def green_honesty(hole, s):
         label = 'GREEN'
     if s.get('insufficient'):
         return label, None
-    tilt = (f'{s["tilt_pct"]}% <b>&#9888;</b>' if outdated else f'{s["tilt_pct"]}%')
+    # "overall" is doing real work, not decoration. The ONLY definition of a slope percentage in any
+    # of the 15 books is the legend's "Black numbers = slope % there" -- per-cell slope, drawn by
+    # render_green's slope labels -- and this figure is a DIFFERENT quantity: a least-squares plane over
+    # the whole putting surface (render_green.green_summary). Measured over all 198 greens by parsing
+    # the shipped SVGs, it prints below every black number on the same card on 134 of them, median
+    # 0.5 pp over all 198 and worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black
+    # numbers 6,7,8,8,10,10,10 whose own median local slope is 4.8%. On 106 of the 170 greens that carry
+    # no (faint) and no no-clear-fall qualifier, so nothing on the card warns the reader either. A
+    # junior applying the card's only definition reads copper-valley 6 as dead flat. One word
+    # distinguishes the two and adds no legend row -- card space is the binding constraint here, with
+    # 1.19 px of clearance on monarch-bay's guide card -- and every figure above is re-derived from the
+    # shipped SVGs by test_the_footer_percentage_is_not_read_as_the_legend_s_slope_number.
+    tilt = (f'overall {s["tilt_pct"]}% <b>&#9888;</b>' if outdated
+            else f'overall {s["tilt_pct"]}%')
     # A green whose plane fit and whose own arrows point opposite ways has no fall direction the data
     # supports, and render_green refuses to name one. Print the measured tilt, which is still true,
     # but NOT inside "feeds ..." -- "feeds no clear fall" would read as a direction.
@@ -850,10 +863,10 @@ def guide_panel():
   <div class="legrow"><svg width="28" height="14"><path d="M2,11 Q9,3 26,6" stroke="#3c5a34" fill="none" stroke-width="0.9"/><path d="M2,13 Q11,7 26,11" stroke="#3c5a34" fill="none" stroke-width="0.9"/></svg>
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep. Bar = 5&nbsp;yd.</span></div>
   <div class="legrow"><svg width="28" height="14">''' + _heat_swatches() + '''</svg>
-    <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; dark red (&ge;5%);
+    <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; red (&ge;5%);
     steeper is always <b>darker</b>, so it reads in black and white too.
     <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; different measures, so they do <b>not</b> add up.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
   <div class="legrow"><span><b>green N ft above/below</b> = <b>measured</b> height vs the back tee.
@@ -1392,14 +1405,14 @@ def coach_about_card():
   <div class="legrow"><span><b>Arrows</b> downhill = the ball&rsquo;s roll; longer = steeper
     <b>on that green</b>.
     <b>Contours</b> join equal height, <b>15&nbsp;cm each</b>; <b>close = steep</b>. <b>Colour</b>: green
-    flat &rarr; yellow &rarr; red (&ge;5%). Small <b>N</b> = north. "feeds" = the low side putts run
+    flat &rarr; amber &rarr; red (&ge;5%). Small <b>N</b> = north. "feeds" = the low side putts run
     toward.</span></div>
   <div class="legrow"><span><b>Black numbers</b> = slope % there; over <b>10%</b> is bank or bunker face,
     not putting surface: coloured, not numbered. <b>Grey numbers</b> = yd from the <b>front edge</b>, down
     the middle. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to
-    green (straight), <b>right</b> = from the tee (walked) &mdash; different measures, so they do
-    <b>not</b> add up.</span></div>
+    green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add
+    up.</span></div>
 ''' + _faint_note() + _no_fall_note() + _no_tree_note() + '''
   <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
     conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>
@@ -1412,7 +1425,7 @@ def coach_about_card():
       distances measured from them, are a
       Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright);
       slope, contours, arrows &amp; <b>elevation change</b> are computed by the maker from
-      <b>public-domain USGS&nbsp;3DEP</b> LiDAR; par,
+      <b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work); par,
       yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. Every map is <b>independently created</b>: <b>no proprietary data, image, symbol
       set, layout or trade dress of any commercial green-reading product was used, copied, referenced or reverse-engineered</b>, and this book is no substitute for any product. Built <b>entirely from remote public data, without entering any club or course</b>.
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
