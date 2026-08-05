@@ -5814,6 +5814,26 @@ def test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept():
 # engine flag, the footer phrase and this test, so the three cannot drift into two idioms.
 CARRY_REFUSED_MARK = "no carry: sand to the green"
 
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                 "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+
+# One row of the nine-row record of the refused windows, as it is typed in the docstring below:
+#   merion 1   277.97-306.66  front 298.66  -8.00  reach 333.39  -34.74  keeps 172/212/245
+# Every column is compared to the run that produced it -- six of the nine rows had gone stale.
+_REFUSED_TABLE_ROW = re.compile(
+    r"([a-z][a-z-]*) (\d+) (\d+\.\d\d)-(\d+\.\d\d) front (\d+\.\d\d) ([+-]\d+\.\d\d) "
+    r"reach (\d+\.\d\d) ([+-]\d+\.\d\d) keeps (nothing|\d+(?:/\d+)*)")
+
+# The two claims render_hole.py and generate.py both make about the window whose carry is withheld.
+# They are the stated reason the card prints NO digit for it, so both are graded, and both are worded
+# identically in the two files so one pattern reads both. The far edge and the CHAINED REACH are
+# different measurements: the reach is at or past the green front on all nine, the window's own far
+# edge on only four, and a sentence that named neither attached the reach's property to the edge.
+_FAR_EDGE_CLAIM = re.compile(
+    r"at or past the green front on ([a-z]+) of the nine and short of it by up to "
+    r"(\d+\.\d\d) yd on the other ([a-z]+)")
+_REACH_CLAIM = re.compile(r"every one of the ([a-z]+) REACHES at or past the green front")
+
 
 @needs_corpus
 def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
@@ -5826,15 +5846,33 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
     cluster was measured and declined. Re-derived over the 198 geometry cards (window, green front,
     landing area by the rule's own metric, then the reach of every bunker inside that window):
 
-        merion 1          277.97-306.66  front 298.66   -8.00   reach 315.70  -17.04   keeps 172/212/245
-        merion 10         226.72-284.12  front 253.45  -30.67   reach 284.12  -30.67   keeps  95/164
-        castlewood-v 8    286.65-309.74  front 311.61   +1.87   reach 324.66  -13.04   keeps 195/250
-        copper-valley 3   293.56-312.39  front 315.69   +3.31   reach 316.17   -0.48   keeps 178
-        monarch-bay 14    273.28-283.35  front 286.78   +3.43   reach 287.63   -0.85   keeps 226
-        callippe 12       272.34-293.33  front 293.60   +0.27   reach 306.84  -13.24   keeps nothing
+        merion 1          277.97-306.66  front 298.66   -8.00   reach 333.39  -34.74   keeps 172/212/245
+        merion 10         226.72-284.12  front 253.45  -30.67   reach 284.12  -30.67   keeps 95/164
+        castlewood-v 8    286.65-309.74  front 311.61   +1.87   reach 346.85  -35.24   keeps 195/250
+        copper-valley 3   293.56-312.39  front 315.69   +3.31   reach 327.41  -11.71   keeps 178
+        monarch-bay 14    273.28-283.35  front 286.78   -6.06   reach 287.63   -0.85   keeps 226
+        callippe 12       272.34-293.33  front 293.60   -0.88   reach 324.16  -30.56   keeps nothing
         micke-grove 3     293.83-309.26  front 296.77  -12.49   reach 309.26  -12.49   keeps nothing
         micke-grove 13    206.71-289.69  front 298.44   +6.15   reach 306.14   -7.70   keeps nothing
-        philadelphia 1    212.11-306.99  front 299.42   -7.57   reach 314.88  -15.46   keeps nothing
+        philadelphia 1    212.11-306.99  front 299.42   -7.65   reach 328.90  -29.48   keeps nothing
+
+    EVERY COLUMN OF THAT TABLE IS NOW DERIVED HERE, because six of the nine rows had gone stale and
+    nothing read them. e0648c6 changed two of the metrics at once -- it bounded the landing area by the
+    greenside sand the `total_yd - 40` filter drops, and it re-seeded `reach` from the rounded far edge
+    and chained it across any strip of grass narrower than CARRY_MERGE_GAP_YD -- and then re-measured
+    only the row it was writing about (micke-grove 13). The rest kept their pre-e0648c6 values:
+
+        reach, stale on five      merion 1 315.70/-17.04, castlewood-v 8 324.66/-13.04,
+                                  copper-valley 3 316.17/-0.48, callippe 12 306.84/-13.24,
+                                  philadelphia 1 314.88/-15.46
+        landing, stale on three   callippe 12 +0.27, monarch-bay 14 +3.43, philadelphia 1 -7.57
+                                  -- each the GREEN-front margin, from before the greenside bound
+
+    The landing drift is the one that matters, because that column is what the refusal turns on:
+    callippe 12 reads +0.27 yd of room where the rule sees -0.88 (a greenside bunker opens at 292.45,
+    1 yd inside the window's own far edge), and monarch-bay 14 reads +3.43 where the rule sees -6.06.
+    Both still refuse, so no card moved -- but the published table stated a margin the code does not
+    use, in the column a reader would check the decision against.
 
     merion 1 is one of the two cases that were missing from the record: the landing rule cost it no
     printed FIGURE, because its fourth merged window is the refused one, so the three it prints are the
@@ -5950,7 +5988,7 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                     merged[-1][1] = max(merged[-1][1], b)
                 else:
                     merged.append([a, b])
-            refused = []
+            refused, keeps, land_of = [], [], {}
             for i, (a, b) in enumerate(merged):
                 # The greenside sand `total_yd - 40` drops is a bound on a lay-up even though it is not
                 # a tee carry -- the same asymmetry the mark's own wording already relied on. micke-grove
@@ -5960,6 +5998,11 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 beyond = min(nxt + [front])
                 if beyond - b <= rh.CARRY_MERGE_GAP_YD:
                     refused.append((a, b))
+                    # kept for the published table: this is the RULE'S landing margin, greenside bound
+                    # included, which is the column three rows of it had from before that bound existed.
+                    land_of[(a, b)] = beyond - b
+                else:
+                    keeps.append(a)
             par = cfg.HOLES[hn][0] if hn in cfg.HOLES else None
             # The two gates that already null the carries null the mark too: with no corroborated
             # origin the whole along-line frame is untrustworthy, and a par 3 has no lay-up decision
@@ -6014,7 +6057,9 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                         if (lo - rh.CARRY_MERGE_GAP_YD <= a0 <= reach + rh.CARRY_MERGE_GAP_YD
                                 and b0 > reach):
                             reach, grew = b0, True
-                marked.append((ref, hn, front - reach))
+                rn, rf = refused[-1]
+                marked.append(dict(ref=ref, hole=hn, near=rn, far=rf, front=front,
+                                   land=land_of[(rn, rf)], reach=reach, keeps=sorted(keeps)))
                 if front - reach > 0:
                     problems.append(
                         f"{ref} hole {hn}: the card says {CARRY_REFUSED_MARK!r} but the sand stops "
@@ -6030,6 +6075,77 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         f"only {len(marked)} card(s) print {CARRY_REFUSED_MARK!r}; nine windows in this corpus have "
         f"no landing area (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14, "
         f"callippe 12, micke-grove 3 and 13, philadelphia 1), so the rule or the frame has moved")
+
+    # ---- the nine-row table above, and the two prose claims about it, graded ----------------------
+    # Six of the nine rows had a stale column and nothing read them, because e0648c6 changed the
+    # landing metric AND the reach metric and then re-measured only the row it was writing about. A
+    # table is exactly the shape this repo's standing lesson names: one figure, two records, no
+    # cross-check. So every column is compared to the run that just produced it.
+    live = {(m["ref"], m["hole"]): m for m in marked}
+    rows = _REFUSED_TABLE_ROW.findall(
+        _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                    "test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green"))
+    assert len(rows) == len(marked), (
+        f"the published table has {len(rows)} rows and the rule refuses {len(marked)} windows "
+        f"({sorted(live)}). The table is the only record of which cards this mark fires on, so a row "
+        f"may not simply go missing -- add or remove the row, do not loosen this.")
+    bad = []
+    for short, hole, near, far, front, landing, reach, margin, keeps in rows:
+        hit = [k for k in live if k[0].startswith(short) and k[1] == int(hole)]
+        if not hit:
+            bad.append(f"the table names {short} {hole}, which no longer refuses a window "
+                       f"(refusals: {sorted(live)})")
+            continue
+        m = live[hit[0]]
+        got_keeps = "/".join(str(round(x)) for x in m["keeps"]) or "nothing"
+        for label, said, real in (("window near", near, m["near"]), ("window far", far, m["far"]),
+                                  ("green front", front, m["front"]),
+                                  ("landing margin", landing, m["land"]),
+                                  ("reach", reach, m["reach"]),
+                                  ("front-reach margin", margin, m["front"] - m["reach"])):
+            if f"{real:+.2f}" != said and f"{real:.2f}" != said:
+                bad.append(f"{short} {hole}: the table says {label} {said}, measured {real:+.2f}")
+        if keeps.strip() != got_keeps:
+            bad.append(f"{short} {hole}: the table says keeps {keeps.strip()!r}, "
+                       f"measured {got_keeps!r}")
+    assert not bad, ("the published record of the refused windows is not what the rule measures:\n  "
+                     + "\n  ".join(bad))
+
+    # THE TWO PROSE CLAIMS, in the engine and in the generator. Both said the refused window's FAR
+    # EDGE "is at or past the green front on all nine" -- which is the CHAINED REACH's property, not
+    # this edge's. Measured, the window's own far edge falls short on five, so a claim used to justify
+    # withholding a digit was false on the majority of the cases it named. Two metrics, one sentence,
+    # and e0648c6 grew the set from eight to nine and put the worst counter-example into it.
+    n_far = sum(1 for m in marked if m["far"] >= m["front"])
+    n_reach = sum(1 for m in marked if m["reach"] >= m["front"])
+    worst_short = max((m["front"] - m["far"] for m in marked if m["far"] < m["front"]), default=0.0)
+    num = {v: k for k, v in _NUMBER_WORDS.items()}
+    stale, seen = [], 0
+    for rel in ("render_hole.py", "generate.py"):
+        prose = _prose(open(os.path.join(ROOT, rel), encoding="utf-8").read())
+        for m in _FAR_EDGE_CLAIM.finditer(prose):
+            seen += 1
+            said_at, said_by, said_rest = m.group(1), float(m.group(2)), m.group(3)
+            if (_NUMBER_WORDS.get(said_at.lower()) != n_far
+                    or _NUMBER_WORDS.get(said_rest.lower()) != len(marked) - n_far
+                    or f"{said_by:.2f}" != f"{worst_short:.2f}"):
+                stale.append(
+                    f"{rel} says {m.group(0)!r}; measured, the refused window's far edge is at or "
+                    f"past the green front on {n_far} of {len(marked)} ({num.get(n_far, n_far)}) and "
+                    f"short of it by up to {worst_short:.2f} yd on the other "
+                    f"{num.get(len(marked) - n_far, len(marked) - n_far)}")
+        for m in _REACH_CLAIM.finditer(prose):
+            seen += 1
+            if _NUMBER_WORDS.get(m.group(1).lower()) != n_reach:
+                stale.append(f"{rel} says {m.group(0)!r}; the chained reach is at or past the green "
+                             f"front on {n_reach} of {len(marked)} refused windows")
+    assert seen >= 4, (
+        f"only {seen} of the four published claims about the refused window's far edge and its "
+        f"chained reach were found (render_hole.py and generate.py each state both). The card prints "
+        f"no digit for that window BECAUSE of these two claims, so they may not be deleted to pass -- "
+        f"if the wording moved, move _FAR_EDGE_CLAIM/_REACH_CLAIM with it.")
+    assert not stale, ("a published claim about the refused window's edges is not what it measures:\n  "
+                       + "\n  ".join(stale))
 
 
 # The pre-migration spelling of the-reserve 8's shortfall, assembled rather than written, for the reason

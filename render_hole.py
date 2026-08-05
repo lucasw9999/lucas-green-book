@@ -1281,12 +1281,26 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # `sand_to_green` is that statement, and it carries no digit ON PURPOSE. Both edges are supported
     # numbers and both are wrong to print: the near edge is the lay-up invitation this rule exists to
-    # withdraw, and the far edge is at or past the green front on all nine -- merion 10's is 284 with the
-    # front at 253, philadelphia 1's is 307 with the front at 299 -- so clubbing to "clear" it flies the
-    # green. Too long is the direction this file already calls the dangerous one (see the par3_straight
-    # note below). Measured with the greenside sand the `total_yd - 40` filter drops, and across a strip of
-    # grass narrower than CARRY_MERGE_GAP_YD where there is one (micke-grove 13's 6.15 yd), every one of
-    # the nine reaches AT OR PAST the green front, which makes the wording true rather than a hedge.
+    # withdraw, and the far edge of the refused WINDOW is
+    # at or past the green front on four of the nine and short of it by up to 8.75 yd on the other five
+    # -- merion 10's is 284 with the front at 253, philadelphia 1's is 307 with the front at 299 -- so
+    # clubbing to "clear" it either flies the green or lands in the sand that carries on past it.
+    # Too long is the direction this file already calls the dangerous one (see the par3_straight
+    # note below).
+    #
+    # THAT SENTENCE USED TO SAY "on all nine", WHICH IS THE OTHER METRIC'S PROPERTY. "at or past on all
+    # nine" is true of the chained REACH below and false of the window's own far edge, which falls SHORT
+    # on five of the nine -- callippe 12 by 0.27, castlewood-valley 8 by 1.87, monarch-bay 14 by 3.43,
+    # copper-valley 3 by 3.31 and micke-grove 13 by 8.75. e0648c6 grew this set from eight cards to nine
+    # and the card it added was that worst counter-example, so the sentence became false on the majority
+    # of the cases it names while reading as though it had been re-checked. Which is why the reason for
+    # withholding the digit now names its measurement, and both are graded against the corpus by
+    # test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green.
+    #
+    # Measured with the greenside sand the `total_yd - 40` filter drops, and across a strip of
+    # grass narrower than CARRY_MERGE_GAP_YD where there is one (micke-grove 13's 6.15 yd),
+    # every one of the nine REACHES at or past the green front, which makes the wording true
+    # rather than a hedge.
     kept, no_landing = [], []
     for i, (a, b) in enumerate(merged):
         nxt = ([merged[i+1][0]] if i+1 < len(merged) else []) + [n for n, f in greenside if f > b]

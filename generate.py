@@ -307,7 +307,14 @@ def carry_phrase(info):
     cards that fires on, an EARLIER carry survives -- so "carry 95 / 164" read as the whole story while a
     closer, uncarryable cluster went unnamed. The mark states that refusal and prints NO number, because
     both edges of the refused window are numbers a player would club against and be wrong: the near one
-    invites the lay-up the rule just withdrew, the far one is at or past the green front on all nine.
+    invites the lay-up the rule just withdrew, and the far one is
+    at or past the green front on four of the nine and short of it by up to 8.75 yd on the other five,
+    while the sand COMPLEX behind it -- the greenside sand the carry filter drops, chained across any
+    strip of grass narrower than CARRY_MERGE_GAP_YD -- means every one of the nine REACHES at or past
+    the green front. The "all nine" belongs to the complex, not to the window edge; this sentence used
+    to attach it to the edge, where it was false on five of the nine cards it named. Both figures are
+    graded against the corpus by
+    test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green.
 
     It needs no legend row and gets none. Measured in chrome-headless-shell under print media, adding a
     50-character clause to the carry legrow overflows monarch-bay's guide card by 9.4 px (pocket) and
