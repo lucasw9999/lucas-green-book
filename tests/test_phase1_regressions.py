@@ -2717,12 +2717,26 @@ def test_no_book_quietly_headlines_a_shorter_tee():
                            + "\n  ".join(offenders))
 
 
+# The coarse-data mark, matched by SHAPE rather than by the resolution it happens to print. It read
+# "GREEN &middot; 1 m data" for the life of the project and that figure was wrong by 2.7x E-W and 3.4x
+# N-S, so any test that pins the literal pins the defect: relabelling the six greens honestly would
+# have made the caveat test below report all six as UNMARKED. "pre-rebuild data" is excluded because it
+# is the other caveat and says nothing about resolution.
+_COARSE_LABEL = re.compile(r'<div class="minilab">GREEN &middot; (?!pre-rebuild)([^<]*?) data')
+
+
 @needs_corpus
 def test_every_printed_caveat_matches_the_data_behind_it():
     """The governing rule of this project, checked against the shipped books rather than a fixture.
 
     Three caveats are the honesty rule made concrete, and each is a claim about the DATA:
-      * "1 m data"        -- this green came from the coarser seamless model, not the point cloud
+      * a measured source cell ("GREEN . 2.7x3.4 m data") -- this green came from the coarser seamless
+        mosaic, not the point cloud. Matched by SHAPE here, never by a literal resolution: this test
+        read `"GREEN &middot; 1 m data" in blk` while that label was itself the defect, so relabelling
+        the six greens honestly would have made this test report all six as missing their caveat. What
+        it polices is PRESENCE and ABSENCE against the metas; whether the printed figure is the one the
+        array measures is graded by
+        test_the_card_prints_the_source_cell_its_own_array_measures.
       * "pre-rebuild data" -- the course was rebuilt after the flight, so the map may be stale
       * no slope at all    -- the gate refused to read this surface
     Every one is tested somewhere on a synthetic surface, which proves the rule fires. None was
@@ -2738,7 +2752,7 @@ def test_every_printed_caveat_matches_the_data_behind_it():
     exactly the coarse ones, and a green printing a slope must not be one the gate refused.
 
     Note for whoever next edits this: split panels on `<div class="panel ` and filter, not on
-    `panel hole">`. The guide card's own explanation of "1 m data" otherwise lands inside the
+    `panel hole">`. The guide card's own explanation of the coarse mark otherwise lands inside the
     preceding hole's block and reads as a mislabelled card -- which is exactly the false alarm this
     test was written after chasing.
     """
@@ -2771,12 +2785,13 @@ def test_every_printed_caveat_matches_the_data_behind_it():
             checked += 1
             seen_courses[ref] += 1   # past the gates: counts WORK, not intent
             coarse = "seamless" in str(meta.get("source", "")).lower()
-            says_coarse = "GREEN &middot; 1 m data" in blk
+            mark = _COARSE_LABEL.search(blk)
+            says_coarse = bool(mark)
             if coarse and not says_coarse and hn not in stale:
-                problems.append(f"{ref} hole {hn}: built from the 1 m seamless model but the card "
+                problems.append(f"{ref} hole {hn}: built from the coarser seamless mosaic but the card "
                                 f"does not say so -- the read looks as sharp as a LiDAR one")
             if says_coarse and not coarse:
-                problems.append(f"{ref} hole {hn}: card says \"1 m data\" but the green was built "
+                problems.append(f"{ref} hole {hn}: card says {mark.group(0)!r} but the green was built "
                                 f"from {meta.get('source')!r} -- disclaiming data that is good")
 
             says_stale = "pre-rebuild data" in blk
@@ -11831,7 +11846,14 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
 HONESTY_CASES = {
     "plain":       (dict(),                                        "GREEN",                        True),
     "outdated":    (dict(_outdated=True),                          "pre-rebuild data",             True),
-    "coarse_1m":   (dict(source="USGS 3DEP seamless 1 m @0.5m"),   "1 m data",                     True),
+    # The coarse mark carries the MEASURED source cell, not a resolution tier: 3DEP's seamless service
+    # is a multi-resolution mosaic and this label said "1 m data" for six greens whose own arrays
+    # measure 2.72 x 3.43 m. Both branches are exercised -- with a measurement, and without one, where
+    # the caveat must still print but must NOT invent a figure.
+    "coarse_cell": (dict(source="USGS 3DEP seamless mosaic @0.5m",
+                         source_cell_m=[2.719, 3.426]),            "2.7&times;3.4 m data",         True),
+    "coarse_unmeasured": (dict(source="USGS 3DEP seamless mosaic @0.5m",
+                              source_cell_m=None),                 "GREEN &middot; coarse data",   True),
     "insufficient": (dict(insufficient=True),                      "GREEN",                        False),
 }
 
@@ -17763,10 +17785,10 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-05): micke-grove 4,325,682; castlewood-hill 4,476,696;
-    merion 5,870,316; monarch-bay 4,933,973; copper-valley 6,084,200; callippe 6,797,931;
-    castlewood-valley 5,835,995; philadelphia 4,604,434; the-reserve 5,109,868;
-    bay-view 4,243,080; valley-hi 4,698,203; poppy-ridge 340,883.
+    CURRENT SIZES (2026-08-05): micke-grove 4,326,007; castlewood-hill 4,477,021;
+    merion 5,870,641; monarch-bay 4,934,424; copper-valley 6,084,525; callippe 6,798,256;
+    castlewood-valley 5,836,320; philadelphia 4,604,759; the-reserve 5,110,193;
+    bay-view 4,243,405; valley-hi 4,698,528; poppy-ridge 341,208.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -26860,3 +26882,563 @@ def test_the_tree_hole_floors_smallest_per_hole_count_is_the_one_the_corpus_show
         "TREE_HOLE_FLOOR is %d and the smallest per-hole count that is not zero is %d -- the floor is "
         "meant to sit BELOW every real corridor, so that losing every marker on a hole that had them "
         "is a loss and not churn" % (fetch_trees.TREE_HOLE_FLOOR, smallest[0]))
+
+
+# ---------------------------------------------------------------------------
+# The seamless greens' SOURCE GRID -- measured from the arrays, never from prose
+# ---------------------------------------------------------------------------
+def _resampled_patch(H, W, cell_x_px, cell_y_px, seed=0):
+    """A patch built the way 3DEP's exportImage builds one: a coarse source grid, bilinear to pixels.
+
+    Ground truth for the detector, so the detector is graded against a cell size THIS function chose
+    rather than against the corpus it is meant to measure. Cast through float32 because that is the
+    precision the service serves and the .npy stores, and the detector's flat-cell test is calibrated
+    to exactly that quantisation.
+    """
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    nx = int(W / cell_x_px) + 4
+    ny = int(H / cell_y_px) + 4
+    nodes = rng.normal(0.0, 1.0, (ny, nx)).cumsum(0).cumsum(1) * 0.02 + 30.0
+    xs = (np.arange(nx) - 1) * cell_x_px
+    ys = (np.arange(ny) - 1) * cell_y_px
+    xf = np.arange(W, dtype=float)
+    yf = np.arange(H, dtype=float)
+    mid = np.array([np.interp(xf, xs, row) for row in nodes])          # (ny, W)
+    out = np.array([np.interp(yf, ys, col) for col in mid.T]).T        # (H,  W)
+    return out.astype("float32").astype("float64")
+
+
+def _measured_cells():
+    """{(slug, hole): (cell E-W m, cell N-S m, resampled?)} for every built green surface.
+
+    The LIVE measurement every published figure below is graded against. It reads only the .npy
+    arrays and their own bboxes, so it needs no network and no service metadata -- which is the whole
+    point: the resolution claim on these cards was checked against a hardcoded string for the life of
+    the project, and a string cannot be measured.
+    """
+    import numpy as np
+    import render_green as rg
+    out = {}
+    for mp in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        slug = os.path.basename(os.path.dirname(os.path.dirname(mp)))
+        if slug.startswith("_"):
+            continue
+        ap = mp[:-5] + ".npy"
+        if not os.path.exists(ap):
+            continue
+        with open(mp, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        arr = np.load(ap).astype("float64")
+        arr[~np.isfinite(arr)] = np.nan
+        arr[np.abs(arr) > 1e30] = np.nan
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        px_x = (xmax - xmin) * _mlon(clat) / meta["W"]
+        px_y = (ymax - ymin) * _mlat(clat) / meta["H"]
+        lat = rg.source_lattice(arr, px_x, px_y)
+        out[(slug, int(meta["hole"]))] = (lat["cell_ew_m"], lat["cell_ns_m"], lat["resampled"],
+                                          "seamless" in str(meta.get("source", "")).lower())
+    return out
+
+
+def test_a_resampled_dem_patch_gives_up_its_own_source_grid_with_no_network():
+    """The claim "1 m data" was never measurable, and that is why it survived six cards and legal/03.
+
+    `fetch_dem.py` hardcoded `source="USGS 3DEP seamless 1 m @0.5m sampling"`. 3DEP's seamless
+    ImageServer is a MULTI-RESOLUTION MOSAIC, and at monarch-bay's six bayside greens -- the only
+    greens in the corpus this stage has ever run on -- it does not serve the 1 m product at all. The
+    six cards, the guide note and two lines of legal/03 all overstated the resolution by 2.7x E-W and
+    3.4x N-S, about 9x in area, on the ONE label the honesty argument rests on. `sampling_note`
+    structurally could not catch it: it is a RATIO test (square-in-metres) with no notion of absolute
+    source resolution, so every mosaic tier passes it silently.
+
+    The detector that CAN catch it needs no service metadata and no network. A bilinear resample is
+    piecewise linear along each axis, so its second difference is EXACTLY zero strictly inside a
+    source cell and spikes at the source nodes; the spacing of those spikes is the source grid. Both
+    halves are graded here:
+
+      * against GROUND TRUTH -- a patch this test builds at a cell size it chose (`_resampled_patch`),
+        so a detector that merely agreed with the corpus could not pass;
+      * against the CORPUS -- the six seamless greens must come back resampled from a grid several
+        pixels wide, and the 192 LiDAR greens must NOT, or the discriminator is decoration.
+
+    The 0.4 m greens are interpolated from a dense point cloud over a Delaunay triangulation, which
+    has no rectangular lattice at all: measured, 0.3-6.1% of their second differences land at the
+    float32 floor against 49-72% on the six. That 8x gap is what SOURCE_LATTICE_FLAT_MIN sits in.
+    """
+    import numpy as np
+    import render_green as rg
+
+    assert hasattr(rg, "source_lattice"), (
+        "render_green has no source_lattice(): nothing measures the grid a green surface was "
+        "resampled FROM, so the card's resolution label is back to being an unverifiable string")
+
+    # (a) ground truth -- cell sizes this test chose, in pixels, at a known metres-per-pixel
+    for cx_px, cy_px, px in ((5.415, 6.816, 0.5027), (2.5, 2.5, 0.5), (9.0, 4.0, 0.4)):
+        patch = _resampled_patch(112, 104, cx_px, cy_px, seed=int(cx_px * 100))
+        got = rg.source_lattice(patch, px, px)
+        assert got["resampled"], (
+            f"a patch built as a bilinear resample of a {cx_px} x {cy_px} px grid was not recognised "
+            f"as resampled at all (flat fractions {got['flat_ew']:.3f} / {got['flat_ns']:.3f} against "
+            f"a floor of {rg.SOURCE_LATTICE_FLAT_MIN})")
+        for axis, want_px, got_m in (("E-W", cx_px, got["cell_ew_m"]), ("N-S", cy_px, got["cell_ns_m"])):
+            want = want_px * px
+            assert abs(got_m - want) <= 0.02 * want, (
+                f"the detector reads the {axis} source cell of a synthetic {want_px} px "
+                f"({want:.4f} m) lattice as {got_m:.4f} m -- {100 * (got_m / want - 1):+.2f}%")
+
+    # (b) a surface that is NOT a resample of anything coarser must not be reported as one
+    rng = np.random.default_rng(7)
+    smooth = rng.normal(0, 1, (120, 120)).cumsum(0).cumsum(1) * 0.01
+    smooth = rg.gauss(smooth, 2.0).astype("float32").astype("float64")
+    assert not rg.source_lattice(smooth, 0.4, 0.4)["resampled"], (
+        "a smoothed random surface with no source lattice at all is reported as resampled, so the "
+        "detector would relabel every 0.4 m LiDAR green as coarse")
+
+    # (c) the corpus: the discriminator must actually discriminate
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    seam = {k: v for k, v in cells.items() if v[3]}
+    lidar = {k: v for k, v in cells.items() if not v[3]}
+    assert seam and lidar, (
+        f"the corpus here holds {len(seam)} seamless and {len(lidar)} LiDAR greens; both kinds are "
+        f"needed or this test cannot show the detector separates them")
+    missed = sorted(k for k, v in seam.items() if not v[2])
+    assert not missed, (
+        "a green recorded as coming from the seamless mosaic shows no resampling lattice, so nothing "
+        f"can say what resolution its card should print: {missed}")
+    falsely = sorted(k for k, v in lidar.items() if v[2])
+    assert not falsely, (
+        f"{len(falsely)} of {len(lidar)} 0.4 m LiDAR greens are reported as resampled from a coarser "
+        f"grid: {falsely[:6]}. The detector must separate the two or the label it drives is noise.")
+    for k, v in sorted(seam.items()):
+        assert min(v[0], v[1]) >= 2.0, (
+            f"{k} measures a source cell of {v[0]:.3f} x {v[1]:.3f} m. Under 2 m the '1 m' claim "
+            f"this test exists to refute would be arguable again -- re-read it before editing.")
+
+
+def test_the_producer_records_the_source_cell_it_measured_instead_of_a_resolution_tier():
+    """The string `fetch_dem.py` writes is the origin of every downstream resolution claim.
+
+    generate.py stamps it on the card, generate.py's guide note explains it, and
+    tools/gen_provenance.py prints it into legal/03. It said "1 m" because someone typed "1 m", and
+    the surface it describes is measured at 2.72 x 3.43 m. So the producer must MEASURE, and the word
+    "seamless" must survive because `is_seamless` is how every consumer classifies these greens.
+    """
+    import numpy as np
+    # COURSE bound so config resolves on a machine whose default course is not built; the module is
+    # NOT dropped from sys.modules, because nothing here reads course data -- sampling_note and
+    # source_cell_clause are pure functions of a bbox and an array.
+    os.environ["COURSE"] = a_course()
+    fd = _import_first_party("fetch_dem")
+
+    clat = 37.6916
+    W = H = 104
+    dlon, dlat = W * 0.5 / _mlon(clat), H * 0.5 / _mlat(clat)
+    square = [0.0, clat, dlon, clat + dlat]
+    patch = _resampled_patch(H, W, 5.415, 6.816, seed=3)
+
+    src, warn = fd.sampling_note(square, W, H, patch)
+    assert warn is None, f"a square grid warned anyway: {warn}"
+    assert fd.is_seamless({"source": src}), f"{src!r} no longer reads as a seamless surface"
+    assert not re.search(r"\b1 m\b", src), (
+        f"the recorded source still claims a 1 m product: {src!r}. 3DEP's seamless service is a "
+        f"multi-resolution mosaic and this stage runs ONLY on greens the 0.4 m LiDAR refused -- and "
+        f"3DEP's 1 m tier is derived from that same LiDAR, so wherever this code path runs the 1 m "
+        f"tier is void by construction.")
+    nums = [float(x) for x in re.findall(r"([\d.]+) m", src)]
+    want = (5.415 * 0.5, 6.816 * 0.5)
+    for w in want:
+        assert any(abs(n - w) <= 0.03 for n in nums), (
+            f"the recorded source names no measured cell near {w:.2f} m: {src!r} -> {nums}")
+
+    # a patch with NO detectable lattice must not have its PIXEL size published as a source cell:
+    # that understates the coarseness, which is the dangerous direction.
+    rng = np.random.default_rng(11)
+    fine = rng.normal(0, 1, (H, W)).cumsum(0).cumsum(1) * 0.01 + 30.0
+    src2, warn2 = fd.sampling_note(square, W, H, fine.astype("float32").astype("float64"))
+    assert not re.search(r"0\.5\d* m (?:E-W|N-S|source)", src2), (
+        f"a reply whose source grid could not be measured records its own 0.5 m pixel as the source "
+        f"cell: {src2!r}. That is a resolution claim the data does not support.")
+    assert "NOT MEASURED" in src2 and warn2, (
+        f"a reply whose source grid could not be measured says nothing about it: {src2!r} / {warn2!r}")
+
+
+
+# legal/03's resolution figures are published per AXIS ("2.70-2.73 m E-W x 3.42-3.43 m N-S"), because a
+# lone "A x B m" pair reads as one cell and these two axes differ by 26%. Parsed that way here so a
+# range on one axis cannot be silently graded against the other's measurements.
+def _axis_cells(text):
+    """([E-W values], [N-S values]) named in `text`, ranges expanded to their endpoints."""
+    out = []
+    for axis in ("E-W", "N-S"):
+        vals = []
+        for m in re.finditer(r"([\d.]+)(?:\s*[–-]\s*([\d.]+))?\s*m\s+" + axis, text):
+            vals += [float(g) for g in m.groups() if g]
+        out.append(vals)
+    return out[0], out[1]
+
+
+def _cells_off(where, said, measured, axis, tol=0.06):
+    if not said or not measured:
+        return []
+    lo, hi = min(measured), max(measured)
+    return [f"{where} publishes a {axis} source cell of {v} m; measured {lo:.3f}-{hi:.3f} m"
+            for v in said if not (lo - tol <= v <= hi + tol)]
+
+
+# "1 m" may still appear in this record -- the corrected note has to be able to say what the record
+# USED to claim, and a course.json field quoted verbatim may still contain it. What must not survive is
+# an unrefuted assertion that these greens ARE 1 m data. Same clause-level shape as
+# _noise_floor_claims: the unit is a clause, and a refutation in the same clause clears it.
+_ONE_METRE = re.compile(r"\b1 m\b|\b1 ?m data\b", re.I)
+_ONE_METRE_REFUTED = re.compile(r"\bnot\b|\bno\b|never|nowhere|instead of|rather than|until|"
+                                r"used to|overstat|wrong|false|both called|claimed", re.I)
+
+
+# ITEM A. The fallback raster's own vintage is recorded NOWHERE in this build -- grep for `ned19`,
+# `arc-second`, `2011-04` or `sanfranciscocoast` across legal/, tools/, fetch_dem.py, README.md and
+# PIPELINE.md and nothing comes back -- while every row beside it publishes a LiDAR flight date decoded
+# from LAZ point records. Matched as a CLAUSE carrying both halves (a date, and a negation of it)
+# rather than as a fixed phrase, because the honest wordings are many and a phrase list would pass on
+# the one that was not thought of.
+def _says_the_raster_is_undated(text):
+    for clause in re.split(r"(?<=[.;:])\s+|\s+—\s+|\s+--\s+", text):
+        if re.search(r"acquisition|flight|date", clause, re.I) and \
+                re.search(r"\bno\b|\bnot\b|nowhere|cannot|undated|never", clause, re.I):
+            return True
+    return False
+
+
+def _unrefuted_one_metre_claims(where, text):
+    bad = []
+    for clause in re.split(r"(?<=[.;:])\s+|\s+—\s+|\s+--\s+", text):
+        if _ONE_METRE.search(clause) and not _ONE_METRE_REFUTED.search(clause):
+            bad.append(f"{where} still asserts a 1 m product: {clause.strip()[:180]}")
+    return bad
+
+
+def _green_labels(path):
+    """{hole: minilab text} for every green card in one built book, read off the shipped HTML."""
+    with open(path, encoding="utf-8") as fh:
+        html = fh.read()
+    out = {}
+    for blk in re.split(r'<div class="panel hole">', html)[1:]:
+        hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
+        lab = re.search(r'<div class="minilab">(GREEN[^<]*)</div>', blk)
+        if hn and lab:
+            out[int(hn.group(1))] = lab.group(1)
+    return out
+
+
+@needs_corpus
+def test_the_card_prints_the_source_cell_its_own_array_measures():
+    """Six cards said `1 m data` for greens whose source grid measures 2.72 x 3.43 m.
+
+    The label is the one place the book tells a junior to trust a green LESS, so an overstatement of
+    2.7x E-W and 3.4x N-S -- about 9x in area -- lands in the worst possible sentence. It was not
+    fixable by editing the string: the string had to become a MEASUREMENT, or the next reader of
+    legal/03 and the next reader of the card would again be checking two copies of one figure against
+    each other instead of against the data.
+
+    So this grades the printed label against `render_green.source_lattice` run fresh over the .npy on
+    disk -- no network, no service metadata, no hardcoded expectation of what the answer should be.
+    BOTH editions, because the enlarged deck is the one that shipped none of these caveats at all
+    until 10b8a61 and is ungraded by tools/check_scale.py by design.
+
+    The reader note on the guide card is graded the same way and against the same measurement: it is
+    the only place in either book that says what the mark MEANS, and it carried the same "1 m".
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    books = [f for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html")))
+             if not os.path.basename(os.path.dirname(f)).startswith("_")]
+    if not books:
+        pytest.skip("no book built")
+
+    problems, seen, graded = [], collections.Counter(), 0
+    for bf in books:
+        slug = os.path.basename(os.path.dirname(bf))
+        labels = _green_labels(bf)
+        if not labels:
+            continue                     # yardage mode prints no green cards
+        seen[slug] += 1
+        want = {h for (s, h) in cells if s == slug and cells[(s, h)][3]}
+        got = {h for h, lab in labels.items() if re.search(r"[\d.]+&times;[\d.]+ m data", lab)}
+        # ITEM B, on the card side: the count the book prints IS the count of seamless greens.
+        if got != want:
+            problems.append(f"{os.path.relpath(bf, ROOT)}: cards carrying a measured-cell label are "
+                            f"{sorted(got)}; greens built from the seamless mosaic are {sorted(want)}")
+        for h in sorted(got):
+            ew, ns, _res, _seam = cells[(slug, h)]
+            nums = [float(x) for x in re.findall(r"([\d.]+)&times;([\d.]+) m data", labels[h])[0]]
+            if abs(nums[0] - ew) > 0.06 or abs(nums[1] - ns) > 0.06:
+                problems.append(f"{os.path.relpath(bf, ROOT)} hole {h}: the card prints "
+                                f"{nums[0]}&times;{nums[1]} m; its own array measures "
+                                f"{ew:.3f} x {ns:.3f} m")
+            graded += 1
+        with open(bf, encoding="utf-8") as fh:
+            html = fh.read()
+        if want:
+            note = re.search(r'<div class="legrow"><span><b>Holes[^<]*</b> had no usable point '
+                             r'cloud.*?</span></div>', html, re.S)
+            if not note:
+                problems.append(f"{os.path.relpath(bf, ROOT)}: {len(want)} card(s) carry a coarse-data "
+                                f"label and the guide card explains it nowhere")
+            else:
+                txt = note.group(0)
+                pairs = re.findall(r"([\d.]+)&times;([\d.]+) m", txt)
+                if not pairs:
+                    problems.append(f"{os.path.relpath(bf, ROOT)}: the guide note names no measured "
+                                    f"cell: {txt[:160]}")
+                lo_ew = min(cells[(slug, h)][0] for h in want)
+                hi_ew = max(cells[(slug, h)][0] for h in want)
+                lo_ns = min(cells[(slug, h)][1] for h in want)
+                hi_ns = max(cells[(slug, h)][1] for h in want)
+                for a, b in pairs:
+                    if not (lo_ew - 0.06 <= float(a) <= hi_ew + 0.06):
+                        problems.append(f"{os.path.relpath(bf, ROOT)}: the guide note says the E-W "
+                                        f"cell is {a} m; measured {lo_ew:.3f}-{hi_ew:.3f} m")
+                    if not (lo_ns - 0.06 <= float(b) <= hi_ns + 0.06):
+                        problems.append(f"{os.path.relpath(bf, ROOT)}: the guide note says the N-S "
+                                        f"cell is {b} m; measured {lo_ns:.3f}-{hi_ns:.3f} m")
+                # ITEM A: nothing in the build records when that raster was flown, and the card prints
+                # a LiDAR flight date two rows above it.
+                if re.search(r"<b>Measured</b> from public USGS 3DEP LiDAR flown", html):
+                    assert re.search(r"we cannot date|no date|undated|not theirs", txt), (
+                        f"{os.path.relpath(bf, ROOT)}: the card dates its LiDAR and then explains the "
+                        f"coarse greens without saying the date is not theirs. Those six greens come "
+                        f"from a separately produced raster whose acquisition date this build records "
+                        f"nowhere, so a flight date beside them implies a contemporaneity nothing "
+                        f"establishes.")
+        # and the false claim must be gone from the printed page, in both of its wordings
+        for phrase in ("1 m data", "coarser <b>1 m</b>", "1 m</b> national model"):
+            if phrase in html:
+                problems.append(f"{os.path.relpath(bf, ROOT)} still prints {phrase!r}")
+
+    assert graded, "no card carrying a measured-cell label was graded, so this test verified nothing"
+    assert_no_course_skipped(seen, "test_the_card_prints_the_source_cell_its_own_array_measures")
+    assert not problems, ("the printed resolution does not match the data:\n  "
+                          + "\n  ".join(problems[:12]))
+
+
+@needs_corpus
+def test_the_legal_record_publishes_the_measured_source_cell_and_the_right_hole_count():
+    """legal/03 published "6 green(s) fall back to the 1 m seamless DEM" and, nine lines apart, "5".
+
+    Two defects in one document. The RESOLUTION was false -- the mosaic served 3DEP's 1/9 arc-second
+    tier, 2.72 x 3.43 m here, not its 1 m tier -- and the COUNT contradicted itself, because the row
+    is derived from the artifacts while the "Sources in full" entry reproduces a `dem_source` string
+    typed by hand. Six is right: holes 1, 9, 10, 16, 17 and 18, and the shipped book carries exactly
+    six labels.
+
+    Graded against the arrays, never against the card. That is the point of doing it twice: two
+    records publishing one figure need a cross-check or the ungraded copy becomes the next defect, and
+    this repo has now produced roughly a dozen of those. Here both the card and this document are
+    checked against `render_green.source_lattice` run over the .npy files, so neither can drift onto
+    the other.
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    rec = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
+    with open(rec, encoding="utf-8") as fh:
+        pub = fh.read()
+
+    seam_by_slug = collections.defaultdict(list)
+    for (slug, hole), v in cells.items():
+        if v[3]:
+            seam_by_slug[slug].append((hole, v[0], v[1]))
+    assert seam_by_slug, "no course here has a seamless green, so this record has nothing to publish"
+
+    problems = []
+    # (a) the shared note. It must name a measured cell, and any surviving "1 m" must be a REFUTATION
+    # of the old claim rather than the claim itself -- the note's job now includes saying what the
+    # record used to publish, so a blanket ban on the string would police the correction.
+    note = re.search(r"^- \*\*(.+?fallback.*?)\*\*(.*?)(?=\n- \*\*)", pub, re.S | re.M)
+    assert note, ("legal/03 no longer carries a bullet about the seamless fallback; that bullet is "
+                  "where the resolution claim lives, so re-read this test before editing")
+    body = " ".join((note.group(1) + note.group(2)).split())
+    problems += _unrefuted_one_metre_claims("the fallback note", body)
+    ew, ns = _axis_cells(body)
+    if not (ew and ns):
+        problems.append(f"the fallback note names no measured source cell per axis: {body[:220]}")
+    all_ew = [c[1] for v in seam_by_slug.values() for c in v]
+    all_ns = [c[2] for v in seam_by_slug.values() for c in v]
+    problems += _cells_off("the fallback note", ew, all_ew, "E-W")
+    problems += _cells_off("the fallback note", ns, all_ns, "N-S")
+    # ITEM A: the vintage. Nothing in the build decodes an acquisition date for that raster, and the
+    # same row dates the LiDAR -- so the record has to say the two are not the same survey.
+    if not _says_the_raster_is_undated(body):
+        problems.append("the fallback note never says the build records no date for that raster, "
+                        "while every row beside it publishes a decoded LiDAR flight date")
+
+    # (b) per course: the count and the cell in the derived row, and the count in the hand prose
+    for slug, greens in sorted(seam_by_slug.items()):
+        cj = os.path.join(ROOT, "courses", slug, "course.json")
+        with open(cj, encoding="utf-8") as fh:
+            name = json.load(fh).get("name", slug)
+        row = next((ln for ln in pub.splitlines() if ln.startswith(f"| {name} |")), None)
+        if not row:
+            problems.append(f"{slug}: no table row for {name!r}")
+            continue
+        cell = row.split("|")[4]
+        m = re.search(r"(\d+)\s+green\(s\)", cell)
+        if not m:
+            problems.append(f"{slug}: the Green slope cell no longer counts the fallback greens: {cell}")
+        elif int(m.group(1)) != len(greens):
+            problems.append(f"{slug}: the row says {m.group(1)} fallback green(s); {len(greens)} of "
+                            f"its greens come from the seamless mosaic ({sorted(g[0] for g in greens)})")
+        problems += _unrefuted_one_metre_claims(f"{slug}: the Green slope cell", cell)
+        row_ew, row_ns = _axis_cells(cell)
+        if not (row_ew and row_ns):
+            problems.append(f"{slug}: the Green slope cell publishes no measured source cell: {cell}")
+        problems += _cells_off(f"{slug}: the row", row_ew, [g[1] for g in greens], "E-W")
+        problems += _cells_off(f"{slug}: the row", row_ns, [g[2] for g in greens], "N-S")
+        # ITEM A again, per row: this cell carries a decoded LiDAR flight date beside the fallback
+        # clause, and it is NOT the fallback raster's date.
+        if "flown" in cell and not re.search(r"not theirs|not recorded|does not cover", cell, re.I):
+            problems.append(f"{slug}: the row dates the LiDAR and names a seamless fallback in the "
+                            f"same cell without saying the date is not the fallback's: {cell}")
+        # the hand-written dem_source, reproduced uncut under "Sources in full" -- ITEM B's source
+        sec = re.search(rf"^### {re.escape(name)}$(.*?)(?=^### |\Z)", pub, re.S | re.M)
+        if sec:
+            ds = next((ln for ln in sec.group(1).splitlines()
+                       if ln.startswith("- **dem_source**")), "")
+            for n in re.findall(r"(\d+)\s+(?:\w+\s+)?(?:hole|green)s?\b", ds):
+                if int(n) not in (len(greens), len(cells) and
+                                  len([1 for (s, _h) in cells if s == slug])):
+                    problems.append(f"{slug}: dem_source publishes a count of {n} beside its "
+                                    f"seamless fallback; {len(greens)} greens are on it. Line: {ds}")
+
+    assert not problems, "the legal record does not match the data it describes:\n  " + "\n  ".join(problems[:12])
+
+    # (c) and the generator must be the thing that wrote it -- a hand edit here would drift again
+    import subprocess
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "gen_provenance.py"), "--check"],
+                       cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0, (f"legal/03 is stale against tools/gen_provenance.py:\n"
+                               f"{r.stdout[-2000:]}{r.stderr[-2000:]}")
+
+
+def _reaches_the_drawing(lam_m, cell_m, px_m, gauss, sig_px=3.0, n=640, rows=23, nph=4):
+    """Amplitude of a `lam_m` ripple in the GROUND that survives to the drawn surface, 0..1.
+
+    The whole chain, end to end, and not a formula: sample the ground at the measured source cell,
+    bilinear-interpolate to the served pixel (np.interp IS bilinear along one axis), smooth with the
+    module's OWN gauss(), then project the result back onto the input wavelength -- so what is
+    reported is the faithful component at `lam_m` and not the long-wavelength artefact that a ripple
+    finer than the source Nyquist folds into.
+
+    Averaged over the sampling phase. The whole-array minimum and maximum differ by under 0.002 at
+    every wavelength measured here, so the phase is not doing any of the work.
+    """
+    import numpy as np
+    xf = np.arange(n) * px_m
+    amps = []
+    for ph in np.linspace(0.0, cell_m, nph, endpoint=False):
+        xs = np.arange(-3, n * px_m / cell_m + 4) * cell_m + ph
+        y = np.interp(xf, xs, np.sin(2 * math.pi * xs / lam_m))
+        s = gauss(np.repeat(y[None, :], rows, axis=0), sig_px)[rows // 2][160:-160]
+        t = xf[160:-160]
+        a = 2 * (s * np.sin(2 * math.pi * t / lam_m)).mean()
+        b = 2 * (s * np.cos(2 * math.pi * t / lam_m)).mean()
+        amps.append(float(math.hypot(a, b)))
+    return sum(amps) / len(amps)
+
+
+@needs_corpus
+def test_the_module_bounds_the_seamless_greens_by_their_source_grid_not_only_by_the_gaussian():
+    """The resolution paragraph quoted ONE half-amplitude wavelength for all 198 greens.
+
+    Its arithmetic was right and its SCOPE was wrong, which is the harder kind of wrong to see: the
+    figures verify to four decimals against the module's own kernel on a 0.4 m grid (0.0002 at 1.5 m,
+    0.1682 at 4, 0.3206 at 5, 0.5012 at 6.4, half-amplitude 6.39 m) and they describe 192 of the 198
+    greens correctly. On the six seamless ones they are simply not the binding term. Those greens are
+    0.5 m PIXELS carrying a bilinear resample of a 2.72 x 3.43 m SOURCE lattice, so two things throw
+    detail away and the paragraph named one -- attributing the whole limit to the Gaussian while the
+    coarser term was 2.7x wider than the pixel it was computed from.
+
+    Measured end to end here (`_reaches_the_drawing`), through the module's own gauss() at the pixel
+    those six actually carry and the source cell their own arrays measure. So the paragraph is graded
+    against the data twice over: the cell comes from `source_lattice` over the .npy files, and the
+    response comes from pushing ripples through the real chain.
+    """
+    import numpy as np
+    import render_green as rg
+    doc = " ".join(rg.__doc__.split())
+    cells = _measured_cells()
+    seam = [(k, v) for k, v in cells.items() if v[3]]
+    if not seam:
+        pytest.skip("no seamless green here; nothing to bound")
+
+    # the pixel and the source cell those greens actually carry, measured
+    ew = [v[0] for _k, v in seam]
+    ns = [v[1] for _k, v in seam]
+    pxs = []
+    for (slug, hole), _v in seam:
+        with open(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.json"),
+                  encoding="utf-8") as fh:
+            m = json.load(fh)
+        xmin, ymin, xmax, ymax = m["bbox"]
+        clat = m["green_center"][0]
+        pxs += [(xmax - xmin) * _mlon(clat) / m["W"], (ymax - ymin) * _mlat(clat) / m["H"]]
+    px = sum(pxs) / len(pxs)
+    cell_ew, cell_ns = sum(ew) / len(ew), sum(ns) / len(ns)
+
+    called = re.search(r"gauss\(arr,\s*([\d.]+)\)", open(os.path.join(ROOT, "render_green.py"),
+                                                          encoding="utf-8").read())
+    assert called, "green_summary no longer calls gauss(arr, ...); re-read this test before editing"
+    sig_px = float(called.group(1))
+
+    # (a) the docstring must publish the MEASURED source cell for those greens
+    claim = re.search(r"([\d.]+) m E-W by ([\d.]+) m N-S", doc)
+    assert claim, ("the docstring never states the source cell the seamless greens are resampled "
+                   f"from, so the limit it publishes is missing its coarser term:\n{doc}")
+    assert abs(float(claim.group(1)) - cell_ew) <= 0.04 and abs(float(claim.group(2)) - cell_ns) <= 0.04, (
+        f"the docstring puts the seamless source cell at {claim.group(1)} x {claim.group(2)} m; "
+        f"measured over the {len(seam)} arrays it is {cell_ew:.3f} x {cell_ns:.3f} m")
+
+    # (b) the half-amplitude wavelength it publishes for those greens must actually halve them
+    half = re.search(r"half-amplitude ([\d.]+) m E-W and ([\d.]+) m N-S", doc)
+    assert half, ("the docstring publishes no half-amplitude wavelength for the seamless greens -- it "
+                  f"used to quote the 0.4 m figure for all 198:\n{doc}")
+    for axis, lam, cell in (("E-W", float(half.group(1)), cell_ew),
+                            ("N-S", float(half.group(2)), cell_ns)):
+        got = _reaches_the_drawing(lam, cell, px, rg.gauss, sig_px)
+        assert abs(got - 0.5) <= 0.03, (
+            f"the docstring puts the {axis} half-amplitude wavelength for the seamless greens at "
+            f"{lam} m; pushed through the real chain at a {cell:.3f} m source cell and a {px:.4f} m "
+            f"pixel, {got:.3f} of a {lam} m ripple survives, not 0.5")
+
+    # (c) ...and the 0.4 m figure must be visibly NOT that bound, or the scope error is not fixed
+    lidar_half = re.search(r"so the half-amplitude wavelength is ([\d.]+) m", doc)
+    assert lidar_half, "the 0.4 m half-amplitude sentence is gone; re-read this test before editing"
+    at_lidar = _reaches_the_drawing(float(lidar_half.group(1)), cell_ew, px, rg.gauss, sig_px)
+    assert at_lidar < 0.35, (
+        f"a {lidar_half.group(1)} m ripple keeps {at_lidar:.3f} of its amplitude on a seamless green, "
+        f"so quoting that wavelength for them would not be the error this test polices -- re-measure "
+        f"before relaxing anything")
+
+    # (d) the 5 m hollow, on those six, in the docstring's own words
+    hollow = re.search(r"survives at ([\d.]+) \(E-W\) and ([\d.]+) \(N-S\) of its depth", doc)
+    assert hollow, ("the docstring no longer says how much of a 5 m hollow reaches those six cards; "
+                    "that sentence is the one a reader uses to decide how much to trust a flat-looking "
+                    "area")
+    for axis, said, cell in (("E-W", float(hollow.group(1)), cell_ew),
+                             ("N-S", float(hollow.group(2)), cell_ns)):
+        got = _reaches_the_drawing(5.0, cell, px, rg.gauss, sig_px)
+        assert abs(got - said) <= 0.008, (
+            f"the docstring says {said} of a 5 m hollow survives {axis} on the seamless greens; "
+            f"measured {got:.4f}")
+
+    # (e) the limit must be attributed to BOTH terms, and to the function that measures the second one
+    assert "source_lattice" in doc, (
+        "the resolution paragraph does not point at source_lattice(), the only thing in the module "
+        "that measures the coarser of its two terms -- so the next reader has no way to check it")
+    assert not re.search(r"and about 1\.5 m only on the six", doc), (
+        "the paragraph still presents the six seamless greens as differing from the rest only by "
+        "their smoothing sigma. Their source grid is 2.7x their pixel; the sigma is the smaller term.")

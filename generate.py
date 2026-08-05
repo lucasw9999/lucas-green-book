@@ -189,25 +189,54 @@ def _course_has_trees():
     return any(_TREES.values())
 
 
+def cell_text(cells):
+    """"2.7&times;3.4 m" for a measured source cell, or a range when the greens disagree. "" for none.
+
+    ONE spelling of that figure, because it prints in TWO places -- the per-card label and the guide
+    card's note -- and a second copy of it is exactly how "1 m" came to be published on six cards and
+    in two lines of legal/03 with nothing able to check either against the other. `cells` is the list
+    of [E-W, N-S] pairs render_green measured off the arrays it drew.
+
+    A single rounded value collapses to one figure; anything else prints the range rather than a mean,
+    because a mean is a number no green carries.
+    """
+    pairs = [c for c in (cells or []) if c]
+    if not pairs:
+        return ""
+    def band(vals):
+        got = sorted({f"{v:.1f}" for v in vals})
+        return got[0] if len(got) == 1 else f"{got[0]}&ndash;{got[-1]}"
+    return f"{band(c[0] for c in pairs)}&times;{band(c[1] for c in pairs)} m"
+
+
 def green_honesty(hole, s):
     """The green label and the slope phrase, for BOTH editions.
 
     These three caveats are the honesty rule made concrete on a card:
       * a green rebuilt AFTER the flight -> say the data predates the rebuild;
-      * a green fed by the coarser 1 m seamless DEM -> say so;
+      * a green fed by the coarser seamless mosaic -> say so, at the resolution it MEASURES;
       * a green the honesty gate refused to read -> print NO slope at all.
     They lived only inside hole_panel(), so the ENLARGED coach edition -- a book actually handed to
     a person -- printed none of them, and reported "0.0%" for a green the engine had declined to
     read. One rule, one implementation.
 
+    The middle one read `GREEN &middot; 1 m data` on all six of monarch-bay's seamless greens, and the
+    data is 2.72 m E-W x 3.43 m N-S -- 3DEP's seamless service is a multi-resolution mosaic and
+    fetch_dem.py had simply typed "1 m" into the `source` field. Overstating a resolution 2.7x and
+    3.4x, about 9x in area, in the one mark whose entire job is to say trust this green LESS. So the
+    figure is the one render_green.source_lattice measured off that green's own array, and a green
+    whose lattice could not be measured prints the caveat WITHOUT a number rather than a number the
+    data does not support.
+
     Returns (label, slope_phrase). slope_phrase is None when no slope may be printed.
     """
     outdated = hole in set(config.COURSE.get("greens_possibly_outdated", []))
     coarse = 'seamless' in str(s.get('source', '')).lower()
+    cell = cell_text([s.get('source_cell_m')])
     if outdated:
         label = 'GREEN &middot; pre-rebuild data'
     elif coarse:
-        label = 'GREEN &middot; 1 m data'
+        label = f'GREEN &middot; {cell} data' if cell else 'GREEN &middot; coarse data'
     else:
         label = 'GREEN'
     if s.get('insufficient'):
@@ -636,7 +665,8 @@ def _flown_line():
                f'<b>{esc(label)}</b>.{esc(qual)} Greens rebuilt after that date will not match &mdash; '
                'trust what you see on the ground.</span></div>\n')
     # An ABSENT flight date used to return here, which also skipped the two caveats below -- and they
-    # have nothing to do with the date. green_honesty() stamps "pre-rebuild data" and "1 m data" on
+    # have nothing to do with the date. green_honesty() stamps "pre-rebuild data" and the measured
+    # source-cell mark on
     # cards without consulting lidar_flown at all, so a course whose owner ran the pipeline but not
     # tools/lidar_dates.py shipped a book with nine cards marked "pre-rebuild data" and a warning
     # triangle, and nothing anywhere saying what that meant. That is precisely the failure the comment
@@ -650,18 +680,37 @@ def _flown_line():
                 '<b>rebuilt after</b> that survey, marked <b>&ldquo;pre-rebuild data&rdquo;</b> '
                 '&mdash; shapes and tiers may have changed. A guide only; trust your own '
                 'read.</span></div>\n')
-    # The other caveat a card can carry needs the same treatment. Six of Monarch Bay's greens print
-    # "GREEN - 1 m data" and the phrase appeared NOWHERE else in either edition -- a 12-year-old
-    # reading it learns nothing, and the whole point of the label is to tell him to trust that green
-    # a little less. Named per hole, exactly like the pre-rebuild wording.
+    # The other caveat a card can carry needs the same treatment. Six of Monarch Bay's greens print a
+    # coarse-data mark and the phrase appeared NOWHERE else in either edition -- a 12-year-old reading
+    # it learns nothing, and the whole point of the label is to tell him to trust that green a little
+    # less. Named per hole, exactly like the pre-rebuild wording.
+    #
+    # It said "the coarser 1 m national model", twice, and the model those greens came from is
+    # 2.72 x 3.43 m -- so the figure is now cell_text() over what render_green MEASURED off those
+    # arrays, the same one spelling the card label uses.
+    #
+    # It also has to say the flight date two rows above is not theirs. The seamless mosaic answered
+    # here from a separately produced raster, and NOTHING in this build decodes an acquisition date for
+    # it -- tools/lidar_dates.py reads LAZ point records, and there is no point cloud on this path. A
+    # card that dates its LiDAR and then marks six greens coarse implies a contemporaneity nothing
+    # establishes, which is arguably the larger of the two honesty gaps here. Measured in-browser
+    # before it was written: the sentence stays three lines in BOTH editions and leaves monarch-bay's
+    # guide card -- the tightest in the corpus -- at its existing 1.19 px (pocket) and 1.22 px
+    # (enlarged) of clearance, with 40 and 22 characters still spare before a fourth line.
     coarse = sorted(h for h, (_svg, summ) in GREENS.items()
                     if 'seamless' in str(summ.get('source', '')).lower())
     if coarse:
         holes = _hole_runs(coarse)
+        cell = cell_text([GREENS[h][1].get('source_cell_m') for h in coarse])
+        # cell is entities from cell_text (&times;, &ndash;), NOT user text -- do not esc() it, for the
+        # same reason `holes` is not esc()'d. A green whose lattice could not be measured prints the
+        # caveat with no figure at all rather than a figure the data does not support.
+        scale = ('the coarser <b>' + cell + '</b> national model, marked '
+                 '<b>&ldquo;' + cell + ' data&rdquo;</b>') if cell else \
+                ('the coarser national model, marked <b>&ldquo;coarse data&rdquo;</b>')
         out += ('  <div class="legrow"><span><b>Holes ' + holes + '</b> had no usable point '   # see above
-                'cloud, so their greens use the coarser <b>1 m</b> national model, marked '
-                '<b>&ldquo;1 m data&rdquo;</b> &mdash; tilt is real, small tiers may smooth '
-                'away.</span></div>\n')
+                'cloud, so their greens use ' + scale + ', from a survey we cannot date '
+                '&mdash; tilt is real, small tiers may smooth away.</span></div>\n')
     # And the same treatment for the TREE layer, which had none. Trees are found by height above
     # ground in the point cloud, so a hole the survey does not reach draws no trees -- indistinguishable
     # on the card from a hole that genuinely has none, while the legend promises "trees". Monarch Bay 1,
@@ -1101,7 +1150,11 @@ def main():
   .ynote .nl {{ border-bottom: 1px solid #cfcfcf; height: 1px; }}
   /* #767676 = 4.54:1 on white, the contrast this project adopted for .foot/.yalt/.playline.
      .minilab was #9a9a9a (2.81:1) and it carries the two marks that tell a junior to trust a
-     green LESS -- 'GREEN . pre-rebuild data' and 'GREEN . 1 m data' -- so the least legible text
+     green LESS -- the pre-rebuild mark and the measured-source-cell mark. Their wording is
+     deliberately NOT quoted here: this comment is embedded in every book's stylesheet, so a copy of a
+     label in it goes stale in 15 shipped artifacts at once, which is what happened when the coarse
+     mark stopped naming a resolution tier and started naming a measurement (see green_honesty).
+     So the least legible text
      on the card was the text that most needed reading. .dcopy (the back-cover licence line) was
      the same grey; .gsmall sat at 4.48:1, marginally under. Darkening changes no metrics, so no
      card's layout moves. */

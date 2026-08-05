@@ -7,7 +7,7 @@
 Render ONE green from real cached USGS elevation + OSM polygon.
 
 Everything drawn is computed from measured USGS 3DEP elevation -- 0.4 m LiDAR
-ground returns where available (1 m seamless DEM as an honest fallback):
+ground returns where available (the 3DEP seamless mosaic as an honest fallback):
   * downhill flow arrows = -gradient of the (denoised) surface
   * contour lines        = iso-elevation of the surface
   * slope heat           = |gradient|, fixed golf scale (0=flat green .. >=5%=red)
@@ -18,13 +18,26 @@ is a datum offset: it moves a whole green up or down together and changes no rea
 depends on RELATIVE height inside the one green. Measured against a second independent survey of the
 same greens, the smoothed surface these contours are drawn from repeats to RMS 0.85 cm (p95 1.86),
 so the 15 cm interval is ~18x the noise -- see legal/09_GREEN_SURFACE_REPEATABILITY.md.
-What genuinely cannot be resolved is SPATIAL and non-geometric. The smoothing is a Gaussian of sigma
-3 PIXELS -- 1.20 m on a 0.4 m LiDAR grid, and about 1.5 m only on the six 0.5 m seamless greens --
-and what it erases is set by its measured amplitude response, not by that sigma: it keeps 0.0002 at
-1.5 m, 0.17 at 4 m, 0.32 at 5 m and 0.50 at 6.4 m, so the half-amplitude wavelength is 6.4 m. A 5 m
-hollow is drawn a third as deep as it is, and anything much under 6 m across is gone. This paragraph
-understated that as "about a metre and a half" for a long time -- 4.3x out, in the one place whose job
-is to bound what the book cannot see. On top of the geometry, no elevation model knows grain, firmness,
+What genuinely cannot be resolved is SPATIAL and non-geometric, and it takes TWO terms to bound rather
+than one -- the smoothing AND the grid the surface was sampled from -- which is why a single wavelength
+cannot stand for all 198 greens. The smoothing is a Gaussian of sigma 3 PIXELS: 1.20 m on a 0.4 m LiDAR
+grid, 1.51 m on the six 0.5 m seamless greens. What it erases is set by its measured amplitude
+response, not by that sigma.
+On the 192 LiDAR greens the Gaussian IS the whole limit, because the point cloud is finer than the
+pixel: it keeps 0.0002 at 1.5 m, 0.17 at 4 m, 0.32 at 5 m and 0.50 at 6.4 m, so the half-amplitude
+wavelength is 6.39 m. A 5 m hollow is drawn a third as deep as it is, and anything much under 6 m
+across is gone. This paragraph understated that as "about a metre and a half" for a long time --
+4.3x out, in the one place whose job is to bound what the book cannot see.
+The six seamless greens are NOT at their own pixel, and quoting the figures above for them was the
+same class of error a second time. Their 0.5 m grid is a bilinear resample of a much coarser SOURCE
+lattice -- measured from the arrays themselves by source_lattice() below, with no network, at
+2.72 m E-W by 3.43 m N-S. That is 3DEP's 1/9 arc-second tier at this latitude and not its 1 m tier,
+which is what the card claimed for the life of the project. The 0.5 m pixels add nothing, so the bound
+there is the source cell in series with the Gaussian: half-amplitude 10.0 m E-W and 11.0 m N-S, 1.6x
+and 1.7x the 6.39 m above. A 5 m hollow on those six survives at 0.055 (E-W) and 0.025 (N-S) of its
+depth -- a twentieth, not a third -- and nothing much under 10 m across survives at all. Those cards
+print the measured cell instead of a resolution tier.
+On top of the geometry, no elevation model knows grain, firmness,
 moisture, mowing direction or a fresh hole location. So this reads real tilt and tiers, never sub-inch
 break -- that still needs an on-site survey and your own eyes.
 """
@@ -43,7 +56,116 @@ def gauss(a, sig_px):
     a = np.apply_along_axis(lambda m: np.convolve(m, k, 'same'), 1, a)
     return a
 
+# --- the SOURCE grid a surface was resampled from, measured from the array alone ---------------
+# Fraction of second differences that must land at the float32 floor before a surface is called a
+# resample of something coarser. Set from the corpus, not guessed: across the 198 built surfaces the
+# six seamless greens sit at 49.5-72.2% (measured per axis) and the 192 LiDAR ones at 0.3-6.1%,
+# because a LiDAR green is interpolated from a dense point cloud over a Delaunay triangulation and
+# has no rectangular lattice at all. 0.25 is 4x above the worst LiDAR green and 2x below the weakest
+# seamless one.
+SOURCE_LATTICE_FLAT_MIN = 0.25
+# The band of source-cell sizes, in PIXELS, this looks in. 1.8 px is the finest lattice a resample
+# could carry and still be visible in a second difference; 18 px is wider than any green patch has
+# room for enough periods to measure.
+_LATTICE_PX_MIN, _LATTICE_PX_MAX = 1.8, 18.0
+
+
+def _lattice_profile(M):
+    """(mean |2nd difference| per interior sample along axis 1, the raw 2nd differences).
+
+    THE detector's whole physics, in one line of arithmetic. A bilinear resample is piecewise LINEAR
+    along each axis, so its second difference is exactly zero strictly inside a source cell and
+    non-zero only where the window straddles a source node. Averaging down the perpendicular axis
+    turns that into a comb whose teeth ARE the source grid, and it needs no network, no service
+    metadata and no knowledge of which mosaic tier answered -- which is the point. The claim this
+    replaces ("1 m") was a hardcoded string, and a string cannot be measured.
+    """
+    d2 = np.abs(np.diff(M, 2, axis=1))
+    with np.errstate(invalid="ignore"):
+        prof = np.nanmean(np.where(np.isfinite(d2), d2, np.nan), axis=0)
+    return np.where(np.isfinite(prof), prof, 0.0), d2
+
+
+def _flat_fraction(d2, scale):
+    """Fraction of second differences at the float32 storage floor -- 1.0 for a perfect resample.
+
+    Tolerance from the STORAGE, not from a guess: 3DEP serves float32 and the .npy keeps it, so a
+    cancellation that is algebraically zero comes back as a few float32 eps of the elevation itself.
+    Measured on monarch-bay hole 1, the values split cleanly into 30% exactly 0.0, a further 34%
+    under 5e-7, and nothing at all between 5e-7 and 1e-4 -- so this threshold sits inside a gap two
+    orders of magnitude wide rather than on a slope.
+    """
+    fin = d2[np.isfinite(d2)]
+    if not fin.size:
+        return 0.0
+    return float((fin <= 8.0 * np.finfo(np.float32).eps * max(scale, 1.0)).mean())
+
+
+def _comb_period(prof):
+    """Spacing of the comb in `prof`, in samples, or None.
+
+    Taken as the LONGEST period carrying near-peak power, not the strongest: a comb has energy at
+    every harmonic of its fundamental, so an argmax over the band lands on c/2 as readily as on c --
+    and a finer lattice always "explains" the array at least as well, so the honest answer is the
+    COARSEST grid consistent with it. Verified against a ground-truth resample in
+    test_a_resampled_dem_patch_gives_up_its_own_source_grid_with_no_network.
+
+    A frequency scan rather than an FFT bin, because the array is ~100 px wide and holds only 15-18
+    periods: bin spacing would quantise the answer to several percent, and the printed label rounds
+    to 0.1 m.
+    """
+    n = prof.size
+    if n < 3 * _LATTICE_PX_MIN:
+        return None
+    p = prof - prof.mean()
+    if not np.any(p):
+        return None
+    per = np.linspace(_LATTICE_PX_MAX, _LATTICE_PX_MIN, 8001)
+    P = np.abs(np.exp(-2j * np.pi * np.outer(1.0 / per, np.arange(n))) @ p)
+    hot = np.flatnonzero(P >= 0.5 * P.max())
+    if not hot.size:
+        return None
+    i = hot[0]                                  # longest period with near-peak power
+    while i + 1 < P.size and P[i + 1] > P[i]:   # walk to the top of that peak
+        i += 1
+    return float(per[i])
+
+
+def source_lattice(arr, px_x, px_y):
+    """The grid this surface was resampled FROM, measured from its own pixels.
+
+    Returns dict(cell_ew_m, cell_ns_m, flat_ew, flat_ns, resampled). `resampled` False means no
+    coarser lattice is there to find -- a 0.4 m LiDAR green -- and then the two cell figures are the
+    PIXEL sizes and carry no resolution claim beyond it; a caller must not publish them as a source
+    cell (see fetch_dem.source_cell_clause, which refuses to).
+
+    Why this exists at all: `fetch_dem.py` hardcoded `source="USGS 3DEP seamless 1 m @0.5m
+    sampling"`, and 3DEP's seamless ImageServer is a MULTI-RESOLUTION MOSAIC. At the only greens this
+    project has ever run that stage on it serves the 1/9 arc-second tier -- 2.72 m E-W x 3.43 m N-S at
+    monarch-bay's latitude -- so six cards, the guide note and two lines of legal/03 overstated the
+    resolution by 2.7x and 3.4x, about 9x in area, on the one label whose job is to say trust this
+    green LESS. `sampling_note`'s aspect test structurally cannot catch that: it is a RATIO
+    (square-in-metres) with no notion of absolute source resolution, so every tier passes it.
+
+    The cause is structural rather than incidental, which is why the fix has to be a measurement: this
+    stage runs ONLY on greens the 0.4 m LiDAR refused, and 3DEP's 1 m tier is DERIVED from that same
+    LiDAR -- so wherever this code path is invoked, the 1 m tier is void by construction.
+    """
+    scale = float(np.nanmax(np.abs(arr))) if np.isfinite(arr).any() else 0.0
+    out = {}
+    for key, M, px in (("ew", arr, px_x), ("ns", arr.T, px_y)):
+        prof, d2 = _lattice_profile(M)
+        flat = _flat_fraction(d2, scale)
+        per = _comb_period(prof) if flat >= SOURCE_LATTICE_FLAT_MIN else None
+        out[f"flat_{key}"] = flat
+        out[f"cell_{key}_m"] = (per * px) if per else float(px)
+        out[f"found_{key}"] = per is not None
+    out["resampled"] = bool(out["found_ew"] and out["found_ns"])
+    return out
+
+
 def erode(mask, n):
+
     m = mask.copy()
     for _ in range(n):
         e = m.copy()
@@ -550,12 +672,12 @@ def render(hole, tournament=False):
         # Every other stage in this pipeline explains itself; this one used to die with a bare
         # FileNotFoundError from json.load, several frames deep, naming a path and nothing else.
         # The situation is ordinary: fetch_dem_hd.py builds only the greens with usable LiDAR
-        # ground returns, and the ones it refuses need the 1 m seamless fallback. Monarch Bay has
+        # ground returns, and the ones it refuses need the seamless-mosaic fallback. Monarch Bay has
         # six such holes, so running generate.py without fetch_dem.py hits this every time.
         raise SystemExit(
             f"hole {hole} of {config.SLUG} has no green surface ({os.path.relpath(mp, config.ROOT)}).\n"
             f"  fetch_dem_hd.py builds only greens with usable 0.4 m LiDAR ground returns; the rest\n"
-            f"  need the 1 m seamless fallback. Run both, then rebuild:\n"
+            f"  need the seamless-mosaic fallback. Run both, then rebuild:\n"
             f"    COURSE={config.SLUG} python3 fetch_dem_hd.py\n"
             f"    COURSE={config.SLUG} python3 fetch_dem.py\n"
             f"    COURSE={config.SLUG} python3 generate.py")
@@ -650,7 +772,7 @@ def render(hole, tournament=False):
 
     # --- render-time honesty gate -------------------------------------------------------------
     # The producer's gate is not enough on its own. fetch_dem_hd.py writes `insufficient`, but
-    # fetch_dem.py -- the 1 m seamless path, which is what a BRAND-NEW course gets -- writes no
+    # fetch_dem.py -- the seamless-mosaic path, which is what a BRAND-NEW course gets -- writes no
     # gate keys at all, so meta.get("insufficient") was None (falsy) for those greens and nothing
     # could stop a bad surface from being printed. This is the last check before a number reaches
     # a card, so verify the surface here too, independently of whoever produced it.
@@ -1013,8 +1135,17 @@ def render(hole, tournament=False):
            f'</svg>{wrapclose}')
 
 
+    # What resolution this card may CLAIM, measured from the array it just drew rather than read off
+    # the producer's prose. The seamless six shipped "1 m data" for the life of the project because
+    # fetch_dem.py typed "1 m" into `source`; a hand-written string is not a measurement, and the one
+    # thing that label exists to do is tell a junior to trust that green less. Recorded only when a
+    # coarser source lattice is actually there -- a 0.4 m LiDAR green has none, and generate.py's
+    # green_honesty prints no cell figure without one. See source_lattice.
+    _lat = source_lattice(arr, px_x, px_y)
     summary = dict(relief_ft=round(relief_m*3.28084,1), median_slope=round(med_slope,1),
                    source=meta.get('source',''),
+                   source_cell_m=([_lat['cell_ew_m'], _lat['cell_ns_m']]
+                                  if _lat['resampled'] else None),
                    tilt_pct=round(tilt_pct,1), feeds=best, undul_ft=round(undul_ft,1),
                    conf=conf, depth_yd=int(round(depth_yd)), width_yd=int(round(width_yd)),
                    front_bank_yd=fb_yd, back_bank_yd=bb_yd, scale_max_in=scale_max_in)

@@ -92,6 +92,78 @@ def _tile_project(slug, dem_source=""):
     return label, len(names), False
 
 
+def _band(vals, nd=2):
+    """"2.70" for one value, "2.70–2.73" for a spread. Never a mean: no green carries a mean."""
+    got = sorted({f"{v:.{nd}f}" for v in vals})
+    return got[0] if len(got) == 1 else f"{got[0]}–{got[-1]}"
+
+
+def _seamless_cells(slug):
+    """[(hole, cell E-W m, cell N-S m)] for every green built from the seamless mosaic. MEASURED.
+
+    This document published "N green(s) fall back to the 1 m seamless DEM" and the notes bullet called
+    it "the USGS 3DEP seamless 1 m DEM". Neither was measured, and both were wrong: 3DEP's seamless
+    ImageServer is a MULTI-RESOLUTION MOSAIC, and at the only greens this project has taken from it the
+    tier that answered has a source cell of 2.72 m E-W x 3.43 m N-S -- its 1/9 arc-second tier at those
+    latitudes. The record overstated resolution by 2.7x and 3.4x, about 9x in area, and so did the six
+    cards, and nothing could catch either because both were copies of one typed string.
+
+    Measured from the .npy arrays and their own bboxes, so it needs no network and no service metadata:
+    a bilinear resample is piecewise linear along each axis, so the spacing of its second-difference
+    spikes IS the source grid. render_green owns that measurement (source_lattice) because it also owns
+    the statement of what these surfaces can resolve; this file must not carry a second copy of it.
+
+    render_green binds a course at import, so COURSE is pointed at the slug being measured -- which
+    exists by construction here -- and put back. The measurement itself is course-agnostic.
+    """
+    metas = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                m = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if "seamless" in str(m.get("source", "")).lower() and os.path.exists(p[:-5] + ".npy"):
+            metas.append((p[:-5] + ".npy", m))
+    if not metas:
+        return []
+    prev = os.environ.get("COURSE")
+    os.environ["COURSE"] = slug
+    try:
+        import numpy as np
+        import render_green
+        from geo import mlat, mlon
+    finally:
+        if prev is None:
+            os.environ.pop("COURSE", None)
+        else:
+            os.environ["COURSE"] = prev
+    out = []
+    for ap, m in metas:
+        arr = np.load(ap).astype("float64")
+        arr[~np.isfinite(arr)] = np.nan
+        arr[np.abs(arr) > 1e30] = np.nan
+        xmin, ymin, xmax, ymax = m["bbox"]
+        clat = m["green_center"][0]
+        lat = render_green.source_lattice(arr, (xmax - xmin) * mlon(clat) / m["W"],
+                                          (ymax - ymin) * mlat(clat) / m["H"])
+        if lat["resampled"]:
+            out.append((int(m["hole"]), lat["cell_ew_m"], lat["cell_ns_m"]))
+    return sorted(out)
+
+
+def _seamless_clause(cells, n_seam):
+    """The Green slope row's fallback clause, from the measurement rather than from prose."""
+    if not cells:
+        return (f"{n_seam} green(s) come from the **3DEP seamless mosaic**, source cell **NOT "
+                f"MEASURED** — no resampling lattice was found in those arrays")
+    holes = ", ".join(str(h) for h, _e, _n in cells)
+    return (f"{n_seam} green(s) come from the **3DEP seamless mosaic** instead, source cell "
+            f"**{_band(c[1] for c in cells)} m E-W × {_band(c[2] for c in cells)} m N-S** measured "
+            f"from those arrays (holes {holes}); the flight date above is NOT theirs — nothing in "
+            f"this build decodes an acquisition date for that raster")
+
+
 def _greens(slug):
     """(count, density_lo, density_hi, n_seamless, n_insufficient, n_with_density) over the built
     green surfaces. n_with_density is separate from count because a seamless green records none,
@@ -207,7 +279,7 @@ def _digitized(slug):
     return [e.get("id") for e in els if "_digitized" in (e.get("tags") or {})]
 
 
-def _row(slug):
+def _row(slug, seam_cells=None):
     j = json.load(open(os.path.join(ROOT, "courses", slug, "course.json")))
     name = j.get("name", slug)
     # Both from distribution.py, with the SAME normalisation, but they are different questions: the
@@ -278,7 +350,11 @@ def _row(slug):
             # six of which are not @0.4 m at all and are counted again in the next clause.
             bits.append(f"{dlo:g}–{dhi:g} pts/m² over {ndens} greens @0.4 m")
         if seam:
-            bits.append(f"{seam} green(s) fall back to the 1 m seamless DEM")
+            # Measured once by the caller and threaded through, so the row, the shared note and the
+            # per-course correction under "Sources in full" are three renderings of ONE measurement
+            # rather than three chances to disagree.
+            bits.append(_seamless_clause(
+                _seamless_cells(slug) if seam_cells is None else seam_cells, seam))
         slope = ", ".join(bits)
 
     nprint, nelev, nholes, nextrap = _elevation(slug)
@@ -397,7 +473,10 @@ def build():
     # make the provenance doc look stale and fail the drift check. One spelling of that rule, shared
     # with gen_disclaimers and cross_flight_check -- see distribution.is_corpus_slug.
     slugs = distribution.course_slugs(ROOT)
-    rows = [_row(s) for s in slugs]
+    # Every course's seamless greens, measured ONCE, before anything is written: the row clause, the
+    # shared note and the per-course correction all render this same measurement.
+    seam_cells = {s: _seamless_cells(s) for s in slugs}
+    rows = [_row(s, seam_cells[s]) for s in slugs]
     # Corpus totals for the "Holes that print no height" note, summed from the same artifacts the rows
     # were built from rather than written down beside them -- a hand-kept total in a generated document
     # is the drift this file exists to prevent.
@@ -419,8 +498,45 @@ def build():
             val = re.sub(r"\s+", " ", str(j.get(key) or "")).strip()
             if val:
                 full.append(f"- **{key}** — {val}")
+        # DERIVED, and printed beside the transcribed fields on purpose. Those fields are reproduced
+        # uncut because that is this section's job, and several of them describe the seamless fallback
+        # as "1 m" -- a resolution that was never measured and is wrong by 2.7x E-W and 3.4x N-S. The
+        # honest repair for a verbatim record is not to edit the quote, it is to publish the
+        # measurement next to it and say which way the quote errs.
+        cells = seam_cells.get(slug) or []
+        if cells:
+            full.append(
+                f"- **measured source cell (seamless greens)** — "
+                f"**{_band(c[1] for c in cells)} m E-W × {_band(c[2] for c in cells)} m N-S** over "
+                f"hole{'s' if len(cells) > 1 else ''} "
+                f"{', '.join(str(h) for h, _e, _n in cells)}, measured from the built arrays by "
+                f"`render_green.source_lattice`. DERIVED, not transcribed: where a recorded field "
+                f"above calls that data *1 m*, it overstates the resolution — the mosaic answered from "
+                f"3DEP's 1/9 arc-second tier. No acquisition date for that raster is recorded anywhere "
+                f"in this build.")
         full.append("")
     full_text = chr(10).join(full)
+    # The shared note's figures come from the same measurement as every row's. Nothing here is written
+    # down by hand: the claim this replaces ("the USGS 3DEP seamless 1 m DEM ... and the card says
+    # `1 m data`") was two copies of one typed string, in a legal record and on six cards, with nothing
+    # able to check either against the other.
+    _all = [c for cs in seam_cells.values() for c in cs]
+    seamless_note = ""
+    if _all:
+        seamless_note = (
+            f" That service is a MULTI-RESOLUTION MOSAIC, so its sampling is not its resolution: at "
+            f"every green this project has taken from it, the tier that answered carries a source cell "
+            f"of **{_band(c[1] for c in _all)} m E-W × {_band(c[2] for c in _all)} m N-S** — 3DEP's "
+            f"1/9 arc-second tier at these latitudes. This record and the cards both called it *1 m* "
+            f"until it was measured out of the arrays themselves "
+            f"(`render_green.source_lattice`, no network needed); that was an overstatement of about "
+            f"9x in area, and the cards now print the measured cell instead of a tier. Separately, "
+            f"**no acquisition date for that raster is recorded anywhere in this build** — "
+            f"`tools/lidar_dates.py` decodes flight dates from LAZ point records and this path has no "
+            f"point cloud — so a row's flight date covers its 0.4 m greens only, and the cards say so.")
+    elif any(_greens(s)[3] for s in slugs):
+        seamless_note = (" Its source cell could NOT be measured from the built arrays, so no "
+                         "resolution is claimed for those greens here.")
     return f"""# Provenance by Course
 
 <!-- GENERATED by tools/gen_provenance.py -- do not hand-edit; re-run it instead.
@@ -452,9 +568,9 @@ hole and green SHAPES, and a re-bunkered hole looks exactly as authoritative as 
 {chr(10).join(rows)}
 
 ## Notes on the special cases
-- **1 m seamless fallback.** A few greens have no usable LiDAR ground returns — bayside holes over
-  water, or greens under heavy canopy. Those use the USGS **3DEP seamless 1 m DEM** instead of the
-  0.4 m point cloud: still public domain, just less sharp, and the card says `1 m data`.
+- **Seamless-mosaic fallback.** A few greens have no usable LiDAR ground returns — bayside holes over
+  water, or greens under heavy canopy. Those use the USGS **3DEP seamless DEM service** instead of the
+  0.4 m point cloud: still public domain, just less sharp.{seamless_note}
 - **Holes that print no height.** Every row above counts three things separately, and they are not the
   same thing: cards that PRINT a tee-to-green height, holes that were MEASURED, and holes that were
   never measured at all. A measured change under **{PRINT_FLOOR_FT:g} ft** is suppressed as level
