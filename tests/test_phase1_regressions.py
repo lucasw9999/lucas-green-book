@@ -5414,6 +5414,15 @@ def test_the_scorecard_panel_agrees_with_every_hole_card():
                           + "\n  ".join(problems[:10]))
 
 
+# The worked example of sand running past a printed carry, in the two shapes the carry tests state it.
+# Hand-typed for three generations -- philadelphia 1, then micke-grove 13 twice over -- and stale each
+# time, because the card it names keeps becoming a card the engine declines to print a carry for. Read
+# back out of the prose and required to be the worst LIVE case, so it maintains itself.
+_CARRY_ILLUSTRATION = re.compile(
+    r"([a-z][a-z-]+) (\d+) prints \"carry (\d+)\" for sand occupying the line out to (\d+) yd")
+_CARRY_UNSTATED = re.compile(r"on ([a-z][a-z-]+) (\d+) that is (\d+) yd of unstated sand")
+
+
 @needs_corpus
 def test_a_printed_carry_never_overstates_what_it_clears():
     """"carry 224" is a number a junior clubs against off the tee, so it must err SHORT, never long.
@@ -5429,16 +5438,25 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         including parts up to 45 m off the line. Erring short is the right direction.
 
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
-        "Clearing it needs more than N", which is false where the sand is long: micke-grove 13 prints
-        "carry 207" for sand occupying the line out to 290 yd, so clearing it needs 290. Sand runs a
+        "Clearing it needs more than N", which is false where the sand is long:
+        the-reserve 16 prints "carry 177" for sand occupying the line out to 322 yd, so clearing it
+        needs 322. Sand runs a
         median 23 yd past the printed number and up to 145. The number is right -- it is where the sand
         starts -- so the sentence was corrected rather than the figure.
 
-        THAT EXAMPLE USED TO BE philadelphia 1's "carry 213" out to 308, and it went stale the same way
-        the 126 below did: that card stopped printing a carry at all when the landing test arrived (see
-        test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for -- its sand reached 7.6 yd PAST
-        the green front, so there was nowhere to lay up). Twice now the illustration has been a card the
-        engine later declined to print. The measured figures below are the durable part.
+        THAT EXAMPLE HAS NOW GONE STALE THREE TIMES, AND IS NO LONGER WRITTEN DOWN. It was
+        philadelphia 1's "carry 213" out to 308; then micke-grove 13's "carry 207" out to 290, until
+        e0648c6 made that card print "no carry: sand to the green" instead (its window leaves 6.15 yd
+        to land in, so the landing rule withdrew the figure) -- and the paragraph above went on
+        describing a carry the card does not print, in the PRESENT TENSE, in the very docstring that
+        warned "twice now the illustration has been a card the engine later declined to print".
+        218a244 cleaned up the other two instances of exactly this and missed these.
+
+        So the illustration is no longer chosen by hand. It is required to BE the worst live case --
+        the same card the paragraph below already names as the worst -- and the card, the printed
+        carry, the far edge and the shortfall are all compared against this run's own measurement
+        below. Nothing here has to be maintained: when the corpus moves, the failure names the card
+        that replaced it.
 
         THE 145 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
         (see render_hole.edge_within) gave the-reserve 16 the 3,562 m^2 waste bunker it had been
@@ -5459,7 +5477,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
     import math
     import statistics
     IN_LINE_M = 15.0
-    checked, problems, past = 0, [], []
+    checked, problems, past, cases = 0, [], [], []
     seen_courses = collections.Counter()
     for ref in CORPUS:
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
@@ -5468,8 +5486,8 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         with open(book, encoding="utf-8") as fh:
             html = fh.read()
         assert "where fairway sand <b>starts</b>" in html and "can run well past N" in html, (
-            f"{ref}: the guide no longer says the sand can run past the printed carry -- on "
-            f"micke-grove 13 that is 83 yd of unstated sand")
+            f"{ref}: the guide no longer says the sand can run past the printed carry -- "
+            f"on the-reserve 16 that is 145 yd of unstated sand")
         cfg, rh = _engine(ref)
         try:
             course, geom = rh.load()
@@ -5506,6 +5524,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             card = info["card_yd"]
             for near, _far in carries:
                 past.append(_far - near)          # how far the sand runs BEYOND the printed number
+                cases.append((_far - near, ref, hn, near, _far))   # ...and which card, for the example
                 checked += 1
                 seen_courses[ref] += 1   # past the gates: counts WORK, not intent
                 if not (80 <= near <= 300):
@@ -5571,6 +5590,43 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         f"neither carry test states the MEDIAN distance sand runs past a printed carry any more. It is "
         f"{med:.1f} yd over {len(past)} shipped carries, against a worst case of {worst:.0f}, and it is "
         f"what says the hedge is about the usual case and not one outlier")
+
+    # ...AND THE WORKED EXAMPLE, tied to the same measurement. The median and the worst were pinned
+    # here; the CARD illustrating them was still typed by hand, and went stale for the THIRD time --
+    # philadelphia 1's "carry 213", then micke-grove 13's "carry 207", which e0648c6 replaced with
+    # "no carry: sand to the green" while this docstring went on describing it in the present tense.
+    # 218a244 fixed the other two instances of that and missed these. So the illustration is required
+    # to be the worst LIVE case, and its four figures are read back out of the prose and compared.
+    # The failure message names the replacement, so the next drift costs a retype and not a diagnosis.
+    wpast, wref, whole, wnear, wfar = max(cases)
+    assert wpast == worst, f"the worst case {worst} is not the one in `cases` ({wpast}) -- same list"
+    ill, illseen = [], 0
+    for fn in ("test_a_printed_carry_never_overstates_what_it_clears",
+               "test_the_carry_legend_says_sand_because_water_is_not_quantified"):
+        prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
+        for m in _CARRY_ILLUSTRATION.finditer(prose):
+            illseen += 1
+            said = (m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+            if said != (None, 0, 0, 0) and not (
+                    wref.startswith(said[0]) and said[1] == whole
+                    and said[2] == wnear and said[3] == wfar):
+                ill.append(f"{fn} illustrates the hedge with {m.group(0)!r}; the worst live case is "
+                           f"{wref} {whole}, which prints carry {wnear} for sand out to {wfar} "
+                           f"({wpast} yd past)")
+        for m in _CARRY_UNSTATED.finditer(prose):
+            illseen += 1
+            if not (wref.startswith(m.group(1)) and int(m.group(2)) == whole
+                    and int(m.group(3)) == wpast):
+                ill.append(f"{fn} says {m.group(0)!r}; the worst live case is {wref} {whole} with "
+                           f"{wpast} yd of sand past its printed carry {wnear}")
+    assert illseen >= 2, (
+        f"only {illseen} worked example(s) of sand running past a printed carry were found in the two "
+        f"carry tests. That example has gone stale three times, twice while the prose around it warned "
+        f"about exactly that, so it is graded rather than trusted -- if the wording moved, move "
+        f"_CARRY_ILLUSTRATION/_CARRY_UNSTATED with it. The live worst is {wref} {whole}: carry "
+        f"{wnear}, sand to {wfar}, {wpast} yd past.")
+    assert not ill, ("a worked example of sand past a printed carry names the wrong card:\n  "
+                     + "\n  ".join(ill))
 
 
 @needs_corpus
