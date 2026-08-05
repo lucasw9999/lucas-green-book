@@ -13488,13 +13488,20 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
     "false", "no")`); these two modules were the ones left on bool(). The existing truth-table tests
     pass `overwrite` as a Python bool and never exercise the env read at all -- and one of them
     records that its previous grep-based version was satisfied merely by this module-scope line
-    existing. So pin the PARSE, not the string."""
+    existing. So pin the PARSE, not the string.
+
+    The SAME off-vocabulary is hand-copied into three more places -- fetch_hole_elev._env_on and
+    fetch_trees._env_on, which covers two flags -- and none of them was pinned. Their flags are driven
+    in this suite only with "0" and "1", so narrowing either tuple to ("", "0"), which makes
+    ALLOW_ELEV_LOSS=false / ALLOW_NO_TREES=no WAIVE the guard, left the whole suite at its baseline
+    (303 passed, 1 skipped, unchanged). Five copies of a vocabulary are only safe while something says
+    they are the same vocabulary, so all five are driven over one table here."""
     os.environ["COURSE"] = a_course()
+    TABLE = (("", False), ("0", False), ("false", False), ("FALSE", False),
+             ("no", False), ("No", False), ("1", True), ("true", True), ("yes", True))
     saved = os.environ.get("OVERWRITE")
     try:
-        for raw, want in (("", False), ("0", False), ("false", False), ("FALSE", False),
-                          ("no", False), ("No", False), ("1", True), ("true", True),
-                          ("yes", True)):
+        for raw, want in TABLE:
             os.environ["OVERWRITE"] = raw
             for name in ("fetch_dem", "fetch_dem_hd"):
                 for m in ("config", name):
@@ -13503,6 +13510,29 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
                 assert mod.OVERWRITE is want, (
                     f"{name}: OVERWRITE={raw!r} parsed to {mod.OVERWRITE}, expected {want} -- an "
                     f"explicit 'off' must not arm a stage that overwrites a working green surface")
+        # ...and the three _env_on copies, whose flags waive guards rather than arm a rewrite: an
+        # empty tree layer (every card drawn as open ground), a hole that has lost the canopy the
+        # survey recorded, and a hole that has lost the elevation it used to print.
+        for name, flags in (("fetch_hole_elev", ("ALLOW_ELEV_LOSS",)),
+                            ("fetch_trees", ("ALLOW_NO_TREES", "ALLOW_TREE_LOSS"))):
+            mod = _import_first_party(name)
+            assert hasattr(mod, "_env_on"), f"{name} no longer has the _env_on this pins"
+            for flag in flags:
+                held = os.environ.get(flag)
+                try:
+                    for raw, want in TABLE:
+                        os.environ[flag] = raw
+                        assert mod._env_on(flag) is want, (
+                            f"{name}._env_on: {flag}={raw!r} parsed to {mod._env_on(flag)}, expected "
+                            f"{want} -- an explicit 'off' must not WAIVE the guard it names")
+                    os.environ.pop(flag, None)
+                    assert mod._env_on(flag) is False, \
+                        f"{name}._env_on: an UNSET {flag} must be off"
+                finally:
+                    if held is None:
+                        os.environ.pop(flag, None)
+                    else:
+                        os.environ[flag] = held
     finally:
         if saved is None:
             os.environ.pop("OVERWRITE", None)
