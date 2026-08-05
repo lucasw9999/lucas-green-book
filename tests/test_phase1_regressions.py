@@ -5348,7 +5348,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     is nowhere to land, and the number invites a shot the hole does not have.
 
     render_hole had already made exactly this argument -- in the comment above its par-3 suppression,
-    about the-reserve 8 ("sand ending FOUR YARDS short of the green front ... the near edge is the one
+    about the-reserve 8 ("sand ending 2.24 yd short of the green front ... the near edge is the one
     number on that card a player could act on and be wrong about") and merion 13. But it acted on PAR,
     and no part of that reasoning is a property of par. Re-measured over the 198 geometry cards after
     the WGS84 per-axis migration, SEVEN printed windows on seven PAR 4s had no landing area either --
@@ -5366,8 +5366,11 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     says what this test needs said: a gap this small along the played line is not a separate decision,
     it is one obstacle -- which is why three bunkers 3.8 yd apart print one carry. A strip of grass
     too narrow to separate two bunkers is too narrow to land in, so the green front joins that merge.
-    It is not a new threshold, and picking one would have been a guess; the corpus leaves a clean break
-    either side of it (worst kept 8.7 yd, best dropped 3.4).
+    It is not a new threshold, and picking one would have been a guess. The break either side of it is
+    real but the figures are METRIC-DEPENDENT, so see
+    test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to, which derives every one
+    of them from the corpus and grades the prose in render_hole.py against them. By THIS test's measure
+    the worst kept is 8.4352 yd and the best dropped -0.4795; by the rule's own, 8.7456 and 3.4251.
 
     Only the FURTHEST printed window is checked here, because the merge already guarantees more than
     CARRY_MERGE_GAP_YD of clear ground after every other one. The unguarded boundary was the one
@@ -5643,6 +5646,107 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         f"callippe 12, micke-grove 3, philadelphia 1), so the rule or the frame has moved")
 
 
+# The pre-migration spelling of the-reserve 8's shortfall, assembled rather than written, for the reason
+# _SCROLLHEIGHT_CLAMP_CLAIM is at module scope: the test that scans for this shape would otherwise match
+# its own prose, and it did -- three of the eight hits in its first red run were its own docstring.
+# Split across the concatenation so no line of this file contains the phrase itself.
+_STALE_RESERVE8_SHORTFALL = re.compile(r"\bfour" + r"\s+" + r"yards\b", re.I)
+
+
+@needs_corpus
+def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
+    """the-reserve 8's sand was said to end FOUR YD short of its green front. It is 2.24.
+
+    That hole is the worked example for BOTH carry suppressions -- the par-3 rule and the landing rule --
+    so its shortfall is quoted in four passages across render_hole.py and this file. The figure was right
+    before the WGS84 per-axis migration; the same commit that re-measured every other number on that card
+    recorded 2.24 (218.03 - 215.79) and then repeated the old one in a NEW comment beside it. A figure
+    four passages quote and nothing grades goes stale once and then propagates.
+
+    Re-derived here from the OSM rings through the engine's own frame, and required in every passage that
+    states it, so the next migration cannot leave one behind.
+
+    Note what the number is and is not: 215.79 is the far edge of the window the CARRY FILTERS keep, so
+    2.24 yd is the shortfall of the printed decision. The full waste complex reaches 234.83 -- 16.81 yd
+    PAST the green front -- once the greenside sand `near_yd > total_yd - 40` drops is counted. Both are
+    true of that hole and they answer different questions; the passages quote the first.
+    """
+    import math
+    ref = "the-reserve-at-spanos-park"
+    if ref not in CORPUS:
+        pytest.skip(f"{ref} has no geometry on disk")
+    cfg, rh = _engine(ref)
+    course, geom = rh.load()
+    import geo
+    loc = cfg.COURSE.get("location") or {}
+    lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+    greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+    bunkers = [g for g in course
+               if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+    hole = lines[8]["geometry"]
+    green, gend, tend = geo.match_green(hole, greens)
+    _svg, info = rh.render_hole(8, cfg.HOLES)
+    la0 = sum(q["lat"] for q in hole) / len(hole)
+    lo0 = sum(q["lon"] for q in hole) / len(hole)
+
+    def em(la, lo):
+        return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
+    tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+    L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+    ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+    perp = (uy, -ux)
+    shift = ((info["card_yd"] - info["arc_yd"])
+             if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+
+    def along_yd(la, lo):
+        e, n = em(la, lo)
+        return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+
+    def off_m(la, lo):
+        e, n = em(la, lo)
+        return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+    front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
+    total = info["card_yd"]
+    raw = []
+    for g in bunkers:
+        al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+        of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+        if not al:
+            continue
+        near, far = min(al), max(al)
+        if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+            continue
+        if near > total - 40:
+            continue
+        raw.append((near, far))
+    assert raw, "the-reserve 8's waste complex no longer passes the carry filters at all"
+    raw.sort()
+    merged = []
+    for a, b in raw:
+        if merged and a - merged[-1][1] <= rh.CARRY_MERGE_GAP_YD:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    a, b = merged[-1]
+    shortfall = front - b
+    assert 0 < shortfall < 8.0, (
+        f"the-reserve 8's sand now ends {shortfall:.2f} yd short of its green front, outside the range "
+        f"these passages describe; re-read them before editing")
+    want = f"{shortfall:.2f}"
+    problems = []
+    for rel in ("render_hole.py", os.path.join("tests", "test_phase1_regressions.py")):
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            src = fh.read()
+        for m in _STALE_RESERVE8_SHORTFALL.finditer(src):
+            problems.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} still says "
+                            f"{m.group(0)!r}; the-reserve 8's sand ends {want} yd short of its green")
+        # ...and each file that describes the hole must carry the measured figure
+        if "the-reserve 8" in src and want not in src:
+            problems.append(f"{rel} describes the-reserve 8 but does not state the measured "
+                            f"{want} yd shortfall anywhere, so nothing pins it")
+    assert not problems, "the-reserve 8's shortfall is published stale:\n  " + "\n  ".join(problems)
+
+
 def _playline_text_by_hole(html):
     """{hole number: the tag-stripped text of every .playline on that hole's card(s)}.
 
@@ -5744,6 +5848,197 @@ def test_the_playline_is_never_clipped_by_its_own_nowrap():
         f"the tightest playline has only {worst[0]:.2f} px of slack -- {worst[1]} hole {worst[2]}, "
         f"{worst[3]!r}. Under 10 px is two characters from silent truncation; shorten the row rather "
         f"than shipping it one re-fetched carry figure away from cutting itself off.")
+
+
+@needs_corpus
+def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to():
+    """CARRY_MERGE_GAP_YD decides whether a carry is printed, and its margin was published unqualified.
+
+    render_hole said "the corpus leaves a clean break either side of it: worst KEPT landing area 8.7 yd
+    (micke-grove 13), best DROPPED 3.4 (monarch-bay 14)". Every figure there is right and the sentence
+    is still misleading, because there are TWO measures in play and it named neither:
+
+      * THE RULE'S OWN -- `beyond = min(next sand, green front)`, unrounded edges. micke-grove 13 has
+        8.7456 yd, so "8.7" is this measure, and the margin over the 8.0 bound is 0.7456.
+      * THE SUPPRESSION TEST'S -- last printed window only, `reach` seeded from the ROUNDED printed far
+        edge, bound the green front alone. micke-grove 13's far edge rounds 289.69 up to 290, which
+        costs 0.31 yd, so the same window measures 8.4352 and the margin is 0.4352.
+
+    Neither figure was wrong; the omission was which one it was. The thinner is the honest headline, and
+    0.4352 yd on a bound that governs 119 printed figures is thin.
+
+    AND FOUR KEPT WINDOWS ARE TIGHTER THAN 8.7456, which the sentence's word "worst" denies:
+    copper-valley 17 (8.2538), micke-grove 11 (8.5031), merion 5 (8.5073), monarch-bay 2 (8.5827). All
+    four are bounded by the NEXT SAND rather than by the green, and the merge guarantees a sand-to-sand
+    gap above CARRY_MERGE_GAP_YD by construction -- so they are tautological and can never be dropped.
+    That is exactly why the qualification matters: 8.7456 is the worst of the 86 windows the rule can
+    actually DECIDE and 8.2538 the worst of all 132, and a reader cannot tell which claim was made.
+
+    WHY THE BOUND IS STILL THE MERGE GAP, argued rather than inherited. It was introduced as a bare `8`
+    for readability alone ("printing 149 163 167 spends the card's scarcest resource on noise"), so it
+    was never measured for this purpose -- and it should not now be replaced by a measured one, because
+    there is nothing here to measure it against. The physical question is "is N yards a landing area for
+    a junior's tee shot", which needs dispersion data this project does not have; inventing a number for
+    it would put a guess in charge of 119 printed figures, which is the move this codebase refuses
+    everywhere else. What the corpus CAN say is that the decision is insensitive to the value: every
+    green-front-bounded window sits at 3.4251 or below, or 8.7456 or above, so any bound in that 5.32 yd
+    gap produces the identical corpus outcome and 8.0 is not doing arithmetic anybody could tune. What
+    was missing was not a better number but a graded one -- so all of them are derived here, and a
+    re-fetch that lands a window inside the gap fails HERE instead of quietly picking a side.
+    """
+    import math
+    rh_src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
+    kept, dropped, printed_last = [], [], []
+    seen_courses = collections.Counter()
+    for ref in CORPUS:
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+
+            def em(la, lo):
+                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            perp = (uy, -ux)
+            shift = ((info["card_yd"] - info["arc_yd"])
+                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+
+            def along_yd(la, lo):
+                e, n = em(la, lo)
+                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+
+            def off_m(la, lo):
+                e, n = em(la, lo)
+                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
+            total = info["card_yd"]
+            raw = []
+            for g in bunkers:
+                al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                if not al:
+                    continue
+                near, far = min(al), max(al)
+                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                    continue
+                if near > total - 40:
+                    continue
+                raw.append((near, far))
+            raw.sort()
+            merged = []
+            for a, b in raw:
+                if merged and a - merged[-1][1] <= rh.CARRY_MERGE_GAP_YD:
+                    merged[-1][1] = max(merged[-1][1], b)
+                else:
+                    merged.append([a, b])
+
+            def reach_of(a, b):
+                """Furthest sand inside a window, including greenside sand the carry filter drops."""
+                r = b
+                for g in bunkers:
+                    al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    if not al or min(of) > 30.0:
+                        continue
+                    if a - 2 <= min(al) <= b + 2:
+                        r = max(r, max(al))
+                return r
+            for i, (a, b) in enumerate(merged):
+                nxt = merged[i + 1][0] if i + 1 < len(merged) else None
+                beyond = front if nxt is None else min(nxt, front)
+                rec = (beyond - b, ref, hn, "green" if (nxt is None or front <= nxt) else "sand")
+                (kept if beyond - b > rh.CARRY_MERGE_GAP_YD else dropped).append(rec)
+                seen_courses[ref] += 1
+            # ...and the suppression test's own measure, on the window that is actually PRINTED
+            cs = info.get("carries") or []
+            if cs:
+                near, far = cs[-1]
+                printed_last.append((front - reach_of(near, far), ref, hn))
+    assert len(kept) >= 100 and dropped, f"only {len(kept)} kept / {len(dropped)} dropped -- build first"
+    assert_no_course_skipped(
+        seen_courses, "test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to")
+    bound = 8.0
+
+    # (1) THE TAUTOLOGY, measured rather than asserted in prose: a window bounded by the next sand can
+    # never be dropped, because the merge already put more than CARRY_MERGE_GAP_YD between them.
+    sand_bound = [k for k in kept if k[3] == "sand"]
+    assert sand_bound, "no kept window is bounded by the next sand; the corpus cannot show the tautology"
+    assert all(k[0] > bound for k in sand_bound), (
+        "a sand-to-sand bounded window came in at or below the merge gap, which the merge makes "
+        "impossible -- the two uses of CARRY_MERGE_GAP_YD have come apart")
+    assert not [d for d in dropped if d[3] == "sand"], (
+        f"{len([d for d in dropped if d[3] == 'sand'])} dropped window(s) are sand-bounded, so the "
+        f"suppression is no longer only ever deciding the green-front boundary and the qualification "
+        f"published in render_hole.py is now false")
+
+    # (2) THE FIGURES, derived, and each required in render_hole.py's prose to 4 dp.
+    green_bound = [k for k in kept if k[3] == "green"]
+    worst_kept_any = min(kept)
+    worst_kept_green = min(green_bound)
+    best_dropped = max(dropped)
+    worst_printed = min(printed_last)
+    tighter = [k for k in kept if k[0] < worst_kept_green[0]]
+    figures = {
+        f"{worst_kept_green[0]:.4f}": f"worst KEPT green-bounded, rule metric ({worst_kept_green[1]} "
+                                     f"hole {worst_kept_green[2]})",
+        f"{worst_kept_any[0]:.4f}": f"worst KEPT of all, rule metric, sand-bounded and so tautological "
+                                   f"({worst_kept_any[1]} hole {worst_kept_any[2]})",
+        f"{best_dropped[0]:.4f}": f"best DROPPED, rule metric ({best_dropped[1]} hole "
+                                  f"{best_dropped[2]})",
+        f"{worst_printed[0]:.4f}": f"worst kept by the suppression test's metric ({worst_printed[1]} "
+                                   f"hole {worst_printed[2]})",
+        f"{worst_printed[0] - bound:.4f}": "the thinnest real margin over the bound",
+    }
+    missing = {v: k for k, v in figures.items() if k not in rh_src}
+    assert not missing, (
+        "render_hole.py's landing-bound note no longer carries these measured figures, so its published "
+        "margin has gone stale (this is a re-measurement, not an opinion):\n  "
+        + "\n  ".join(f"{n} = {w}" for w, n in sorted(missing.items())))
+    assert str(len(tighter)) in rh_src and "tautolog" in rh_src.lower(), (
+        f"{len(tighter)} kept window(s) are tighter than the worst green-bounded one, all of them "
+        f"sand-bounded and so tautological. render_hole.py must say how many and say they are "
+        f"tautological, or 'worst KEPT' reads as a claim about every window")
+    for phrase in ("rule's own", "suppression test"):
+        assert phrase in rh_src.lower(), (
+            f"render_hole.py's landing-bound note does not name {phrase!r}, so a reader cannot tell "
+            f"which of the two measures each published figure belongs to -- which is the whole defect")
+
+    # (3) THE GAP IS STILL A GAP. If a re-fetch puts a green-bounded window between the best dropped and
+    # the worst kept, the value of the bound starts deciding cards and has to be argued, not inherited.
+    assert worst_kept_green[0] > best_dropped[0] + 1.0, (
+        f"the landing decision is no longer insensitive to the bound: the worst kept green-bounded "
+        f"window is {worst_kept_green[0]:.4f} yd ({worst_kept_green[1]} hole {worst_kept_green[2]}) and "
+        f"the best dropped {best_dropped[0]:.4f} ({best_dropped[1]} hole {best_dropped[2]}). "
+        f"CARRY_MERGE_GAP_YD was chosen for readability and inherited here on the argument that the "
+        f"corpus cannot tell one value in the gap from another. Re-argue it before shipping.")
+    assert best_dropped[0] < bound < worst_kept_green[0], (
+        f"the bound {bound} no longer sits between the best dropped ({best_dropped[0]:.4f}) and the "
+        f"worst kept green-bounded ({worst_kept_green[0]:.4f}) window")
+    assert worst_printed[0] > bound, (
+        f"the suppression test's own worst kept window is {worst_printed[0]:.4f} yd, at or below the "
+        f"{bound} bound -- the two measures now disagree about a shipped card")
 
 
 @needs_corpus
@@ -9846,6 +10141,86 @@ def _fake_surface_tree(root, pairs):
     return bases
 
 
+def test_the_sidecar_backfills_array_guard_survives_dash_o_and_its_enumerator_matches_the_corpus(
+        tmp_path):
+    """Two holes in the one tool that writes into the only copy of the derived surfaces.
+
+    (1) `assert npy_before == npy_after` is a BARE ASSERT, and `python -O` deletes it. It is the whole
+        protection against the migration finding a rewritten array between its read and its write --
+        the case _fingerprint hashes rather than sizes in order to catch -- guarding the one write in
+        this project that touches data with no copy anywhere. Under -O the loop happily stamps a
+        digest describing an array that has since moved, which is precisely a digest certifying a tear.
+        Checked by compiling the module with optimisation, not by reading the source: an `assert` is
+        gone from the bytecode under -O, and only the bytecode can say whether the guard still exists.
+
+    (2) `_sidecars` enumerates `distribution.course_slugs(root)`, which globs `courses/*/course.json`.
+        Every corpus test that grades these surfaces globs `courses/*/dem_hd/hole*.json` and filters
+        only `_`-prefixed slugs. The two sets differ on a slug that holds SURFACES BUT NO course.json:
+        the tests grade it and require a digest, and the tool cannot see it to stamp one -- an
+        unstampable failure, in a directory nothing can regenerate. Scratch slugs are excluded by both
+        and must stay excluded; it is the course.json requirement that is the mismatch.
+    """
+    import py_compile
+
+    import surface_io
+
+    # (1) the guard must survive -O. compile() with optimize=2 is what `python -O` does to this module.
+    with open(os.path.join(ROOT, "surface_io.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    plain = compile(src, "surface_io.py", "exec", optimize=0)
+    stripped = compile(src, "surface_io.py", "exec", optimize=2)
+
+    def consts(code, needle):
+        """Every string constant reachable from `code`, so a message can be looked for in nested defs."""
+        out = []
+        stack = [code]
+        while stack:
+            c = stack.pop()
+            for k in c.co_consts:
+                if isinstance(k, str):
+                    out.append(k)
+                elif hasattr(k, "co_consts"):
+                    stack.append(k)
+        return [s for s in out if needle in s]
+    MSG = "changed during a sidecar-only migration"
+    assert consts(plain, MSG), (
+        "surface_io no longer carries the message for the array-moved guard; re-read main() before "
+        "editing this test")
+    assert consts(stripped, MSG), (
+        "the array-moved guard in surface_io.main is a bare `assert`, so `python -O` compiles it away "
+        "and the message vanishes from the bytecode. That assertion is the only thing standing between "
+        "a rewritten .npy and a digest that certifies it, on the one write in this project that touches "
+        "data with no copy anywhere -- courses/ is gitignored and only laz/ is refetchable. Raise "
+        "instead of asserting.")
+    py_compile.compile(os.path.join(ROOT, "surface_io.py"), cfile=str(tmp_path / "so.pyc"),
+                       doraise=True, optimize=2)
+
+    # (2) the enumerator must agree with what the corpus tests grade.
+    for slug, sub in (("gamma-golf-club", True), ("_scratch-course", False)):
+        d = tmp_path / "courses" / slug / "dem_hd"
+        d.mkdir(parents=True)
+        (d / "hole1.json").write_text(json.dumps({"W": 2, "H": 2}))
+        if sub:
+            (tmp_path / "courses" / slug / "course.json").write_text(json.dumps({"slug": slug}))
+    # ...and the case the two enumerators disagree about: surfaces, no course.json, not scratch
+    orphan = tmp_path / "courses" / "delta-golf-club" / "dem_hd"
+    orphan.mkdir(parents=True)
+    (orphan / "hole1.json").write_text(json.dumps({"W": 2, "H": 2}))
+
+    found = set(surface_io._sidecars(str(tmp_path)))
+    graded = {p[:-len(".json")]
+              for p in glob.glob(os.path.join(str(tmp_path), "courses", "*", "dem_hd", "hole*.json"))
+              if not os.path.basename(os.path.dirname(os.path.dirname(p))).startswith("_")}
+    assert all("_scratch-course" not in p for p in found), (
+        f"_sidecars reached a scratch slug: {sorted(found)}. The migration rewrites these files in "
+        f"place, so a fixture's meta must never be in the list.")
+    assert found == graded, (
+        f"_sidecars and the corpus tests disagree about which surfaces exist. Graded but not "
+        f"stampable: {sorted(graded - found)}; stampable but not graded: {sorted(found - graded)}. "
+        f"A surface every test requires a digest on, that --stamp cannot see, is an unstampable "
+        f"failure in a directory nothing can regenerate.")
+
+
 def test_the_sidecar_backfill_writes_nothing_unless_every_pair_reads_and_the_arrays_never_move(
         tmp_path, monkeypatch):
     """The code that rewrote 198 irreplaceable sidecars had no test at all.
@@ -9972,7 +10347,10 @@ def test_the_sidecar_backfill_writes_nothing_unless_every_pair_reads_and_the_arr
             np.save(fh, np.arange(12, dtype="float32").reshape(3, 4) * 7.0)
         return out
     monkeypatch.setattr(surface_io, "stamp_digest", stamp_then_move)
-    with pytest.raises(AssertionError) as e:
+    # SystemExit, not AssertionError: the guard was a bare `assert`, which `python -O` deletes -- see
+    # test_the_sidecar_backfills_array_guard_survives_dash_o_and_its_enumerator_matches_the_corpus, which
+    # reads the -O bytecode. This assertion is about the run STOPPING, and it still is.
+    with pytest.raises(SystemExit) as e:
         surface_io.main(["--stamp"])
     assert ".npy" in str(e.value), (
         f"the array was rewritten to the same length during a sidecar-only migration and the run did "
@@ -18376,7 +18754,7 @@ def test_no_par_3_prints_a_carry():
     them the near edge was actively misleading:
 
       * the-reserve 8 printed "carry 90" for a waste complex running 90 to 216 yd on a 237 yd hole --
-        sand ending four yards short of the green front. Flying 90 clears nothing; the distance that
+        sand ending 2.24 yd short of the green front. Flying 90 clears nothing; the distance that
         matters is ~215. A 126 yd gap, eight or nine clubs.
       * merion 13 printed "carry 82" on a 128 yd hole for sand running 82 to 113 with the green front
         at 107 -- again no landing area beyond it.

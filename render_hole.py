@@ -216,7 +216,9 @@ WANDER_MAX = 1.02       # arc / chord above which a line's extra length may be m
 # noise. That is already a judgement about the ground BETWEEN two hazards -- so it is also the bar for
 # the ground between the last sand and the green, which is where a player is being invited to land.
 # See the landing test in the carry block: a strip of grass too narrow to separate two bunkers is too
-# narrow to lay up in, so the green front joins the same merge.
+# narrow to lay up in, so the green front joins the same merge. That SECOND use is a borrowing, not a
+# measurement -- this number was introduced for readability alone -- and the argument for borrowing it,
+# with every margin either side of it, is written out there rather than here.
 CARRY_MERGE_GAP_YD = 8.0
 
 # THE DRAWING CORRIDOR, one declaration for the whole project.
@@ -1158,7 +1160,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # becomes the one number on that card a player could act on and be wrong about.
     #
     # That argument was already written down here -- see the par-3 note below, on the-reserve 8 (sand
-    # ending four yards short of its green) and merion 13 (sand ending PAST its green front). It was
+    # ending 2.24 yd short of its green) and merion 13 (sand ending PAST its green front). It was
     # keyed on PAR, and none of it is a property of par. Re-measured over the 198 geometry cards after
     # the WGS84 per-axis migration, seven windows on seven PAR 4s had no landing area either:
     #
@@ -1178,9 +1180,34 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # THE BAR IS CARRY_MERGE_GAP_YD, not a new threshold -- picking one would have been a guess. That
     # constant already declares a gap this small along the played line to be one obstacle rather than two
     # decisions, which is a judgement about the ground BETWEEN hazards; the ground between the last sand
-    # and the green is the same kind of ground, so the green front simply joins the merge. The corpus
-    # leaves a clean break either side of it: worst KEPT landing area 8.7 yd (micke-grove 13), best
-    # DROPPED 3.4 (monarch-bay 14).
+    # and the green is the same kind of ground, so the green front simply joins the merge.
+    #
+    # THE MARGIN, AND WHICH MEASURE EACH FIGURE BELONGS TO. This note used to read "the corpus leaves a
+    # clean break either side of it: worst KEPT landing area 8.7 yd (micke-grove 13), best DROPPED 3.4
+    # (monarch-bay 14)". Both figures are right and the sentence still misled, because two measures are
+    # in play and it named neither:
+    #
+    #   * by the RULE'S OWN measure -- `beyond = min(next sand, green front)`, unrounded edges --
+    #     worst KEPT green-bounded 8.7456 (micke-grove 13), best DROPPED 3.4251 (monarch-bay 14).
+    #     Margin over the bound: 0.7456.
+    #   * by the SUPPRESSION TEST's measure -- last PRINTED window only, `reach` seeded from the ROUNDED
+    #     far edge, bounded by the green front alone -- the same window measures 8.4352, because
+    #     rounding 289.69 up to 290 costs 0.31 yd. Margin over the bound: 0.4352, and that is the
+    #     thinnest real margin, so it is the honest headline for a bound governing 119 printed figures.
+    #
+    # "worst KEPT" also needed qualifying: 4 kept windows are tighter than 8.7456 -- copper-valley 17 at
+    # 8.2538, micke-grove 11 at 8.5031, merion 5 at 8.5073, monarch-bay 2 at 8.5827. Every one is bounded
+    # by the NEXT SAND rather than the green, and the merge guarantees a sand-to-sand gap above
+    # CARRY_MERGE_GAP_YD by construction, so those are TAUTOLOGICAL and can never be dropped. 8.7456 is
+    # the worst of the 86 windows this rule can actually decide; 8.2538 is the worst of all 132.
+    #
+    # And the value is inherited rather than measured ON PURPOSE. The physical question -- "is N yards a
+    # landing area for a junior's tee shot" -- needs dispersion data this project does not have, so a
+    # measured replacement would be a guess in charge of 119 figures. What the corpus can say is that the
+    # decision is insensitive to the value: every green-bounded window is at 3.4251 or below or 8.7456 or
+    # above, so any bound inside that 5.32 yd gap gives the identical outcome. All of the above is
+    # re-derived and graded by test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to,
+    # which also fails if a re-fetch closes the gap and makes the value start deciding cards.
     #
     # PER WINDOW, bounded by the next sand or the green, whichever comes first -- so a hole keeps the
     # carries that DO have somewhere to land. merion 10 keeps 95 and 164 (57 and 41 yd of fairway beyond
@@ -1249,9 +1276,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # card, and on two of them the near edge was actively misleading:
     #
     #   * the-reserve 8 printed "carry 90" for a 128-vertex waste complex running from 90 to 216 yd on
-    #     a 237 yd hole -- sand ending FOUR YARDS short of the green front. Flying 90 clears nothing;
-    #     the distance that matters is ~215. A 126 yd gap, eight or nine clubs, and the near edge is
-    #     the one number on that card a player could act on and be wrong about.
+    #     a 237 yd hole -- sand ending 2.24 yd short of the green front (218.03 - 215.79). Flying 90
+    #     clears nothing; the distance that matters is ~215. A 126 yd gap, eight or nine clubs, and the
+    #     near edge is the one number on that card a player could act on and be wrong about. (The figure
+    #     read "four yd" until the WGS84 per-axis migration re-measured it, and travelled into a NEW
+    #     comment afterwards, so it is graded now -- see
+    #     test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured.)
     #   * merion 13 printed "carry 82" on a 128 yd hole for a bunker running 82 to 113, where the green
     #     front is at 107 -- again no landing area beyond it.
     #
