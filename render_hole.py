@@ -1197,7 +1197,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #   * by the RULE'S OWN measure -- `beyond = min(next merged window, greenside sand, green front)`,
     #     unrounded edges -- worst KEPT that the rule can decide 8.8428 (castlewood-hill 10, bounded by
     #     greenside sand), best DROPPED 6.1489 (micke-grove 13, likewise). Margin over the bound: 0.8428,
-    #     and that is the thinnest real margin, so it is the honest headline for a bound governing 118
+    #     and that is the thinnest real margin, so it is the honest headline for a bound governing 119
     #     printed figures.
     #   * by the SUPPRESSION TEST's measure -- last PRINTED window only, `reach` seeded from the ROUNDED
     #     far edge and then chained across any strip of grass narrower than CARRY_MERGE_GAP_YD, which is
@@ -1224,7 +1224,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # And the value is inherited rather than measured ON PURPOSE. The physical question -- "is N yards a
     # landing area for a junior's tee shot" -- needs dispersion data this project does not have, so a
-    # measured replacement would be a guess in charge of 118 figures. What the corpus can say is that the
+    # measured replacement would be a guess in charge of 119 figures. What the corpus can say is that the
     # decision is insensitive to the value: every window the rule decides is at 6.1489 or below or 8.8428
     # or above, so any bound inside that 2.6940 yd gap gives the identical outcome. That gap USED to be
     # 5.3205 yd wide, so counting the greenside sand has made the bound more load-bearing, not less --

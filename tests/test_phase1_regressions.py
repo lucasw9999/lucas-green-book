@@ -6136,6 +6136,87 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
     assert not problems, "the-reserve 8's shortfall is published stale:\n  " + "\n  ".join(problems)
 
 
+# Every spelling of "how many printed figures CARRY_MERGE_GAP_YD is in charge of". Three phrasings
+# across two files, one number, and nothing derived it -- so when e0648c6's greenside-sand bound took
+# the total from 128 to 119, f7c22bc re-measured the one sentence it was editing and left the other two
+# saying 118. The repo then published both numbers at once. Anchored on distinct prose rather than on a
+# bare "(\d+) figures", because the same paragraph also states how many figures the bound COST ("8
+# figures across 8 of 198 cards"), which is a different count and must not be dragged along.
+_CARRY_FIGURE_COUNT_CLAIMS = (
+    r"governing\s+(\d+)\s+printed figures",
+    r"in charge of\s+(\d+)(?:\s+printed)?\s+figures",
+    r"\b128\s*->\s*(\d+)\b",
+)
+
+
+@needs_corpus
+def test_every_published_count_of_the_printed_carry_figures_is_what_the_books_print():
+    """Two passages said the bound governs 118 figures and two said 119. The books print 119.
+
+    CARRY_MERGE_GAP_YD decides whether each carry window reaches a card, and both passages that argue
+    for keeping an INHERITED value lean on how much it governs -- "the honest headline for a bound
+    governing N printed figures", "a measured replacement would be a guess in charge of N figures". The
+    size of N is the whole force of that argument, so it is load-bearing prose, and it was written down
+    in four places and derived in none.
+
+    e0648c6 moved the number: counting the greenside sand the `total_yd - 40` filter drops took the
+    corpus from 128 printed carry figures to 119. f7c22bc corrected the one occurrence it was writing
+    about -- the "Cost:" line, which spells the total as a before-and-after pair -- and left its two
+    siblings at 118, while a test docstring had already been updated to 119. So the repo simultaneously
+    published 118 and 119 for one measurement, which is strictly worse than publishing one wrong
+    figure, because a reader cannot tell which of the two records was the maintained one.
+
+    NO PHRASE THIS SCAN MATCHES IS WRITTEN OUT HERE, for the reason
+    test_a_printed_carry_never_overstates_what_it_clears gives beside its own scan: the patterns read
+    every one of these three files, this one included, so a docstring that quoted the defect verbatim
+    would both flag itself and inflate the `seen` count that keeps deletion from being the easy way out.
+    The first red run of this test did exactly that.
+
+    COUNTED OFF THE SHIPPED PAGES, not off the engine, and that is the point: the claim is about
+    figures a reader can see, so the measurement reads `carry <b>...</b>` out of the pocket books and
+    counts the digits inside. An engine-side count would re-derive the same rule the sentence is
+    defending and could agree with it while the cards printed something else. The ENLARGED edition is
+    excluded deliberately -- it re-prints three courses' carries through the same shared
+    `playline_html`, so counting it would double 54 of these figures and the claim is about the corpus
+    of 198 cards.
+    """
+    printed, by_course = 0, collections.Counter()
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        for m in re.finditer(r"carry <b>([^<]*)</b>", html):
+            n = len(re.findall(r"\d+", m.group(1)))
+            printed += n
+            by_course[ref] += n
+    assert printed > 50, (
+        f"only {printed} carry figures found across the pocket books -- build them first, or the "
+        f"count these sentences are graded against is not the corpus's")
+
+    stale, seen = [], 0
+    for rel in ("render_hole.py", "generate.py", os.path.join("tests", "test_phase1_regressions.py")):
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            src = fh.read()
+        # Comment blocks wrap these sentences across lines, so match the prose with the `#` gutters and
+        # the line breaks flattened away; the matched phrase is quoted back instead of a line number.
+        flat = re.sub(r"\s+", " ", re.sub(r"^[ \t]*#", "", src, flags=re.M))
+        for pat in _CARRY_FIGURE_COUNT_CLAIMS:
+            for m in re.finditer(pat, flat):
+                seen += 1
+                if int(m.group(1)) != printed:
+                    stale.append(f"{rel} says {m.group(0)!r}; the pocket books print {printed} carry "
+                                 f"figures ({dict(sorted(by_course.items()))})")
+    assert seen >= 4, (
+        f"only {seen} published statement(s) of how many printed figures the landing bound governs "
+        f"were found, and there were four. Both arguments for inheriting CARRY_MERGE_GAP_YD rest on "
+        f"that count, so deleting the sentence must not be how this passes -- if the wording moved, "
+        f"move the pattern in _CARRY_FIGURE_COUNT_CLAIMS with it.")
+    assert not stale, ("a published count of the printed carry figures is not what the books print:\n  "
+                       + "\n  ".join(stale))
+
+
 def _playline_text_by_hole(html):
     """{hole number: the tag-stripped text of every .playline on that hole's card(s)}.
 
