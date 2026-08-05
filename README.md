@@ -97,7 +97,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. This file rebinds
-`COURSE` and drops modules from `sys.modules` at 69 sites, so a test can silently reconfigure the next
+`COURSE` and drops modules from `sys.modules` at 94 sites, so a test can silently reconfigure the next
 one, and file order alone will never show it — a real `IndexError` in `render_hole` hid behind that for
 its whole life and only appeared under shuffling:
 ```bash
@@ -126,10 +126,23 @@ from the build outputs precisely so the legal record cannot drift from what was 
 
 Two more tools, useful when a course looks wrong rather than on every build:
 ```bash
-python3 tools/check_osm_bbox.py --all # every printed hole's 45 m corridor lies inside its fetch box
+python3 tools/check_osm_bbox.py --all # every printed hole's 68 m corridor lies inside its fetch box
 COURSE=<slug> python3 tools/lidar_dates.py   # decodes the flight date from the LiDAR point records
 python3 tools/cross_flight_check.py --all    # do two surveys of the same green print the same read?
 ```
+
+A green surface is two files that only mean anything together — `dem_hd/holeNN.npy` carries no
+georeference, so the sidecar's bbox is what places every pixel. Each sidecar records a SHA-256 of the
+array committed beside it, and `render_green` refuses a pair that disagrees; a surface built before
+that digest existed carries none, and is stamped from the array already on disk rather than left
+unverifiable:
+```bash
+python3 surface_io.py            # how many built surfaces carry a pair digest
+python3 surface_io.py --stamp    # stamp the ones that do not (writes sidecars only, never a .npy)
+```
+It reads every pair first and writes nothing at all if any one of them fails to load or disagrees with
+its own metadata — a pair that is already torn has to be rebuilt, because stamping it would certify the
+tear. Re-running it on a stamped tree is a no-op.
 `check_osm_bbox.py` catches a fetch box so tight that features beside the hole were never downloaded —
 the map then agrees with the footer because both count only what arrived. `lidar_dates.py` is where
 the flight dates in the provenance table come from; a USGS *project name* is not a flight date, and
@@ -143,7 +156,11 @@ also the project's only measurement of how repeatable these surfaces are: see
 [`legal/09_GREEN_SURFACE_REPEATABILITY.md`](legal/09_GREEN_SURFACE_REPEATABILITY.md).
 
 ## Editions &amp; extras
-- **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex, top‑flip; slips into a back‑pocket
+- **Standard pocket book** — 3.5×5″ cards, 4 per sheet, duplex **flipped on the LONG edge** (what
+  every sheet note in the book itself says; on portrait paper that turns the sheet about its vertical
+  centreline, which is the mirroring the imposition compensates for — a top/short‑edge flip prints
+  every back behind the wrong front). The cut cards then read upright when you turn a leaf over its
+  top edge. Slips into a back‑pocket
   yardage‑book cover. Each hole shows the back tee as the headline yardage, in its own tee colour.
 - **Large‑print edition** (`COURSE=<slug> COACH=1 python3 generate.py`) — each hole split across two
   cards (course map, then green) with larger type, for coaches. Marked a **practice edition** (past

@@ -24,20 +24,211 @@ os.makedirs(f"{DIR}/laz", exist_ok=True)
 S, W, N, E = config.COURSE["osm_bbox"]
 BBOX = f"{W},{S},{E},{N}"            # TNM wants minx,miny,maxx,maxy
 
-def tnm_items(tries=8):
+TNM_PAGE_MAX = 200      # products per request. The API's own cap on this endpoint -- ask for it, then PAGE.
+# Consecutive pages that add no new product before the walk gives up. A service that ignores `offset`
+# re-serves page one forever, and following that is unbounded; a service whose ORDER is merely unstable
+# adds nothing on the odd page and progresses on the next. One page cannot tell those apart, three can,
+# and the accounting at the end of tnm_items decides what the stall meant.
+TNM_STALL_PAGES = 3
+
+
+def _tnm_page(offset, tries):
+    """One page of TNM LPC products for the course bbox: (items, total, note).
+
+    `total` is what the service says the whole query holds, or None when it did not say. `note` is any
+    message or error field it carried, so a caller can report what was actually said.
+
+    Retries on a transport error or an empty reply, which is how this endpoint expresses being busy. But
+    an empty reply CARRYING a total of 0 is an answer, not a wobble, and comes straight back: "0 items
+    (service busy), retrying" was the sole diagnosis this module printed for every cause of an empty
+    list -- a real outage, a bbox over open water, and a renamed `datasets=` string all read the same.
+    """
     url = ("https://tnmaccess.nationalmap.gov/api/v1/products?bbox=" + BBOX +
-           "&datasets=Lidar%20Point%20Cloud%20(LPC)&outputFormat=JSON&max=200")
+           "&datasets=Lidar%20Point%20Cloud%20(LPC)&outputFormat=JSON"
+           f"&max={TNM_PAGE_MAX}&offset={offset}")
     for a in range(tries):
         try:
-            data = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent':'greenbook/1.0'}), timeout=90).read()
-            items = json.loads(data).get('items', [])
+            data = urllib.request.urlopen(urllib.request.Request(
+                url, headers={'User-Agent': 'greenbook/1.0'}), timeout=90).read()
+            reply = json.loads(data)
+            items = reply.get('items') or []
+            total = reply.get('total')
+            note = reply.get('message') or reply.get('errors') or reply.get('error')
+            if isinstance(total, str) and total.isdigit():
+                total = int(total)          # the endpoint has been seen to quote it
             if items:
-                return items
-            print(f"  TNM try {a+1}: 0 items (service busy), retrying")
+                return items, (total if isinstance(total, int) else None), note
+            if total == 0:
+                print(f"  TNM answered: it lists 0 LPC products for this bbox"
+                      + (f" -- {note}" if note else ""))
+                return [], 0, note
+            print(f"  TNM try {a+1}: 0 items and no total (service busy), retrying")
         except Exception as e:
             print(f"  TNM try {a+1} failed: {type(e).__name__}, retrying")
         time.sleep(10)
-    return []
+    return [], None, None
+
+
+def tnm_items(tries=8):
+    """Every LPC product TNM lists for this course bbox, following the API's paging.
+
+    THIS USED TO BE ONE REQUEST FOR `&max=200`, read as the whole world. A course needing more than 200
+    products would have got a silently TRUNCATED tile list: the missing tiles are not an error anywhere
+    downstream, they are simply absent, so lidar_coverage measures a smaller footprint, choose_project
+    ranks surveys on it, and greens fall back to the 1 m DEM or to nothing for a reason that is not real.
+    There was a `print("WARNING: hit the 200-item TNM cap")`, which is a line in a long log rather than a
+    refusal, and everything else in this pipeline refuses.
+
+    Latent on this corpus -- 4 to 14 tiles are kept per course, nowhere near the cap -- so the fix is for
+    the course that is not in it yet.
+
+    WHAT A SHORT LIST MEANS DEPENDS ON WHY IT IS SHORT, and the first version of this paging did not ask.
+    It advanced with `offset += len(items)` and then refused whenever `len(got) < total`. Both halves
+    assume `offset` is item-indexed over a STABLE ordering, and this API guarantees neither -- so a
+    reordering between two requests makes one page overlap the last, dedup drops the repeats, and the run
+    dies telling the user to re-run a service that is working perfectly. Every one of these semantics was
+    reasoned about against a monkeypatched stub, never observed live, which is exactly why the failure
+    modes now have to distinguish "the service said something I cannot interpret" from "the service is
+    broken".
+
+    The fact that separates them is how many ROWS the service handed over against the number it claims:
+
+      * WALKED TO THE END and handed over at least `total` rows, but fewer DISTINCT products came back.
+        Every offset in the range was asked, so `got` already holds every product the service was willing
+        to show; the deficit is repeated rows, not missing tiles. That is an ordering artefact, and it
+        WARNS and returns best effort rather than stopping a build that has everything.
+      * RAN OUT of rows before delivering `total`. The listing really is short, nothing can say which
+        products are missing, and a missing tile is invisible downstream. That still REFUSES.
+
+    Two refusals are unchanged, because neither is a thing a healthy service does:
+      * a page exactly at the cap with NO total. That is the one state where a complete list and a
+        truncated one are indistinguishable, which is precisely what the old code could not tell apart.
+      * a service that ignores `offset` and re-serves page one. It is followed for TNM_STALL_PAGES pages
+        and then abandoned -- but abandoning the walk is NOT walking to the end, so such a run can never
+        reach the best-effort path however many rows it was handed. Accepting page one as the whole survey
+        is the defect this function was written for.
+
+    AND THE STATED TOTAL IS TAKEN FROM THE FIRST PAGE THAT GIVES ONE. It used to be overwritten by every
+    page, and the reply for an offset past the end answers `total: 0` -- so that zero erased the real
+    figure and the shortfall check became a no-op. Measured: with the terminating page answering `total:
+    0`, a listing 200 products short of a stated 500 was accepted in silence. The two defects masked each
+    other, which is why the refusal looked over-eager and was in fact mostly dead.
+
+    WHAT ENDS THE WALK is an empty page, a `total` that has been met, or the stall detector -- NOT a page
+    that came back under `max`. `max` is a ceiling, not a quota, and an HTTP API may under-fill any page
+    and keep serving on the next. Treating a sub-cap page as the end regardless refused a healthy service:
+    a stated 500 served as 200 + 150 + 150 stopped at 350 rows and reported that the producer "ran out",
+    naming an offset the walk had never requested. A short page still ends the walk when NO total was
+    stated, which is the ordinary case on this corpus -- 4 to 14 tiles in one reply.
+
+    AND EVERY REFUSAL NAMES AN OFFSET THAT WAS ACTUALLY REQUESTED, from `last_asked`. The stall refusal
+    computed it as `offset - TNM_PAGE_MAX`, which is the last request only while every page arrives
+    cap-sized -- true until the paragraph above made sub-cap pages reachable mid-walk, and false after: a
+    service ignoring `offset` at 150 rows a page against a stated 500 is asked at 0/150/300/450 and that
+    subtraction blames 400. The offset is in the message so an operator can replay the request that
+    stalled; one that was never made replays as something else.
+
+    Getting nothing at all is the old outage path and still returns [], which main() turns into its own
+    "re-run later" stop.
+    """
+    got, ids, offset, total = [], set(), 0, None
+    served = 0              # ROWS the service handed over, before dedup. The other half of the accounting.
+    last_asked = 0          # the offset of the most recent REQUEST. NOT `offset - TNM_PAGE_MAX`: pages
+                            # come back under the cap, so that subtraction names a request never made.
+    stalled = 0             # CONSECUTIVE pages that added no new product
+    stalls_seen = 0         # pages that added nothing, consecutive or not -- see the refusals below
+    walked_to_end = False   # the listing ran out, as opposed to this loop giving up on it
+    notes = []
+    while True:
+        last_asked = offset
+        items, page_total, note = _tnm_page(offset, tries)
+        if note and str(note) not in notes:
+            notes.append(str(note))
+        # FIRST stated total wins -- see the docstring. An over-the-end page answers `total: 0`, and
+        # taking the latest erased the real figure and disarmed the shortfall refusal below.
+        if page_total is not None and total is None:
+            total = page_total
+        if not items:
+            walked_to_end = True
+            break
+        served += len(items)
+        new = 0
+        for it in items:
+            key = it.get('sourceId') or it.get('downloadURL') or it.get('title')
+            if key in ids:
+                continue
+            ids.add(key)
+            got.append(it)
+            new += 1
+        offset += len(items)
+        stalled = stalled + 1 if new == 0 else 0
+        stalls_seen += 1 if new == 0 else 0
+        if stalled >= TNM_STALL_PAGES:
+            break                   # not honouring `offset`; the accounting below says what that cost
+        # Its position relative to the sub-cap block below is NOT load-bearing, and saying so beats
+        # leaving the next reader to assume it is: past page one `total` is never None -- a cap-sized
+        # page with no total raises and a sub-cap page with no total breaks -- so the only thing that
+        # block does (`if total is None: break`) cannot fire on a page where a stall could have built up.
+        # Measured: swapping the two leaves all eleven stubbed scenarios byte-identical.
+        if len(items) < TNM_PAGE_MAX:
+            # A SUB-CAP PAGE IS THE END ONLY WHEN NOTHING SAYS OTHERWISE. `max` is a ceiling, not a
+            # quota: an HTTP API may under-fill any page and keep serving on the next. Reading a short
+            # page as the end WHILE A STATED `total` IS STILL UNMET refused a healthy service --
+            # 500 served as 200 + 150 + 150 stopped at 350 and blamed the producer for "running out"
+            # at an offset that had never been requested. With a `total` in hand, keep paging; the
+            # empty page, the stall detector, or `total` itself ends the walk.
+            if total is None:
+                walked_to_end = True
+                break
+        elif total is None:
+            raise SystemExit(
+                f"USGS TNM returned exactly {TNM_PAGE_MAX} products -- this request's cap -- and no\n"
+                f"  `total`, so a complete listing and a truncated one look identical. Refusing to\n"
+                f"  guess: if it is truncated, the missing tiles are not an error anywhere downstream,\n"
+                f"  they are just absent, and greens lose their 0.4 m surface for a reason that is not\n"
+                f"  real. Check what the products API now returns and extend the paging here."
+                + (f"\n  The service said: {'; '.join(notes)}" if notes else ""))
+        if len(got) >= total:
+            break
+
+    said = f"\n  The service said: {'; '.join(notes)}" if notes else ""
+    if stalled >= TNM_STALL_PAGES and not walked_to_end:
+        raise SystemExit(
+            f"USGS TNM re-served products it had already listed for {stalled} pages running, the last at\n"
+            f"  offset={last_asked}, so it is not honouring `offset` and the listing cannot be\n"
+            f"  paged. Refusing to treat the {len(got)} products seen so far as the whole survey"
+            + (f" of {total}" if total else "") + ": a short\n"
+            f"  tile list is invisible downstream -- the tiles are simply absent, coverage measures\n"
+            f"  smaller, and greens fall back to the 1 m DEM for a reason that is not real. Check the\n"
+            f"  products API before re-running." + said)
+    if total and got and len(got) < total:
+        if walked_to_end and served >= total:
+            # NOT a refusal. The walk reached the end of the listing and the service handed over at
+            # least as many rows as it claims to hold, so every product it was willing to show is in
+            # `got` and the gap is rows it repeated -- an unstable ordering under an item-indexed
+            # offset, which this API does not promise not to do. Loud, because it is still a surprise.
+            print(f"  WARNING: TNM says it holds {total} LPC products for this bbox and served "
+                  f"{served} rows, but only {len(got)} were distinct.")
+            print(f"  Reading that as an unstable listing order rather than a truncated survey: every "
+                  f"offset from 0 to {offset} was requested and the end of the listing was reached, so "
+                  f"these {len(got)} are every product the service was willing to show.")
+            print(f"  If a tile you expect is missing, re-run -- a different ordering will page "
+                  f"differently." + said.replace("\n  ", " "))
+        else:
+            # A repeated page and a short listing are different faults and can arrive together, so the
+            # refusal reports both: a walk that saw repeats cannot even claim `offset` was advancing over
+            # a stable order, which changes what the operator should go and look at.
+            repeats = ("" if not stalls_seen else
+                       f"\n  {stalls_seen} page(s) repeated products already listed, so `offset` may not\n"
+                       f"  be advancing over a stable order either -- the shortfall may be either fault.")
+            raise SystemExit(
+                f"USGS TNM says it holds {total} LPC products for this bbox but ran out after serving\n"
+                f"  {served} rows, of which {len(got)} were distinct. That is a TRUNCATED listing, not a\n"
+                f"  reordered one: a service whose order merely shifted would still have handed over\n"
+                f"  {total} rows. Refusing to build on a partial tile list -- see this function's\n"
+                f"  docstring for why a short list is invisible downstream. Re-run when the service is\n"
+                f"  healthy." + repeats + said)
+    return got
 
 # Path segments USGS uses as containers, never as a survey name.
 _BUCKETS = {'legacy', 'lpc', 'laz', 'metadata', 'projects'}
@@ -360,8 +551,6 @@ def main():
     if not items:
         raise SystemExit("USGS TNM returned no tiles after retries (temporary outage). "
                          "Re-run later; point cloud is known to exist for this bbox.")
-    if len(items) >= 200:
-        print("  WARNING: hit the 200-item TNM cap; some tiles may be missing from this listing")
     # Keep only tiles whose bounding box ACTUALLY overlaps the course. TNM's bbox
     # query returns neighbouring tiles too, and a tile that merely borders the
     # query box can miss every green -- overlap is what matters. (If no item

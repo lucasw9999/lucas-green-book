@@ -136,6 +136,52 @@ def census(elements):
     return c
 
 
+# Kinds whose count CHURNS in OSM independently of the golf course, and which nothing a card
+# MEASURES is derived from. A landcover polygon is split at a new path, a creek is re-segmented at a
+# road crossing (render_hole already has to de-duplicate that: one creek, many ways), a mapper adds
+# or deletes a handful of tree nodes. Everything NOT listed here -- green, hole, fairway, tee,
+# bunker, cartpath, rough, water_hazard, and any kind not yet seen -- keeps ZERO tolerance, because
+# losing one of those rebinds or re-draws a hole. Default-deny: a new kind is structural until
+# someone shows it churns.
+VOLATILE_KINDS = frozenset({
+    # observed in this corpus' caches: tree, tree_row, wood, water, building, wetland, rock
+    # ...plus the other landcover kinds main()'s own queries ask for
+    'tree', 'tree_row', 'wood', 'forest', 'scrub', 'wetland',
+    'water', 'building', 'bare_rock', 'rock', 'stone',
+})
+
+# Kinds whose loss removes drawn HAZARD ink from a card: sand and water, the tan and the blue, the two
+# things the footer counts as "NB" and "NW". These get NO rarity exemption and NO tolerance floor,
+# because rare is exactly when one loss matters most -- see the block in _check_response.
+#
+# `water` is in BOTH sets, and that is the point. It churns (a creek is re-segmented at a road
+# crossing, so a 60-way network legitimately becomes 59) and it is also the class a card draws to warn
+# a junior about a pond. So it keeps the PROPORTIONAL part of the churn tolerance and loses the floor
+# of 1: 2% of 60 is still one way, 2% of 3 is zero ponds.
+HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water'})
+
+# 2%, floor 1. Chosen from what these counts actually are on this corpus (the-reserve 2,462 trees and
+# 1,530 buildings, micke-grove 532 trees, the-reserve 60 water ways, merion 8 wood) against what the
+# guard has to keep catching: every documented truncation lost 89-100% of a kind (fairway 18 -> 0,
+# 37 -> 1, 23 -> 4, and the remark replies that return nothing at all). So 2% sits an order of
+# magnitude below the smallest real failure while covering ordinary editing -- 49 trees at the-reserve,
+# 30 buildings. The floor of 1 is what the reproduced defect needed: one deleted natural=tree node out
+# of 2,462 hard-aborted the whole fetch, and without a floor a 4 -> 3 water shrink still would.
+CHURN_TOLERANCE = 0.02
+
+
+def _churn_tolerance(old_count, kind=None):
+    """How many features of `kind` may go missing without a human looking.
+
+    The floor of 1 exists for the reproduced defect (one deleted tree node out of 2,462 hard-aborted a
+    whole fetch) and it is wrong for a HAZARD kind, where it hands a three-pond course a free pond.
+    Hazard kinds therefore get the proportional part only, which is zero below 50 features.
+    """
+    if kind in HAZARD_KINDS:
+        return int(old_count * CHURN_TOLERANCE)
+    return max(1, int(old_count * CHURN_TOLERANCE))
+
+
 def _check_response(j, path, out):
     """Validate the INCOMING Overpass reply before it is allowed to replace a good cache.
 
@@ -147,7 +193,16 @@ def _check_response(j, path, out):
 
     Three checks: refuse a remark-bearing reply outright, refuse a reply that has lost features of any
     KIND against the cache we are about to overwrite, and refuse one whose total golf-feature count
-    has collapsed. Set ALLOW_SHRINK=1 to override the last two when OSM genuinely lost features.
+    has collapsed.
+
+    THREE different waivers, because these are three different questions a human has to answer.
+    ALLOW_SHRINK=1 accepts a real OSM deletion of a VOLATILE kind (trees, buildings, landcover);
+    ALLOW_HAZARD_SHRINK=1 accepts the loss of drawn HAZARD ink -- sand or water, the kinds in
+    HAZARD_KINDS; ALLOW_STRUCTURAL_SHRINK=1 accepts the loss of a green, hole, fairway or any other kind
+    a card is built from. One flag used to gate the first two of those, and the message for a churned
+    tree prescribed it -- so waiving a deleted tree stump also waived the green check that exists to stop
+    18 cards rebinding. The third was split off for the identical reason: a waiver granted for a
+    re-mapped green must not also accept a bunker that quietly stopped being fetched.
     """
     if not isinstance(j, dict) or not isinstance(j.get('elements'), list):
         raise SystemExit(f"ABORT: Overpass reply for {out} is not an element list -- refusing to write.")
@@ -175,47 +230,103 @@ def _check_response(j, path, out):
         # could lose all but one to six of them. A reply with all the holes and none of the greens is
         # exactly the truncated reply that bound bay-view hole 9 to hole 7's green.
         #
-        # No tolerance, because these are stable mapped polygons and the documented failure cost ONE
-        # green. A genuine OSM deletion is what ALLOW_SHRINK is for; it should need a human to look.
-        if not os.environ.get("ALLOW_SHRINK"):
-            # COMPARE LIKE WITH LIKE. The baseline is the cache, which holds two classes of element
-            # the raw Overpass reply CANNOT contain: hand-digitized features merged in after this
-            # check runs, and rings flattened out of multipolygon relations by a later fetch. Counting
-            # them made the guard fire on a legitimate re-fetch of 9 of the 11 courses -- valley-hi
-            # fairway 18 -> 0, monarch-bay 37 -> 1, micke-grove 23 -> 4, the-reserve 20 -> 2 -- and
-            # deterministically, so the only available action was the ALLOW_SHRINK=1 the message
-            # prescribes, which then waives the real checks too. A guard that must be switched off to
-            # do ordinary work is worse than none: it trains you to switch it off.
-            #
-            # Filtering the baseline is the honest comparison, not a loosening. The reply is still
-            # required to carry every FETCHED feature the cache had; it is simply no longer asked to
-            # carry the ones this project added itself.
-            def _fetchable(els):
-                # _digitized is a TAG; _from_relation is a TOP-LEVEL key (written that way at line 94).
-                # Reading both from tags filtered nothing, so the guard still refused 9 of 11 courses --
-                # and my verification of that fix used a probe that read the same wrong key, so it agreed
-                # with itself. Measured on valley-hi: 18 elements carry _from_relation at top level,
-                # 0 inside tags.
-                return [e for e in els
-                        if '_digitized' not in (e.get('tags') or {})
-                        and e.get('_from_relation') is None]
-            oc, nc = census(_fetchable(old)), census(j['elements'])
-            lost = {k: (oc[k], nc[k]) for k in oc if oc[k] >= 4 and nc[k] < oc[k]}
-            if lost:
-                detail = ", ".join(f"{k} {o} -> {n}" for k, (o, n) in sorted(lost.items()))
-                raise SystemExit(
-                    f"ABORT: Overpass returned FEWER features than the existing cache for {out}:\n"
-                    f"    {detail}\n"
-                    f"  Overwriting would silently rebind holes to the wrong greens -- a card then\n"
-                    f"  prints a confident, correctly-computed read of the WRONG putting surface.\n"
-                    f"  Re-run; if OSM really did lose these features, set ALLOW_SHRINK=1\n"
-                    f"  deliberately.")
-        if old_n >= 4 and new_n < old_n * 0.5 and not os.environ.get("ALLOW_SHRINK"):
+        # No tolerance for the kinds a card is built from, because these are stable mapped polygons and
+        # the documented failure cost ONE green. A genuine OSM deletion is what ALLOW_STRUCTURAL_SHRINK
+        # is for; it should need a human to look.
+        #
+        # COMPARE LIKE WITH LIKE. The baseline is the cache, which holds two classes of element the raw
+        # Overpass reply CANNOT contain: hand-digitized features merged in after this check runs, and
+        # rings flattened out of multipolygon relations by a later fetch. Counting them made the guard
+        # fire on a legitimate re-fetch of 9 of the 11 courses -- valley-hi fairway 18 -> 0, monarch-bay
+        # 37 -> 1, micke-grove 23 -> 4, the-reserve 20 -> 2 -- and deterministically, so the only
+        # available action was the waiver the message prescribes, which then waives the real checks too.
+        # A guard that must be switched off to do ordinary work is worse than none: it trains you to
+        # switch it off.
+        #
+        # Filtering the baseline is the honest comparison, not a loosening. The reply is still
+        # required to carry every FETCHED feature the cache had; it is simply no longer asked to
+        # carry the ones this project added itself.
+        def _fetchable(els):
+            # _digitized is a TAG; _from_relation is a TOP-LEVEL key (written that way at line 94).
+            # Reading both from tags filtered nothing, so the guard still refused 9 of 11 courses --
+            # and my verification of that fix used a probe that read the same wrong key, so it agreed
+            # with itself. Measured on valley-hi: 18 elements carry _from_relation at top level,
+            # 0 inside tags.
+            return [e for e in els
+                    if '_digitized' not in (e.get('tags') or {})
+                    and e.get('_from_relation') is None]
+        oc, nc = census(_fetchable(old)), census(j['elements'])
+        # RARE IS NOT SAFE, and the `oc[k] < 4` floor below said it was. It exempted any kind with
+        # fewer than four features ENTIRELY, and `water`'s max(1, 2%) tolerance gave the small ones
+        # one free loss on top. Measured on the caches now on disk:
+        #
+        #     castlewood-hill    water_hazard 1, water 3    -- draws water on 3 of 18 cards
+        #     castlewood-valley  water_hazard 2, lateral_water_hazard 1, water 7   -- 12 of 18
+        #     monarch-bay        water_hazard 1, water 1    -- 3 of 18
+        #     callippe water_hazard 1; merion lateral 1; philadelphia lateral 3; valley-hi water 4
+        #
+        # Reproduced against those counts: hill could lose ALL THREE of its water features, valley both
+        # its water_hazards, monarch-bay its only one, and every one of those replies was accepted
+        # silently. A book that promises never to omit a hazard the golfer can reach had no floor at all
+        # under the hazards a card actually draws.
+        #
+        # THE BASELINE THAT WOULD SETTLE IT IS GONE. febbbba re-fetched exactly these courses and its
+        # message reports "ZERO upstream drift on all four". The pre-fetch caches no longer exist
+        # anywhere -- `courses/` is gitignored, so git never held them, and they are not in /tmp,
+        # /var/tmp or the home tree -- which makes that zero UNVERIFIABLE rather than established. It
+        # cannot even be ruled out that the new box is narrower on some side. Reconstruction is not
+        # determinate: a uniform-shrink model reproduces every published shortfall and then self-refutes,
+        # because under it hill 16's own green would have sat outside the old box and the book rendered
+        # hole 16. Read the zero as unchecked, and do not let this happen a second time -- which is what
+        # HAZARD_KINDS is for.
+        lost, churn, hazard = {}, {}, {}
+        for k in oc:
+            if nc[k] >= oc[k]:
+                continue
+            if oc[k] < 4 and k not in HAZARD_KINDS:
+                continue
+            # A hazard kind that also churns keeps the proportional tolerance and nothing else; one that
+            # does not churn (golf-tagged sand and hazards are stable mapped polygons) gets none.
+            tol = _churn_tolerance(oc[k], k) if k in VOLATILE_KINDS else 0
+            if oc[k] - nc[k] <= tol:
+                continue
+            bucket = hazard if k in HAZARD_KINDS else churn if k in VOLATILE_KINDS else lost
+            bucket[k] = (oc[k], nc[k])
+        def _detail(d):
+            return ", ".join(f"{k} {o} -> {n}" for k, (o, n) in sorted(d.items()))
+        if lost and not os.environ.get("ALLOW_STRUCTURAL_SHRINK"):
+            raise SystemExit(
+                f"ABORT: Overpass returned FEWER features than the existing cache for {out}:\n"
+                f"    {_detail(lost)}\n"
+                f"  Overwriting would silently rebind holes to the wrong greens -- a card then\n"
+                f"  prints a confident, correctly-computed read of the WRONG putting surface.\n"
+                f"  Re-run; if OSM really did lose these features, set ALLOW_STRUCTURAL_SHRINK=1\n"
+                f"  deliberately.")
+        if hazard and not os.environ.get("ALLOW_HAZARD_SHRINK"):
+            raise SystemExit(
+                f"ABORT: Overpass returned FEWER HAZARD features than the existing cache for {out}:\n"
+                f"    {_detail(hazard)}\n"
+                f"  Sand and water are the two things this book promises never to omit -- the map draws\n"
+                f"  them and the footer counts them as NB and NW. There is no rarity exemption here on\n"
+                f"  purpose: a course with one water hazard is the course where losing it is invisible.\n"
+                f"  Re-run; if OSM really did lose them (a bunker filled in, a pond drained), set\n"
+                f"  ALLOW_HAZARD_SHRINK=1 deliberately -- that waives THIS check only, never the\n"
+                f"  greens/holes/fairways one, and no other waiver grants it.")
+        if churn and not os.environ.get("ALLOW_SHRINK"):
+            raise SystemExit(
+                f"ABORT: Overpass returned far fewer features of a churning kind than the existing\n"
+                f"  cache for {out}:\n"
+                f"    {_detail(churn)}\n"
+                f"  A drop this large is nearly always a partial reply. Nothing a card MEASURES comes\n"
+                f"  from these, but the map would draw less of the course than it has. Re-run; if OSM\n"
+                f"  really did lose them, set ALLOW_SHRINK=1 deliberately -- that waives THIS check\n"
+                f"  only, never the greens/holes/fairways one above.")
+        if old_n >= 4 and new_n < old_n * 0.5 and not os.environ.get("ALLOW_STRUCTURAL_SHRINK"):
             raise SystemExit(
                 f"ABORT: Overpass returned {new_n} golf features for {out} but the existing cache has\n"
                 f"  {old_n}. A collapse like this is nearly always a partial reply, and overwriting\n"
                 f"  would silently rebind holes to the wrong greens. Re-run; if OSM really did lose\n"
-                f"  these features, set ALLOW_SHRINK=1 deliberately.")
+                f"  these features, set ALLOW_STRUCTURAL_SHRINK=1 deliberately.")
 
 
 def _bindings(elements, out):
@@ -305,7 +416,14 @@ def _cached_elements(path):
         return []
 
 
-def fetch(query, out):
+def fetch(query, out, write=True):
+    """Run one Overpass query and commit the reply to COURSE_DIR/<out>, returning it.
+
+    write=False validates and returns the reply WITHOUT committing it, for the one caller that has
+    more to put in the file: see main(), which appends the flattened multipolygon rings first and
+    writes osm_course.json exactly once. A file that is not complete until a LATER network call has
+    succeeded must not be committed before that call is made.
+    """
     url = "https://overpass-api.de/api/interpreter?data=" + urllib.parse.quote(query)
     path = os.path.join(config.COURSE_DIR, out)
     kept = _digitized_of(path)            # read BEFORE the network call, so a fetch can never race it
@@ -340,8 +458,8 @@ def fetch(query, out):
                         if not eg or (e.get('tags') or {}).get('golf') != 'green':
                             continue
                         ela = sum(p['lat'] for p in eg)/len(eg); elo = sum(p['lon'] for p in eg)/len(eg)
-                        dm = math.hypot((elo-dlo)*111320.0*math.cos(math.radians(dla)),
-                                        (ela-dla)*111320.0)
+                        dm = math.hypot((elo-dlo)*geo.mlon(dla),
+                                        (ela-dla)*geo.mlat(dla))
                         if dm < 25.0:
                             raise SystemExit(
                                 f"ABORT: digitized green {d.get('id')} in {path} is {dm:.1f} m from a\n"
@@ -353,11 +471,21 @@ def fetch(query, out):
                 print(f"  {out}: preserved {len(add)} of {len(kept)} digitized feature(s)")
             # Last gate before the bytes land: would this cache bind a hole to the wrong green?
             _check_bindings(j.get('elements') or [], out, prev)
-            # write atomically: a crash or a full disk must not leave a half-written cache behind
-            tmp = path + ".part"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, path)
+            if write:
+                # write atomically: a crash or a full disk must not leave a half-written cache behind
+                tmp = path + ".part"
+                try:
+                    with open(tmp, "wb") as f:
+                        f.write(data)
+                    os.replace(tmp, path)
+                finally:
+                    # A staged file left here is invisible twice over: courses/<slug>/ is the one
+                    # directory nothing sweeps (surface_io.sweep_staged is dem_hd-only by its
+                    # `.hole*.part` pattern, fetch_lidar's is laz/-only), and the `except Exception`
+                    # below SWALLOWS the failure and retries, so nothing reports it either. And it
+                    # would sit beside the only copy of the hand-digitized greens.
+                    if os.path.exists(tmp):     # a no-op once the rename above has happened
+                        os.remove(tmp)
             return j
         except SystemExit:
             raise
@@ -390,7 +518,7 @@ def main():
  node["natural"="rock"]({BB});
  node["natural"="stone"]({BB});
 );
-out geom tags;''', "osm_course.json")
+out geom tags;''', "osm_course.json", write=False)
 
     # Multipolygon relations need their OWN fetch. Under `out geom` a relation comes back as bounds
     # and tags only -- no members, no geometry -- so adding relation[...] to the query above yields
@@ -412,17 +540,27 @@ way(r);
 out geom;''', "osm_relations.json")
     flat = _flatten_relations(rel['elements'])
     course['elements'] = course['elements'] + flat
-    # WRITE IT BACK. fetch() saved osm_course.json before this relation pass ran, so appending to the
-    # in-memory dict alone changed nothing on disk: the feature counts printed below showed 18
-    # fairways while the file every consumer reads still had none. Verified by diffing the counts of
-    # the written file against its backup -- identical, no 'fairway' key at all.
+    # WRITE IT ONCE, HERE -- which is why the fetch above was told not to commit. osm_course.json is
+    # not COMPLETE until these rings are in it, and the relation fetch is allowed to abort (an
+    # Overpass remark is a hard stop by design). Writing the way-only reply first and rewriting it
+    # afterwards put that abort BETWEEN the two writes, so one timed-out relations call left the file
+    # every consumer reads permanently stripped of its rings -- valley-hi 18 -> 0, no 'fairway' key
+    # at all -- and _check_response's baseline filter means no later re-fetch can notice.
     cpath = os.path.join(config.COURSE_DIR, "osm_course.json")
     tmp = cpath + ".part"
-    with open(tmp, "w") as f:
-        json.dump(course, f, indent=2)
-    os.replace(tmp, cpath)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(course, f, indent=2)
+        os.replace(tmp, cpath)
+    finally:
+        # json.dump streams, so a value it cannot encode leaves PARTIAL json in the staged file, and
+        # courses/<slug>/ is the one directory nothing sweeps. Same `finally` as the other four
+        # staged writers in this project (tools/lidar_dates.write_lidar_flown,
+        # surface_io.commit_surface, fetch_hole_elev.write_hole_elev, fetch_trees.write_layer).
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
     if flat:
-        print(f"  osm_course.json rewritten with {len(flat)} flattened ring(s)")
+        print(f"  osm_course.json written with {len(flat)} flattened ring(s)")
     c = census(course['elements'])
     print("osm_course.json feature counts:", dict(c))
     if not c.get('building'):

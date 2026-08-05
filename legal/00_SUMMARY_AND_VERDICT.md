@@ -7,10 +7,16 @@ pass was run in addition to a direct audit.
 
 ## Verdict
 
-### ✅ All ELEVEN distributed books are CLEAN
+### ✅ All ELEVEN distributed courses — FOURTEEN books — are CLEAN
 Bay View · Callippe Preserve · Castlewood Hill · Castlewood Valley · Copper Valley ·
 Merion (East) · Micke Grove · Monarch Bay (Tony Lema) · Philadelphia CC (Spring Mill) ·
 The Reserve at Spanos Park · Valley Hi.
+
+Eleven courses, **fourteen books to give away**: eleven pocket editions plus three enlarged
+coach editions (Merion, Monarch Bay, Philadelphia CC). The heading counts both because they are
+different things — this line used to say "ELEVEN distributed books" above a list of eleven
+*courses*, so the two front-door documents disagreed on how many things the project hands out
+(`README.md` in this folder has always said fourteen).
 
 **Poppy Ridge is NOT in that set.** It is built in yardage mode and
 `03_PROVENANCE_BY_COURSE.md` marks it **Personal**, which that file's own legend defines as
@@ -41,8 +47,8 @@ Confirmed by audit:
   nominative trademark use, non‑affiliation, removal‑on‑request, no‑warranty, Rule‑4.3
   designed‑not‑guaranteed).
 
-**Those eleven are built only from open, public-domain and factual inputs, which is why they are
-the ones handed out. Poppy Ridge is not — it is personal-use only, for the reason above.**
+**Those eleven courses are built only from open, public-domain and factual inputs, which is why they
+are the ones handed out. Poppy Ridge is not — it is personal-use only, for the reason above.**
 
 *(This folder records what the project DID and where every input came from. It is not legal
 advice and states no legal conclusion — none of it was written by a lawyer. An earlier revision

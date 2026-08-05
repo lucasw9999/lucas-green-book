@@ -86,6 +86,35 @@ if _missing:
         + "  Compare against examples/course.json, which documents every field.")
 
 # hole -> (par, mens_hcp, <tee yardages in hole_cols order>)
+# EVERY ROW IS AS WIDE AS hole_cols, CHECKED HERE. This was `HOLES = {int(k): tuple(v) ...}` with no
+# shape check on the rows at all, and course.json is hand-typed and is the only copy of the transcribed
+# scorecard. Every consumer then indexes a row POSITIONALLY by name -- BACK_I, FRONT_I and each entry of
+# OTHERS below, plus generate.py's card headline and render_hole's carries, gutters and elevation.
+#
+# The two failure modes are not equally visible and the quiet one is worse:
+#   * a row one value SHORT died later and elsewhere, as a bare `IndexError` out of the
+#     _LONGEST_OF_PAIR_IS_SECONDARY sum below, naming neither the course nor the hole -- so the reader
+#     starts at a traceback in the engine rather than at the line they mistyped.
+#   * a row one value LONG did not fail at all. The extra column is simply never read, and any
+#     consumer indexing from the END silently shifts a tee: the card prints one tee's yardage under
+#     another tee's label, and the carries and the from-tee gutters are then measured from a tee the
+#     player is not standing on. That is exactly the class of wrong number this book exists not to print,
+#     and there was nothing between a slipped keystroke and a printed card.
+#
+# So it is checked beside the transcription, where the file being read is the file that is wrong, and it
+# names the course and every offending hole -- a bare "malformed row" leaves 18 of them to search.
+_ROW_W = len(COURSE["hole_cols"])
+_bad_rows = sorted(((k, len(v)) for k, v in COURSE["holes"].items() if len(v) != _ROW_W),
+                   key=lambda kv: (len(kv[0]), kv[0]))
+if _bad_rows:
+    raise SystemExit(
+        f"courses/{SLUG}/course.json: {len(_bad_rows)} scorecard row(s) are not {_ROW_W} values wide.\n"
+        f'  "hole_cols" is {COURSE["hole_cols"]}, so every row in "holes" must be par, mens_hcp and one\n'
+        f"  yardage per tee, in that order -- {_ROW_W} values.\n"
+        + "".join(f"  hole {k}: {n} value(s), {'missing' if n < _ROW_W else 'extra'} "
+                  f"{abs(_ROW_W - n)} -- {COURSE['holes'][k]}\n" for k, n in _bad_rows)
+        + "  The engine reads these rows by POSITION, so a short or long one prints one tee's yardages\n"
+          "  under another tee's label. Fix the transcription against the published scorecard.")
 HOLES = {int(k): tuple(v) for k, v in COURSE["holes"].items()}
 HOLE_NUMS = sorted(HOLES)                          # actual holes present (9-hole courses have 1..9)
 NHOLES = len(HOLE_NUMS)

@@ -24,9 +24,31 @@ Method, per hole:
 Both are medians, not means: a mean is dragged by a single mis-classified return, and a tee box is
 flat enough that the median is the tee's height.
 
-Finding the back tee is the whole difficulty -- see tee_anchor. A hole whose tee cannot be located,
-or whose tee has too few ground returns, gets NO figure rather than a guessed one, and the card
-simply omits the line. The count and the basis are recorded so every omission is auditable.
+Finding the back tee is the whole difficulty -- see tee_anchor. A hole gets NO figure rather than a
+guessed one, and the card simply omits the line, when ANY of these holds:
+  * the hole has no mapped centreline in osm_geom.json, so there is nothing to place a tee on;
+  * its mapped line neither spans the card yardage nor belongs to a straight par 3, so the back tee
+    cannot be located (tee_anchor refuses rather than sample somewhere up the fairway);
+  * the green has no usable surface -- no dem_hd patch, flagged insufficient, or a ring that
+    rasterises to nothing (green_elevation);
+  * the tee sample holds too few ground returns (MIN_RING_PTS on a mapped pad, MIN_TEE_PTS in the
+    fallback box);
+  * the mapped tee pad spans more height than MAX_TEE_RELIEF_FT, so a median over it does not stand
+    for a tee height -- 6 of 177 holes, and a cause of its own rather than a variant of the two above
+    it: merion h1 holds 3839 ground returns on a pad it fails by relief, over a usable green surface;
+  * the change exceeds MAX_PLAUSIBLE_FT and can only be a units or datum fault.
+
+Every refusal is PRINTED as it happens, with its reason. It is not RECORDED: hole_elev.json holds only
+the holes that got a figure, so which of the six refused a given hole survives in this stage's run log
+and nowhere else. This docstring used to claim "the count and the basis are recorded so every omission
+is auditable" and tools/gen_provenance.py believed it -- legal/03 told readers that every hole without a
+height had a tee that "could not be located or had no ground returns", on four courses where that was
+not the reason (merion h1 and h11 each resolved an anchor and were refused for pad relief). The COUNT is
+recoverable from the artifact -- holes on the card minus rows written -- and the count is all legal/03
+now claims.
+
+A row written here is also not the same thing as a height printed. generate.py suppresses any measured
+change under 3 ft as level (elev_phrase), so the corpus's 171 measured holes print on 114 cards.
 
 Run:  COURSE=<slug> python3 fetch_hole_elev.py [--write]
       --write records hole_elev.json in COURSE_DIR.
@@ -41,6 +63,7 @@ import numpy as np
 
 import config
 import geo
+from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
 import render_hole                 # for par3_exact_from_tee: one definition of "straight par 3"
 
 DIR = config.COURSE_DIR
@@ -57,9 +80,13 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # the standard error of the median (1.253*sd/sqrt(n)) with a 0.25 ft ceiling, and that gate was INERT:
 # over the corpus it ranged 0.002-0.146 ft and refused nothing, and it cannot refuse anything above
 # about 100 returns because sqrt(n) swamps sd. It also ranked the wrong way round -- castlewood-hill 18
-# has 5.1 ft of relief and a +1.06 ft/m slope along the hole axis, which is not a tee, and it scored
-# BETTER than philadelphia 18 (9.1 ft of relief) purely by having fewer points. Measured against the
-# actual implied error, sd correlates 4x better than se (0.44 vs 0.11).
+# has 4.3 ft of relief and falls 1.06 ft per metre along the hole axis, which is not a tee, and it
+# scored BETTER than philadelphia 18 (6.2 ft of relief) purely by having fewer points. Measured against
+# the actual implied error, sd correlates 4x better than se (0.44 vs 0.11).
+# (Those two read 5.1 and 9.1 ft here for as long as the gate has existed, which are their PEAK-TO-PEAK
+# spreads. The gate measures p95-p5 -- see tee_elevations -- so the comment was quoting a spread the
+# code never computes, on the one pad it names as the reason for the threshold. Re-measured through the
+# shipped ring sampler: 4.30 and 6.22 ft.)
 #
 # What the figure needs is that the sampled ground IS a tee: a mown, near-level pad whose median stands
 # for the whole of it. So bound the spread directly. 2.5 ft of relief across a pad admits a real teeing
@@ -70,20 +97,23 @@ MIN_TEE_PTS = 200       # box fallback only: below this the box barely reached t
 # the datum would be ambiguous by more than the smallest quantity the book is willing to print. Costs
 # 6 of 177 holes their printed height (bay-view h3, castlewood-hill h9 and h18,
 # merion h1 and h11, philadelphia h18). Printing nothing is the honest outcome for those.
+# The corpus leaves an EMPTY BAND around the threshold, which is the evidence that it separates two
+# populations rather than cutting through one: the flattest pad it refuses is castlewood-hill 9 at
+# 2.75 ft and the steepest it accepts is philadelphia 3 at 2.13 ft, so 2.5 sits inside a 0.62 ft gap
+# that no hole occupies. Both ends are pinned by
+# test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height, which is where to look before
+# moving this number: the gate itself was exercised by NOTHING for as long as it existed, and deleting
+# it left the whole suite green while merion h11 started printing "green 35.3 ft below the tee" off a
+# pad spanning 3.1 ft.
 MAX_TEE_RELIEF_FT = 2.5   # p5-p95 spread of the ring sample; a tee is level or it is not a tee
 MIN_RING_PTS = 30         # and enough points for that spread to mean anything
 GROUND = 2              # LAS classification for bare earth
-R_LAT = 111320.0        # metres per degree of latitude
 # A tee-to-green change beyond this is not a golf hole, it is a units or datum fault. The largest real
 # figure in the corpus is 151 ft (castlewood-hill 7, a genuinely hilly Pleasanton course), so this
 # leaves better than half again of headroom. It exists because the unit bug this file once had produced
 # 300-550 ft figures that printed on real cards and looked like data: a plausibility bound is the one
 # check that would have stopped them at the source instead of needing a reader to notice.
 MAX_PLAUSIBLE_FT = 250.0
-
-
-def _mlon(lat):
-    return 111320.0*math.cos(math.radians(lat))
 
 
 def tee_anchor(hnum, line, greens):
@@ -115,7 +145,7 @@ def tee_anchor(hnum, line, greens):
     green, gend, tend = geo.match_green(line, greens, label=f"hole {hnum}")
     la0 = sum(p['lat'] for p in line)/len(line)
     lo0 = sum(p['lon'] for p in line)/len(line)
-    em = lambda la, lo: ((lo-lo0)*_mlon(la0), (la-la0)*R_LAT)
+    em = lambda la, lo: ((lo-lo0)*mlon(la0), (la-la0)*mlat(la0))
     same = lambda a, b: abs(a['lat']-b['lat']) < 1e-9 and abs(a['lon']-b['lon']) < 1e-9
     ordered = line if same(line[0], tend) else list(reversed(line))
     pts = [em(p['lat'], p['lon']) for p in ordered]
@@ -141,7 +171,7 @@ def tee_anchor(hnum, line, greens):
                 f = (want - acc)/(seg or 1.0)          # fraction from pts[i] toward pts[i-1]
                 tx = pts[i][0] + (pts[i-1][0]-pts[i][0])*f
                 ty = pts[i][1] + (pts[i-1][1]-pts[i][1])*f
-                return (ty/R_LAT + la0, tx/_mlon(la0) + lo0,
+                return (ty/mlat(la0) + la0, tx/mlon(la0) + lo0,
                         f"walked back along the mapped line to the card {card_yd} yd "
                         f"(the line runs {arc_yd:.0f} yd, past this tee)")
             acc += seg
@@ -152,7 +182,7 @@ def tee_anchor(hnum, line, greens):
         dx, dy = te[0]-gc[0], te[1]-gc[1]
         d = math.hypot(dx, dy) or 1.0
         tx, ty = gc[0] + dx/d*card_m, gc[1] + dy/d*card_m
-        return (ty/R_LAT + la0, tx/_mlon(la0) + lo0,
+        return (ty/mlat(la0) + la0, tx/mlon(la0) + lo0,
                 f"par-3 tee extrapolated along the hole axis to the card {card_yd} yd "
                 f"(mapped line runs {arc_yd:.0f} yd)")
     return None, None, (f"mapped line is {arc_yd:.0f} yd against a card {card_yd} yd, so its tee end "
@@ -189,8 +219,8 @@ def ring_containing(la, lo, rings):
     """The (lats, lons) ring holding this lat/lon, or None. Ray-cast in a local metric frame so the
     lon/lat aspect ratio cannot distort the test on a small pad."""
     for rla, rlo in rings:
-        k = _mlon(la)
-        if _point_in_ring(lo*k, la*R_LAT, rlo*k, rla*R_LAT):
+        k, kla = mlon(la), mlat(la)
+        if _point_in_ring(lo*k, la*kla, rlo*k, rla*kla):
             return (rla, rlo)
     return None
 
@@ -265,20 +295,24 @@ def _crs_units_per_m(crs, la, lo):
     from pyproj import Transformer
     T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
     x0, y0 = T.transform(lo, la)
-    x1, y1 = T.transform(lo, la + 15.0/R_LAT)
+    x1, y1 = T.transform(lo, la + 15.0/mlat(la))
     d = math.hypot(x1-x0, y1-y0)
     return (d/15.0) if d > 1e-9 else 1.0
 
 
 def _tee_points(anchors):
-    """{hole: (x, y)} in the LAZ CRS for each hole's tee anchor, plus the CRS used."""
+    """{hole: (x, y)} in the LAZ CRS for each hole's tee anchor, plus the CRS used.
+
+    The CRS comes from geo.sole_laz_crs, which refuses a laz/ holding more than one. This read the
+    FIRST tile's header and assumed the rest matched: mix a ftUS tile into a metric directory and every
+    anchor here lands in another county, so no ground returns fall over any tee pad and each hole simply
+    prints no height -- a refusal that looks like missing data rather than a mixed directory.
+    """
     tiles = sorted(glob.glob(f"{DIR}/laz/*.laz"))
     if not tiles:
         return {}, None
-    import laspy
     from pyproj import Transformer
-    with laspy.open(tiles[0]) as f:
-        crs = f.header.parse_crs()
+    crs = geo.sole_laz_crs(f"{DIR}/laz")
     if crs is None:
         return {}, None
     T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
@@ -455,6 +489,114 @@ def elevation_change_m(green_z_m, tee_z_raw, vscale):
     return green_z_m - tee_z_raw * vscale
 
 
+def _env_on(name):
+    """An escape hatch is ON only if it is not an explicit off.
+
+    Parsed the way fetch_trees._env_on parses its two, NOT for truthiness: bool(os.environ.get(..))
+    makes ALLOW_ELEV_LOSS=0 and =false mean YES, and this one waives the guard that stands between a
+    survey that came back thinner and a book that quietly stops printing a height it used to.
+    """
+    return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
+
+
+def stored_rows(path):
+    """{hole: row} for the hole_elev.json already on disk; {} when there is none to compare against.
+
+    An unreadable file is treated as no baseline rather than a hard stop, which is the call
+    fetch_trees._stored_layer makes and the opposite of fetch_osm._digitized_of's -- and the
+    distinction is whether a human made the data. Nothing here is hand-made: this run re-measures
+    every hole from the tiles and the green surfaces, so a corrupt baseline costs this guard its
+    comparison and nothing else.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {str(h): r for h, r in (json.load(f).get("holes") or {}).items()}
+    except Exception:
+        return {}
+
+
+def check_rows(rows, path):
+    """Refuse to commit hole_elev.json when a hole that HAD a height no longer has one.
+
+    This artifact was the only derived file under courses/ with no loss guard. Its siblings all have
+    one, because every one of them can lose data for reasons that have nothing to do with the ground:
+    fetch_osm._check_response (churn, a green floor, ALLOW_SHRINK), fetch_trees.check_layer
+    (ALLOW_NO_TREES / ALLOW_TREE_LOSS and a per-hole floor), surface_io.commit_surface (the pair and
+    its digest), lidar_dates.write_lidar_flown (load and set one key). Here there was only
+    `if not rows: return 1`, which blocks TOTAL loss and nothing between that and everything.
+
+    NO CRASH IS NEEDED TO CAUSE A PARTIAL ONE: fewer laz/ tiles on disk than last time, a first tile
+    whose CRS reads differently (geo.vertical_scale keys off it), a tee box that used to just clear
+    MIN_TEE_PTS. And the corpus cannot tell such a loss from the status quo, because this file is
+    ALREADY partial on 8 of its 11 courses -- 171 rows over 198 holes, bay-view at 11 of 18, merion 12,
+    monarch-bay 13, castlewood-hill 15, philadelphia 16, castlewood-valley 16, callippe 17, valley-hi
+    17. A hole dropping out looks exactly like a hole that never had a figure.
+
+    Nor does anything downstream object. generate.py omits the elevation line for a hole with no row,
+    and gen_provenance's "measured on N of 18" follows the loss DOWN, so the book stays internally
+    consistent and reads as finished; the only tripwire is `gen_provenance --check` calling the
+    document STALE, and the remedy it prints regenerates the document, which launders the loss into
+    the record.
+
+    PER HOLE, not a total, for the reason fetch_trees.check_layer is: a course can hold its count while
+    one hole trades places with another, and it is the named hole whose card silently loses its height.
+    """
+    prev = stored_rows(path)
+    lost = sorted(int(h) for h in prev if h not in rows)
+    if not lost:
+        return
+    detail = ", ".join(f"{h} ({prev[str(h)].get('change_ft')} ft)" for h in lost)
+    if not _env_on("ALLOW_ELEV_LOSS"):
+        raise SystemExit(
+            "REFUSING to write %s: hole(s) %s had a measured height in the stored file and this run\n"
+            "  produced none. Those cards would drop the elevation line with nothing to show a\n"
+            "  measurement was lost -- the book stays self-consistent and legal/03's \"measured on N\n"
+            "  of 18\" follows the loss down. Check that every laz/ tile is still on disk, that the\n"
+            "  first tile's CRS still reads the same, and read the per-hole refusals printed above.\n"
+            "  Set ALLOW_ELEV_LOSS=1 if the loss is real (a green rebuilt, a tee re-mapped)."
+            % (path, detail))
+    print("WARNING: ALLOW_ELEV_LOSS set -- hole(s) %s lose the height they had" % detail)
+
+
+def write_hole_elev(path, payload):
+    """Stage `payload` beside hole_elev.json and rename it into place, sweeping the stage either way.
+
+    Extracted from main() so a TEST can drive it -- the same move lidar_dates.write_lidar_flown,
+    fetch_dem.is_flat_fill and fetch_dem_hd.keeps_existing_surface record. Inline it could only be
+    exercised by a full LiDAR run over a course with tiles on disk.
+
+    THE STAGE IS SWEPT ON THE FAILURE PATH, which is what this write was missing while the project's
+    other staged writes were being fixed for exactly that. course.json's went through
+    write_lidar_flown and the surface pair's through commit_surface; this one was found third, and two
+    more (fetch_osm's) were found after it -- eight in all, enumerated in
+    test_no_staged_write_leaves_its_part_file_behind. Nothing
+    globs for its leftover -- surface_io.sweep_staged only matches dem_hd's dot-prefixed `.hole*.part`.
+    A `.part` is never valid data, because it is only renamed into place after the write returns, so
+    anything still wearing the staged name is by construction incomplete. And under courses/ -- the one
+    directory nothing sweeps, holding the only copy of these measurements -- a stray hole_elev.json.part
+    beside hole_elev.json reads as an interrupted rewrite of the heights 114 cards print from.
+
+    Staged rather than written in place for the reason lidar_dates gives about course.json, one notch
+    weaker: this file IS derived and a re-run rebuilds it, but json.dump truncates on open and then
+    streams, so a failure mid-encode leaves a wreck that is not obviously a wreck (measured elsewhere in
+    this project at 327 bytes where 265 were). os.replace makes the old file survive intact instead.
+
+    ENCODING NAMED on the write, as config.py's note on course.json argues for the read: json.dump's
+    ensure_ascii keeps the bytes ASCII whatever the locale, and saying utf-8 costs nothing and removes
+    the locale from the question entirely.
+    """
+    tmp = path + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
+
+
 def main():
     if config.BUILD_MODE == "yardage":
         print(f"{config.SLUG} is a yardage-mode course: no green surfaces, so no elevation change "
@@ -467,13 +609,15 @@ def main():
         print("no hole centrelines in osm_geom.json"); return 1
 
     # Vertical units: the Z we compare must be metres. geo.vertical_scale RAISES rather than assume,
-    # which is what we want -- a ftUS cloud read as metres would report a 3.28x elevation change.
+    # which is what we want -- a ftUS cloud read as metres would report a 3.28x elevation change. And
+    # the CRS it is asked about must be the CRS of EVERY tile, not of whichever one the glob reached
+    # first: geo.sole_laz_crs refuses a mixed laz/, because on a near pair this scale would be wrong by
+    # 3.28 and the card would print a confident wrong height. Same reader fetch_dem_hd builds the green
+    # surfaces through, so the two stages cannot disagree about what CRS this course's cloud is in.
     tiles = sorted(glob.glob(f"{DIR}/laz/*.laz"))
     if not tiles:
         print(f"{config.SLUG}: no LAZ on disk, so tee heights cannot be measured"); return 2
-    import laspy
-    with laspy.open(tiles[0]) as f:
-        vscale = geo.vertical_scale(config.COURSE.get("lidar_crs") or f.header.parse_crs())
+    vscale = geo.vertical_scale(config.COURSE.get("lidar_crs") or geo.sole_laz_crs(f"{DIR}/laz"))
 
     greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
     anchors, refused, bases = {}, {}, {}
@@ -545,13 +689,13 @@ def main():
     print(f"  => {len(rows)} of {len(holes)} holes measured")
     if "--write" in sys.argv:
         p = f"{DIR}/hole_elev.json"
-        tmp = p + ".part"
-        with open(tmp, "w") as f:
-            json.dump({"tee_radius_m": TEE_R_M, "min_tee_points": MIN_TEE_PTS,
-                       "source": "USGS 3DEP LiDAR ground returns (class 2) vs the green's own "
-                                 "0.4 m surface",
-                       "holes": rows}, f, indent=2)
-        os.replace(tmp, p)
+        # LAST GATE BEFORE THE BYTES LAND, like fetch_trees.check_layer: everything above measures the
+        # tiles, and this asks whether the measurement is one the book may be rebuilt on.
+        check_rows(rows, p)
+        write_hole_elev(p, {"tee_radius_m": TEE_R_M, "min_tee_points": MIN_TEE_PTS,
+                            "source": "USGS 3DEP LiDAR ground returns (class 2) vs the green's own "
+                                      "0.4 m surface",
+                            "holes": rows})
         print(f"  wrote {os.path.relpath(p, config.ROOT)}")
     return 0
 

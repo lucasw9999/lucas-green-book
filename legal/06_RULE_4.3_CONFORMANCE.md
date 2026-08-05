@@ -43,7 +43,7 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   overrode it and 15 of 198 greens printed over the limit while three documents claimed the cap
   held. `tools/check_scale.py` now **lays every book out in a real browser under print media and
   measures the drawn green there**, exiting non‑zero above 0.375 in : 5 yd. Latest run:
-  **198/198 conforming, worst 0.3602 in : 5 yd (1:500)**, 4.0% margin. Never trust the renderer's
+  **198/198 conforming, worst 0.3601 in : 5 yd (1:500)**, 4.0% margin. Never trust the renderer's
   intent again — measure the artifact.
 
   Two precise statements about what that gate does and does not do, because an earlier revision of
@@ -59,7 +59,7 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
     produced from the HTML currently on disk (by recorded content hash), and a test reads the printed
     card size straight out of the PDF's crop marks and compares it to the 4.25 × 7 in limit.
 - **Per‑hole, not per‑book.** Scale is computed per green, so it legitimately varies (roughly 1:500
-  to 1:945). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
+  to 1:944; median 1:588). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
   becomes unusable for reading the green — the rest of the book stays fine.
 - **Book size:** cards are **3.5 × 5.0 in** — well under the 4.25 × 7 in cap.
   (See `config.py`: `CARD_DEFAULT_W_IN, CARD_DEFAULT_H_IN = 3.5, 5.0`; `CARD_W_IN`/`CARD_H_IN` are

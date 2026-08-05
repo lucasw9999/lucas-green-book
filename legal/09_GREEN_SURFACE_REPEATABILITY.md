@@ -1,22 +1,45 @@
 # Green Surface Repeatability — what the printed slope numbers are actually worth
 
-Measured 2026‑08‑01 against the corpus on disk. **No single command produces this document**, and
+Measured 2026‑08‑01 against the corpus on disk; every figure produced by
+`tools/cross_flight_check.py` re‑measured 2026‑08‑02 after two further defects in that tool (see the
+note under "Result"). **No single command produces this document**, and
 saying otherwise was itself a defect: three of its blocks cannot be produced by the command this line
 used to name. Each section now says what does.
 
 | section | reproduce with |
 |---|---|
-| "The natural experiment", "Result" (except the raw‑point sentence), "The contour interval" | `python3 tools/cross_flight_check.py --all` |
+| "The natural experiment", "Result" (except the raw‑point sentence), "The contour interval" | `python3 tools/cross_flight_check.py --all` — run from the repo root |
+| the coverage figures quoted in the "Result" note (the‑Reserve's 26 pass/green pairs, north‑up vs the shipped south‑up row index) | a one‑off probe that wraps `cross_flight_check._cover` and reports both row conventions for every pass; not a shipped tool |
 | the raw‑point‑level sentence under the Philadelphia table | a one‑off script, not a shipped tool; the method is stated in full beside the figures |
 | "A second, independent line of evidence: flight‑line overlap" | a one‑off script, not a shipped tool; it reuses `cross_flight_check`'s own gridding and differs only in how the points are partitioned |
 | the `withheld` / `synthetic` counts | a one‑off scan of every LAZ tile for those two classification‑flag bits on class‑2 points |
-| item 1 of "What this does and does not establish" (elevation) | `python3 tools/verify_elevation.py --all` — needs the network and `rasterio` |
+| the plane‑R² figures beside the `(faint)` threshold, above | a one‑off script, not a shipped tool: it re‑fits `render_green.green_summary()`'s own plane over each green's putting‑surface cells and reports 1 − SS_res/SS_tot. Pinned by `test_the_faint_mark_is_not_published_as_a_survey_noise_floor`, which re‑measures it |
+| item 1 of "What this does and does not establish" (elevation) | `python3 tools/verify_elevation.py --all` — needs the network and `rasterio`. **The figures it publishes there predate a georeference fix in that tool and are upper bounds pending a re‑run — see the note inside that bullet** |
 | the before/after figures inside item 1 | one‑off measurements taken when those faults were fixed. They describe states of the code that no longer exist and **cannot** be reproduced from the corpus as it stands |
 
-Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where that tilt is
-close to the survey's own noise floor and the card still names a side, and
+Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where a single
+plane is a poor description of that green and the card still names a side, and
 15 cm contours, and all but one name a feed direction — micke‑grove 2 is flat enough that the plane
-and the arrows disagree, so that card names none (see note 2). The governing rule of this project is that it must never print a
+and the arrows disagree, so that card names none (see note 2).
+
+**That `(faint)` sentence used to give the survey's own noise as the reason for the mark, and this
+document's own tables contradict it.** The threshold behind the mark is 1.2% of tilt; the
+worst tilt disagreement between two independent surveys of the same green, in the table below, is
+**0.05 percentage points**, so the threshold sits **24×** above the largest disagreement ever
+observed here, and the corpus's faintest printed green — 0.3% — is still 6× above it. The feed
+direction is reproducible to **3.7°**, an eighth of the 45° sector a compass word names, and the
+`clear`/`faint` mark itself never differed between passes. No green in this corpus has a plane fit
+inside the survey noise, so "near this survey's limit" was not a caveat, it was a false one — and the
+pocket book's guide card had turned it into advice, telling a junior to "trust the side less" on
+exactly the greens where the side is best corroborated.
+
+What the 1.2% threshold does track, and the reason it is well chosen and unchanged, is whether **one
+plane is an adequate model** of the green. Fitting `render_green.green_summary()`'s own plane over
+each green's putting surface and taking R² = 1 − SS_res/SS_tot: `clear` greens come out at p05 0.61
+and a median of 0.90, `faint` greens at p05 0.02 and a median of 0.44. A faint green is not badly
+measured — it is a green a single tilt describes badly, with tiers and hollows one word cannot carry.
+The guide card now says so, and sends the reader to the arrows rather than away from the compass
+word. The governing rule of this project is that it must never print a
 number the data does not support — but until this measurement, **nothing recorded what the data
 supports.** The accuracy disclaimers were honest in intent and unevidenced in fact. This is the
 evidence.
@@ -32,7 +55,7 @@ the same `render_green.green_summary()` the card is printed from.
 
 A pass that merely clips the edge of a green cannot check anything — its least‑squares plane is
 fitted to a sliver. So a pass is only compared when it independently put a ground return in **≥50%
-of that green's interior cells**. 47 pass/green pairs were excluded on that basis; 33 greens had two
+of that green's interior cells**. 46 pass/green pairs were excluded on that basis; 33 greens had two
 qualifying passes.
 
 Which cells count as putting surface is decided **once, from the shipped surface**, and held fixed
@@ -42,14 +65,47 @@ instead of the ground.
 
 ## Result
 
-> Every figure in this document was re‑measured on 2026‑08‑01 after a defect was found in the tool
-> that produces it. `cross_flight_check.py` gridded each pass with `linspace(ymin, ymax, H)`, which
-> puts row 0 at the SOUTH edge and samples bbox edges rather than cell centres — while the shipped
-> surface, the green mask and the plane fit are all north‑up on cell centres. So the tool had been
-> comparing a vertically mirrored surface, half a cell out, against the card's own conventions: over
-> 90 greens that was a median 0.42 pp of tilt and 76° of aim away from what any card prints. Both
-> passes were mirrored identically, so the *conclusion* survived unharmed — but the numbers supporting
-> it were not the card's. Corrected, the agreement is TIGHTER on every measure below.
+> Every figure below that comes from `cross_flight_check.py` was re‑measured on 2026‑08‑02, after two
+> further defects were found in that tool. The first of the three, a grid‑orientation fault found
+> 2026‑08‑01, is recorded last.
+>
+> **The vertical scale carried over between courses.** `check()` rebinds a course by dropping `config`,
+> `geo` and `render_green` from `sys.modules` — but not `fetch_dem_hd`, which binds `config` and
+> `DIR = config.COURSE_DIR` at module scope. So under `--all` every course after the first was gridded
+> with the FIRST course's foot/metre scale. Five of the corpus's point clouds are US‑survey‑foot State
+> Plane (0.3048) and six are metric (1.0), and the run starts on an ftUS one — so Philadelphia and the‑Reserve, both
+> metric, had every tilt divided by 3.28. Philadelphia's five greens read 0.58 / 0.95 / 1.49 / 1.37 /
+> 0.32 % where its own cards print 1.91 / 3.12 / 4.88 / 4.49 / 1.05 %, and two of its five
+> `clear`/`faint` marks (holes 1 and 2) were pushed from `clear` to `faint`. Both passes were scaled wrong by the same factor, so the
+> *conclusion* survived — but the previous version of this document printed the Philadelphia table
+> straight out of that run, i.e. five numbers no card of that book prints.
+>
+> **That correction moved the noise floor the WRONG way, and this document now says so.** Differencing
+> two correctly scaled metric surfaces yields larger centimetre figures than differencing two that were
+> both shrunk 3.28×. RMS **0.56 cm** was published here; the honest number is **0.85 cm**, and the 15 cm
+> contour interval is **18×** it rather than 27×. The claim still holds with a wide margin — it holds by
+> less than was claimed.
+>
+> **The coverage gate was scored on a mirrored green.** `_cover` indexed a north‑up green mask
+> (`render_green.poly_to_px`, row 0 = north) with a south‑up row index, so every pass was scored against
+> the green flipped top‑to‑bottom. Over the‑Reserve's 26 pass/green pairs that moved coverage by up to
+> 16.5 pp (hole 17: 67.6% read as 51.2%) and moved one pair across the 50% gate (hole 18: 61.6% read as
+> 49.3%). The excluded‑pair count below therefore falls from 47 to **46**; no green gained a *second*
+> qualifying pass, so n is unchanged at 33. This is the same north/south fault as the one below, in the
+> same file, which had been fixed in `_summary` and never carried across to `_cover`.
+>
+> **And the first of the three.** `cross_flight_check.py` gridded each pass with
+> `linspace(ymin, ymax, H)`, which puts row 0 at the SOUTH edge and samples bbox edges rather than cell
+> centres — while the shipped surface, the green mask and the plane fit are all north‑up on cell centres.
+> So the tool had been comparing a vertically mirrored surface, half a cell out, against the card's own
+> conventions: over 90 greens that was a median 0.42 pp of tilt and 76° of aim away from what any card
+> prints. Both passes were mirrored identically, so that conclusion survived unharmed too.
+>
+> The pattern across all three is worth stating plainly, because it is the reason none of them was
+> caught by the agreement they were measuring: a fault applied EQUALLY to both passes cancels out of the
+> comparison and leaves "the surveys agree" standing, while quietly detaching the numbers from the
+> cards. Only checks against the shipped surface can see that class of fault, and the suite now has
+> them.
 
 
 **33 greens, each independently surveyed twice. Every pair agrees.**
@@ -66,16 +122,16 @@ which a green *should* be caught changing. On the five greens both passes covere
 
 | hole | 2024‑12‑17 | 2025‑03‑27 | Δ tilt | Δ aim |
 |---|---|---|---|---|
-| 1 | 0.58% faint | 0.58% faint | 0.00 pp | 1.7° |
-| 2 | 0.95% faint | 0.96% faint | 0.01 pp | 0.2° |
-| 6 | 1.49% clear | 1.48% clear | 0.01 pp | 0.5° |
-| 7 | 1.37% clear | 1.38% clear | 0.01 pp | 0.3° |
-| 8 | 0.32% faint | 0.33% faint | 0.01 pp | 0.6° |
+| 1 | 1.91% clear | 1.91% clear | 0.01 pp | 1.7° |
+| 2 | 3.12% clear | 3.15% clear | 0.03 pp | 0.2° |
+| 6 | 4.88% clear | 4.85% clear | 0.03 pp | 0.5° |
+| 7 | 4.49% clear | 4.52% clear | 0.03 pp | 0.3° |
+| 8 | 1.05% faint | 1.08% faint | 0.03 pp | 0.6° |
 
 At the raw point level those two passes agree to a **median 0.03 ft (0.4 in), 95th percentile
 0.13 ft**, over ~11,000 ground returns per green.
 
-Four of the 33 pairs agreed physically but landed either side of a printed digit — 2.05% against
+Six of the 33 pairs agreed physically but landed either side of a printed digit — 2.05% against
 2.06% prints as "2.0" and "2.1". That is rounding at the boundary, not disagreement, and the tool
 reports it as such rather than as a failure.
 
@@ -96,14 +152,14 @@ the card is — over all 33 greens and 87,589 cells inside the green cores:
 
 | | |
 |---|---|
-| RMS difference | **0.56 cm** |
-| 95th percentile | 1.13 cm |
-| worst single cell | 3.03 cm |
+| RMS difference | **0.85 cm** |
+| 95th percentile | 1.86 cm |
+| worst single cell | 6.27 cm |
 
-The 15 cm contour interval is therefore about **27× the noise floor** of the surface it is drawn from.
+The 15 cm contour interval is therefore about **18× the noise floor** of the surface it is drawn from.
 The claim holds with a wide margin. Averaging 9.6–27.9 ground returns per square metre over these 33 greens (4.7–27.9 corpus‑wide) and then smoothing
-over ~1.5 m beats single-pulse accuracy by a large factor, which is why the relative figure is an
-order of magnitude better than the absolute spec.
+over ~1.20 m (a Gaussian of sigma 3 pixels at the 0.4 m sampling above) beats single-pulse accuracy by
+a large factor, which is why the relative figure is an order of magnitude better than the absolute spec.
 
 ## A second, independent line of evidence: flight-line overlap
 
@@ -122,7 +178,7 @@ bay-view's overlap points and its non-overlap points **separately**, over all 18
 | worst single cell | 3.60 cm |
 | printed tilt | agrees within **0.07 pp** on every hole (below the 0.1 pp the card resolves) |
 
-That is the same order of answer the date split gave (RMS 0.56 cm) from a completely different decomposition of
+That is the same order of answer the date split gave (RMS 0.85 cm) from a completely different decomposition of
 the data — two independent flight lines of the same green, and two independent surveys months apart,
 agree to about a centimetre either way. So the overlap points stay: dropping them would halve bay-view's
 ground density in exchange for nothing measurable.
@@ -150,7 +206,8 @@ had to hold, and it holds with two orders of magnitude of margin.
    shifted every height in the book by +0.46 ft. Corrected together they moved 102 of the then-177 printed
    integers, made 6 heights appear and 2 disappear at the 3 ft floor, flipped no above/below word on
    any card that prints one, and took this tool's agreement with the independent DEM from a median
-   0.80 ft to 0.09 ft. Both passes come
+   0.80 ft to 0.09 ft (both of those are `verify_elevation.py` figures and both predate its georeference
+   fix — see the note in the first bullet below). Both passes come
    from the same USGS program, sensor class and processing chain, so a *systematic* bias would be
    present in both and invisible to the comparisons above. Two kinds of systematic bias are worth
    separating, because only one of them stays open:
@@ -166,6 +223,33 @@ had to hold, and it holds with two orders of magnitude of margin.
      read as metres would show tens of metres; a geoid/ellipsoid confusion about 30 m in California.
      Neither is present. (This project has shipped a foot/metre fault before — it put 74 of 175 holes'
      elevations out by a median 298 ft — so the check is not hypothetical.)
+
+     > **Every number in this bullet is an upper bound awaiting re‑measurement, and the "same green
+     > polygon" sentence above overstates what the tool did.** They were all produced by
+     > `tools/verify_elevation.py` before 2026‑08‑02, when its patch fetcher was found to discard the
+     > returned GeoTIFF's own georeference: it rebuilt its pixel centres from the bbox it *requested*,
+     > while the ImageServer had **expanded** that bbox to match the square image size it was asked for.
+     > So every sample sat at the wrong place on the ground and reached past the polygon it was meant to
+     > be confined to — the short axis was expanded by more than 1.05× on 185 of the corpus's 198 greens,
+     > worst 2.712× (castlewood‑valley 14), and on monarch‑bay 3 the mask took 2889 cells where the
+     > returned georeference puts 1945 inside the green.
+     >
+     > The **direction** is known: the sample pulled in collar the polygon excludes, which *inflates* the
+     > measured disagreement, so the figures above are bounds rather than measurements. The **size**, on
+     > the one course re‑measured against the returned georeference, is about a factor of two — merion's
+     > absolute‑offset median **0.1019 → 0.0522 m**, worst green **0.515 → 0.436 m**. Roughly half of the
+     > published 0.10 m was this tool's own region error. Note that merion's pre‑fix worst green, 0.515 m,
+     > is already larger than the **0.35 m** this bullet publishes as the corpus's worst single green (and
+     > the tool's own docstring says 0.47 m): those two were never reconciled either, which is a further
+     > reason to treat every figure here as pending. The tee‑to‑green *change* figures carry the same
+     > fault at **both** ends, where it partly cancels and the direction is therefore not known.
+     >
+     > The elevation service was unreachable from the machine where the fix was made (HTTP 502), so **no
+     > corrected corpus figure is substituted here** — inventing one would be exactly the fault this
+     > document exists to guard against. Re‑run `python3 tools/verify_elevation.py --all` when the service
+     > answers and replace every figure in this bullet, and the matching ones in that tool's docstring.
+     > The *conclusion* — that no tens‑of‑metres unit fault and no ~30 m geoid confusion is present —
+     > survives either way: the correction moves centimetres, and those faults move tens of metres.
    - **The source program itself** — its absolute vertical datum, or a consistent
      ground‑classification bias in turfgrass. That remains open: the seamless DEM is derived from the
      same LiDAR, so it cannot independently confirm the program's own datum, and both products take

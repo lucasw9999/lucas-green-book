@@ -8,6 +8,15 @@ Covers **15** built books (12 pocket, 3 enlarged). Blocks differ per
 course where the data differs (a rebuilt
 course, a NAIP-traced green), so each variant is listed with the courses that print it.
 
+**Every place a book prints the copyright, the trademark or a licence sentence is quoted below**, not
+one panel per book. A book prints them in three places, and the wordings are not identical:
+the inside *About & legal* panel leads with the copyright, the BACK COVER leads with the trademark,
+and the front cover carries the attribution alone. The licence SENTENCE itself is one spelling in one
+function (`generate.py`, `sharing_line()`), so it cannot differ between panels -- the ordering of the
+attribution around it is a typographic choice, deliberate on a cover. Sections C-E were missing for as
+long as this generator existed: 27 printed instances the record did not quote, while a `--check` gate
+ran green over them on every merge because it only ever asked about one CSS class.
+
 ## A. Pocket edition "About & legal"
 ### Variant A1 -- printed on 10 book(s): callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park, valley-hi-country-club
 > A free, independent green book for junior golfers, not for sale. Hole & green shapes, and the
@@ -93,6 +102,25 @@ course, a NAIP-traced green), so each variant is listed with the courses that pr
 > loss, penalty, damage, ruling or disqualification from use of this book. lucasgreenbook.org ·
 > contact info@lucasgreenbook.org. © 2026 Lucas Wu · Lucas Green Book™. This book: free to
 > share, not for sale — CC BY-NC-ND 4.0.
+
+## C. Pocket edition back cover -- copyright, trademark & licence
+### Variant C1 -- printed on 11 book(s): bay-view-golf-club, callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park, valley-hi-country-club
+> Lucas Green Book™ · © 2026 Lucas Wu. This book: free to share, not for sale — CC BY-NC-ND
+> 4.0.
+
+### Variant C2 -- printed on 1 book(s): poppy-ridge-golf-course
+> Lucas Green Book™ · © 2026 Lucas Wu. This copy is for personal use only — please do not share
+> or redistribute it, because its greens are blank for want of trustworthy survey data and a
+> reader elsewhere cannot know that. Not for sale. All rights reserved.
+
+## D. Coach / ENLARGED edition back cover -- copyright, trademark & licence
+### Variant D1 -- printed on 3 book(s): merion-golf-club, monarch-bay-golf-club, philadelphia-country-club
+> Lucas Green Book™ · © 2026 Lucas Wu. Practice aid. This book: free to share, not for sale —
+> CC BY-NC-ND 4.0.
+
+## E. Front cover attribution
+### Variant E1 -- printed on 12 book(s): bay-view-golf-club, callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, poppy-ridge-golf-course, the-reserve-at-spanos-park, valley-hi-country-club
+> © 2026 Lucas Wu · Lucas Green Book™
 
 ## Why this text covers the risks
 - **Independent / open-data provenance** -> copyright + trade-dress defense.

@@ -154,13 +154,31 @@ def yardage_guide_panel():
 
 
 def _tree_markers(hole):
-    """LiDAR tree markers on one hole, or [] -- cached; see the note at the footer that uses it."""
+    """LiDAR tree markers on one hole, or [] -- cached; see the note at the footer that uses it.
+
+    A layer that is ABSENT is []: render_hole._lidar_trees() returns {} for that with no exception, and
+    a course with no point cloud honestly has no canopy to draw. A layer that is UNREADABLE is a STOP.
+
+    The catch here used to be `except Exception: _TREES = {}`, and it could only ever absorb the second
+    case: the absent-layer path raises nothing, and the tiles-but-no-layer path raises SystemExit, which
+    is not an Exception. So the one thing it caught was a corrupt or truncated trees_lidar.json -- and it
+    turned it into zero markers on every hole, which _course_has_trees() then reads as "this course has
+    no trees" and drops the per-card "no tree data" caveat as noise. A wrecked 126-245 KB canopy record
+    printed as a clean, tree-free 18-hole book with nothing anywhere saying the data was missing. It also
+    falsified the claim tools/lidar_dates.py used to justify writing that file in place -- that a
+    truncated layer "fails loudly at render_hole.py's json.load".
+    """
     global _TREES
     if _TREES is None:
         try:
             _TREES = render_hole._lidar_trees() or {}
-        except Exception:
-            _TREES = {}
+        except Exception as e:
+            raise SystemExit(
+                f"trees_lidar.json for {config.SLUG} could not be read ({type(e).__name__}: {e}).\n"
+                f"  Drawing no trees would be indistinguishable from a course that has none -- every\n"
+                f"  hole prints open ground and the per-card \"no tree data\" caveat is suppressed as\n"
+                f"  noise -- so the book is not built from a layer this project cannot parse. Re-run:\n"
+                f"    COURSE={config.SLUG} python3 fetch_trees.py") from e
     return _TREES.get(str(hole)) or []
 
 
@@ -202,9 +220,13 @@ def green_honesty(hole, s):
     # 220 "(firm)" against 32 "(subtle)" -- so the common case spent a word to say nothing, and the
     # informative case was buried among them. Marking only the exception says strictly more, and it
     # bought back 35 two-line footers (43 -> 8 of 252 measured in-browser), which is card space on the
-    # edition that was clipping its own licence line. It is also the only honest reading: a green whose
-    # fall is faint is a green whose printed direction is inside the survey noise, and that is worth a
-    # mark; a green whose fall is clear needs no adjective.
+    # edition that was clipping its own licence line. It is also the only honest reading: a green
+    # marked faint is one that a single slope describes badly -- render_green's gate is a plane-fit
+    # ADEQUACY test, measured R^2 p05 0.61/median 0.90 on the greens it calls clear against 0.02/0.44
+    # on the ones it calls faint -- so the mark says "one word will not carry this green, read the
+    # arrows", and that is worth a mark; a green a single tilt does describe needs no adjective.
+    # It does NOT say the direction is unreliable: see render_green.green_summary, where 1.2% stands
+    # 24x above the worst tilt disagreement two surveys of one green have ever produced here.
     faint = ' (faint)' if s["conf"] == "faint" else ''
     if s["feeds"] == render_green.NO_CLEAR_FALL:
         # "no clear fall (faint)" would say the same thing twice, and the sentinel is the stronger of
@@ -278,11 +300,25 @@ def elev_phrase(hole):
 
 
 def carry_phrase(info):
-    """"carry 172 / 212 / 245" -- the near edge of each bunker window a tee shot must clear."""
+    """"carry 172 / 212 / 245" -- the near edge of each bunker window a tee shot must clear.
+
+    Plus the one thing the list could not say by ending: render_hole withdraws a carry wherever the sand
+    leaves no room to land short of the green (see its `no_landing` block), and on five of the eight
+    cards that fires on, an EARLIER carry survives -- so "carry 95 / 164" read as the whole story while a
+    closer, uncarryable cluster went unnamed. The mark states that refusal and prints NO number, because
+    both edges of the refused window are numbers a player would club against and be wrong: the near one
+    invites the lay-up the rule just withdrew, the far one is at or past the green front on all eight.
+
+    It needs no legend row and gets none. Measured in chrome-headless-shell under print media, adding a
+    50-character clause to the carry legrow overflows monarch-bay's guide card by 9.4 px (pocket) and
+    10.9 px (enlarged), clipping .abtxt -- the licence and warranty block this project has already
+    clipped twice. The phrase makes no measurement claim, so there is nothing for a legend to define.
+    """
     cs = info.get("carries") or []
-    if not cs:
-        return ""
-    return "carry <b>" + " / ".join(str(a) for a, _b in cs) + "</b>"
+    out = ("carry <b>" + " / ".join(str(a) for a, _b in cs) + "</b>") if cs else ""
+    if info.get("sand_to_green"):
+        out += (" &middot; " if out else "") + "<b>no carry: sand to the green</b>"
+    return out
 
 
 def playline_html(hole, info):
@@ -605,9 +641,10 @@ def _faint_note():
 
     The word this replaced -- "(firm)" -- was defined NOWHERE, in either edition, while printing on
     every one of 252 green footers. The only hook a reader had for it was the turf sense, which is
-    the wrong one: it is a statement about how far the measured fall stands above the survey noise,
-    not about how the green is playing that morning. A qualifier a reader can only misread is worse
-    than no qualifier, which is why the common case no longer prints one at all.
+    the wrong one: it is a statement about how well a single slope describes the green -- shallow
+    fall, and one plane fitting it badly -- not about how the green is playing that morning. A
+    qualifier a reader can only misread is worse than no qualifier, which is why the common case no
+    longer prints one at all.
 
     Keyed off what was actually rendered, so a book whose every green has a clear fall does not carry
     a line explaining a mark it never uses.
@@ -621,11 +658,17 @@ def _faint_note():
     if not any(sm.get("conf") == "faint" and sm.get("feeds") != render_green.NO_CLEAR_FALL
                for _svg, sm in GREENS.values()):
         return ''
-    # Kept to ONE line on purpose. The first draft ran four and pushed the guide card past its own
-    # bounds, clipping the licence and contact lines on three books -- the exact fault the coach
-    # edition was just fixed for. A caveat that costs the licence text is not a caveat worth printing.
-    return ('  <div class="legrow"><span><b>(faint)</b> after a feed = shallow fall, near this '
-            'survey\'s limit &mdash; trust the side less.</span></div>\n')
+    # Kept to ONE line on purpose, and to one LINE OF TYPE at that. The first draft ran four lines and
+    # pushed the guide card past its own bounds, clipping the licence and contact lines on three books
+    # -- the exact fault the coach edition was just fixed for. A caveat that costs the licence text is
+    # not a caveat worth printing. The rewrite below is 79 characters against the 83 of the sentence it
+    # replaced, and that margin is NOT slack: the wording is set by rendered WIDTH, not by character
+    # count, and an 86-character version of the same sentence -- four characters longer than the one it
+    # replaced -- wrapped to a third line and overflowed monarch-bay's enlarged guide card by 10.9 px,
+    # clipping "info@lucasgreenbook.org" off the printed page. Measured in the browser: this row leaves
+    # 1.22 px of headroom there. Re-measure before rewording it.
+    return ('  <div class="legrow"><span><b>(faint)</b> after a feed = shallow fall, and no single '
+            'slope fits &mdash; read the arrows.</span></div>\n')
 
 
 def _no_fall_note():
@@ -655,7 +698,7 @@ def guide_panel():
     <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; dark red (&ge;5%);
     steeper is always <b>darker</b>, so it reads in black and white too.
     <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add up.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked) &mdash; different measures, so they do <b>not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
   <div class="legrow"><span><b>green N ft above/below</b> = <b>measured</b> height vs the back tee.
@@ -1195,8 +1238,8 @@ def coach_about_card():
     not putting surface: coloured, not numbered. <b>Grey numbers</b> = yd from the <b>front edge</b>, down
     the middle. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to
-    green (straight), <b>right</b> = from the tee (walked) &mdash; on a dogleg they do <b>not</b> add
-    up.</span></div>
+    green (straight), <b>right</b> = from the tee (walked) &mdash; different measures, so they do
+    <b>not</b> add up.</span></div>
 ''' + _faint_note() + _no_fall_note() + _no_tree_note() + '''
   <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
     conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>

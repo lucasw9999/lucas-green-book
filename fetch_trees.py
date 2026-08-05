@@ -34,8 +34,6 @@ import config
 import geo
 
 DIR = config.COURSE_DIR
-R_LAT = 111320.0
-def mlon(lat): return 111320.0*math.cos(math.radians(lat))
 # NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
 # No default. A course.json without "location" used to fall back to -121.0, i.e. silently pick
 # California UTM zone 10 -- for a Pennsylvania course (zone 18) every tree would be projected
@@ -113,11 +111,17 @@ def load_playing_surfaces():
         t=e.get('tags',{})
         # WATER belongs here. The filter caught golf surfaces and buildings -- and it catches those
         # perfectly, zero markers land on either across all 11 courses -- but not ponds, so canopy height
-        # measured over open water was drawn as trees. 535 of 68,884 shipped markers sat inside a mapped
-        # water polygon, 151 more than 5 m from the bank and 40 more than 10 m in; the worst is 22.0 m
-        # inside a pond on the-reserve 2, a card that draws that water in its own footer ("5B 2W") with
-        # 339 tree dots on top of it. A tree standing in a pond is the same defect class as the 1,107
-        # markers once drawn on roofs, 53 of them on Merion's clubhouse.
+        # measured over open water was drawn as trees. 535 of the 68,884 markers shipping BEFORE this
+        # filter sat inside a mapped water polygon, 151 more than 5 m from the bank and 40 more than
+        # 10 m in; the worst is 22.0 m inside a pond on the-reserve 2, a card that draws that water in
+        # its own footer ("5B 2W") with 339 tree dots on top of it. A tree standing in a pond is the
+        # same defect class as the 1,107 markers once drawn on roofs, 53 of them on Merion's clubhouse.
+        # (68,884 is the PRE-filter population, quoted so the removals have a denominator. What the
+        # corpus stores today is 68,257 -- the same set less the 615 this filter and its sibling below
+        # take out, and less 12 more that only became visible when castlewood-hill's and
+        # castlewood-valley's osm_bbox were widened to cover the drawing corridor on 2026-08-04: this
+        # filter cannot exclude a house or a tee the OSM fetch never asked for. See
+        # tools/check_osm_bbox.py.)
         is_surface = (t.get('golf') in ('fairway','green','tee','bunker')
                       or t.get('building') not in (None, 'no')
                       or t.get('natural') == 'water'
@@ -132,6 +136,129 @@ def load_playing_surfaces():
                     else 'golf')
             surfaces.append((min(xs),min(ys),max(xs),max(ys),poly,kind))
     return surfaces
+
+# A hole must have held at least this many markers before losing all of them counts as a LOSS rather
+# than churn. Same floor and same reason as fetch_osm._check_response's `oc[k] < 4` skip: a corridor
+# with one or two markers is a filter edge case, while the failures this has to catch take a hole from
+# tens or hundreds to zero (the smallest per-hole count in this corpus outside monarch-bay's three
+# survey-edge holes is 15).
+TREE_HOLE_FLOOR = 4
+
+
+def _stored_layer(path):
+    """{hole: marker count} for the tree layer already on disk; {} when there is none to compare against.
+
+    An unreadable file is treated as no baseline rather than a hard stop, which is the opposite of
+    fetch_osm._digitized_of's rule and deliberately so: nothing in trees_lidar.json is hand-made, this
+    run is regenerating the whole file from the tiles, and the zero-total guard below still applies. The
+    counts are all that is needed -- the guard asks "did a hole that had canopy lose it", never what the
+    coordinates were.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        j = json.load(open(path))
+    except Exception:
+        return {}
+    if not isinstance(j, dict):
+        return {}
+    return {str(k): len(v) for k, v in j.items() if isinstance(v, list)}
+
+
+def _env_on(name):
+    """An escape hatch is ON only if it is not an explicit off.
+
+    Parsed the way this module's other two hatches are, NOT for truthiness: bool(os.environ.get(..))
+    makes ALLOW_NO_TREES=0 and =false mean YES, and these two waive the guards that stand between a
+    failed survey and a book that draws a tree-lined hole as open ground.
+    """
+    return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
+
+
+def check_layer(out, path):
+    """Refuse to commit a tree layer that has LOST the canopy the stored one recorded.
+
+    Two different questions, so two different waivers -- the distinction fetch_osm._check_response
+    records the hard way, where one flag gated both a churned tree node and the loss of a green:
+
+      * ALLOW_NO_TREES  -- this layer has no markers at all. A re-run returns zero for reasons that
+        have nothing to do with the trees: a wrong "lidar_crs" projects every point out of its
+        corridor, an osm_geom.json that lost its golf=hole ways leaves the corridor list empty, a tile
+        with no class-2 return is skipped. None of those is "this course has no trees", and the
+        difference is invisible downstream -- render_hole._lidar_trees() hard-stops on a MISSING file
+        when the course has tiles, but an EMPTY one parses, generate._course_has_trees() then drops the
+        per-card "no tree data" caveat as noise, and gen_provenance reports bare holes only
+        `if tl and any(tl.values())`. So the one state nothing reports is the one that reports nothing.
+      * ALLOW_TREE_LOSS -- some hole that HAD canopy now has none. Checked per hole because the
+        aggregate cannot see it: a course can keep 96% of its markers while one card goes from
+        tree-lined to open ground, and that card is what a golfer aims over.
+
+    The per-hole test is skipped when the layer is empty outright: every hole has then lost its
+    markers, that is the same fact the first guard already states, and needing two flags to say it once
+    is how a waiver becomes a habit.
+    """
+    tot = sum(len(v) for v in out.values())
+    prev = _stored_layer(path)
+    if tot == 0:
+        if not _env_on("ALLOW_NO_TREES"):
+            raise SystemExit(
+                "REFUSING to write an EMPTY tree layer to %s.\n"
+                "  Zero markers is not the same claim as 'this course has no trees', and nothing\n"
+                "  downstream can tell them apart: the maps draw open ground and no card is marked\n"
+                "  \"no tree data\". Check that \"lidar_crs\" is right, that osm_geom.json still holds\n"
+                "  golf=hole ways, and that the tiles carry class-2 ground returns.\n"
+                "  Set ALLOW_NO_TREES=1 if this course genuinely has none." % path)
+        print("WARNING: ALLOW_NO_TREES set -- writing a tree layer with no markers at all; every "
+              "hole will draw as open ground")
+        return
+    lost = sorted(int(h) for h, n in prev.items()
+                  if n >= TREE_HOLE_FLOOR and not out.get(h))
+    if lost:
+        if not _env_on("ALLOW_TREE_LOSS"):
+            raise SystemExit(
+                "REFUSING to write %s: hole(s) %s had %s markers in the stored layer and this run\n"
+                "  found none. Those cards would print open ground where the survey found canopy,\n"
+                "  and the \"no tree data\" caveat only appears when SOME hole still has markers.\n"
+                "  Set ALLOW_TREE_LOSS=1 if the loss is real (a hole re-routed, or the corridor is\n"
+                "  genuinely outside the point data)."
+                % (path, ", ".join(str(h) for h in lost),
+                   ", ".join(str(prev[str(h)]) for h in lost)))
+        print("WARNING: ALLOW_TREE_LOSS set -- hole(s) %s lose every marker they had"
+              % ", ".join(str(h) for h in lost))
+
+
+def write_layer(path, out):
+    """Stage the tree layer beside trees_lidar.json and rename it in, sweeping the stage either way.
+
+    The write this replaces was `json.dump(out, open(path, "w"))`, three lines under a comment calling
+    check_layer "the last gate before the bytes land". json.dump TRUNCATES the file when it opens it
+    and then streams, so a failure part-way through the encode leaves a wreck that is LARGER than the
+    layer it replaced, having got as far as the key it choked on -- measured on course.json at 327 bytes
+    where 265 were. Tree layers run 126 KB (merion) to 245 KB (valley-hi) and are the only record of the
+    canopy; the tiles can rebuild them, but nothing tells the next reader that this file is a wreck
+    rather than a survey.
+
+    Nothing DOWNSTREAM told them either, which is why staging this was worth more than tidiness.
+    lidar_dates.write_lidar_flown's docstring justified leaving this one write in place by saying a
+    truncated layer "fails loudly at render_hole.py's json.load" -- while generate._tree_markers held a
+    bare `except Exception: _TREES = {}` around exactly that call, turning the loud failure into zero
+    markers everywhere, which then suppressed the per-card "no tree data" caveat as noise and produced a
+    clean-looking, tree-free 18-hole book. Both halves are fixed together: the write cannot leave a
+    wreck, and the build no longer swallows one.
+
+    The stage is removed on the failure path, and the handle is closed by the `with` rather than by
+    refcount. Encoding is named because coordinates are ASCII and saying so removes the locale from the
+    question; ensure_ascii keeps it true whatever the machine.
+    """
+    tmp = path + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
+
 
 def on_playing_surface(lon,lat,surfaces):
     """'golf' | 'building' | False -- which kind of surface this marker falls on (counted
@@ -171,21 +298,24 @@ def main():
     # were built, and a building, pond or fairway mapped as a relation is invisible to a cache that
     # predates it -- so load_playing_surfaces() above never sees that footprint and its roof or its
     # open water comes back as canopy. That is the identical failure the ALLOW_NO_BUILDINGS gate
-    # exists for (53 markers on Merion's clubhouse; 615 of 68,884 shipped markers inside a mapped
-    # pond, worst 22.0 m in), and there was no equivalent check for it.
+    # exists for (53 markers on Merion's clubhouse; 615 of the 68,884 markers shipping before these two
+    # filters were inside a mapped pond, worst 22.0 m in -- the corpus stores 68,257 today, that set
+    # less exactly those 615 and the 12 a too-narrow osm_bbox hid), and there was no equivalent check
+    # for it.
     #
     # The marker is the FILE, not a count of relations: a cache with zero flattened rings is either a
     # course that genuinely has no multipolygons or a cache that never asked, and those two are not
     # the same claim. osm_relations.json exists exactly when the pass ran, so its presence records
     # "we asked" and a reply of zero relations is then a positive answer.
     #
-    # Measured over this corpus: castlewood-hill and castlewood-valley are the only two caches with
-    # no osm_relations.json, and they are also the only two with zero `_from_relation` elements; the
-    # other nine carry 1 to 36 flattened rings (monarch-bay 36 fairways, micke-grove 19,
-    # the-reserve 19, valley-hi 18). Re-queried live on 2026-08-01, both Castlewood bboxes return
-    # ZERO golf / natural=water / building relations, so nothing is in fact missing from those two
-    # books -- but that could not be known without asking, which is the whole point. Re-running
-    # fetch_osm.py records the zero and clears this.
+    # Measured over this corpus: castlewood-hill and castlewood-valley WERE the only two caches with no
+    # osm_relations.json, and also the only two with zero `_from_relation` elements; the other nine carry
+    # 1 to 36 flattened rings (monarch-bay 36 fairways, micke-grove 19, the-reserve 19, valley-hi 18).
+    # Both were re-fetched on 2026-08-04 when their osm_bbox was widened to cover the drawing corridor
+    # (see tools/check_osm_bbox.py), and both replies hold ZERO golf / natural=water / building relations
+    # -- so nothing was in fact missing from those two books, and now the FILE says so instead of a
+    # comment. All eleven caches with geometry carry osm_relations.json today; this gate is what keeps a
+    # twelfth from arriving without one.
     _rel = f"{DIR}/osm_relations.json"
     _allow_rel = os.environ.get("ALLOW_NO_RELATIONS", "").lower() not in ("", "0", "false", "no")
     if not os.path.exists(_rel) and not _allow_rel:
@@ -267,7 +397,11 @@ def main():
                 continue
             pts.append([lat,lon])
         out[str(hn)]=pts
-    json.dump(out,open(f"{DIR}/trees_lidar.json","w"))
+    path=f"{DIR}/trees_lidar.json"
+    # LAST GATE BEFORE THE BYTES LAND, like fetch_osm's _check_bindings: everything above is a
+    # measurement of the tiles, and this asks whether the measurement is one the book may be built on.
+    check_layer(out,path)
+    write_layer(path,out)
     tot=sum(len(v) for v in out.values())
     print(f"wrote trees_lidar.json: {tot} tree markers across {len(out)} holes "
           f"(dropped {dropped_surface} on green/fairway/tee/bunker, {dropped_building} on buildings; "

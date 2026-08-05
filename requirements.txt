@@ -4,23 +4,45 @@
 #   python3 -m playwright install chromium      # one extra step: the PDF renderer
 #
 # Python 3.11+ (the engine uses sys.stdlib_module_names and modern f-strings).
-# Floors are the versions this was developed and verified against; newer is expected to work.
+# Floors are the oldest versions this project supports, and newer is expected to work. They are NOT the
+# versions it was measured on -- those are in legal/10_SOFTWARE_DEPENDENCIES.md, read off installed
+# metadata -- but no floor may sit outside what another package declared here requires of it, which
+# test_no_declared_version_floor_is_one_the_rest_of_the_declared_set_rejects checks from that same
+# metadata.
 
 # --- core engine (fetch_* and render_*) -------------------------------------
 numpy>=2.0                # grids, gradients, contouring
 scipy>=1.11               # griddata interpolation of the 0.4 m green surface (fetch_dem_hd.py)
 laspy>=2.5                # read USGS LiDAR .laz point clouds
-lazrs>=0.6                # the LAZ decompression backend laspy needs (laspy[lazrs])
-pyproj>=3.6               # lat/lon <-> UTM, and per-tile CRS from the LAZ header
-tifffile>=2023.1.1        # the 3DEP seamless 1 m DEM arrives as GeoTIFF (fetch_dem.py)
+lazrs>=0.8,<0.9           # the LAZ decompression backend laspy needs (laspy[lazrs]); nothing imports
+                          # it by name, laspy loads it. The range is laspy's own -- laspy 2.7.0 declares
+                          # `lazrs>=0.8.0,<0.9.0` in that extra -- and because this file asks for lazrs
+                          # directly rather than through the extra, no resolver ever reads that
+                          # constraint. So this line is the ONLY place it can live. It said >=0.6, which
+                          # blessed a lazrs laspy does not support, on the LiDAR read every printed
+                          # green surface comes from.
+pyproj>=3.6               # lat/lon <-> UTM, per-tile CRS and Z units from the LAZ header, AND the
+                          # WGS84 ellipsoid parameters that geo.py turns into this project's two
+                          # ground scales (mlat/mlon). Since the earth-model migration every printed
+                          # length -- green depth and width, the 5-yd ladder and scale bar, tilt %, the
+                          # hole map's yardage ticks and carries, the Rule 4.3 print scale -- is a
+                          # difference of degrees multiplied by one of those two, so the whole render
+                          # path now needs this package for every number on a card, not only for a
+                          # projection. It reaches it through geo.py rather than importing it, which is
+                          # why only geo.py is credited here. See legal/11_HORIZONTAL_EARTH_MODEL.md.
+rasterio>=1.3             # reads the 3DEP GeoTIFF *with* its georeference. Module-level in the engine
+                          # (fetch_dem.py) because the served patch must be read on the extent the
+                          # service actually returned -- the earlier reader parsed no GeoTIFF
+                          # transform, so a returned extent that differed from the requested one was
+                          # recorded as the requested one and six monarch-bay cards printed a tilt
+                          # inflated 16.6% to 52.5%. Also tools/verify_elevation.py, the ONLY
+                          # independent cross-check on the printed tee-to-green heights, and what
+                          # separated a real -3.7 ft from the 558 ft a units fault printed.
 
 # --- build + verification tooling -------------------------------------------
 playwright>=1.40          # headless Chromium prints the book to PDF; also measures rendered layout.
                           # Chromium itself is NOT pip-installable: run
                           #   python3 -m playwright install chromium
-rasterio>=1.3             # reads the 3DEP GeoTIFF for tools/verify_elevation.py -- the ONLY
-                          # independent cross-check on the printed tee-to-green heights, and what
-                          # separated a real -3.7 ft from the 558 ft a units fault printed.
 pytest>=7.4               # tests/
 
 # --- OPTIONAL, and deliberately NOT installed by default --------------------

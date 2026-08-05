@@ -12,6 +12,13 @@ bearing), downloads a small DEM patch per green via the 3DEP exportImage service
 sampled at 0.5 m/px, and writes COURSE_DIR/dem_hd/holeNN.{npy,json} -- the same
 format render_green.py consumes.
 
+The recorded bbox is the one the REPLY carries, never the one this asked for. ArcGIS exportImage
+adjusts the bbox to the requested `size`'s aspect ratio in the IMAGE SR -- degrees here -- while
+`size` is computed from the bbox's METRIC aspect, so the service used to expand the latitude span by
+1/cos(lat) and hand back a raster the recorded bbox did not describe. See _served_patch: the request
+now says adjustAspectRatio=false so the grid is square in METRES, and the georeference is read off the
+GeoTIFF either way so the meta always describes its own array.
+
 Run it AFTER fetch_dem_hd.py, not instead of it. This stage FILLS GAPS: it shares dem_hd/ with
 fetch_dem_hd.py and skips any green that already holds a good 0.4 m LiDAR surface, so the two
 compose per GREEN rather than per course -- which is what a bayside course needs, where most
@@ -21,18 +28,30 @@ against 4,973,620).
 
 Run:  COURSE=<slug> python3 fetch_dem_hd.py     # first: 0.4 m where LiDAR allows
       COURSE=<slug> python3 fetch_dem.py        # then: 1 m for the greens it refused
-      ONLY=14,16 ...                            # restrict to specific holes
+      ONLY=14,16 ...                            # restrict to specific holes (a comma-separated
+                                                #   list of numbers; ranges are refused, not guessed)
       OVERWRITE=1 ...                           # replace a good 0.4 m surface on purpose
 """
 import urllib.request, json, math, io, time, os
-import numpy as np, tifffile
+import numpy as np, rasterio
 import config
 import geo
+from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
+import surface_io
 
 DIR = config.COURSE_DIR
 OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
-OVERWRITE = bool(os.environ.get("OVERWRITE"))   # replace a good 0.4 m surface on purpose
-R_LAT = 111320.0
+# Sweep stale staging files first, the same way fetch_lidar.py sweeps laz/. A run killed outright
+# (SIGKILL, laptop asleep, power) leaves a .holeNN.*.part that commit_surface's `finally` never got to
+# run for, and it then sits in dem_hd/ forever -- which matters because that file is the only on-disk
+# trace of the surface pair's rename window, and evidence a dead run also leaves is not evidence.
+surface_io.sweep_staged(OUT)
+# replace a good 0.4 m surface on purpose. Parsed the way fetch_trees.py parses its two escape
+# hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
+# OVERWRITE=no all mean YES, so the word "false" armed the path that trades every 0.4 m LiDAR green
+# for the coarse 1 m DEM -- the exact loss keeps_existing_surface below exists to prevent. An
+# explicit off must be off.
+OVERWRITE = os.environ.get("OVERWRITE", "").lower() not in ("", "0", "false", "no")
 def is_seamless(meta):
     """True when this surface came from the 1 m seamless DEM rather than 0.4 m LiDAR ground returns.
 
@@ -75,13 +94,12 @@ def keeps_existing_surface(meta_path, overwrite=False):
     return bool(src) and not is_seamless(meta) and not meta.get("insufficient")
 
 
-def mlon(lat): return 111320.0 * math.cos(math.radians(lat))
 
 def centroid(g):
     la = sum(p['lat'] for p in g['geometry']) / len(g['geometry'])
     lo = sum(p['lon'] for p in g['geometry']) / len(g['geometry']); return la, lo
 def bearing(a_lat, a_lon, b_lat, b_lon):
-    dE = (b_lon - a_lon) * mlon((a_lat + b_lat) / 2); dN = (b_lat - a_lat) * R_LAT
+    dE = (b_lon - a_lon) * mlon((a_lat + b_lat) / 2); dN = (b_lat - a_lat) * mlat((a_lat + b_lat) / 2)
     return (math.degrees(math.atan2(dE, dN)) + 360) % 360
 
 NAN_FRAC_MAX = 0.02          # matches fetch_dem_hd.py's gate
@@ -140,12 +158,164 @@ def _green_interior_stats(arr, bbox, W, H, polygon):
     return (1.0 if n_in == 0 else n_nan / n_in), n_in, relief
 
 
+class UnusableReply(Exception):
+    """The reply cannot be used, and retrying it will not change that.
+
+    Base class so main()'s no-retry handler covers every such verdict by kind rather than by name --
+    a new one added later must not fall through to the generic `except Exception`, which retries four
+    times and then reports a fetch failure for something that was never transient.
+    """
+
+
+class NoGeoreference(UnusableReply):
+    """The reply carries no GeoTIFF transform, so the extent it covers is unknown."""
+
+
+class NotSquareInMetres(UnusableReply):
+    """Reserved: kept so `UnusableReply` has more than one concrete kind and the base-class handler in
+    main() is exercised by intent rather than by accident. NOT raised for an anisotropic reply -- see
+    sampling_note for why such a reply is recorded rather than refused."""
+
+
+# How far off square a served pixel may be before its sampling is no longer "0.5 m". Set from the
+# corpus, not guessed: across all 198 built surfaces the served pixel measures between 1.000041 and
+# 1.008503 off square (integer W,H against a real-valued span), so this admits every real one with
+# ~6x margin. The failure it exists to catch is a grid square in DEGREES, whose metric aspect is
+# mlat/mlon -- 1.2584 at monarch-bay -- rejected by 5x. (The retired flat-earth constants made that
+# ratio exactly 1/cos(lat), i.e. 1.2637 there, which is the figure the shipped URLs were built with.)
+PIXEL_ASPECT_MAX = 1.05
+
+
+def served_pixel_aspect(bbox, W, H):
+    """max/min of the served pixel's two side lengths IN METRES. 1.0 is square.
+
+    Reads the property off the ARTIFACT -- the bbox the GeoTIFF carries and the array's own shape --
+    which is the only way to know the service honoured the request. A URL-literal assertion proves a
+    string was sent; ArcGIS REST silently IGNORES parameters it does not recognise, so what was sent
+    and what was honoured are different questions, and only the second one matters here.
+
+    The centre latitude comes from the bbox itself, so this needs nothing from the caller and can be
+    applied to any recorded surface, including the 198 already on disk.
+    """
+    xmin, ymin, xmax, ymax = bbox
+    clat = (ymin + ymax) / 2.0
+    mx = (xmax - xmin) * mlon(clat) / W
+    my = (ymax - ymin) * mlat(clat) / H
+    lo, hi = min(abs(mx), abs(my)), max(abs(mx), abs(my))
+    return float("inf") if lo == 0 else hi / lo
+
+
+def sampling_note(bbox, W, H):
+    """(source string, warning or None) -- the provenance claim this patch's pixels actually support.
+
+    The whole squareness of this stage's grid rested on ONE query parameter, `adjustAspectRatio=false`,
+    and nothing had ever checked it. ArcGIS REST silently ignores parameters it does not recognise, so
+    if that one is dropped, renamed, or retired the service goes back to keeping `size` and stretching
+    the bbox to square pixels IN DEGREES -- anisotropic by mlat/mlon, 1.2584 at monarch-bay's 37.6916
+    deg, measured by re-issuing all six shipped URLs, which the retired constants made 1/cos(lat) =
+    1.2637. The external-contract review that covered OSM, ASPRS,
+    TNM and R&A never ran at ArcGIS, and this is the path a BRAND-NEW course takes for every green the
+    LiDAR stage refuses: the least gated and most used producer in the pipeline.
+
+    RECORDED, not refused. An expanded reply is still a usable surface once it is placed right -- the
+    bbox is read off the GeoTIFF either way, so it degrades to merely anisotropic rather than
+    mis-georeferenced, which is the decision
+    test_a_seamless_green_records_the_extent_its_array_actually_covers exists to hold. What must not
+    survive is the CLAIM: `source="USGS 3DEP seamless 1 m @0.5m sampling"` is what
+    tools/gen_provenance.py prints into legal/03, and on an anisotropic grid it is false. So the source
+    string states the sampling the pixels support, and the caller prints the warning.
+
+    Every consumer tests `"seamless" in source.lower()` (fetch_dem.is_seamless, generate.py,
+    gen_provenance._greens), so both spellings keep that word.
+    """
+    xmin, ymin, xmax, ymax = bbox
+    clat = (ymin + ymax) / 2.0
+    mx = (xmax - xmin) * mlon(clat) / W
+    my = (ymax - ymin) * mlat(clat) / H
+    aspect = served_pixel_aspect(bbox, W, H)
+    if aspect <= PIXEL_ASPECT_MAX:
+        return "USGS 3DEP seamless 1 m @0.5m sampling", None
+    return ("USGS 3DEP seamless 1 m, sampled "
+            f"{mx:.3f} m E-W x {my:.3f} m N-S (ANISOTROPIC, not 0.5 m square)",
+            f"served pixels are {aspect:.4f}x from square in metres ({mx:.4f} m E-W vs {my:.4f} m "
+            f"N-S). exportImage did not honour adjustAspectRatio=false -- 1/cos(lat) is "
+            f"{1 / math.cos(math.radians(clat)):.4f} here, so check the request parameters against "
+            f"the current ArcGIS REST API. The surface is still placed correctly (its bbox is read "
+            f"off the GeoTIFF), but render_green's gauss(arr, 3.0) is one sigma in PIXELS, so the read "
+            f"is blurred unequally, and the '@0.5m sampling' provenance claim is NOT being recorded")
+
+
+def _served_patch(raw):
+    """(array, [xmin, ymin, xmax, ymax]) from an exportImage reply -- the extent it actually SERVED.
+
+    The georeference has to travel with the pixels. `size={W},{H}` is derived from the bbox's METRIC
+    aspect (0.5 m per pixel each way), while `imageSR=4326` makes ArcGIS adjust the bbox to that
+    size's aspect ratio IN DEGREES -- so without adjustAspectRatio=false the service expands the
+    latitude span by mlat/mlon and the array does not cover the bbox it was asked for. Measured by
+    re-issuing all six shipped monarch-bay URLs, which were requested under the retired constants
+    that made that ratio 1/cos(37.6916 deg) = 1.2637: 1.2542x to 1.2675x, each north and south edge
+    out by 5.5 to 7.7 m. On the true WGS84 scales the same ratio there is 1.2584. Recording the requested bbox anyway put an
+    inflated tilt on all six of that course's seamless cards, because render_green takes the array's
+    SHAPE from the array and its metres-per-pixel and polygon mask from the meta.
+
+    This used to read the pixels with tifffile.imread(), which parses no GeoTIFF transform, so the
+    georeference was discarded before anything could compare it. rasterio is what
+    tools/verify_elevation._fetch_patch reads the same reply with -- one reader, so the producer and
+    the only independent verifier of these heights agree by construction rather than by luck. That
+    function was fixed for this exact fault and this one was not; that is the whole reason the error
+    survived.
+
+    Refuses rather than guessing when there is no transform at all, the same way _fetch_patch does:
+    a surface whose position on the ground is unknown cannot be measured, and this project prefers a
+    refusal to an unsupported number.
+
+    Squareness in METRES is measured separately, at the point where the claim about it gets written --
+    see sampling_note. It is not a refusal here, because an expanded reply is still usable once placed
+    right; what it must not do is go on calling itself 0.5 m sampling.
+    """
+    with rasterio.open(io.BytesIO(raw)) as ds:
+        arr = ds.read(1).astype('float64')
+        b, identity = ds.bounds, ds.transform.is_identity
+    if identity:
+        raise NoGeoreference("the elevation service returned a raster with no georeference, so the "
+                            "ground it covers is unknown")
+    return arr, [b.left, b.bottom, b.right, b.top]
+
+
+def only_holes(raw):
+    """The set of hole numbers ONLY= names, or REFUSE if it names something this parser cannot read.
+
+    It used to keep the digit tokens and drop the rest, so `ONLY=1-9` silently meant EVERY hole -- and
+    the "ONLY holes:" acknowledgement sits inside `if only:`, so it printed nothing either. On the stage
+    that replaces 0.4 m LiDAR surfaces with the coarse 1 m DEM, and next to OVERWRITE=1 in the same
+    usage block, a typo that DOUBLES the scope of the run is the one way a scope filter must not fail.
+
+    Ranges stay unsupported on purpose: the documented syntax is a comma-separated list (`ONLY=14,16`
+    here, in README.md and in PIPELINE.md), and a second spelling understood only by this script is a
+    parser the docs and the other stages do not share. `1-9` is a typo for `1,9`, so say so.
+
+    Extracted so the TEST can call it -- main() cannot be exercised without the network. Same reason
+    is_flat_fill and both keeps_existing_surface predicates are predicates.
+    """
+    txt = (raw or "").replace(" ", "")
+    toks = [t for t in txt.split(",") if t]
+    bad = [t for t in toks if not t.isdigit()]
+    if bad or (txt and not toks):
+        why = ("not a hole number: " + ", ".join(repr(t) for t in bad)) if bad else "it names no hole"
+        raise SystemExit(
+            f"cannot read ONLY={raw!r}: {why}.\n"
+            f"  ONLY takes a comma-separated list of hole numbers, e.g. ONLY=14,16 -- ranges are not\n"
+            f"  supported. Dropping what it cannot read would mean EVERY hole, which with OVERWRITE=1\n"
+            f"  is the difference between rebuilding the holes you named and rebuilding all of them.")
+    return {int(t) for t in toks}
+
+
 def main():
     # ONLY=14,10 restricts the run to specific holes. Protecting the neighbours' sharp 0.4 m
     # surfaces is no longer its job -- keeps_existing_surface() does that unconditionally now, which
     # also means ONLY= on a hole that already holds a good LiDAR surface writes nothing without
     # OVERWRITE=1.
-    only = {int(v) for v in os.environ.get("ONLY", "").replace(" ", "").split(",") if v.isdigit()}
+    only = only_holes(os.environ.get("ONLY", ""))
     if only:
         print("ONLY holes:", sorted(only))
     d = json.load(open(f"{DIR}/osm_geom.json"))
@@ -204,25 +374,50 @@ def main():
         # list from the second hole onward.
         gpoly = green['geometry']; lats = [p['lat'] for p in gpoly]; lons = [p['lon'] for p in gpoly]
         clat, clon = centroid(green)
-        mrg = 12.0; dlat = mrg/R_LAT; dlon = mrg/mlon(clat)
-        xmin, xmax = min(lons)-dlon, max(lons)+dlon
-        ymin, ymax = min(lats)-dlat, max(lats)+dlat
-        wm = (xmax-xmin)*mlon(clat); hm = (ymax-ymin)*R_LAT
+        mrg = 12.0; dlat = mrg/mlat(clat); dlon = mrg/mlon(clat)
+        # The extent to ASK FOR, and a size that makes the grid square in METRES over it. What gets
+        # RECORDED is whatever extent the reply carries; the two agree only because of
+        # adjustAspectRatio=false below. See _served_patch.
+        q_xmin, q_xmax = min(lons)-dlon, max(lons)+dlon
+        q_ymin, q_ymax = min(lats)-dlat, max(lats)+dlat
+        wm = (q_xmax-q_xmin)*mlon(clat); hm = (q_ymax-q_ymin)*mlat(clat)
         W = max(48, int(wm/0.5)); H = max(48, int(hm/0.5))
+        # adjustAspectRatio=false is what makes bbox AND size both honoured. By default exportImage
+        # keeps `size` and stretches the bbox to match its aspect ratio in the image SR, which in
+        # 4326 means square pixels in DEGREES -- 0.5038 m east-west against 0.6366 m north-south on
+        # monarch-bay hole 1, measured. render_green smooths with `gauss(arr, 3.0)`, one sigma in
+        # PIXELS, so that grid blurs 1.5 m one way and 1.9 m the other however the bbox is recorded.
+        # With the flag: 0.5038 m by 0.5042 m, square in metres the way fetch_dem_hd's 0.4 m grid is.
         url = ("https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage"
-               f"?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=4326&imageSR=4326&size={W},{H}"
+               f"?bbox={q_xmin},{q_ymin},{q_xmax},{q_ymax}&bboxSR=4326&imageSR=4326&size={W},{H}"
+               "&adjustAspectRatio=false"
                "&format=tiff&pixelType=F32&interpolation=RSP_BilinearInterpolation"
                "&noData=-9999&noDataInterpretation=esriNoDataMatchAny&f=image")
-        arr = None
+        arr = bbox = None
+        refused = None
         for attempt in range(4):
             try:
                 raw = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'greenbook/1.0'}), timeout=120).read()
-                arr = tifffile.imread(io.BytesIO(raw)).astype('float64')
+                arr, bbox = _served_patch(raw)
+                break
+            except UnusableReply as e:
+                # not transient: retrying cannot conjure up a transform, nor make a degrees-square
+                # grid square in metres. Caught by BASE CLASS so a verdict added later cannot fall
+                # through to the generic handler below and be retried four times as a network blip.
+                refused = str(e)
                 break
             except Exception as e:
                 print(f"hole {hn}: attempt {attempt+1} failed ({e}); retry"); time.sleep(1.5)
+        if refused:
+            print(f"hole {hn}: REFUSED -- {refused}; no surface written")
+            continue
         if arr is None:
             print(f"hole {hn}: DEM fetch FAILED"); continue
+        # The ARRAY is the authority for its own shape, and its GeoTIFF for its own extent. Both used
+        # to be taken from the request instead, and the meta then described a patch of ground the
+        # pixels beside it do not cover.
+        H, W = arr.shape
+        xmin, ymin, xmax, ymax = bbox
         # Honesty gate -- the SAME contract fetch_dem_hd.py writes. This producer used to write no
         # gate keys at all, so render_green's meta.get("insufficient") was None (falsy) and nothing
         # could stop an unusable surface from being printed. This is the path a BRAND-NEW course
@@ -240,16 +435,24 @@ def main():
         if flat:
             print(f"hole {hn}: CONSTANT surface across the green ({relief*100:.1f} cm of relief) -- "
                   f"outside 3DEP coverage, not a flat green; no slope will be printed")
-        np.save(f"{OUT}/hole{hn:02d}.npy", arr)
-        json.dump(dict(hole=hn, approach_bearing=appr, bbox=[xmin, ymin, xmax, ymax], W=W, H=H,
-                       green_id=green['id'], green_center=[clat, clon],
-                       polygon=[[p['lat'], p['lon']] for p in gpoly],
-                       source="USGS 3DEP seamless 1 m @0.5m sampling",
-                       nan_frac=nan_frac, insufficient=insufficient,
-                       # A seamless raster has no point cloud, so there is no measured point
-                       # density. Report None rather than inventing a plausible number.
-                       density=None),
-                  open(f"{OUT}/hole{hn:02d}.json", "w"))
+        # The provenance claim this patch's pixels actually support. "@0.5m sampling" is only true if
+        # the service honoured adjustAspectRatio=false, which nothing checked -- and that string is what
+        # gen_provenance prints into legal/03. Measured off the served bbox and the array's own shape.
+        _source, _aniso = sampling_note([xmin, ymin, xmax, ymax], W, H)
+        if _aniso:
+            print(f"hole {hn}: !! {_aniso}")
+        # ONE unit: the array carries no georeference, so an array beside a stale bbox is a printed
+        # slope for ground the pixels do not cover. See surface_io.commit_surface.
+        surface_io.commit_surface(
+            f"{OUT}/hole{hn:02d}", arr,
+            dict(hole=hn, approach_bearing=appr, bbox=[xmin, ymin, xmax, ymax], W=W, H=H,
+                 green_id=green['id'], green_center=[clat, clon],
+                 polygon=[[p['lat'], p['lon']] for p in gpoly],
+                 source=_source,
+                 nan_frac=nan_frac, insufficient=insufficient,
+                 # A seamless raster has no point cloud, so there is no measured point
+                 # density. Report None rather than inventing a plausible number.
+                 density=None))
         if insufficient:
             print(f"hole {hn}: INSUFFICIENT -- {nan_frac*100:.0f}% of the green has no elevation; "
                   f"no slope will be printed")

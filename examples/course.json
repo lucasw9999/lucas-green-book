@@ -11,6 +11,11 @@
     "Keys the engine actually reads are marked REQUIRED / OPTIONAL below. Any key starting with",
     "an underscore is ignored, so this block is safe to keep."
   ],
+  "_slug": [
+    "NOT READ by any module. The slug the pipeline uses is the DIRECTORY name",
+    "(config.SLUG), so this field is a convenience for the human transcriber and a mismatch",
+    "here changes nothing. All 12 local courses carry it, which is why it is still documented."
+  ],
   "slug": "example-golf-club",
   "name": "Example Golf Club",
   "address": "1 Fairway Rd, Somewhere, ST 00000",
@@ -32,7 +37,19 @@
   },
   "_par": "OPTIONAL, defaults 72. Must equal the sum of the per-hole pars; a test checks this.",
   "par": 72,
+  "_holes_count": [
+    "NOT READ by any module. len(holes) is what the engine counts. Recorded on 2 of 12",
+    "local courses; documented so nobody adds it expecting the book to use it."
+  ],
   "holes_count": 18,
+  "_green_speed": [
+    "NOT READ by any module -- no card prints it and no tool reads it. It is a",
+    "transcription note (all 12 local courses carry it; 11 hold an em-dash and one says",
+    "'fast'). Kept and documented rather than deleted, because the shipped template must",
+    "mention every key a real course.json carries -- but do not expect it on a card. A",
+    "stimpmeter reading is also NOT something this project can support: the books are",
+    "built from remote public data and green speed is measured on the ground that day."
+  ],
   "green_speed": "—",
   "_tees": [
     "REQUIRED for the Tees panel. yards/rating/slope come from the card; use null for anything the",
@@ -294,5 +311,22 @@
     "scorecard": "Where the par/handicap/yardages came from, which sources agreed, and anything single-source or unverified.",
     "geometry": "OpenStreetMap contributors (ODbL)",
     "elevation": "USGS 3DEP LiDAR (public domain) — name the project, and note any caveat (e.g. flown mid-renovation)."
-  }
+  },
+  "_lidar_project": [
+    "OPTIONAL. Pins the USGS project fetch_lidar.py must use, e.g.",
+    "'CA_AlamedaCounty_2021_B21'. fetch_lidar.py reads it and REFUSES if TNM does not",
+    "offer that project, rather than silently taking a different survey. No local course",
+    "sets it today. This is hand-authored, not derived."
+  ],
+  "_lidar": [
+    "OPTIONAL, hand-authored, and read by NO code. A record of how a course's tiles were",
+    "fetched when it predates fetch_lidar.py's TNM search: {project, tiles, base_url} where",
+    "base_url carries a {tile} placeholder. the-reserve-at-spanos-park is the only course that",
+    "has it, and its 4 bare tile ids match the 4 bare-named .laz files on disk. It is a",
+    "reproduction recipe for a human, not an input -- nothing runs it, so a stale url here",
+    "cannot break a build, and equally nothing checks it. NOTE its `project` says",
+    "CA_Central_Valley_LiDAR_2016_D16 while lidar_flown decodes 2017-12-16/17 from the point",
+    "records: that is the documented reason flight dates are measured and not inferred from a",
+    "project name, not a contradiction to fix."
+  ]
 }

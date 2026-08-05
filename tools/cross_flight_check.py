@@ -50,8 +50,11 @@ from lidar_dates import course_tz, gps_to_utc            # noqa: E402  (same dir
 MIN_COVER = 0.50       # fraction of the green's interior cells this pass alone must touch
 MIN_PTS = 2000         # and an absolute floor, for small greens where 50% is still very few points
 # Tolerances. Set from what two genuinely independent surveys of an UNCHANGED green actually do:
-# philadelphia's passes are 100 days apart and agree to 0.01pp of tilt and 2.1 degrees of aim; the
-# well-covered Alameda pairs agree to 0.07pp. Anything past these is not precision, it is change.
+# philadelphia's passes are 100 days apart and agree to 0.03pp of tilt and 1.7 degrees of aim; the
+# well-covered Alameda pairs agree to 0.05pp and 1.3 degrees, and the widest aim anywhere in the corpus
+# is 3.7 degrees. Anything past these is not precision, it is change. (Re-measured 2026-08-02: the
+# figures here previously came from runs in which fetch_dem_hd was left cached across courses, so the
+# metric courses' tilts were 3.28x too small -- see the pop list in check().)
 TOL_TILT_PP = 0.25     # percentage points of dominant tilt
 TOL_AIM_DEG = 10.0     # degrees of dominant break direction
 # The card claims "Contours join equal height (15 cm each)". That claim is about RELATIVE height
@@ -86,12 +89,12 @@ def dates_recoverable(header):
 def _grid(meta):
     """The shipped tile's own grid, plus the green-interior mask, so every pass is compared on it."""
     import render_green as rg
-    from geo import R_LAT, mlon
+    from geo import mlat, mlon
     W, H = meta['W'], meta['H']
     xmin, ymin, xmax, ymax = meta['bbox']
     clat = (ymin+ymax)/2.0
     px_x = (xmax-xmin)*mlon(clat)/W
-    px_y = (ymax-ymin)*R_LAT/H
+    px_y = (ymax-ymin)*mlat(clat)/H
     poly = rg.poly_to_px(meta['polygon'], meta['bbox'], W, H)
     # rg.point_in_poly rather than matplotlib's Path: the same test the renderer uses, and no
     # dependency the install instructions would then have to name for one diagnostic.
@@ -104,7 +107,15 @@ def _cover(meta, mask, lon, lat):
     W, H = meta['W'], meta['H']
     x0, y0, x1, y1 = meta['bbox']
     cx = np.clip(((lon-x0)/(x1-x0)*W).astype(int), 0, W-1)
-    cy = np.clip(((lat-y0)/(y1-y0)*H).astype(int), 0, H-1)
+    # ROW 0 IS THE NORTH EDGE, because `mask` comes from render_green.poly_to_px ((ymax-lat)/...) --
+    # the same convention _summary's comment below spells out. This line used (lat-y0)/..., row 0 at
+    # the SOUTH, so the >=50% gate was scored against the green flipped top-to-bottom: the fault fixed
+    # in _summary, never carried across to here. It decides EVIDENCE rather than a printed number, both
+    # ways -- a pass that covered the green scored low and dropped (the green then loses its only
+    # cross-check), or a pass that clipped the edge scored high and admitted, which is exactly what
+    # MIN_COVER exists to stop. On the-reserve it moved covers by up to 16.5 pp and moved one pair
+    # across the gate.
+    cy = np.clip(((y1-lat)/(y1-y0)*H).astype(int), 0, H-1)
     inside = mask[cy, cx]
     if not mask.sum():
         return 0.0
@@ -166,7 +177,16 @@ def _shipped_putt(meta, grid):
 def check(slug, verbose=True):
     """Returns (n_greens_compared, [disagreements])."""
     os.environ['COURSE'] = slug
-    for m in ('config', 'geo', 'render_green'):
+    # fetch_dem_hd BELONGS IN THIS LIST. It binds `config` and `DIR = config.COURSE_DIR` at module
+    # scope, so leaving it cached kept laz_to_utm() reading the FIRST slug bound in the process: under
+    # --all every later course was gridded with that course's vertical scale. Five of the corpus's point
+    # clouds are ftUS State Plane (0.3048) and six are metric (1.0), and --all starts on an ftUS one -- so
+    # philadelphia's tilts, the strongest case in legal/09, came out 3.28x too small (0.58% where its
+    # card prints 1.91%) and two of its five clear/faint marks flipped. Both passes were scaled wrong
+    # by the same factor, so "the surveys agree" survived and only the claim that these are the CARD's
+    # numbers broke -- the same shape of fault, and the same reason it hid, as the north/south grid flip
+    # in _summary below.
+    for m in ('config', 'geo', 'render_green', 'fetch_dem_hd'):
         sys.modules.pop(m, None)
     import config                                        # noqa: F401  (binds the course)
     from fetch_dem_hd import laz_to_utm
