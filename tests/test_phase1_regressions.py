@@ -5939,6 +5939,14 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     That is exactly why the qualification matters: 8.7456 is the worst of the 86 windows the rule can
     actually DECIDE and 8.2538 the worst of all 132, and a reader cannot tell which claim was made.
 
+    THAT COUNT WAS GRADED BY `str(len(tighter)) in rh_src`, WHICH IS NOT A CHECK. It is a substring test
+    for one digit in a 1,400-line file, and every count from 0 to 9 passes it. Proven vacuous by
+    mutation: the published sentence was rewritten to claim ZERO kept windows are tighter than 8.7456 --
+    flatly false, and the precise claim the qualification exists to deny -- and this test still passed.
+    The count is now read back OUT of the sentence and compared, and every named window's margin has to
+    sit beside its own hole number, because each of these figures already appears elsewhere in the same
+    comment block and so proves nothing about the list it is supposed to be in.
+
     WHY THE BOUND IS STILL THE MERGE GAP, argued rather than inherited. It was introduced as a bare `8`
     for readability alone ("printing 149 163 167 spends the card's scarcest resource on noise"), so it
     was never measured for this purpose -- and it should not now be replaced by a measured one, because
@@ -6085,6 +6093,34 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
         f"{len(tighter)} kept window(s) are tighter than the worst green-bounded one, all of them "
         f"sand-bounded and so tautological. render_hole.py must say how many and say they are "
         f"tautological, or 'worst KEPT' reads as a claim about every window")
+    # ...AND THE COUNT HAS TO BE ATTACHED TO THE FIGURE IT QUALIFIES. `str(len(tighter)) in rh_src` is a
+    # bare substring test for one digit in a 1,400-line file, so every count from 0 to 9 satisfies it.
+    # PROVEN VACUOUS by mutation: the published sentence was rewritten to claim ZERO kept windows are
+    # tighter than 8.7456 -- flatly false, and the exact claim the qualification exists to make -- and
+    # this test still passed. So the count is read out of the sentence and compared, and each named
+    # window's own margin has to sit beside its hole number rather than merely appear somewhere in the
+    # file (every one of these figures already appears in some other paragraph of the same block).
+    # The leading `#` goes with the newline: this block wraps mid-phrase, so "copper-valley 17 at" and
+    # "8.2538" are on consecutive comment lines and a naive whitespace collapse leaves a hash between.
+    flat = " ".join(re.sub(r"(?m)^[ \t]*#[ \t]?", "", rh_src).split())
+    m = re.search(r"(\d+) kept windows? (?:are|is) tighter than ([0-9]+\.[0-9]{4})", flat)
+    assert m, (
+        f"render_hole.py no longer states how many kept windows are tighter than the worst green-bounded "
+        f"one, in a form that can be graded. Measured: {len(tighter)} tighter than "
+        f"{worst_kept_green[0]:.4f}. Write it as '<N> kept windows are tighter than <figure>'.")
+    assert (int(m.group(1)), m.group(2)) == (len(tighter), f"{worst_kept_green[0]:.4f}"), (
+        f"render_hole.py says {m.group(0)!r}; measured over this corpus it is {len(tighter)} kept "
+        f"window(s) tighter than {worst_kept_green[0]:.4f}. A count checked only by `str(n) in src` is "
+        f"satisfied by any single digit anywhere in the file -- which is how this sentence could have "
+        f"claimed zero and passed.")
+    unnamed = [f"{t[1]} hole {t[2]} at {t[0]:.4f}" for t in sorted(tighter)
+               if f"{t[2]} at {t[0]:.4f}" not in flat]
+    assert not unnamed, (
+        "render_hole.py names the tighter kept windows one by one, and these are not in that list with "
+        "their own margin beside their hole number:\n  " + "\n  ".join(unnamed)
+        + "\n  The list is the whole qualification: without it 'worst KEPT' reads as a claim about "
+          "every window, and a figure quoted without its hole cannot be checked.")
+
     for phrase in ("rule's own", "suppression test"):
         assert phrase in rh_src.lower(), (
             f"render_hole.py's landing-bound note does not name {phrase!r}, so a reader cannot tell "
