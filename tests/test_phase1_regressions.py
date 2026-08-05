@@ -3187,7 +3187,8 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
     length -- 7.3% of 12,161 arrows sit at their green's cap, median 7.4% per green, worst 13.3%. The cap
     is right rather than wrong: without it a single outlier pixel would shrink every other arrow to
     nothing. The card also carries slope numbers and colour, so the tail is not unreadable -- just not
-    distinguishable by length.
+    distinguishable by length. What the legend DOES have to say, and now does, is that the length is
+    scaled to one green: see test_the_arrow_legend_says_the_length_is_scaled_to_that_green.
     """
     cfg, _rh = _engine(a_course())
     import render_green
@@ -3222,6 +3223,117 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
     # and the ramp really does saturate at 5, or the printed number is wrong
     assert render_green.heat_color(5.0) == render_green.heat_color(50.0), \
         "the legend says red at >=5% but the ramp keeps changing above 5"
+
+
+# Phrases that scope "longer = steeper" to ONE green. A list rather than one string because the
+# legend is prose that gets re-edited for space, and the requirement is the SCOPE, not the sentence.
+_PER_GREEN_SCOPE = ("on that green", "on this green", "that green only", "each green",
+                    "per green", "within one green", "one green at a time")
+
+
+@needs_corpus
+def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
+    """"Longer = steeper" is true within one green and false across a book, so it has to say which.
+
+    Arrow length is `2.2 + 3.4*min(m/smax, 1)` where `smax = max(percentile(slope[putt], 92), 1.0)` --
+    the 92nd percentile of THAT GREEN's own putting surface. So a full-length arrow does not mean a
+    slope; it means "about as steep as this green gets", and the slope it stands for is a different
+    number on every card. Measured over the shipped corpus:
+
+        smax runs 2.885% (philadelphia 16) to 9.028% (bay-view 8), a 3.13x range
+        EVERY book has an internal spread: 1.50x (monarch-bay) ... 3.13x (philadelphia); merion 2.93x
+        192 of 198 greens draw an arrow within 0.05 view units of the 5.6 cap, 186 exactly at it
+        the printed tilt barely tracks it, r = 0.658 over 198 greens: philadelphia 18 prints 2.6%
+        with its arrows calibrated to 9.03%, philadelphia 6 prints 4.9% with 7.64% -- the graphic and
+        the number rank those two greens OPPOSITELY, in the same book
+
+    THE NORMALISATION IS CORRECT AND MUST NOT BE REMOVED to satisfy this test. render_green's own
+    note says why: on a global scale one outlier pixel shrinks every other arrow on every green to
+    nothing. The defect is the LEGEND, which stated the rule with no scope at all in all 14 of its
+    instances, inviting exactly the one comparison the drawing cannot support -- arrow length between
+    two holes. Within a card the reader is right, and the card also carries an ABSOLUTE colour ramp
+    and a printed tilt %, which is what makes the qualifier sufficient rather than a retraction.
+
+    Anti-vacuous in both directions. The spread is measured before the wording is required, so if a
+    future change put arrow length on one scale across a book this fails on the premise and says the
+    requirement is obsolete, instead of demanding a qualifier that has stopped being true.
+    """
+    import numpy as np
+
+    def mask_of(poly, W, H):
+        X, Y = np.meshgrid(np.arange(W)+0.5, np.arange(H)+0.5)
+        inside = np.zeros((H, W), bool)
+        n = len(poly); j = n-1
+        for i in range(n):
+            xi, yi = poly[i]; xj, yj = poly[j]
+            inside ^= ((yi > Y) != (yj > Y)) & (X < (xj-xi)*(Y-yi)/(yj-yi+1e-12)+xi)
+            j = i
+        return inside
+
+    # --- the premise: how far apart are two greens' arrow scales inside ONE book? ------------------
+    # Walks _green_surfaces() through _engine() rather than dropping sys.modules by hand: this suite
+    # publishes its own count of module-drop sites in README, and an extra one here would falsify it.
+    per_book, seen = collections.defaultdict(list), collections.Counter()
+    for slug, hole, meta, H, W in _green_surfaces():
+        _engine(slug)
+        import render_green as rg
+        arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy"))
+        x0, y0, x1, y1 = meta["bbox"]
+        px_x = (x1-x0)*_mlon(meta["green_center"][0])/W
+        px_y = (y1-y0)*_mlat(meta["green_center"][0])/H
+        mask = mask_of(rg.poly_to_px(meta["polygon"], meta["bbox"], W, H), W, H)
+        if mask.sum() < 50:
+            continue
+        arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)
+        _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
+        putt = S["putt"]
+        if not putt.any():
+            continue
+        # render_green's own rule for the length scale, deliberately mirrored: the premise under test
+        # IS that rule, so re-deriving it is the measurement, not a duplicate of the code.
+        smax = max(float(np.percentile(S["slope"][putt], 92)), 1.0)
+        per_book[slug].append((smax, hole))
+        seen[slug] += 1
+    assert_no_course_skipped(seen, "test_the_arrow_legend_says_the_length_is_scaled_to_that_green")
+    spreads = {}
+    for slug, vals in per_book.items():
+        lo, hi = min(vals), max(vals)
+        spreads[slug] = (hi[0]/lo[0], lo, hi)
+    worst = max(spreads.values(), key=lambda v: v[0])
+    assert worst[0] >= 1.25, (
+        f"no book's arrow scale varies by more than {worst[0]:.2f}x between its own greens, so "
+        f"'longer = steeper' may no longer need a per-green scope. If the normalisation was made "
+        f"global, delete this test rather than the legend wording -- but re-read render_green's note "
+        f"on why one outlier pixel used to shrink every arrow first. Per book: "
+        f"{ {k: round(v[0], 2) for k, v in sorted(spreads.items())} }")
+
+    # --- so every legend instance that states the rule must scope it to one green -----------------
+    problems, checked = [], 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        for row in re.findall(r'<div class="legrow">(.*?)</div>', html, re.S):
+            flat = re.sub(r"<[^>]+>", "", row)
+            flat = flat.replace("&mdash;", "--").replace("&nbsp;", " ")
+            flat = re.sub(r"\s+", " ", flat).strip()
+            if "steeper" not in flat.lower() or "longer" not in flat.lower():
+                continue
+            checked += 1
+            if not any(s in flat.lower() for s in _PER_GREEN_SCOPE):
+                problems.append(
+                    f"{ref}/{os.path.basename(p)}: {flat!r} states 'longer = steeper' with no scope. "
+                    f"Arrow length is normalised to each green's own 92nd-percentile slope, which "
+                    f"spans {worst[1][0]:.2f}%-{worst[2][0]:.2f}% inside one book, so a reader "
+                    f"comparing two holes by arrow length is reading a scale that moved between them")
+    assert checked >= 14, (
+        f"only {checked} arrow-legend instances found across the built books; the corpus prints 14 "
+        f"(11 pocket colour books + 3 enlarged). A legend this test cannot find is a legend it cannot "
+        f"grade")
+    assert not problems, ("the arrow legend does not say the length is scaled per green:\n  "
+                          + "\n  ".join(problems[:6]))
 
 
 @needs_corpus
@@ -16969,10 +17081,10 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-05): micke-grove 4,325,635; castlewood-hill 4,476,591;
-    merion 5,870,211; monarch-bay 4,933,956; copper-valley 6,084,069; callippe 6,797,914;
-    castlewood-valley 5,835,802; philadelphia 4,604,387; the-reserve 5,109,822;
-    bay-view 4,242,948; valley-hi 4,698,186; poppy-ridge 340,883.
+    CURRENT SIZES (2026-08-05): micke-grove 4,325,652; castlewood-hill 4,476,608;
+    merion 5,870,228; monarch-bay 4,933,973; copper-valley 6,084,086; callippe 6,797,931;
+    castlewood-valley 5,835,819; philadelphia 4,604,404; the-reserve 5,109,839;
+    bay-view 4,242,965; valley-hi 4,698,203; poppy-ridge 340,883.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a

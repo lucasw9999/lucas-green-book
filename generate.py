@@ -716,7 +716,8 @@ def guide_panel():
     return '''<div class="panel guide">
   <div class="gtitle">How to read a green</div>
   <div class="legrow"><svg width="28" height="14"><line x1="2" y1="7" x2="18" y2="7" stroke="#15271b" stroke-width="1.3"/><polygon points="18,7 14,4.5 14,9.5" fill="#15271b"/></svg>
-    <span><b>Arrows</b> point downhill &mdash; the way the ball rolls. Longer = steeper.</span></div>
+    <span><b>Arrows</b> point downhill, the ball&rsquo;s roll. Longer = steeper
+    <b>on that green</b>.</span></div>
   <div class="legrow"><span><b>Black numbers</b> = slope % there; over <b>10%</b> is bank or bunker face,
     not putting surface, so it is coloured but not numbered. <b>Grey numbers</b> = yd from the front edge
     <b>down the middle</b>. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
@@ -1258,7 +1259,8 @@ def coach_about_card():
   <div class="gtitle">Enlarged edition</div>
   <div class="legrow"><span>Each hole = <b>two big cards</b>: the course map, then the green on its
     <b>reverse</b>.</span></div>
-  <div class="legrow"><span><b>Arrows</b> point downhill (the way the ball rolls; longer = steeper).
+  <div class="legrow"><span><b>Arrows</b> downhill = the ball&rsquo;s roll; longer = steeper
+    <b>on that green</b>.
     <b>Contours</b> join equal height, <b>15&nbsp;cm each</b>; <b>close = steep</b>. <b>Colour</b>: green
     flat &rarr; yellow &rarr; red (&ge;5%). Small <b>N</b> = north. "feeds" = the low side putts run
     toward.</span></div>
