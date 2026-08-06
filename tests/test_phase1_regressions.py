@@ -5026,7 +5026,7 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
     references in this file, legal/05 has `gen_disclaimers --check`, legal/09 has ten, legal/11 has a
     test of its own. legal/10 -- the one that says which third-party code this project asks you to
     install and under what licence -- had none, and it published "44 tracked files" against a repo that
-    holds 46.
+    held 46.
 
     THE +2 IS NOT TWO NEW FILES, and the first account of it said so wrongly. 69414b2 introduced this
     document saying 44 against a tree that held 43 -- the same commit having untracked
@@ -6032,8 +6032,14 @@ def test_every_test_this_repo_cites_by_name_exists():
     paragraph they are standing in, which is the worst place to be wrong.
 
     A PREFIX counts as a hit, because the house style wraps long names across comment lines and a
-    fragment of a real name is a formatting artifact rather than a stale pointer. `test_phase1_
-    regressions` is the module and is exempt. Both spellings that survived the prefix rule were real.
+    fragment of a real name is a formatting artifact rather than a stale pointer. A MODULE in this
+    directory is exempt: `tests/test_r14_export.py` is a file, and prose naming a file (a `pytest
+    tests/<file>` command line, a "documented in <file>" pointer) is not citing a guard by name.
+    That exemption used to be the single literal `test_phase1_regressions`, which was every module
+    there was; the moment eight sibling modules landed, two file references failed as dead pointers.
+    It is derived from the files being scanned now, so a new module cannot reopen it -- and it cannot
+    hide a dead FUNCTION pointer, because a module name only clears a citation that IS one.
+    Both spellings that survived the prefix rule were real.
     Neither dead name is written out in full here, for the reason _STALE_RESERVE8_SHORTFALL is
     assembled rather than spelled: this scan reads its own docstring, and the first draft matched it.
     """
@@ -6041,6 +6047,10 @@ def test_every_test_this_repo_cites_by_name_exists():
     files = (sorted(_glob.glob(os.path.join(ROOT, "*.py")))
              + sorted(_glob.glob(os.path.join(ROOT, "tools", "*.py")))
              + sorted(_glob.glob(os.path.join(ROOT, "tests", "*.py"))))
+    modules = {os.path.basename(f)[:-len(".py")] for f in files}
+    assert "test_phase1_regressions" in modules, (
+        "this file is not in the scanned set, so the module exemption below is not being derived "
+        "from anything -- check the globs above")
     defined = set()
     sources = {}
     for f in files:
@@ -6052,7 +6062,7 @@ def test_every_test_this_repo_cites_by_name_exists():
     for f, src in sources.items():
         for m in re.finditer(r"\btest_[a-z0-9_]{10,}\b", src):
             name = m.group(0)
-            if name == "test_phase1_regressions":
+            if name in modules:
                 continue
             cited += 1
             if any(d.startswith(name) for d in defined):
@@ -9997,11 +10007,12 @@ def test_one_junk_gps_time_cannot_size_the_cluster_mass_counters_allocation(tmp_
 
     # (2) NO REAL RETURN IS DROPPED. Every date the corpus has recorded must sit inside the window,
     # re-derived from the artifact `--write` produces rather than from a copy of the measurement.
-    outside, checked = [], 0
+    outside, checked, corpus = [], 0, 0
     for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
         slug = os.path.basename(os.path.dirname(cj))
         if slug.startswith("_"):
             continue
+        corpus += 1
         with open(cj, encoding="utf-8") as fh:
             rec = json.load(fh).get("lidar_flown") or {}
         for key in ("first", "last"):
@@ -10021,7 +10032,11 @@ def test_one_junk_gps_time_cannot_size_the_cluster_mass_counters_allocation(tmp_
     # -- it is gitignored -- and parts (1) and (3) are the enforcement there, neither of which needs any
     # course data. Demanding the floor unconditionally made this test one of the failures
     # test_a_fresh_clone_gets_a_clean_suite exists to catch.
-    if glob.glob(os.path.join(ROOT, "courses", "*", "course.json")):
+    # GATED ON THE SAME POPULATION THE LOOP WALKED, and that is the whole point: this used to ask a raw
+    # glob of courses/*/course.json, which counts the SCRATCH slugs the loop above skips -- so one
+    # underscore-prefixed fixture directory, publishing no flight dates because it publishes nothing,
+    # turned the floor on with `checked` still 0. Two spellings of "is there a corpus?" in one test.
+    if corpus:
         assert checked >= 20, \
             f"only {checked} recorded endpoints checked; too few to say the window fits the corpus"
 
@@ -23408,13 +23423,15 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-06): micke-grove 4,326,013; castlewood-hill 4,477,027;
+    CURRENT SIZES (2026-08-06): micke-grove 4,326,017; castlewood-hill 4,477,027;
     merion 5,870,647; monarch-bay 4,934,430; copper-valley 6,084,531; callippe 6,798,262;
     castlewood-valley 5,836,326; philadelphia 4,604,765; the-reserve 5,110,199;
     bay-view 4,243,411; valley-hi 4,698,534; poppy-ridge 341,146.
     (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
     rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
-    net, those 121 less the 63 its conditional back-cover sentences added.)
+    net, those 121 less the 63 its conditional back-cover sentences added. micke-grove then gained 4
+    on the same day, alone: legal/03 records that its Red 70.0/116 is the WOMEN'S pair, and blanking
+    the 116 that had been printing in a men's slope column turned that cell into `&mdash;`.)
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
