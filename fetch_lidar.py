@@ -637,8 +637,12 @@ def main():
     print("done ->", f"{DIR}/laz")
     # Check the DATA, not just the filenames: a tile can be present and correctly named and still
     # hold no points where a green is. See lidar_coverage.py for the two greens this cost us.
+    # report_or_exit, not report: this was a bare expression statement that DISCARDED the verdict, so
+    # a fetch ending "!! 1 green(s) are NOT fully covered by the point data on disk" exited 0 and
+    # PIPELINE.md's "what an agent does each time" read that as success. The stop names the key that
+    # clears it, because monarch-bay's bayside holes make its verdict permanently unclean.
     import lidar_coverage
-    lidar_coverage.report(config.COURSE_DIR)
+    lidar_coverage.report_or_exit(config.COURSE_DIR)
 
 if __name__ == "__main__":
     main()

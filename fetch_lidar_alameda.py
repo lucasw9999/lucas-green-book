@@ -290,8 +290,10 @@ def main():
     # hold no points where a green is. This is the module's own worst case -- Castlewood Hill's
     # w6153n2055 copy on disk covers a 470-ft strip of a 3000-ft cell, and two greens fell in the
     # gap. See lidar_coverage.py.
+    # report_or_exit, not report: this was a bare expression statement that DISCARDED the verdict, so
+    # a fetch whose own check said "coverage NOT CHECKED" still exited 0.
     import lidar_coverage
-    lidar_coverage.report(config.COURSE_DIR)
+    lidar_coverage.report_or_exit(config.COURSE_DIR)
 
 if __name__ == "__main__":
     main()

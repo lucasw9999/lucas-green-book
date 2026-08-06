@@ -15892,24 +15892,7 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     # with no tiles at all the check must stay quiet rather than claim everything is missing
     assert lc.uncovered_greens(str(tmp_path)) == []
 
-    def write_tile(path, ring_pts, pad_m):
-        """A LAZ whose points span ring_pts' bbox grown by pad_m -- so its HEADER footprint does."""
-        import laspy
-        import numpy as np
-        from pyproj import CRS, Transformer
-        crs = CRS.from_epsg(26910)
-        T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        xy = [T.transform(q["lon"], q["lat"]) for q in ring_pts]
-        x0 = min(c[0] for c in xy) - pad_m; x1 = max(c[0] for c in xy) + pad_m
-        y0 = min(c[1] for c in xy) - pad_m; y1 = max(c[1] for c in xy) + pad_m
-        h = laspy.LasHeader(version="1.4", point_format=6)
-        h.global_encoding.gps_time_type = 1
-        h.add_crs(crs)
-        las = laspy.LasData(h)
-        las.x = np.array([x0, x1, x0, x1]); las.y = np.array([y0, y0, y1, y1])
-        las.z = np.zeros(4)
-        las.gps_time = np.full(4, 1.32e9)
-        las.write(str(path))
+    write_tile = _laz_footprint          # shared with the coverage tests below, written once
 
     write_tile(tmp_path / "laz" / "a.laz", ring(), 5.0)
 
@@ -15949,8 +15932,11 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     assert hb[0][1] == 1 and hb[0][2] == 2, f"hole 7 has 1 of 2 nodes outside, got {hb[0]}"
 
     # and it must REPORT, not raise: a green over water legitimately has no returns
-    status, out, holes_out = lc.report(str(tmp_path))
+    status, out, holes_out, fb_out = lc.report(str(tmp_path))
     assert status == "checked" and out == bad and holes_out == hb
+    assert fb_out == lc.fell_back(str(tmp_path)), (
+        f"report() must hand back the dem_hd fallback set it read: {fb_out} vs "
+        f"{lc.fell_back(str(tmp_path))}")
 
     # "nothing flagged" must never be reported as "verified covered" when NOTHING WAS CHECKED. With
     # zero tiles on disk this printed "all 1 green(s) sit inside the downloaded tiles' data" and
@@ -15960,24 +15946,29 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     (empty / "laz").mkdir(parents=True)
     (empty / "osm_geom.json").write_text(json.dumps({"elements": [
         {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring()}]}))
-    st, bad0, _ = lc.report(str(empty))
+    st, bad0, _, fb0 = lc.report(str(empty))
     assert bad0 == [], bad0
     assert st != "checked", \
         f"status {st!r}: with no tiles on disk the check must say so, not imply coverage"
     assert "tile" in st.lower(), st
+    assert fb0 == {}, f"nothing was checked, so dem_hd was not read: {fb0}"
 
     # ...and the same when the greens cannot be placed
     nogeom = tmp_path / "nogeom"
     (nogeom / "laz").mkdir(parents=True)
     write_tile(nogeom / "laz" / "a.laz", ring(), 5.0)
-    st2, _, _ = lc.report(str(nogeom))
+    st2, _, _, _ = lc.report(str(nogeom))
     assert st2 != "checked" and "green" in st2.lower(), st2
 
     # both fetchers must run the check, or a missing tile copy goes unnoticed again
     for mod in ("fetch_lidar.py", "fetch_lidar_alameda.py"):
         src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
+        # This grades that the CALL EXISTS and nothing more -- it would still pass with report()
+        # changed to `return None` on every path, which is why the message no longer claims the
+        # verdict is honoured. That is graded behaviourally, by
+        # test_the_fetchers_stop_on_the_coverage_verdict_they_asked_for.
         assert _in_code("lidar_coverage.report", src), \
-            f"{mod} never verifies its tiles against the greens"
+            f"{mod} does not call the coverage check at all"
         # ...and both must sweep stale .part files. A transfer killed outright leaves one that no
         # exception handler runs to remove; observed for real when a Merion fetch was killed mid-tile
         # and left a 26 MB .part sitting in laz/. It is never valid data -- a .part is only renamed
@@ -15995,6 +15986,661 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     _fl.sweep_partials(str(d))
     left = sorted(p.name for p in d.iterdir())
     assert left == ["keep.laz"], f"sweep_partials left {left}"
+
+
+# --- lidar_coverage: the verdict, the population it counts, and the docs about it ---------------
+#
+# The module stands at the acquisition boundary: if the tiles do not reach a green, that green falls
+# back to the coarser seamless DEM. Its only test graded uncovered_greens/uncovered_holes and the
+# SOURCE TEXT of the two call sites; measured with coverage.py, 41 of its 151 statements were never
+# executed, including the whole of main() -- the only place a verdict becomes an exit code -- and the
+# whole of fell_back(), the cross-check that exists BECAUSE the rectangle test misses three of Monarch
+# Bay's six fallback greens. The four tests below grade behaviour on those paths.
+
+def _laz_footprint(path, ring_pts, pad_m, epsg=26910):
+    """Write a LAZ whose HEADER bbox is ring_pts' bbox grown by pad_m.
+
+    Four corner points, so the footprint lidar_coverage reads out of the header is exactly that
+    rectangle. `epsg=None` writes a tile that declares NO CRS: lidar_coverage cannot place anything in
+    such a tile and skips it (lidar_coverage.py:104), a branch nothing reached.
+
+    Module-level because four tests need it. It was nested inside one of them, and this repo's own
+    notes on sweep_partials record what a second copy of a helper costs.
+    """
+    import laspy
+    import numpy as np
+    from pyproj import CRS, Transformer
+    crs = None if epsg is None else CRS.from_epsg(epsg)
+    T = Transformer.from_crs("EPSG:4326", crs or CRS.from_epsg(26910), always_xy=True)
+    xy = [T.transform(q["lon"], q["lat"]) for q in ring_pts]
+    x0 = min(c[0] for c in xy) - pad_m; x1 = max(c[0] for c in xy) + pad_m
+    y0 = min(c[1] for c in xy) - pad_m; y1 = max(c[1] for c in xy) + pad_m
+    h = laspy.LasHeader(version="1.4", point_format=6)
+    h.global_encoding.gps_time_type = 1
+    if crs is not None:
+        h.add_crs(crs)
+    las = laspy.LasData(h)
+    las.x = np.array([x0, x1, x0, x1]); las.y = np.array([y0, y0, y1, y1])
+    las.z = np.zeros(4)
+    las.gps_time = np.full(4, 1.32e9)
+    las.write(str(path))
+
+
+def _coverage_course(root, rings, tiles=(), metas=()):
+    """A course directory shaped the way lidar_coverage.report() reads one.
+
+    rings: [(green_id, [{"lon","lat"}, ...])]   -> osm_geom.json golf=green ways
+    tiles: [(name, ring_pts, pad_m, epsg)]      -> laz/<name>, header footprints (epsg=None: no CRS)
+    metas: [dict]                               -> dem_hd/holeNN.json, the fields fell_back() reads
+    """
+    root = pathlib.Path(root)
+    (root / "laz").mkdir(parents=True, exist_ok=True)
+    (root / "osm_geom.json").write_text(json.dumps({"elements": [
+        {"type": "way", "id": gid, "tags": {"golf": "green"}, "geometry": ring}
+        for gid, ring in rings]}))
+    for name, ring_pts, pad_m, epsg in tiles:
+        _laz_footprint(root / "laz" / name, ring_pts, pad_m, epsg)
+    if metas:
+        (root / "dem_hd").mkdir(exist_ok=True)
+        for m in metas:
+            (root / "dem_hd" / f"hole{int(m['hole']):02d}.json").write_text(json.dumps(m))
+    return str(root)
+
+
+def _dem_hd_surfaces(course_dir):
+    """{green_id: meta} for every green surface dem_hd/ actually holds.
+
+    Read here rather than through lidar_coverage, because the defect these tests grade is a published
+    count taken from the WRONG POPULATION -- so the population has to be measured from the files
+    independently of the module that miscounted it.
+    """
+    out = {}
+    for p in sorted(glob.glob(os.path.join(course_dir, "dem_hd", "hole*.json"))):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                m = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if m.get("green_id") is not None:
+            out[m["green_id"]] = m
+    return out
+
+
+def test_the_fetchers_stop_on_the_coverage_verdict_they_asked_for(tmp_path, monkeypatch):
+    """Both fetchers called `lidar_coverage.report(config.COURSE_DIR)` as a BARE EXPRESSION STATEMENT
+    and threw all three return values away, so the check ran, printed, and changed nothing.
+
+    Reproduced end to end before this test existed: a fetch that finished
+
+        done -> .../laz
+          !! 1 green(s) are NOT fully covered by the point data on disk:
+               green 2: 5 of 5 sampled node(s) have no returns over them
+
+    exited 0, and so did one that ended "coverage NOT CHECKED: no readable LAZ tiles on disk" with
+    laspy unimportable. The module's own main() has mapped those two verdicts to exit 1 and exit 2
+    since it was written -- measured standalone on the same data, monarch-bay exits 1, poppy-ridge
+    exits 2, bay-view exits 0 -- and nothing carried that to the caller. PIPELINE.md titles the
+    sequence "Add a NEW course (what an agent does each time)", so an agent gating on the fetch step's
+    exit code was told the tiles had been verified when the verdict said the opposite.
+
+    The stop is KEYED, not unconditional, and that is load-bearing: Monarch Bay's holes 1, 17 and 18
+    are permanently over San Francisco Bay, so its verdict will never be clean and an unconditional
+    non-zero would wedge that course's re-fetch forever. Two keys, because they answer two different
+    questions -- see lidar_coverage.report_or_exit, and fetch_osm._check_response for what one flag
+    gating two questions cost.
+
+    Behavioural on purpose. The only previous test of these call sites was
+    `assert _in_code("lidar_coverage.report", src)`, which grades that the call EXISTS; it would still
+    pass with report() changed to `return None` on every path.
+    """
+    pytest.importorskip("pyproj")
+    slug = a_course()
+    os.environ["COURSE"] = slug
+    for m in ("config", "lidar_coverage", "fetch_lidar", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    import config
+    import lidar_coverage
+    import fetch_lidar
+    import fetch_lidar_alameda
+
+    (tmp_path / "laz").mkdir()
+    seen = []
+
+    def run(mod, verdict, **env):
+        """Drive mod.main() to the coverage call at its tail. Returns the SystemExit, or None.
+
+        Everything before the tail is stubbed at the seam each fetcher already owns -- the TNM
+        listing, the HEAD probes, the download plan -- and DIR is redirected at a tmp directory so
+        nothing touches the live corpus. `seen` records the coverage call, so a SystemExit raised
+        somewhere EARLIER can never be mistaken for the verdict being honoured.
+        """
+        seen.clear()
+
+        def _verdict(course_dir):
+            seen.append(course_dir)
+            return verdict
+
+        with monkeypatch.context() as mp:
+            for k, v in env.items():
+                mp.setenv(k, v)
+            for k in (getattr(lidar_coverage, "COVERAGE_GAPS_ACK", "ALLOW_COVERAGE_GAPS"),
+                      getattr(lidar_coverage, "UNCHECKED_ACK", "ALLOW_UNCHECKED_COVERAGE")):
+                if k not in env:
+                    mp.delenv(k, raising=False)
+            mp.setattr(lidar_coverage, "report", _verdict)
+            mp.setattr(mod, "DIR", str(tmp_path))
+            mp.setitem(fetch_lidar.config.COURSE, "lidar_project", None)
+            mp.setattr(fetch_lidar, "plan_downloads", lambda *_a, **_k: ([], 1))
+            mp.setattr(fetch_lidar, "tnm_items", lambda *_a, **_k: [
+                {"downloadURL": "https://x/Projects/CA_Test_2021_B21/LAZ/t.laz",
+                 "sizeInBytes": 1, "title": "t.laz", "sourceId": "s"}])
+            mp.setattr(fetch_lidar_alameda, "tile_copies",
+                       lambda t, unknown: [("CA_AlamedaCo_1_2021", f"https://x/LAZ/{t}.laz", 1)])
+            try:
+                mod.main()
+            except SystemExit as e:
+                return e
+            return None
+
+    FETCHERS = (fetch_lidar, fetch_lidar_alameda)
+    NOT_CHECKED = ("no readable LAZ tiles on disk", [], [], {})
+    CLEAN = ("checked", [], [], {})
+    GREEN_GAP = ("checked", [(2, 5, 5)], [], {})
+    HOLE_GAP = ("checked", [], [("7", 1, 2)], {})
+    # the shape the rectangle CANNOT see: inside a tile's header bbox, yet the built surface says the
+    # points never served it. Monarch Bay's holes 9, 10 and 16 are exactly this, all three today.
+    FELL_BACK = ("checked", [], [], {689151373: (9, "built from the seamless DEM")})
+
+    for mod in FETCHERS:
+        name = mod.__name__ + ".py"
+
+        e = run(mod, NOT_CHECKED)
+        assert seen, f"{name}: main() never reached the coverage check -- this test proves nothing"
+        assert e is not None, (
+            f"{name} exited 0 after the coverage check said NOTHING WAS VERIFIED. A green the tiles "
+            f"do not reach falls back to the 3DEP seamless mosaic, and this check is the only thing "
+            f"that would have said so.")
+
+        e = run(mod, GREEN_GAP)
+        assert seen and e is not None, (
+            f"{name} exited 0 with a green the point data does not reach. main() maps that verdict "
+            f"to exit 1; the fetcher discarded it.")
+
+        e = run(mod, FELL_BACK)
+        assert seen and e is not None, (
+            f"{name} exited 0 for a green the header bbox vouched for whose BUILT surface came from "
+            f"the seamless mosaic -- the half of the verdict the rectangle cannot see, and the one "
+            f"this module's dem_hd cross-check exists for.")
+
+        assert run(mod, CLEAN) is None, f"{name} refuses a CLEAN coverage verdict"
+        assert seen, f"{name}: the clean run never reached the check"
+
+    assert run(fetch_lidar, HOLE_GAP) is not None, (
+        "fetch_lidar.py exited 0 with a hole centreline outside the point data -- that is where "
+        "fetch_trees.py looks for canopy returns, so the hole silently loses its trees")
+
+    # The keys are read off the module, never restated here, so renaming one cannot leave this green.
+    GAPS = lidar_coverage.COVERAGE_GAPS_ACK
+    UNCHECKED = lidar_coverage.UNCHECKED_ACK
+    assert GAPS != UNCHECKED, "one flag cannot waive two different questions"
+
+    # NOT WEDGED: the key named in the message clears the stop.
+    for mod in FETCHERS:
+        e = run(mod, GREEN_GAP)
+        assert GAPS in str(e.args[0]), (
+            f"{mod.__name__}: the stop must name the key that clears it, or the course is wedged: "
+            f"{e.args[0]!r}")
+        assert run(mod, GREEN_GAP, **{GAPS: "1"}) is None, (
+            f"{mod.__name__}: {GAPS}=1 must let a course with real, known gaps re-fetch -- Monarch "
+            f"Bay's holes 1, 17 and 18 are permanently over the bay")
+        e = run(mod, NOT_CHECKED)
+        assert UNCHECKED in str(e.args[0]), (
+            f"{mod.__name__}: the NOT CHECKED stop must name its own key: {e.args[0]!r}")
+        assert run(mod, NOT_CHECKED, **{UNCHECKED: "1"}) is None, \
+            f"{mod.__name__}: {UNCHECKED}=1 must allow a deliberate build with no coverage check"
+
+    # ...and waiving one question must not silence the other.
+    assert run(fetch_lidar, NOT_CHECKED, **{GAPS: "1"}) is not None, (
+        f"{GAPS}=1 silenced 'nothing was verified'. Monarch Bay needs that key set forever, so it "
+        f"would then never hear about a missing laspy either -- the one-flag-two-questions fault "
+        f"fetch_osm._check_response records.")
+    assert run(fetch_lidar, GREEN_GAP, **{UNCHECKED: "1"}) is not None, \
+        f"{UNCHECKED}=1 silenced a real coverage gap"
+
+    # An explicit OFF must not arm the waiver: bool(os.environ.get(..)) makes "0" and "false" mean
+    # YES, which is the parse fetch_dem/fetch_dem_hd had to be fixed for.
+    for raw in ("0", "false", "FALSE", "no", "No", ""):
+        assert run(fetch_lidar, GREEN_GAP, **{GAPS: raw}) is not None, \
+            f"{GAPS}={raw!r} waived the coverage stop -- an explicit 'off' must not arm it"
+        assert run(fetch_lidar, NOT_CHECKED, **{UNCHECKED: raw}) is not None, \
+            f"{UNCHECKED}={raw!r} waived the NOT-CHECKED stop"
+    for raw in ("1", "true", "yes"):
+        assert run(fetch_lidar, GREEN_GAP, **{GAPS: raw}) is None, f"{GAPS}={raw!r} did not waive"
+
+    # ACCEPTANCE, against the live corpus: the stop is exactly as strict as main()'s exit code, and
+    # NO course is permanently blocked -- every one of them re-fetches with its key set.
+    dirs = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
+    if not dirs:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    blocked = []
+    for cj in dirs:
+        cdir = os.path.dirname(cj)
+        if os.path.basename(cdir).startswith("_"):
+            continue
+        status, bad, holes, fb = lidar_coverage.report(cdir)
+        unexplained = [g for g in fb if g not in {gid for gid, _o, _t in bad}]
+        want_stop = status != "checked" or bool(bad or holes or unexplained)
+        key = UNCHECKED if status != "checked" else GAPS
+        with monkeypatch.context() as mp:
+            mp.delenv(GAPS, raising=False)
+            mp.delenv(UNCHECKED, raising=False)
+            try:
+                lidar_coverage.report_or_exit(cdir)
+                stopped = False
+            except SystemExit:
+                stopped = True
+        assert stopped == want_stop, (
+            f"{os.path.basename(cdir)}: verdict {status!r} bad={len(bad)} holes={len(holes)} "
+            f"fallback-only={len(unexplained)} -> stopped={stopped}, expected {want_stop}")
+        with monkeypatch.context() as mp:
+            mp.setenv(key, "1")
+            try:
+                lidar_coverage.report_or_exit(cdir)
+            except SystemExit as e:
+                blocked.append((os.path.basename(cdir), key, str(e.args[0])[:80]))
+    assert not blocked, (
+        f"these courses cannot be re-fetched even with the acknowledgement key set -- that is a "
+        f"permanently wedged course, which is what the keys exist to prevent: {blocked}")
+
+
+def test_the_coverage_verdict_is_one_call_and_carries_the_fallback_set(tmp_path, monkeypatch):
+    """lidar_coverage.py:298 says "One call, one answer. main() used to re-run uncovered_holes() for
+    its exit code, which reopened every tile header and left a window where the verdict printed and
+    the code returned could disagree." Eleven lines below it, main() re-ran `fell_back()` -- reading
+    every dem_hd/holeNN.json that report() had already read -- because report() returned three values
+    and the fallback set was not one of them. Two calls, two answers, under a comment claiming one.
+
+    So this counts the calls rather than reading the comment, and pins the exit codes main() produces:
+    2 when nothing could be checked, 1 for any finding, 0 only for a clean verdict. Those codes are
+    the contract PIPELINE.md's "what an agent does each time" leans on and were graded by nothing --
+    all sixteen statements of main() were unexecuted.
+    """
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "lidar_coverage"):
+        sys.modules.pop(m, None)
+    import config
+    import lidar_coverage as lc
+
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+
+    def ring(dlon=0.0, dlat=0.0):
+        return [{"lon": lon + dlon - d, "lat": lat + dlat - d},
+                {"lon": lon + dlon + d, "lat": lat + dlat - d},
+                {"lon": lon + dlon + d, "lat": lat + dlat + d},
+                {"lon": lon + dlon - d, "lat": lat + dlat + d}]
+
+    # the source strings the two stages actually write today (fetch_dem_hd.py:451 and
+    # fetch_dem.sampling_note), so the fixture cannot outlive the vocabulary it stands in for.
+    LIDAR = "USGS 3DEP LiDAR ground returns @0.4m"
+    SEAMLESS = "USGS 3DEP seamless mosaic @0.5m sampling"
+
+    # (1) clean: one green, one tile over it, one surface built from the points
+    clean = _coverage_course(tmp_path / "clean", [(1, ring())],
+                             [("a.laz", ring(), 5.0, 26910)],
+                             [{"hole": 1, "green_id": 1, "source": LIDAR}])
+    # (2) a green the rectangle vouches for whose BUILT surface came from the seamless DEM
+    fallback = _coverage_course(tmp_path / "fallback", [(1, ring())],
+                                [("a.laz", ring(), 5.0, 26910)],
+                                [{"hole": 1, "green_id": 1, "source": SEAMLESS}])
+    # (3) a green outside every tile's footprint
+    outside = _coverage_course(tmp_path / "outside", [(1, ring()), (2, ring(dlon=0.035))],
+                               [("a.laz", ring(), 5.0, 26910)],
+                               [{"hole": 1, "green_id": 1, "source": LIDAR}])
+    # (4) no tiles at all -- nothing was checked
+    nothing = _coverage_course(tmp_path / "nothing", [(1, ring())])
+
+    # report() must hand the fallback set back, or main() has to go and read dem_hd/ again
+    out = lc.report(fallback)
+    assert len(out) == 4, (
+        f"report() returned {len(out)} value(s). main() needs the dem_hd fallback set to compute its "
+        f"exit code; without it in the return there are two reads of the same files and two answers "
+        f"the module's own comment says there is one of.")
+    status, bad, holes, fb = out
+    assert status == "checked" and bad == [] and holes == []
+    assert fb == lc.fell_back(fallback), \
+        f"report()'s fallback set {fb} is not what fell_back() says: {lc.fell_back(fallback)}"
+
+    # ONE read of dem_hd/, counted rather than asserted from the comment
+    real = lc.fell_back
+    n = []
+
+    def counted(*a, **k):
+        n.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(lc, "fell_back", counted)
+    monkeypatch.setattr(config, "COURSE_DIR", fallback)
+    del n[:]
+    code = lc.main()
+    assert len(n) == 1, (
+        f"main() read every dem_hd/hole*.json {len(n)} times for one verdict. lidar_coverage.py's own "
+        f"comment above this call reads 'One call, one answer', and the second call is eleven lines "
+        f"below it.")
+    assert code == 1, (
+        f"main() returned {code} for a green whose surface came from the seamless mosaic although the "
+        f"rectangle vouched for it. Returning 0 there is the under-report this module exists to stop.")
+    monkeypatch.setattr(lc, "fell_back", real)
+
+    for cdir, want, why in (
+            (clean, 0, "a clean verdict"),
+            (fallback, 1, "a green the rectangle vouched for whose surface fell back"),
+            (outside, 1, "a green outside every tile footprint"),
+            (nothing, 2, "no readable tile on disk, so nothing was checked")):
+        monkeypatch.setattr(config, "COURSE_DIR", cdir)
+        assert lc.main() == want, f"main() must return {want} for {why}"
+
+    # A tile that declares no CRS cannot place anything, and a course whose ONLY tile is such a tile
+    # has had nothing checked -- it must not read as covered (lidar_coverage.py:104 and :111).
+    nocrs = _coverage_course(tmp_path / "nocrs", [(1, ring())], [("a.laz", ring(), 5.0, None)])
+    st, bad_nc, _h, _f = lc.report(nocrs)
+    assert st != "checked" and bad_nc == [], (
+        f"a tile with no CRS vouched for a green: status {st!r}, flagged {bad_nc}")
+    assert "CRS" in st, st
+    monkeypatch.setattr(config, "COURSE_DIR", nocrs)
+    assert lc.main() == 2, "a course whose only tile declares no CRS has had nothing checked"
+
+    # An unreadable file in laz/ is reported, not silently counted as a tile.
+    broken = pathlib.Path(_coverage_course(tmp_path / "broken", [(1, ring())],
+                                           [("a.laz", ring(), 5.0, 26910)]))
+    (broken / "laz" / "junk.laz").write_bytes(b"not a laz file at all")
+    foot = lc.tile_footprints(str(broken / "laz"))
+    assert [f[0] for f in foot] == ["a.laz"], \
+        f"an unreadable tile must not enter the footprint list: {[f[0] for f in foot]}"
+
+    # No greens in osm_geom.json is not "every green is covered" either -- called directly, since
+    # report() answers that case with its own status before it gets this far.
+    nogreens = _coverage_course(tmp_path / "nogreens", [], [("a.laz", ring(), 5.0, 26910)])
+    assert lc.uncovered_greens(nogreens) == [], "no green geometry must flag nothing, not everything"
+
+    # ...and with no reader at all, nothing is checked rather than everything vouched for.
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "laspy", None)          # makes `import laspy` raise ImportError
+        st2, bad2, holes2, fb2 = lc.report(clean)
+        assert st2 != "checked" and (bad2, holes2, fb2) == ([], [], {}), \
+            f"with no laspy the check must say so, not vouch for the greens: {st2!r} {bad2}"
+        monkeypatch.setattr(config, "COURSE_DIR", clean)
+        assert lc.main() == 2, "no tile reader means nothing was checked, which is exit 2"
+
+    # The __main__ wiring, which is what an agent's `python3 lidar_coverage.py` actually sees. Graded
+    # against main() measured in-process on the same course, never against a hardcoded code.
+    import subprocess
+    want_codes = {}
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        cdir = os.path.dirname(cj)
+        if os.path.basename(cdir).startswith("_"):
+            continue
+        monkeypatch.setattr(config, "COURSE_DIR", cdir)
+        want_codes.setdefault(lc.main(), os.path.basename(cdir))
+    if not want_codes:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    for want, slug in sorted(want_codes.items()):
+        r = subprocess.run([sys.executable, "lidar_coverage.py"], cwd=ROOT, text=True,
+                           capture_output=True, env={**os.environ, "COURSE": slug})
+        assert r.returncode == want, (
+            f"`COURSE={slug} python3 lidar_coverage.py` exited {r.returncode} where main() returns "
+            f"{want} in-process -- the module's exit code is what an agent gates the fetch step on\n"
+            f"{r.stdout}{r.stderr}")
+
+
+def test_the_dem_hd_cross_check_counts_the_population_it_drew_from(tmp_path):
+    """The cross-check's ratio mixed two populations: the numerator counted dem_hd metas, the
+    denominator was len(rings) -- every golf=green in osm_geom.json, which routinely holds greens the
+    course does not have. Measured at monarch-bay, which printed
+
+        dem_hd cross-check: 6 of 20 green(s) did NOT get a surface from the point cloud
+
+    against 20 OSM greens but only 18 dem_hd surfaces: rings 689151352 and 1441733934 have no meta at
+    all, so EIGHT of 20 greens have no surface from the point cloud, not 6, and a reader subtracting
+    gets 14 point-cloud greens where the true number is 12. fell_back()'s own docstring names this
+    population mismatch as the reason it keys by green_id, and then the ratio used the OSM count
+    anyway. Wider than one course: copper-valley and philadelphia each carry 30 rings against 18
+    surfaces.
+
+    So the denominator must be the population the numerator is drawn from -- the surfaces dem_hd/
+    actually holds -- and `denominator - numerator` must be the number of greens whose surface DID
+    come from the point cloud. Both sides measured from the files, never restated.
+    """
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "lidar_coverage"):
+        sys.modules.pop(m, None)
+    import lidar_coverage as lc
+
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+
+    def ring(dlon=0.0):
+        return [{"lon": lon + dlon - d, "lat": lat - d}, {"lon": lon + dlon + d, "lat": lat - d},
+                {"lon": lon + dlon + d, "lat": lat + d}, {"lon": lon + dlon - d, "lat": lat + d}]
+
+    # the source strings the two stages actually write today (fetch_dem_hd.py:451 and
+    # fetch_dem.sampling_note), so the fixture cannot outlive the vocabulary it stands in for.
+    LIDAR = "USGS 3DEP LiDAR ground returns @0.4m"
+    SEAMLESS = "USGS 3DEP seamless mosaic @0.5m sampling"
+    # five OSM greens; only three of them ever got a surface; one of those three fell back. The OSM
+    # count and the surface count differ exactly the way every real course's do.
+    rings = [(i, ring(dlon=0.0005 * i)) for i in range(1, 6)]
+    metas = [{"hole": 1, "green_id": 1, "source": LIDAR},
+             {"hole": 2, "green_id": 2, "source": SEAMLESS},
+             {"hole": 3, "green_id": 3, "source": LIDAR}]
+    cdir = _coverage_course(tmp_path / "c", rings,
+                            [("a.laz", [q for _g, r in rings for q in r], 5.0, 26910)], metas)
+
+    def ratio(printed):
+        m = re.search(r"dem_hd cross-check: (\d+) of (\d+)", printed)
+        assert m, f"no dem_hd cross-check ratio in:\n{printed}"
+        return int(m.group(1)), int(m.group(2))
+
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        lc.report(cdir)
+    num, den = ratio(buf.getvalue())
+    built = _dem_hd_surfaces(cdir)
+    fb = lc.fell_back(cdir)
+    assert (num, den) == (len(fb), len(built)), (
+        f"the cross-check printed {num} of {den} against {len(fb)} fallback surface(s) out of "
+        f"{len(built)} built. The denominator must be the population the numerator came from")
+    assert den != len(rings), (
+        f"the denominator is still the OSM green count ({len(rings)}); this course has {len(built)} "
+        f"built surfaces, and mixing the two is the defect")
+    assert den - num == sum(1 for gid in built if gid not in fb), \
+        "denominator minus numerator must be the greens whose surface DID come from the point cloud"
+
+    # A refused 0.4 m attempt counts as a fallback too -- fetch_dem_hd records that as `insufficient`
+    # rather than by naming the seamless DEM, and it means the same thing: the points produced nothing
+    # usable there. An UNREADABLE meta is evidence neither way and must not enter either count.
+    odd = pathlib.Path(_coverage_course(
+        tmp_path / "odd", rings, [("a.laz", [q for _g, r in rings for q in r], 5.0, 26910)],
+        [{"hole": 1, "green_id": 1, "source": LIDAR},
+         {"hole": 2, "green_id": 2, "source": "0.4 m attempt", "insufficient": True}]))
+    (odd / "dem_hd" / "hole09.json").write_text("{ this is not json")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        lc.report(str(odd))
+    num, den = ratio(buf.getvalue())
+    assert (num, den) == (1, 2), (
+        f"printed {num} of {den}; one of the two readable surfaces was refused as insufficient and "
+        f"the third file is unreadable, which is evidence neither way")
+    assert "refused as insufficient" in buf.getvalue(), \
+        "the cross-check must say WHY a green has no point-cloud surface"
+
+    # A dem_hd/ with nothing in it must not report over a population of none. That branch printed
+    # "every built green surface came from the point cloud" for an empty directory.
+    bare = pathlib.Path(_coverage_course(
+        tmp_path / "bare", rings, [("a.laz", [q for _g, r in rings for q in r], 5.0, 26910)]))
+    (bare / "dem_hd").mkdir()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        lc.report(str(bare))
+    printed = buf.getvalue()
+    assert "cross-check" in printed, f"an empty dem_hd/ said nothing at all:\n{printed}"
+    assert "came from the point cloud" not in printed, (
+        f"an empty dem_hd/ claims its surfaces came from the point cloud; it holds none:\n{printed}")
+
+    # ...and on every real course, against the files themselves.
+    dirs = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
+    if not dirs:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    checked = 0
+    for cj in dirs:
+        cd = os.path.dirname(cj)
+        if os.path.basename(cd).startswith("_"):
+            continue
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            lc.report(cd)
+        printed = buf.getvalue()
+        if "dem_hd cross-check" not in printed:
+            continue
+        built, fb = _dem_hd_surfaces(cd), lc.fell_back(cd)
+        rings_here = lc._green_rings(cd)
+        if fb:
+            num, den = ratio(printed)
+            assert (num, den) == (len(fb), len(built)), (
+                f"{os.path.basename(cd)}: printed {num} of {den}; measured {len(fb)} fallback "
+                f"surface(s) of {len(built)} built ({len(rings_here)} OSM greens)")
+            checked += 1
+        else:
+            # the clean branch must not claim a population it does not have either
+            m = re.search(r"dem_hd cross-check: all (\d+) built", printed)
+            assert m, f"{os.path.basename(cd)}: clean cross-check line missing:\n{printed}"
+            assert int(m.group(1)) == len(built), (
+                f"{os.path.basename(cd)}: clean cross-check claims {m.group(1)} surfaces, "
+                f"{len(built)} are built")
+            checked += 1
+    assert checked, "no course exercised the dem_hd cross-check"
+
+
+def test_the_docs_describe_the_coverage_check_the_code_performs():
+    """README.md said lidar_coverage.py "checks the downloaded tiles' DATA actually reaches the greens
+    & holes". That is the exact claim the module records as REMOVED for being false: the test behind it
+    is point-in-header-BBOX, and lidar_coverage.py's own docstring says the guarantee is impossible in
+    principle -- "this test can only ever prove a green is outside the data; it cannot prove one is
+    inside it." PIPELINE.md carried the same claim with a weaker hedge ("the tiles' data footprint
+    really reaches").
+
+    It is false on this corpus today, not in theory, and this test measures by how much: a green whose
+    nodes all fall inside some tile's header rectangle can still have no returns under it, and
+    dem_hd/ records which ones did. So the docs must name the mechanism the code has -- the header
+    bounding boxes, plus the dem_hd cross-check that exists because the rectangle misses these -- and
+    must not say the point DATA was shown to reach the greens.
+    """
+    lc_src = open(os.path.join(ROOT, "lidar_coverage.py"), encoding="utf-8").read()
+    # The mechanism words are taken from the module, so a rename cannot leave this test green against
+    # docs describing the old one.
+    assert "header" in lc_src and 'os.path.join(course_dir, "dem_hd"' in lc_src.replace(
+        "os . path", "os.path"), "lidar_coverage.py no longer reads tile headers or dem_hd/"
+
+    mentions = []
+    for doc in ("README.md", "PIPELINE.md"):
+        text = open(os.path.join(ROOT, doc), encoding="utf-8").read()
+        for para in re.split(r"\n(?=\S)|\n\n", text):
+            if "lidar_coverage.py" in para:
+                mentions.append((doc, " ".join(para.split())))
+    assert len(mentions) >= 2, f"the docs stopped describing lidar_coverage.py at all: {mentions}"
+
+    # The false shape: a word for the POINTS governing a verb of arrival at the greens. Both published
+    # sentences matched it ("the downloaded tiles' DATA actually reaches", "the tiles' data footprint
+    # really reaches"); a sentence about header boxes reaching a green does not, because the subject is
+    # the rectangle.
+    claim = re.compile(r"\b(data|point cloud|points|returns)\b[^.;]{0,40}?\b(reach\w*|cover\w*)\b"
+                       r"|\b(reach\w*|cover\w*)\b[^.;]{0,40}?\b(data|point cloud|points|returns)\b",
+                       re.I)
+    for doc, para in mentions:
+        for sentence in re.split(r"(?<=[.;]) ", para):
+            if "lidar_coverage" not in sentence and "coverage" not in sentence.lower():
+                continue
+            m = claim.search(sentence)
+            assert not m, (
+                f"{doc} says the point data was shown to reach the greens: {m.group(0)!r}. The test "
+                f"behind that sentence is point-in-header-BBOX; lidar_coverage.py's docstring says it "
+                f"can only prove a green is OUTSIDE the data. Say what it checks -- the tiles' header "
+                f"bounding boxes, plus the dem_hd cross-check.\n  {sentence}")
+        assert "header" in para.lower(), (
+            f"{doc} describes lidar_coverage.py without naming the header bounding boxes it actually "
+            f"tests, so a reader cannot tell the claim from the one the module withdrew:\n  {para}")
+        assert "dem_hd" in para, (
+            f"{doc} describes lidar_coverage.py without its second half. The rectangle alone missed "
+            f"real fallback greens on this corpus; the dem_hd cross-check is why they are reported "
+            f"at all:\n  {para}")
+
+    # ...and the wording the module records as removed must not have come back, quoted from the module
+    # rather than restated here.
+    m = re.search(r"used to read [\"']([^\"']+)[\"']", lc_src)
+    assert m, "lidar_coverage.py no longer records the wording it removed for being false"
+    gone = re.sub(r"[^a-z]", "", m.group(1).lower())
+    for doc, para in mentions:
+        assert gone not in re.sub(r"[^a-z]", "", para.lower()), \
+            f"{doc} republished the claim lidar_coverage.py removed: {m.group(1)!r}"
+
+    # LIVE MEASUREMENT: how many greens pass the rectangle and still have no point-cloud surface.
+    if not CORPUS:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    os.environ["COURSE"] = a_course()
+    for m2 in ("config", "lidar_coverage"):
+        sys.modules.pop(m2, None)
+    import lidar_coverage as lc
+
+    misses, greens = [], 0
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        cd = os.path.dirname(cj)
+        if os.path.basename(cd).startswith("_"):
+            continue
+        status, bad, _holes, fb = lc.report(cd)
+        greens += len(_dem_hd_surfaces(cd))
+        if status != "checked":
+            continue
+        flagged = {gid for gid, _o, _t in bad}
+        misses += [(os.path.basename(cd), gid) for gid in fb if gid not in flagged]
+    assert greens, "no built green surfaces found; nothing was measured"
+    assert misses, (
+        f"no green on this corpus passes the header-bbox test while its built surface says the points "
+        f"never served it -- {greens} surfaces checked. If that is now true of every course, this test "
+        f"still holds (a rectangle cannot prove coverage in principle), but re-derive the figures the "
+        f"docs and lidar_coverage.py's docstring quote before changing them.")
+
+    # The module's prose publishes two corpus counts as the evidence for its own wording. Both had a
+    # DENOMINATOR that quietly meant "courses with tiles" while reading as "courses in this corpus" --
+    # 11 against the 12 that are built. Re-derived here, never restated.
+    cdirs = [os.path.dirname(p) for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*",
+                                                                      "course.json")))
+             if not os.path.basename(os.path.dirname(p)).startswith("_")]
+    boxed = [cd for cd in cdirs if lc._footprint_boxes(cd)[0]]
+    all_inside = [cd for cd in boxed if not lc.uncovered_holes(cd)]
+    clean_bbox = [cd for cd in boxed if not lc.uncovered_greens(cd)]
+    pairs = re.findall(r"(\d+) courses that have tiles on disk \((\d+) are built", lc_src)
+    assert len(pairs) >= 2, \
+        "lidar_coverage.py stopped saying how many courses its two corpus figures are drawn from"
+    for tiles_said, built_said in pairs:
+        assert (int(tiles_said), int(built_said)) == (len(boxed), len(cdirs)), (
+            f"lidar_coverage.py says {tiles_said} of {built_said} courses have tiles on disk; measured "
+            f"{len(boxed)} of {len(cdirs)}")
+    m = re.search(r"(\d+) have every centreline node inside the data", lc_src)
+    assert m and int(m.group(1)) == len(all_inside), (
+        f"lidar_coverage.py says {m and m.group(1)} courses have every centreline node inside the "
+        f"data; measured {len(all_inside)} of the {len(boxed)} with tiles")
+    m = re.search(r"printed for (\d+) of the \d+ courses that have tiles", lc_src)
+    assert m and int(m.group(1)) == len(clean_bbox), (
+        f"lidar_coverage.py says the clean-bbox line is printed for {m and m.group(1)} courses; "
+        f"measured {len(clean_bbox)} of the {len(boxed)} with tiles")
 
 
 def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):

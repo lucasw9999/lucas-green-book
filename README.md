@@ -70,7 +70,7 @@ fetch_dem.py            #   THEN the USGS 3DEP seamless MOSAIC for the greens it
                         #   OVERWRITE=1 to replace a good 0.4 m surface on purpose)
 fetch_trees.py          # trees from LiDAR returns 2.5-35 m above ground (never on greens/fairways/tees/bunkers)
 fetch_hole_elev.py      # tee-to-green height change from the same LiDAR -> hole_elev.json (--write)
-lidar_coverage.py       # checks the downloaded tiles' DATA actually reaches the greens & holes
+lidar_coverage.py       # greens & holes vs the tiles' header bboxes, + a dem_hd cross-check
 distribution.py         # one rule: may this book be handed out? (used by the legal record too)
 render_green.py         # green slope map (arrows, contours, slope %, 5-yard depth grid)
 render_hole.py          # tee -> green hole layout
@@ -99,7 +99,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. This file rebinds
-`COURSE` and drops modules from `sys.modules` at 95 sites, so a test can silently reconfigure the next
+`COURSE` and drops modules from `sys.modules` at 99 sites, so a test can silently reconfigure the next
 one, and file order alone will never show it — a real `IndexError` in `render_hole` hid behind that for
 its whole life and only appeared under shuffling:
 ```bash

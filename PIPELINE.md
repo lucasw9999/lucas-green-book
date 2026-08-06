@@ -167,8 +167,11 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    product tier: 3DEP's seamless service is a MULTI-RESOLUTION MOSAIC, and at every green this stage
    has run on it answered from the 1/9 arc-second tier, so the label used to say `1 m` and was wrong
    by 2.7x E-W and 3.4x N-S.
-   `lidar_coverage.py` then checks the tiles' data footprint really reaches every green and hole
-   centreline -- a tile can be present, correctly named, and hold no points where a green is.
+   `lidar_coverage.py` then checks every green and hole centreline against the tiles' HEADER bounding
+   boxes, and cross-checks `dem_hd/` for what the point cloud actually produced -- a rectangle can
+   prove a green is outside the survey, never that it is inside it. It STOPS the fetch on anything it
+   flags; `ALLOW_COVERAGE_GAPS=1` accepts gaps you have read (monarch-bay's holes 1, 17 and 18 are
+   permanently over the bay), `ALLOW_UNCHECKED_COVERAGE=1` builds with no check at all.
 6. **Elevation.** `fetch_hole_elev.py --write` measures each hole's tee-to-green height change from the
    same ground returns -- median Z at the back tee against the median of the green's own surface -- into
    `hole_elev.json`. Run it AFTER the surfaces exist, since it reads them. Skipping it is silent: the
