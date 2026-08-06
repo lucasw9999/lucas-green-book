@@ -359,9 +359,11 @@ def check_course(slug):
         _a_raw, _meta, _digest = surface_io.read_pair(meta_p[:-len(".json")])
         # `green_center` is no longer read here, and its consumer was replaced DELIBERATELY rather than
         # lost: this was `gla, glo = ...["green_center"]` feeding `d_grn = dem_median_m(gla, glo)`, a disc
-        # median at the green's centre, until 4b19d2f moved the reference onto the green POLYGON so that
-        # both sides of the comparison measure the same region ("the measured height of the green was
-        # measured mostly off the green"). The unpack outlived it. See dem_median_over_ring below.
+        # median at the green's centre, until 4b19d2f moved the GREEN-side reference onto the green
+        # POLYGON ("the measured height of the green was measured mostly off the green"). What that
+        # commit fixed is the GREEN side, and only that side: it did not make the two halves of this
+        # comparison read one region, and the paragraph below is where what each half reads is stated.
+        # The unpack outlived it. See dem_median_over_ring below.
         # The reference reads the green POLYGON, which IS the region the pipeline reads, so on the
         # green side what is left is disagreement about the data. At a MAPPED tee it reads the WHOLE
         # mapped tee ring while the pipeline reads the pad inside a 15 m window, so there the difference
