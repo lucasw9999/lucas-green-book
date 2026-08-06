@@ -7,18 +7,22 @@
 The guards that stand between one test and the next, and between an editing slip and the only copy of
 the corpus.
 
-Both live in conftest.py because that is the ONLY file pytest loads for every test module in this
+They live in conftest.py because that is the ONLY file pytest loads for every test module in this
 directory. The deletion guard used to be a session-autouse fixture inside test_phase1_regressions.py,
 whose own comment called itself "one choke point ... every deletion in this suite" -- which was not true
 of anything but that one file. `pytest tests/<any new file>` ran completely unguarded, and a second test
 module is the natural thing for the next person to add.
 
 `_bind_a_course` was in the same position and moved here for the same reason, one round later, once the
-"next person" had arrived: this directory now holds nine test modules and an autouse fixture applies
+"next person" had arrived: this directory now holds eleven test modules and an autouse fixture applies
 only to the module (or, from here, the package) that declares it. README's promise that the COURSE
 binding is restored "after every test" was true of one file while eight others rebound COURSE, imported
 config, and left the binding for whatever ran next -- which is exactly the leakage the shuffled-order
 advice beside it is about, and how a real IndexError in render_hole hid for its whole life.
+
+`_a_course_exists_to_bind` is the third, and it is here because a binding needs something to bind TO:
+on a fresh clone there is no course at all, so the binder had nothing to do and `import config` died
+with SystemExit in every test that reached an engine module. See its own docstring.
 
 What courses/ is, and why deletion is the interesting failure: a course folder holds ~300 MB of
 LiDAR, the derived 0.4 m green surfaces, and course.json -- a scorecard a human transcribed from
@@ -27,6 +31,7 @@ there is no copy in history, none on a remote, none anywhere. Only laz/ can be f
 """
 import glob
 import os
+import shutil
 import sys
 
 import pytest
@@ -40,12 +45,16 @@ _COURSE_DATA, _SCRATCH, _OUTSIDE = "course data", "scratch", "outside courses/"
 # holes then failed to render and were silently swallowed.
 CORPUS_NEEDS = ("osm_geom.json", "osm_course.json")
 
+# The slug a FRESH CLONE binds to. See _a_course_exists_to_bind.
+FRESH_CLONE_SLUG = "_no_corpus_fixture"
+
 
 def corpus_slugs():
     """Course slugs that have the geometry needed to render a hole map.
 
-    Underscore-prefixed folders are scratch (staging, the cold-build test) and are skipped so a
-    transient directory cannot silently widen or narrow what the corpus tests measure.
+    Underscore-prefixed folders are scratch (staging, the cold-build test, and the fresh-clone
+    fixture below) and are skipped so a transient directory cannot silently widen or narrow what the
+    corpus tests measure.
 
     HERE RATHER THAN IN THE SUITE FILE because `_bind_a_course` below needs it and conftest.py cannot
     import a test module. test_phase1_regressions._courses() delegates to this, so the rule has one
@@ -62,6 +71,61 @@ def corpus_slugs():
     return out
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _a_course_exists_to_bind():
+    """On a fresh clone, make ONE course for the engine to import against. Inert where a corpus exists.
+
+    courses/ is gitignored, so a stranger who clones this repo has the engine and no data at all.
+    `import config` then falls back to its own hardcoded default slug, does not find it, and raises
+    SystemExit -- so every test that imports ANY engine module (config, fetch_osm, render_green, and
+    everything downstream of them) FAILED rather than skipped. That is precisely what README's promise
+    to "skip cleanly with no course data" denies and what test_a_fresh_clone_gets_a_clean_suite exists
+    to catch, and one round put six such tests in at once: three grading a pure predicate in config,
+    two driving fetch_osm's census over synthetic Overpass replies, one reading render_green.render's
+    own source.
+
+    A SKIP WOULD HAVE BEEN THE CHEAPER ANSWER AND THE WRONG ONE. Not one of those six wants course
+    DATA -- a pure function, a hand-built OSM reply, a function's source text -- they want the engine
+    to be importable, and the engine is importable from a single course.json. So one is made, from
+    examples/course.json: it is tracked, it is the file config.py's own refusal message tells a
+    stranger to copy, and test_the_shipped_template_has_no_half_pair already grades it as valid.
+
+    Underscore-prefixed, which is what makes it invisible. distribution.is_corpus_slug -- this repo's
+    one spelling of "a course, or somebody's scratch?" -- reads it as scratch, so corpus_slugs() above,
+    every corpus enumerator in the suite, gen_provenance, gen_disclaimers and cross_flight_check all
+    skip it, and _classify below permits deleting it. Nothing measures it; it exists so that an import
+    resolves.
+
+    THE BINDING IS SESSION-WIDE, not per test, because module-scoped fixtures are set up BEFORE any
+    function-scoped one -- `_bind_a_course` cannot cover an `import config` that happens during a
+    module fixture's own setup, which is the same ordering that once let synth_engine's COURSE leak
+    into the whole tail of the suite. `_bind_a_course` then sees this as the binding it must restore.
+
+    A leftover directory from a crashed run is REUSED, never replaced or removed: this fixture only
+    deletes a directory it created in this process, and only ever its own slug.
+    """
+    template = os.path.join(ROOT, "examples", "course.json")
+    d = os.path.join(ROOT, "courses", FRESH_CLONE_SLUG)
+    if corpus_slugs() or not os.path.exists(template):
+        yield None
+        return
+    prev, made = os.environ.get("COURSE"), False
+    if not os.path.exists(d):
+        os.makedirs(d)
+        shutil.copyfile(template, os.path.join(d, "course.json"))
+        made = True
+    os.environ["COURSE"] = FRESH_CLONE_SLUG
+    try:
+        yield FRESH_CLONE_SLUG
+    finally:
+        if prev is None:
+            os.environ.pop("COURSE", None)
+        else:
+            os.environ["COURSE"] = prev
+        if made:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 @pytest.fixture(autouse=True)
 def _bind_a_course():
     """Bind COURSE for every test IN THIS DIRECTORY, and restore it afterwards.
@@ -71,6 +135,11 @@ def _bind_a_course():
     built on this machine, so the crash was invisible here: on a tree without
     the-reserve-at-spanos-park, `pytest -k contours_join` died with SystemExit and looked like a real
     defect. Binding it here makes single-test and randomised-order runs behave like a full run.
+
+    WHERE THERE IS NO CORPUS AT ALL there is nothing here to bind, and this fixture leaves whatever
+    _a_course_exists_to_bind put in the environment for the whole session -- which on a fresh clone is
+    the one course it makes from examples/course.json. That fixture's docstring has the argument for
+    why a fresh clone gets a binding rather than a skip.
 
     It also RESTORES the binding afterwards, so every test starts from the same course whatever the one
     before it did. Binding without restoring left the suite order-dependent by construction: sites all
