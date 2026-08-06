@@ -18232,15 +18232,18 @@ def _anchors_on_both_earths():
                 geo.mlat, geo.mlon = pair
                 fhe.mlat, fhe.mlon = pair
                 holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
-                anchors = {}
+                anchors, bases = {}, {}
                 for hn in sorted(holes):
-                    la, lo, _basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+                    la, lo, basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
                     if la is not None:
                         anchors[hn] = (la, lo)
+                        # kept, not discarded: WHICH anchors move is the whole refutation, and the
+                        # published reason they move is a claim about the basis that computes them.
+                        bases[hn] = basis
                 targets, crs = fhe._tee_points(anchors)
                 pads = fhe._tee_pads(targets, crs) if targets else {}
                 la0, lo0 = next(iter(anchors.values()))
-                out[slug][label] = {"anchors": anchors, "pads": sorted(pads),
+                out[slug][label] = {"anchors": anchors, "pads": sorted(pads), "bases": bases,
                                     "upm": fhe._crs_units_per_m(crs, la0, lo0)}
     finally:
         geo.mlat, geo.mlon = live_pair
@@ -18251,8 +18254,9 @@ def _anchors_on_both_earths():
 
 # A SENTENCE that blames an earth-model change for moving an anchor onto or off a mapped tee ring.
 # Both halves are required and the pairing is the point: c7a4f65 really did move five anchors (by under
-# a tenth of a metre) and really did change the sampled window's size, so prose may say either of
-# those. What it may not say is that the correction changed which RING holds an anchor, or the count
+# a metre, which is the bound step 1 asserts; the five figures live in step 1b, measured, and are
+# deliberately not copied here) and really did change the sampled window's size, so prose may say either
+# of those. What it may not say is that the correction changed which RING holds an anchor, or the count
 # that follows from it. Cleared by a refutation in the same sentence, the way every other prose gate in
 # this file clears one -- and DELIBERATELY a tight marker set: a loose one (\bnot\b, \bwas\b) clears a
 # live false claim on any coincidence of wording, which is the trap measured in 7d8d131.
@@ -18304,9 +18308,12 @@ def test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anc
     on disk under the retired figure of the Earth (a constant 111320.0 m/deg of latitude and
     111320.0*cos(lat) of longitude) and under the live WGS84 scales, with nothing else changed. The two
     earths agree on the anchor count, on the fallback count, and on which ring holds every single
-    anchor. Five anchors move at all -- the four that come from a par-3 extrapolation or a walk-back,
-    which are the only paths that arithmetic touches -- and all five move by well under a metre. A
-    `tee end of the mapped hole line` anchor is a raw OSM vertex and is bit-identical across it, which
+    anchor. Five anchors move at all -- the five that come from a par-3 extrapolation or a walk-back,
+    which are the only paths that arithmetic touches, and step 1b grades that basis too -- and all five
+    move by under a metre; the five figures themselves are pinned in step 1b against this same
+    measurement rather than restated here, because a fourth copy of a bound is how the third one
+    drifted. A `tee end of the mapped hole line` anchor is a raw OSM vertex and is bit-identical
+    across it, which
     is why castlewood-valley 7 and 14 (both of them that basis) cannot have moved.
 
     THE REAL CAUSE IS febbbba, which widened four courses' OSM fetch box and re-derived only the tree
@@ -18343,7 +18350,7 @@ def test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anc
                 continue
             d = math.hypot((a[1] - b[1]) * _mlon(a[0]), (a[0] - b[0]) * _mlat(a[0]))
             if d > 0:
-                displaced.append((d, _short(slug), hn))
+                displaced.append((d, _short(slug), hn, s["live"]["bases"].get(hn) or ""))
     live_n = (f"{counts['live'][0]} anchors / {counts['live'][0] - counts['live'][1]} fallbacks on the "
               f"live earth, {counts['retired'][0]} / {counts['retired'][0] - counts['retired'][1]} on "
               f"the retired one; {len(displaced)} anchor(s) move, worst "
@@ -18364,6 +18371,48 @@ def test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anc
         f"an anchor moves {max(displaced)[0]:.2f} m between the two earths. That is far enough to "
         f"cross a small tee ring, so 'it cannot have changed the ring' stops following from the "
         f"measurement: {live_n}")
+
+    # 1b. THE BOUND ITSELF, which the step above MEASURED and did not grade. Its failure text has
+    #     always printed the worst move, but the only assertion on it was `< 1.0` -- so the figure
+    #     `_tee_pads` publishes for the same quantity was checked by nothing, and it was wrong by 4.4x
+    #     in the UNDERSTATING direction: the docstring said "by under 0.1 m" and 1030fc6's message said
+    #     "at most 0.07 m", which is the SMALLEST of the five moves quoted as the largest. That is the
+    #     median-quoted-as-worst-case shape this module already records fixing at the green end, and a
+    #     figure a test measures and never compares is exactly how it survived.
+    #     All five are pinned, worst first, with the hole the worst one is on: when every term of the
+    #     set is published, the smallest cannot be mistaken for the bound.
+    moves = sorted(displaced, reverse=True)
+    live_moves = ", ".join(f"{d:.4f} m on {s} {h}" for d, s, h, _b in moves)
+    m = _published(
+        _fhe_prose(),
+        r"Only (\d+) anchors differ at all.{0,220}?by at most ([\d.]+) m, on ([a-z-]+) (\d+), the "
+        r"other four ([\d.]+), ([\d.]+), ([\d.]+) and ([\d.]+) m",
+        "how far the anchors the earth-model correction moves actually move",
+        f"{len(moves)} move: {live_moves}")
+    assert int(m.group(1)) == len(moves), (
+        f"_tee_pads says {m.group(1)} anchors differ between the two earths; {len(moves)} do: "
+        f"{live_moves}")
+    assert (m.group(3), int(m.group(4))) == (moves[0][1], moves[0][2]), (
+        f"_tee_pads puts the worst move on {m.group(3)} {m.group(4)}; it is on {moves[0][1]} "
+        f"{moves[0][2]} ({moves[0][0]:.4f} m). Naming the hole is what makes the bound checkable "
+        f"against the corpus rather than against another copy of itself: {live_moves}")
+    said = [float(m.group(i)) for i in (2, 5, 6, 7, 8)]
+    off = [f"published {p:.4f} m against measured {d:.4f} m on {s} {h}"
+           for p, (d, s, h, _b) in zip(said, moves) if abs(p - d) > 1e-4]
+    assert not off, (
+        "the displacements _tee_pads publishes for the earth-model correction are not the ones the "
+        "corpus gives. This is the ONE figure the refutation does not rest on -- ring membership is "
+        "identical on every anchor either way -- and it is still published, so it is still graded:\n  "
+        + "\n  ".join(off))
+    # WHY only these move, which is the other half of the same sentence: a raw OSM vertex is
+    # bit-identical across the earth model, so anything that moves has to be a computed anchor.
+    raw = [f"{s} {h} moved {d:.4f} m on basis {b!r}" for d, s, h, b in moves
+           if not re.search(r"extrapolated|walked back", b)]
+    assert not raw, (
+        "an anchor moves between the two earths that neither a par-3 extrapolation nor a walk-back "
+        "computes, so 'the only paths that arithmetic touches' is no longer why the set is this "
+        "small -- and the bit-identical argument that clears castlewood-valley 7 and 14 is what "
+        "rests on it:\n  " + "\n  ".join(raw))
 
     # 2. THE DISTINCTION. What c7a4f65 really did move is the WINDOW, through _crs_units_per_m, and
     #    that mechanism has to be live or the retained attribution is as ungrounded as the two removed.
@@ -30615,14 +30664,24 @@ def test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording()
 
 
 # A resolution bound DIRECTLY to the seamless product, in either order: "1 m seamless DEM",
-# "seamless 1 m", "1 m fallback", "1 m mosaic", "1 m national model", "1 m DEM". Deliberately an
-# ADJACENCY rule rather than "a number anywhere in a clause that mentions the mosaic" -- the clauses
-# that legitimately put 0.4 m LiDAR beside the seamless fallback in one sentence are everywhere in this
-# repo, and a grader that flagged them would be switched off within a day.
+# "seamless 1 m", "1 m fallback", "1 m mosaic", "1 m national model", "1 m DEM", "1 m fill".
+# Deliberately an ADJACENCY rule rather than "a number anywhere in a clause that mentions the mosaic" --
+# the clauses that legitimately put 0.4 m LiDAR beside the seamless fallback in one sentence are
+# everywhere in this repo (MEASURED: a co-occurrence rule flags 121 figures in 56 places, 61 of them the
+# 0.4 m point cloud named beside the fallback it exists to replace), and a grader that flagged them
+# would be switched off within a day.
+#
+# AND THE LIST IS INCOMPLETE, which is measured rather than conceded. "fill" is on it because it was
+# not: fetch_dem_hd.py:269 called the product "the coarse 1 m fill" for as long as that docstring has
+# existed, one word outside the set, in the same paragraph as a site 7d8d131 corrected using this very
+# pattern. Worse for the vocabulary idea, the binding does not have to be adjacent at all --
+# `surface_io.py`'s module docstring says "fetch_dem.py at 1 m from the seamless DEM", live and
+# present-tense, and no adjacency vocabulary of any size reaches it. That is recorded by file so the
+# next widening has a target rather than a rediscovery, the way 7d8d131 recorded the one before it.
 _SEAMLESS_RES = re.compile(
     r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b\s+"
-    r"(?:seamless|mosaic|national\s+model|fallback|DEM\b)"
-    r"|(?:seamless|mosaic|fallback)\s+(?:DEM\s+|service\s+)?(?<![\d.])(\d[\d.]*)\s*"
+    r"(?:seamless|mosaic|national\s+model|fallback|fill|DEM\b)"
+    r"|(?:seamless|mosaic|fallback|fill)\s+(?:DEM\s+|service\s+)?(?<![\d.])(\d[\d.]*)\s*"
     r"(?:m|metres?|meters?)\b",
     re.I)
 
@@ -30677,13 +30736,45 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
     SCOPE, stated positively so it cannot be read as more than it is: this grades every STRING LITERAL
     in the repo's .py files -- the runtime messages a user reads while the pipeline runs, and the
     fixtures that stand in for recorded artifacts -- plus README.md, PIPELINE.md and every legal
-    record. It does NOT grade comments or docstrings: two pipeline modules outside this change still
-    carry the stale product name in internal notes, so a grader that swept them would be red on
-    arrival and would have to be waived, which is worse than a narrower grader that is honest about
-    its edges. Widening the surface set to comments and docstrings needs no change to the measurement
-    below -- only for those notes to be corrected first.
+    record. It does NOT grade comments or docstrings, and what stops it is MEASURED, because both
+    reasons given before this round have expired: 7d8d131 corrected the two pipeline modules it named,
+    and 730c9a7 corrected the tools/gen_provenance.py comment 7d8d131 named as the next blocker.
+    Pointed at comments and docstrings today, this pattern flags nothing live and a couple of dozen
+    clauses that QUOTE the retired string as the claim they replaced -- across five modules, two tools
+    and this file. So widening the surface set is not blocked any more; it costs a content-keyed history
+    allowlist of that size, keyed to clauses in four files a later round is still confirming, and it
+    would buy less than it looks: the one live stale claim left in the repo's prose is
+    `surface_io.py`'s module docstring, "fetch_dem.py at 1 m from the seamless DEM" -- in the parallel
+    position where the other producer's true 0.4 m sits, for a stage that samples at 0.5 m/px off a
+    mosaic measured at 2.72 x 3.43 m -- and the note above the pattern says why no adjacency rule
+    reaches it. Correcting that docstring, then paying for the allowlist, is the order; the
+    measurement below needs no change for either.
     """
     allowed = _seamless_grid_figures()
+    # THE VOCABULARY, probed on the shipped pattern itself rather than described. "fill" is on the
+    # adjacency list because it was NOT, and one word is all it took: fetch_dem_hd.py's
+    # keeps_existing_surface said "the coarse 1 m fill" inside its own docstring, live and present-tense
+    # from 27f5c25, twenty lines above a site 7d8d131 corrected in the same paragraph -- and 7d8d131
+    # measured that paragraph with this very pattern, so the miss and the measurement were one word
+    # apart. The dead figure is BUILT rather than typed, exactly as the label fixture above builds
+    # its own: a probe spelled out as a literal here would be swept by the scan below and fail as a
+    # finding against itself.
+    dead = f"{9.9:.1f} m"
+    for shape in (f"built from a {dead} fill", f"the fill {dead} answered with",
+                  f"{dead} seamless DEM", f"seamless {dead}", f"a {dead} mosaic",
+                  f"the coarser {dead} national model"):
+        assert _SEAMLESS_RES.search(shape), (
+            f"the shipped adjacency pattern no longer binds a figure to the product in {shape!r}, so a "
+            f"live claim in that shape would pass unseen")
+    # And the shape NO vocabulary can reach, asserted as a LIMIT rather than as a property worth
+    # keeping: a figure bound to the product by a preposition sits arbitrarily far from any product
+    # word. If a future rule does catch it, this is what must be changed deliberately -- together with
+    # the SCOPE note above, which counts what a widening would flag.
+    assert not _SEAMLESS_RES.search(f"fetch_dem.py at {dead} from the seamless DEM"), (
+        "the adjacency pattern now reaches a figure bound to the product by a PREPOSITION. That is a "
+        "wider class than this grader has ever claimed, and the scope note in the docstring above is "
+        "measured against the narrow one -- re-measure it and rewrite both, rather than letting the "
+        "grader and its own description of itself drift apart.")
     if not allowed:
         pytest.skip("per-course green surfaces are gitignored; nothing to measure")
     tol = 0.06                          # the same cell tolerance the card and legal/03 graders use

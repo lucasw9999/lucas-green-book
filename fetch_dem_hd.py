@@ -266,7 +266,12 @@ def keeps_existing_surface(meta_path, overwrite=False):
     """True when meta_path holds a READABLE surface that a refused 0.4 m attempt must not replace.
 
     The mirror of fetch_dem.keeps_existing_surface, with the seamless case INVERTED -- that one protects
-    good 0.4 m LiDAR from the coarse 1 m fill, this one protects ANY readable record from a blank green.
+    good 0.4 m LiDAR from the coarse seamless fill, this one protects ANY readable record from a blank
+    green. (Said "the coarse 1 m fill" here until this round. 7d8d131 corrected the other three notes in
+    this module and missed this one, and the reason is worth recording: the grader it measured them with
+    binds the figure to the product by ADJACENCY -- seamless, mosaic, national model, fallback, DEM --
+    and "fill" is not on that list, so the same claim in the same paragraph was invisible. The arrays
+    are measured 20 lines below.)
 
     The inline guard this replaced tested `fetch_dem.is_seamless(prev)`, so it protected only the 6
     seamless records in a 198-green corpus -- 3%. The other 192 are LiDAR-sourced, and re-running this

@@ -330,8 +330,13 @@ def _tee_pads(anchors, crs):
     111320.0*cos(lat) of longitude) and under the live WGS84 scales, changing nothing else, and the
     anchor count, the fallback count and the holding ring of every single anchor come out identical.
     Only 5 anchors differ at all -- the ones a par-3 extrapolation or a walk-back computes, the only
-    paths that arithmetic touches -- and by under 0.1 m; a `tee end of the mapped hole line` anchor is a
-    raw OSM vertex and is bit-identical across it, which is the basis both castlewood-valley holes use.
+    paths that arithmetic touches -- and by at most 0.4442 m, on merion 3, the other four 0.2842,
+    0.2379, 0.2208 and 0.0731 m. (Published here as "under 0.1 m", and in 1030fc6's message as "at most
+    0.07 m", which is the SMALLEST of those five quoted as the largest -- the same median-as-worst-case
+    shape this docstring records fixing at the green end. The refutation is unaffected either way: it
+    rests on ring membership being identical on every anchor, not on how far the five that move move.)
+    A `tee end of the mapped hole line` anchor is a raw OSM vertex and is bit-identical across it, which
+    is the basis both castlewood-valley holes use.
     What c7a4f65 DID move is the sampled window's SIZE, through _crs_units_per_m: at merion it is
     0.2570% wider in CRS units, and that is the whole of merion h1's 3839 -> 3851 and h11's
     3917 -> 3923 ground-return drift, off anchors that do not move. That third attribution stands.
