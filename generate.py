@@ -1018,7 +1018,53 @@ def _scorecard_claim():
             "Yardages from <b>published</b> scorecard data.")
 
 
-def legend_panel():
+def _dedication_sharing():
+    """The dedication's own two sentences about passing the book on -- conditional, like sharing_line().
+
+    THE BACK COVER OF A PERSONAL-USE BOOK INVITED REDISTRIBUTION TWICE AND FORBADE IT ONCE, and it
+    shipped that way. Read out of courses/poppy-ridge-golf-course/greenbook.html in printed order:
+    "It's a small personal contribution to junior golf, FREE TO USE AND SHARE. ... Play well, read
+    true, and PASS IT ON. ... THIS COPY IS FOR PERSONAL USE ONLY -- PLEASE DO NOT SHARE OR REDISTRIBUTE
+    IT". Page 1 of the same book carries "PERSONAL USE ONLY - PLEASE DO NOT SHARE" from _cover_badge().
+    So the one card a reader keeps granted the permission the same card, the cover and legal/03 all
+    withhold -- verbatim the failure sharing_line()'s docstring says it exists to end.
+
+    It got past the test written to hold that line: the shipped guard asserts the absence of the
+    LITERAL "free to share, not for sale", which is the licence sentence's spelling, and the dedication
+    worded the same permission its own way.
+
+    The warmth is not the defect and is not removed: a book that may be shared still says so, in these
+    exact words. What changes on the book that may not be is the permission, and the reason stays where
+    it belongs -- the licence line at the foot of this same card, which says why.
+
+    ONE LINE OF TYPE more than the sentence it replaces, and that is measured, not estimated. In
+    chrome-headless-shell under print media on the shipped poppy-ridge back cover, this wording moves
+    the gap between the QR block and the .dcopy licence line from 16.22 px to 9.33 px and the crest's
+    top clearance from 71.20 to 64.31. The tightest element on that card is unmoved at 2.00 px from the
+    trim (its page number); no text on it comes nearer. A two-line-longer draft leaves 2.44 px of that
+    QR-to-licence gap, so there is one line here and no more.
+    """
+    if DISTRIBUTABLE:
+        return ('''<p>It is <b>not for sale</b>. It&rsquo;s a small personal contribution to junior golf,
+      free to use and share.</p>
+    <p>Play well, read true, and pass it on.</p>''')
+    return ('''<p>It is <b>not for sale</b>. It&rsquo;s a small personal contribution to junior golf,
+      <b>for your own use</b>.</p>
+    <p>Play well, read true &mdash; and please keep this copy to yourself; the note below says
+      why.</p>''')
+
+
+def dedication_panel():
+    """The LAST card: the dedication, which prints upright as the back cover.
+
+    NOT a legend. This was called legend_panel() while building `<div class="panel dedic">` -- "For
+    every junior golfer", "Crafted by Lucas Wu", the copyright and licence line -- and the book's
+    actual legend card is guide_panel(). pad_to_leaves() and is_upright_back() both already call this
+    card "the dedication", and its enlarged counterpart is coach_dedic_card(), so the name was the one
+    thing still pointing a reader at the wrong function. The fossil had a measurable trace: `.legend
+    ol` and `.legend li` shipped in the stylesheet of all 12 pocket books and no element in any book
+    carried class="legend".
+    """
     flag = ('<svg width="26" height="26" viewBox="0 0 26 26">'
             '<line x1="9" y1="4" x2="9" y2="22" stroke="#b8860b" stroke-width="1.6" stroke-linecap="round"/>'
             '<path d="M9 4 L20 8 L9 12 Z" fill="#b8860b"/></svg>')
@@ -1029,6 +1075,11 @@ def legend_panel():
     # never emitted; the caption had clearly been intended and was lost.
     qr = (f'<div class="dqr"><img src="{IG_QR}" alt="@lucaswu.golf"/>'
           f'<div class="dqrcap">Instagram <b>@lucaswu.golf</b></div></div>') if IG_QR else ""
+    # ONE f-string for the whole card. Splicing the two conditional sentences in with `+` broke it
+    # once already: the segment holding {qr} stopped being an f-string, and all 12 pocket books printed
+    # the literal text "{qr}" where the Instagram code and its caption belong. Bound to locals instead.
+    share = _dedication_sharing()
+    licence = sharing_line()
     return f'''<div class="panel dedic">
   <div class="dcrest">{flag}</div>
   <div class="dtitle">For every junior golfer</div>
@@ -1036,15 +1087,13 @@ def legend_panel():
     <p>A good green book shouldn&rsquo;t cost more than the round. Every kid who tees it
       up deserves the same honest read as anyone else &mdash; so I built this one and give
       it away.</p>
-    <p>It is <b>not for sale</b>. It&rsquo;s a small personal contribution to junior golf,
-      free to use and share.</p>
-    <p>Play well, read true, and pass it on.</p>
+    {share}
   </div>
   <div class="drule"></div>
   <div class="dsign">Crafted by <b>Lucas Wu</b></div>
   <div class="dweb"><div class="dwebtag">VISIT</div><div class="dweburl">lucasgreenbook.org</div></div>
   {qr}
-  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. ''' + sharing_line() + '''</div>
+  <div class="dcopy">Lucas Green Book&trade; &middot; &copy; 2026 Lucas Wu. {licence}</div>
 </div>'''
 
 def notes_panel(title, holes_range):
@@ -1135,7 +1184,7 @@ def build_deck():
     trailing = [scorecard_panel(), tees_panel(),
                 notes_panel(f"Notes {config.HOLE_NUMS[0]}-{config.HOLE_NUMS[-1]}"
                             if config.NHOLES <= 18 else "Notes",
-                            config.HOLE_NUMS), legend_panel()]
+                            config.HOLE_NUMS), dedication_panel()]
     return leading + holes + trailing, len(leading), len(holes)
 
 
@@ -1255,8 +1304,6 @@ def main():
   .guide ul {{ margin: 0; padding-left: 14px; font-size: 7.7pt; line-height: 1.28; }}
   .guide li {{ margin-bottom: 3px; }}
   .gsmall {{ font-size: 6.7pt; color: #767676; margin-top: auto; padding-top: 3px; }}
-  .legend ol {{ margin: 0; padding-left: 14px; font-size: 7.8pt; line-height: 1.3; }}
-  .legend li {{ margin-bottom: 3px; }}
 
   table {{ width: 100%; border-collapse: collapse; font-size: 7.8pt; }}
   td {{ border: 1px solid #ddd; padding: 0 3px; text-align: center; }}

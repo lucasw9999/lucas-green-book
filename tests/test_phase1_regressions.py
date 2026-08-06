@@ -120,14 +120,18 @@ def _assert_examined(holes, labels, errors, what, per_hole=MIN_LABELS_PER_HOLE):
 
 
 def _restore_course(prev):
-    """Point COURSE back at something that exists after a synthetic course is torn down."""
+    """Point COURSE back at something that exists after a synthetic course is torn down.
+
+    `generate` is dropped with the rest because it binds config, DISTRIBUTABLE and HOLE_ELEV at IMPORT
+    time -- a generate left in sys.modules is a generate still bound to the previous course, and
+    _fresh_generate() below routes through here rather than adding a second pop site for it."""
     if prev is not None:
         os.environ["COURSE"] = prev
     elif CORPUS:
         os.environ["COURSE"] = CORPUS[0]
     else:
         os.environ.pop("COURSE", None)
-    for m in ("config", "render_hole", "render_green", "fetch_trees"):
+    for m in ("config", "render_hole", "render_green", "fetch_trees", "generate"):
         sys.modules.pop(m, None)
 
 
@@ -21956,10 +21960,13 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-05): micke-grove 4,326,134; castlewood-hill 4,477,148;
-    merion 5,870,768; monarch-bay 4,934,551; copper-valley 6,084,652; callippe 6,798,383;
-    castlewood-valley 5,836,447; philadelphia 4,604,886; the-reserve 5,110,320;
-    bay-view 4,243,532; valley-hi 4,698,655; poppy-ridge 341,204.
+    CURRENT SIZES (2026-08-06): micke-grove 4,326,013; castlewood-hill 4,477,027;
+    merion 5,870,647; monarch-bay 4,934,430; copper-valley 6,084,531; callippe 6,798,262;
+    castlewood-valley 5,836,326; philadelphia 4,604,765; the-reserve 5,110,199;
+    bay-view 4,243,411; valley-hi 4,698,534; poppy-ridge 341,146.
+    (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
+    rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
+    net, those 121 less the 63 its conditional back-cover sentences added.)
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -33913,3 +33920,211 @@ def test_the_module_bounds_the_seamless_greens_by_their_source_grid_not_only_by_
     assert not re.search(r"and about 1\.5 m only on the six", doc), (
         "the paragraph still presents the six seamless greens as differing from the rest only by "
         "their smoothing sigma. Their source grid is 2.7x their pixel; the sigma is the smaller term.")
+
+
+# ===========================================================================
+# THE BACK COVER, THE ENLARGED COVER, AND THE TWO EDITIONS' SHARED RULES
+#
+# generate.py builds two books from one engine, and every defect below is one of two shapes: a card
+# that INVITES what its own foot forbids, or a rule the enlarged deck re-implemented instead of
+# calling. Both shapes have shipped here before -- green_honesty(), the hazard footer and the playline
+# each drifted between the two code paths -- so each test drives the real card builders.
+# ===========================================================================
+
+def _fresh_generate(slug):
+    """`generate` imported bound to ONE course.
+
+    generate binds config, DISTRIBUTABLE and HOLE_ELEV at IMPORT time, so the module and everything
+    under it that reads COURSE has to be dropped and re-imported per course. Routed through
+    _restore_course() rather than popping sys.modules again here: README.md publishes the number of
+    module-drop sites in this suite as the evidence for its shuffled-order advice, and a helper is not
+    a good enough reason to move that figure."""
+    _restore_course(slug)
+    import generate
+    return generate
+
+
+def _drop_generate():
+    """Undo _fresh_generate, so a later test does not inherit a course-bound generate."""
+    _restore_course(CORPUS[0] if CORPUS else None)
+
+
+def _book_prose(html):
+    """The words a READER sees: tags stripped, the book's entities flattened, lower-cased.
+
+    Entity-flattened because the invitation the shipped defect printed is spelled with &rsquo; and
+    &mdash; inside it, and a grader that matches raw markup would miss the sentence it exists to
+    catch for a purely typographic reason."""
+    h = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S | re.I)
+    t = re.sub(r"<[^>]+>", " ", h)
+    for ent, ch in (("&rsquo;", "'"), ("&lsquo;", "'"), ("&mdash;", "--"), ("&ndash;", "-"),
+                    ("&middot;", "."), ("&nbsp;", " "), ("&ldquo;", '"'), ("&rdquo;", '"'),
+                    ("&amp;", "&"), ("&copy;", "(c)"), ("&trade;", "(TM)"), ("&rarr;", "->"),
+                    ("&ge;", ">="), ("&times;", "x")):
+        t = t.replace(ent, ch)
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+# THE FORMS BY WHICH A CARD INVITES THE READER TO PASS THE BOOK ON. A set of patterns, not one
+# literal, and that distinction is the whole finding: the test that existed to catch this
+# (test_a_book_that_may_not_be_shared_says_so_on_the_page) asserts the absence of the exact string
+# "free to share, not for sale", and the shipped back cover said "free to use and share" and "pass it
+# on" instead -- so a card that invited redistribution twice and forbade it once read as clean.
+# Self-validated below against the sentence that actually shipped.
+_SHARE_INVITATIONS = (
+    r"free to (?:\w+ (?:and|or) )?share",
+    r"free to (?:copy|distribute|redistribute|hand out|hand on|print and share)",
+    r"\bpass (?:it|this|them|these) on\b",
+    r"\bshare (?:it|this|them) (?:with|freely|around)\b",
+    r"\bfeel free to (?:share|copy|print|hand)",
+    r"\byours to (?:share|copy|give|pass)\b",
+)
+
+# Verbatim out of courses/poppy-ridge-golf-course/greenbook.html as it shipped -- the back cover of a
+# book distribution.py has always classed personal-use only, whose own foot reads "THIS COPY IS FOR
+# PERSONAL USE ONLY -- PLEASE DO NOT SHARE OR REDISTRIBUTE IT" and whose page 1 carries the same mark.
+_SHIPPED_INVITATION = (
+    "it is not for sale. it's a small personal contribution to junior golf, free to use and share. "
+    "play well, read true, and pass it on."
+)
+
+# ...and the sentence the same card prints at its foot, which must NOT read as an invitation. Two of
+# these patterns were drafted wide enough to match "share or redistribute" inside it; a grader that
+# fires on the prohibition would force the fix to delete the notice rather than the invitation.
+_SHIPPED_PROHIBITION = (
+    "this copy is for personal use only -- please do not share or redistribute it, because its "
+    "greens are blank for want of trustworthy survey data and a reader elsewhere cannot know that. "
+    "not for sale. all rights reserved."
+)
+
+
+def _invitations_in(text):
+    return [re.search(p, text).group(0) for p in _SHARE_INVITATIONS if re.search(p, text)]
+
+
+def test_a_book_that_may_not_be_shared_does_not_invite_the_reader_to_share_it():
+    """A personal-use book's back cover told the reader it was "free to use and share" and to "pass it on".
+
+    SHIPPED. courses/poppy-ridge-golf-course/greenbook.html, back cover, in order: "It is not for
+    sale. It's a small personal contribution to junior golf, FREE TO USE AND SHARE. ... Play well,
+    read true, and PASS IT ON. ... THIS COPY IS FOR PERSONAL USE ONLY -- PLEASE DO NOT SHARE OR
+    REDISTRIBUTE IT". Page 1 of the same book carries "PERSONAL USE ONLY - PLEASE DO NOT SHARE" via
+    _cover_badge(). One card invited redistribution twice and forbade it once, which is precisely the
+    failure sharing_line()'s docstring says it exists to end: "The verdict lived in the policy and the
+    paperwork while the artifact invited the opposite."
+
+    THE GRADER CATCHES THE INVITATION, NOT A SPELLING OF IT. The test that was supposed to hold this
+    line scans for the literal "free to share, not for sale" -- the distributable licence sentence --
+    and the dedication evaded it by wording the same permission differently. So this asks whether the
+    card grants permission to pass the book on, in any of the forms a warm hand-written dedication
+    would use, and proves against the shipped text that it can see the one that got through.
+
+    BOTH DIRECTIONS. A distributable pocket book must still carry the invitation: the fix is to make
+    the sentence conditional, not to strip the warmth out of eleven books that have every right to it.
+    """
+    # (0) the grader must be able to see the defect it exists to catch, and must NOT fire on the
+    #     prohibition printed on the same card.
+    saw = _invitations_in(_SHIPPED_INVITATION)
+    assert saw, ("none of _SHARE_INVITATIONS matches the invitation that actually shipped, so this "
+                 f"test cannot see the defect it was written for:\n  {_SHIPPED_INVITATION}")
+    assert not _invitations_in(_SHIPPED_PROHIBITION), (
+        "an invitation pattern fires on the DO-NOT-SHARE notice "
+        f"({_invitations_in(_SHIPPED_PROHIBITION)}), so this test would demand the notice be deleted "
+        f"rather than the invitation")
+
+    # (1) the live builder, so this holds on a fresh clone with no poppy-ridge built. The back-cover
+    #     builder is resolved by either name because this defect round also renames it (it was called
+    #     legend_panel while building the dedication) -- see the D-11 test below.
+    import distribution
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        build = getattr(gen, "dedication_panel", None) or getattr(gen, "legend_panel", None)
+        assert build is not None, "generate has no back-cover / dedication panel builder"
+        real = gen.DISTRIBUTABLE
+        try:
+            gen.DISTRIBUTABLE = True
+            free = _book_prose(build())
+            gen.DISTRIBUTABLE = False
+            owned = _book_prose(build())
+        finally:
+            gen.DISTRIBUTABLE = real
+    finally:
+        _drop_generate()
+    assert _invitations_in(free), (
+        "a book that MAY be shared no longer says so anywhere on its back cover. The fix for the "
+        "personal-use book is a conditional sentence, not the deletion of the dedication's warmth "
+        f"from every book:\n  {free[-400:]}")
+    assert not _invitations_in(owned), (
+        "the back cover of a book that may NOT be shared still invites the reader to pass it on "
+        f"({_invitations_in(owned)}):\n  {owned[-400:]}")
+    assert "not for sale" in owned, (
+        "the personal-use back cover dropped 'not for sale' along with the invitation; that clause is "
+        "true of every book and is the one the dedication is actually about")
+
+    # (2) ...and the artifact, because a source-only revert is weak evidence here: this defect was
+    #     found by reading a shipped book, not the engine.
+    checked = 0
+    for path, slug, _coach in _built_books():
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
+            shareable = distribution.is_distributable(json.load(fh))
+        with open(path, encoding="utf-8") as fh:
+            text = _book_prose(fh.read())
+        checked += 1
+        if shareable:
+            continue
+        assert not _invitations_in(text), (
+            f"{os.path.relpath(path, ROOT)} may not be shared and invites it anyway "
+            f"({_invitations_in(text)}). Its own foot and its page 1 forbid it.")
+    assert checked >= 10, f"only {checked} built books scanned; expected the whole corpus"
+    assert any(not distribution.is_distributable(
+        json.load(open(os.path.join(ROOT, "courses", s, "course.json"), encoding="utf-8")))
+        for _p, s, _c in _built_books()), \
+        "no non-distributable book is built here, so the branch that matters went unmeasured"
+
+
+def test_the_back_cover_builder_is_not_called_a_legend_and_no_book_styles_a_class_it_never_uses():
+    """legend_panel() did not build a legend. It built the DEDICATION / back cover.
+
+    `<div class="panel dedic">`, "For every junior golfer", "Crafted by Lucas Wu", the copyright line.
+    The actual legend card is guide_panel(). Its enlarged counterpart is correctly named
+    coach_dedic_card(), and pad_to_leaves()/is_upright_back() both call this card "the dedication", so
+    the name was the only thing still saying otherwise -- in the one function a reader looking for the
+    legend would open first.
+
+    The fossil left a measurable trace: `.legend ol` and `.legend li` shipped in all 12 pocket books
+    and NO element in any book carries class="legend". Derived from the artifact, both halves."""
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    import ast
+    tree = ast.parse(src)
+    builders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            body = ast.get_source_segment(src, node) or ""
+            if 'class="panel dedic"' in body:
+                builders.append(node.name)
+    assert builders, ('no function in generate.py builds `<div class="panel dedic">`; re-read this '
+                      'test before editing')
+    for name in builders:
+        assert "legend" not in name.lower(), (
+            f"generate.{name}() builds the dedication / back cover and is named for a legend. The "
+            f"legend card is guide_panel(); a reader looking for it opens this instead.")
+        assert "dedic" in name.lower(), (
+            f"generate.{name}() builds the dedication and its name does not say so; its enlarged "
+            f"counterpart is coach_dedic_card()")
+
+    # ...and the stylesheet fossil, measured against every built book rather than argued.
+    for path, slug, coach in _built_books():
+        with open(path, encoding="utf-8") as fh:
+            html = fh.read()
+        used = set()
+        for m in re.findall(r'class="([^"]+)"', html):
+            used |= set(m.split())
+        style = "".join(re.findall(r"<style>(.*?)</style>", html, re.S))
+        assert "legend" not in used, (
+            f"{os.path.relpath(path, ROOT)} now uses class=\"legend\" somewhere -- re-read this test "
+            f"before deleting the rule again")
+        assert not re.search(r"\.legend\b", style), (
+            f"{os.path.relpath(path, ROOT)} styles `.legend`, which no element in it carries. The "
+            f"fossil of legend_panel(), shipped in every pocket book.")
