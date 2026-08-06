@@ -110,13 +110,27 @@ def _assert_examined(holes, labels, errors, what, per_hole=MIN_LABELS_PER_HOLE):
 
     Every corpus test used to swallow per-hole render failures with `except Exception: continue`
     and assert nothing about coverage, so making render_hole raise turned the whole file into
-    "5 passed in 0.04s" -- a green suite that had examined nothing at all."""
+    "5 passed in 0.04s" -- a green suite that had examined nothing at all.
+
+    COUNTED WITH A DIFFERENT ENUMERATOR FROM THE LOOP IT GRADES, which is the whole point and was
+    the hole. Both sides used to come from `expected_holes()`, which walks CORPUS and imports the same
+    config the graded loop imports -- so a course that dropped out of `_courses()` took the numerator
+    AND the denominator with it and this passed unmoved. `expected_geometry_holes()` counts the holes
+    declared in each course.json on the FILESYSTEM: no CORPUS, no COURSE env var, no config import,
+    no module cache. Its own docstring records the mutation that proves the difference (hiding
+    valley-hi inside `_courses()` left a CORPUS-derived floor green). The two are also compared, so a
+    disagreement between the two enumerators is itself reported rather than silently resolved."""
     assert not errors, f"{what}: {len(errors)} hole(s) failed to render: {errors[:5]}"
-    want = expected_holes()
+    want = expected_geometry_holes()
     assert want > 0, "no holes discoverable in the corpus -- nothing could be examined"
+    assert expected_holes() == want, (
+        f"{what}: the corpus enumeration reaches {expected_holes()} holes and the filesystem declares "
+        f"{want} across the courses that have geometry. A course present on disk that CORPUS does not "
+        f"reach is a course every corpus test in this file is silently skipping -- compare "
+        f"{sorted(CORPUS)} against {sorted(geometry_courses())}.")
     assert holes == want, \
         f"{what}: examined {holes} holes but {want} are present -- holes were skipped"
-    floor = int(per_hole * expected_holes())
+    floor = int(per_hole * want)
     assert labels >= floor, f"{what}: only saw {labels} labels over {holes} holes (expected >= {floor})"
 
 
@@ -397,6 +411,41 @@ def expected_geometry_holes():
                 n += len(json.load(fh).get("holes") or {})
         _EXPECTED_GEOM_HOLES = n
     return _EXPECTED_GEOM_HOLES
+
+
+def expected_surfaces():
+    """Green surfaces built on disk: one `dem_hd/holeNN.json` per green the pipeline has gridded.
+
+    THE POPULATION EVERY "greens checked" FLOOR IN THIS FILE IS ACTUALLY ABOUT, counted instead of
+    guessed. Six of them were round numbers sitting 24-49% BELOW it -- `checked >= 150` against an
+    actual 198 surfaces, `>= 100` against an actual 171 recorded heights -- so a quarter to a half of
+    the corpus could fall out of a sweep before the floor noticed, and a coverage floor is the only
+    thing between a silently skipped course and a green test. A floor that low grades the arithmetic on
+    whatever survived rather than the corpus.
+
+    Derived, never absolute, for the reason 40623b4 removed five absolute floors: this is 198 here and
+    18 for somebody who has built one course, so it cannot punish a reader for having less data.
+    """
+    return len([p for p in glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))
+                if not os.path.basename(os.path.dirname(os.path.dirname(p))).startswith("_")])
+
+
+def expected_elev_rows():
+    """Tee-to-green heights recorded on disk: rows across every `hole_elev.json`.
+
+    The sibling population to expected_surfaces(), for the sweeps that walk what fetch_hole_elev
+    WROTE rather than what render_green built -- 171 here against floors of 100 and 150.
+    """
+    n = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "hole_elev.json"))):
+        if os.path.basename(os.path.dirname(p)).startswith("_"):
+            continue
+        try:
+            with open(p, encoding="utf-8") as fh:
+                n += len(json.load(fh).get("holes") or {})
+        except (OSError, ValueError):
+            continue
+    return n
 
 
 def _expected_cards():
@@ -7955,7 +8004,12 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
                                 f"PLUS its 12 m collar again.")
             if abs(gz - whole) <= 0.02:
                 agreed_with_patch += 1
-    assert checked >= 150, f"only {checked} greens checked -- run fetch_hole_elev --write first"
+    # THE POPULATION, not a round number 24% under it. `>= 150` against an actual 171 recorded
+    # heights let 21 of them fall out of this sweep -- more than a whole course -- before the floor
+    # noticed, and every one that falls out takes its green's median with it.
+    assert checked >= expected_elev_rows(), (
+        f"only {checked} greens checked of the {expected_elev_rows()} heights recorded on disk -- run "
+        f"fetch_hole_elev --write first, or a recorded height has no green surface to measure over")
     assert not problems, ("the recorded green height is not measured over the green:\n  "
                           + "\n  ".join(problems[:10]))
     # The anti-vacuous half: on the old code EVERY hole matched the whole-patch median, so a test that
@@ -11628,7 +11682,10 @@ def test_every_green_surface_still_belongs_to_the_hole_that_draws_it():
             if g.get("id") != meta.get("green_id"):
                 bad.append(f"{slug} h{hn}: surface built for green {meta.get('green_id')} but the hole "
                            f"now binds to {g.get('id')} -- rebuild that hole's DEM")
-    assert checked >= 150, f"only {checked} surfaces checked; expected the corpus"
+    assert checked >= expected_surfaces(), (
+        f"only {checked} surfaces checked of the {expected_surfaces()} built on disk; a surface that "
+        f"drops out of this sweep is a green whose binding nothing re-derived. The floor was 150 "
+        f"against 198, which tolerated 48 vanishing.")
     assert not bad, "green surfaces no longer match their holes:\n  " + "\n  ".join(bad[:8])
 
 
@@ -16180,6 +16237,7 @@ def test_every_built_green_records_its_coverage():
     """
     import json as _json
     checked = 0
+    seamless = 0
     worst_unc = 0.0
     worst_dens = 1e9
     for mf in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
@@ -16187,13 +16245,22 @@ def test_every_built_green_records_its_coverage():
             continue
         m = _json.load(open(mf))
         if "seamless" in str(m.get("source", "")).lower():
+            seamless += 1
             continue                       # the seamless fallback path records its own keys
         assert "uncovered" in m, f"{mf} has no coverage figure -- the gate's input is unrecorded"
         assert m.get("density") is not None and m.get("nan_frac") is not None
         worst_unc = max(worst_unc, float(m["uncovered"]))
         worst_dens = min(worst_dens, float(m["density"]))
         checked += 1
-    assert checked >= 150, f"only {checked} point-cloud greens found"
+    # EVERY SURFACE ON DISK IS ACCOUNTED FOR, either graded here or counted as a seamless fallback.
+    # The floor was `checked >= 150` against 192 point-cloud greens, so 42 could stop recording their
+    # coverage and this still called them all checked -- and an unrecorded coverage figure is exactly
+    # the gate input this test exists to keep auditable.
+    assert checked + seamless == expected_surfaces(), (
+        f"{checked} point-cloud greens graded and {seamless} seamless fallbacks skipped, against "
+        f"{expected_surfaces()} green surfaces built on disk. A surface that is neither is one this "
+        f"sweep never opened.")
+    assert checked >= 1, "every built surface came off the seamless fallback; nothing here was graded"
     assert worst_unc <= 0.02, f"worst uncovered share {worst_unc:.3f} exceeds the gate"
     assert worst_dens >= 4.0, f"worst in-green density {worst_dens} is below the gate floor"
 
@@ -17645,7 +17712,9 @@ def test_green_binding_wins_by_a_wide_margin_not_a_hair():
                 tight.append(f"{ref} hole {hn}: its green is {ds[0][0]:.1f} m from the line end and "
                              f"another is {ds[1][0]:.1f} m -- a {ds[1][0] - ds[0][0]:.1f} m margin. One "
                              f"OSM edit could swap the whole slope map onto the wrong hole.")
-    assert checked >= 150, f"only {checked} greens checked"
+    assert checked >= expected_geometry_holes(), (
+        f"only {checked} greens checked of the {expected_geometry_holes()} holes with geometry on disk. "
+        f"The floor was 150 against 198: two courses could stop binding before it fired.")
     assert_no_course_skipped(seen, "test_green_binding_wins_by_a_wide_margin_not_a_hair")
     assert not tight, ("a green binding rests on too little margin:\n  " + "\n  ".join(tight[:6]))
 
@@ -20007,7 +20076,9 @@ def test_recorded_green_height_matches_the_built_surface():
             assert abs(row["green_z_m"] - gz) < 0.02, (
                 f"{slug} h{hn}: recorded green_z_m {row['green_z_m']} vs surface median {gz:.2f} -- "
                 f"ratio {row['green_z_m']/gz if gz else 0:.3f} (3.28 means a double unit scale)")
-    assert checked >= 100, f"only {checked} recorded green heights checked; expected the whole corpus"
+    assert checked >= expected_elev_rows(), (
+        f"only {checked} recorded green heights checked of the {expected_elev_rows()} on disk. The floor "
+        f"was 100 against 171 -- 41% of them could go unread while this reported the corpus.")
 
 
 @needs_corpus
@@ -22326,7 +22397,9 @@ def test_the_recorded_elevation_source_names_the_surface_each_row_was_measured_o
         assert "min_tee_points" not in rec, (
             f"{slug}: hole_elev.json still publishes min_tee_points as though it gated these rows; "
             f"it applies only to the box fallback")
-    assert checked >= 100, f"only {checked} rows checked; expected the corpus"
+    assert checked >= expected_elev_rows(), (
+        f"only {checked} rows checked of the {expected_elev_rows()} recorded on disk; a row whose "
+        f"green_source nothing compared is a row that can name any surface it likes")
     assert not bad, ("%d recorded elevation source(s) do not match the surface measured:\n  " % len(bad)
                      + "\n  ".join(bad[:10]))
 
@@ -22928,7 +23001,9 @@ def test_no_implausible_elevation_figure_is_recorded():
             assert abs(row["change_ft"]) <= fhe.MAX_PLAUSIBLE_FT, (
                 f"{slug} h{hn}: {row['change_ft']:+.1f} ft exceeds the {fhe.MAX_PLAUSIBLE_FT:.0f} ft "
                 f"bound -- that is a units or datum fault, not terrain")
-    assert n >= 150, f"only {n} figures checked; expected the whole corpus"
+    assert n >= expected_elev_rows(), (
+        f"only {n} figures checked of the {expected_elev_rows()} recorded on disk; a row that drops out "
+        f"is a printed height nothing weighed against the plausibility bound")
     # the bound must not be so tight that real hilly terrain trips it
     assert abs(worst) < fhe.MAX_PLAUSIBLE_FT * 0.85, (
         f"largest real figure {worst:+.1f} ft ({worst_at}) is close to the bound; raise it deliberately "
@@ -27142,9 +27217,12 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
         finally:
             rh.load = orig_load
     assert not errors, f"{len(errors)} hole(s) failed to render re-noded: {errors[:5]}"
-    assert holes == 4 * expected_holes(), \
-        f"examined {holes} hole-renderings, expected {4 * expected_holes()}"
-    assert inserted > 4 * expected_holes(), (
+    # expected_geometry_holes(), not expected_holes(): the latter walks CORPUS and imports the same
+    # config this loop imports, so a course dropping out of _courses() would take both sides of this
+    # equality with it. See _assert_examined.
+    assert holes == 4 * expected_geometry_holes(), \
+        f"examined {holes} hole-renderings, expected {4 * expected_geometry_holes()}"
+    assert inserted > 4 * expected_geometry_holes(), (
         f"the re-noding only inserted {inserted} vertices across {pairs} passes -- it is not "
         f"actually re-noding anything, so this test would pass on a broken engine")
     assert counts > 0, "the corpus reports no water at all, so nothing here could move"
@@ -27271,8 +27349,8 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
                                 info["water_hazards"], svg.count('fill="#a9d3ef"'),
                                 info["waters"]))
     assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
-    assert holes == expected_holes(), \
-        f"examined {holes} holes but {expected_holes()} are present -- holes were skipped"
+    assert holes == expected_geometry_holes(), \
+        f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
     assert reachable >= 15, (
         f"only {reachable} area-water/hole pairs come within {WATER_CORRIDOR_M:g} m of a played line in "
         f"the whole corpus -- the witness found nothing to check, so this test proves nothing")
@@ -27512,8 +27590,8 @@ def test_sand_the_hole_line_reaches_is_never_missing_from_the_card():
                 if n < len(near):
                     stale.append((slug, hn, ed, len(near), n, info["bunkers"]))
     assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
-    assert holes == expected_holes(), \
-        f"examined {holes} holes but {expected_holes()} are present -- holes were skipped"
+    assert holes == expected_geometry_holes(), \
+        f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
     assert reachable >= 200, (
         f"only {reachable} bunker/hole pairs come within {SAND_CORRIDOR_M:g} m of a hole line in the "
         f"whole corpus -- the witness found nothing to check, so this test proves nothing")
