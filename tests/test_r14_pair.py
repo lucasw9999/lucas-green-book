@@ -281,22 +281,62 @@ def test_a_blank_green_and_a_measured_one_are_sized_against_the_same_panel():
     playline, so 0.18 under-reserves by up to 0.32 in and a green sized against it is too tall for
     its panel. A blank card's footer is the same .foot flex row, so it wraps the same way.
 
-    BEHAVIOURAL on a tall narrow green, which is where height binds: no corpus green does (the most
-    height-limited has VBw/VBh = 0.5508, above the ratio at which height starts to bind), so the
-    discriminator is synthetic geometry rather than a shipped card.
+    BEHAVIOURAL ONLY WHERE HEIGHT IS THE BINDING FIT, which is the whole difficulty, and the first
+    version of this fixture did not have it. That version wrote its ring as [lon, lat] pairs while
+    poly_to_px reads (lat, lon), so the shape drawn was not the 8 m x 40 m green its comment claimed:
+    it laid out at VBw 95.70 x VBh 41.10, aspect 2.3285, and WIDTH bound it -- w-fit 0.021001 against
+    h-fit 0.093917 -- so it drew 0.863 in into a 3.860 in panel, 4.5x of slack, and the assertion
+    below passed at every footer allowance between 0.18 and 0.50. (The rotation was never the problem:
+    approach_frame returns -90 - a_ang, and at bearing 0 a_ang is exactly -90, so theta is 0.0 and the
+    pixel ring is drawn north-up. That half of the old comment was true.)
+
+    16 m wide x 80 m deep at 0.4 m per pixel, ring in (lat, lon) like every real sidecar's, lays out
+    at VBw 56.0 x VBh 216.0, aspect 0.2593 -- below the GRN_PANEL_W_IN/GRN_PANEL_H_IN = 0.5207 ratio at
+    which height starts to bind -- and at 0.2043 in : 5 yd it is far enough inside the Rule 4.3 cap
+    that neither of the other two fits can take over. It draws 3.860 in with the shared constant and
+    4.180 in with the 0.18 allowance restored, so the assertion below fails when the constant is put
+    back. That the fixture is height-bound at all is now asserted rather than asserted-about, because a
+    fixture that quietly stops binding is exactly how this test came to grade nothing.
+
+    Synthetic, because no shipped card reaches it. Measured through the blank path across the 198 built
+    green geometries, height binds on 0: 167 are limited by the 2.010 in column and 31 by the Rule 4.3
+    cap, and the most height-limited green (castlewood-valley 13, VBw/VBh = 0.5508) still sits above
+    0.5207. (Those two counts are the BLANK path's, whose viewBox is the padded ring alone; the 172/26
+    split at GRN_PANEL_W_IN is render()'s, over its own viewBox.)
     """
     import render_green as rg
-    # 8 m wide x 40 m tall, approached from due north so approach_frame applies no rotation.
+    # 16 m wide (E-W) x 80 m deep (N-S) at 0.4 m per pixel, approached from due north. The ring is
+    # (lat, lon) per vertex because that is the order poly_to_px reads and every real sidecar writes.
     clat = 37.5
-    w_deg, h_deg = 8.0 / mlon(clat), 40.0 / mlat(clat)
-    x0, y0 = -122.0, clat
-    ring = [[x0, y0], [x0 + w_deg, y0], [x0 + w_deg, y0 + h_deg], [x0, y0 + h_deg]]
-    meta = {"hole": 3, "W": 20, "H": 100, "bbox": [x0, y0, x0 + w_deg, y0 + h_deg],
-            "green_center": [clat + h_deg / 2.0, x0 + w_deg / 2.0], "polygon": ring,
+    res_m, w_m, h_m = 0.4, 16.0, 80.0
+    w_deg, h_deg = w_m / mlon(clat), h_m / mlat(clat)
+    lon0, lat0 = -122.0, clat
+    ring = [[lat0, lon0], [lat0, lon0 + w_deg], [lat0 + h_deg, lon0 + w_deg], [lat0 + h_deg, lon0]]
+    meta = {"hole": 3, "W": int(round(w_m / res_m)), "H": int(round(h_m / res_m)),
+            "bbox": [lon0, lat0, lon0 + w_deg, lat0 + h_deg],
+            "green_center": [lat0 + h_deg / 2.0, lon0 + w_deg / 2.0], "polygon": ring,
             "approach_bearing": 0.0, "insufficient": True}
     svg, _summary = rg._blank_green(meta, True)
     k, vb = _drawn_in_per_view_unit(svg)
-    drawn_h_in = k * vb[3]
+    VBw, VBh = vb[2], vb[3]
+    drawn_h_in = k * VBh
+
+    # ANTI-VACUITY, in two parts, both about this fixture rather than about the code. The footer
+    # allowance can only move a drawing whose HEIGHT fit is the binding one of the three, and the
+    # allowance it replaced has to actually overfill the panel; without both, the assertion after them
+    # is satisfied by any allowance and grades nothing.
+    cap, w_fit = TARGET_IN_PER_5YD * _px_m(meta) / 4.572, rg.GRN_PANEL_W_IN / VBw
+    assert rg.GRN_PANEL_H_IN / VBh < min(cap, w_fit), (
+        f"this fixture is not height-bound (h-fit {rg.GRN_PANEL_H_IN / VBh:.6f} against w-fit "
+        f"{w_fit:.6f} and Rule 4.3 cap {cap:.6f}), so what footer allowance the blank path reserves "
+        f"cannot change what it draws and the assertion below cannot fail")
+    one_line_h_in = rg.config.CARD_H_IN - 2*0.07 - 0.50 - 0.18       # the allowance render() replaced
+    would_have_drawn = min(cap, w_fit, one_line_h_in / VBh) * VBh
+    assert would_have_drawn > rg.GRN_PANEL_H_IN + 0.05, (
+        f"restoring the one-line 0.18 in allowance would draw {would_have_drawn:.3f} in into a "
+        f"{rg.GRN_PANEL_H_IN:.3f} in panel, which does not overfill it, so the assertion below is "
+        f"satisfied either way")
+
     assert drawn_h_in <= rg.GRN_PANEL_H_IN + 1e-9, (
         f"the blank path drew a {drawn_h_in:.3f} in green into a {rg.GRN_PANEL_H_IN:.3f} in panel; "
         f"it is sized against a footer allowance render() already replaced")
