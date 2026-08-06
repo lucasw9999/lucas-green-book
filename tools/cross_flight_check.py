@@ -174,7 +174,9 @@ def _shipped_putt(meta, grid):
     reports the resulting difference as survey repeatability -- which is the evidence in legal/09.
     """
     import render_green as rg
-    W, H, px_x, px_y, mask = grid
+    # W and H are not needed here and never were: the mask carries the shape and green_summary takes the
+    # two pixel sizes. The five-name unpack was copied from _summary, which does use them.
+    _W, _H, px_x, px_y, mask = grid
     arr, _meta, _digest = surface_io.read_pair(f"{meta['_dir']}/dem_hd/hole{meta['hole']:02d}")
     if not mask.any() or np.isnan(arr[mask]).all():
         return None

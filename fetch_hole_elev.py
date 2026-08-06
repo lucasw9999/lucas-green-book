@@ -213,7 +213,7 @@ def tee_anchor(hnum, line, greens):
           - anything else                     -> REFUSE. A par 4/5 card follows a played route that
             can dogleg, so there is no way to say where the missing yardage went.
     """
-    green, gend, tend = geo.match_green(line, greens, label=f"hole {hnum}")
+    green, _gend, tend = geo.match_green(line, greens, label=f"hole {hnum}")
     la0 = sum(p['lat'] for p in line)/len(line)
     lo0 = sum(p['lon'] for p in line)/len(line)
     em = lambda la, lo: ((lo-lo0)*mlon(la0), (la-la0)*mlat(la0))

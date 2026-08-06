@@ -353,9 +353,15 @@ def check_course(slug):
         # against comes from the array beside it. The disagreement would then be reported as data, in
         # the one line whose whole job is to bound our own processing.
         # It raises rather than skipping the hole on purpose: a checker that quietly drops the one green
-        # whose pair is torn still prints a median and a worst case over "the corpus".
+        # whose pair is torn still prints a median and a worst case over "the corpus". main()'s per-course
+        # `except Exception` catches it, names the course and the tear, and records the course as NOT
+        # CHECKED -- which can never be read as agreement (see the `if not ok` exit-2 arm).
         _a_raw, _meta, _digest = surface_io.read_pair(meta_p[:-len(".json")])
-        gla, glo = _meta["green_center"]
+        # `green_center` is no longer read here, and its consumer was replaced DELIBERATELY rather than
+        # lost: this was `gla, glo = ...["green_center"]` feeding `d_grn = dem_median_m(gla, glo)`, a disc
+        # median at the green's centre, until 4b19d2f moved the reference onto the green POLYGON so that
+        # both sides of the comparison measure the same region ("the measured height of the green was
+        # measured mostly off the green"). The unpack outlived it. See dem_median_over_ring below.
         # The reference reads the green POLYGON, which IS the region the pipeline reads, so on the
         # green side what is left is disagreement about the data. At a MAPPED tee it reads the WHOLE
         # mapped tee ring while the pipeline reads the pad inside a 15 m window, so there the difference
