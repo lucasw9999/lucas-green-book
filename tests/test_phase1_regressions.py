@@ -30063,6 +30063,34 @@ def _grade_tick_error_table(rec, note, measured):
             f"geo.py quotes {said_retired[R]}/{said_live[R]} yd at the {R} yd tick and legal/11 quotes "
             f"{published[R][0]}/{published[R][1]}. The reader gets the record, the next editor gets the "
             f"note, and they have to be the same measurement.")
+    # THE REACH ITSELF, WHICH IS THE DENOMINATOR OF BOTH CEILINGS BELOW and was graded on a clone by
+    # nothing. It is pinned to the corpus in (c) -- `counts["furthest_vertex_yd"]` -- and courses/ is
+    # gitignored, so the checkout a reader of a public repository has could inflate the closing row's own
+    # reach and every bound that divides by it grew with it: 10x the reach is 10x the error budget for
+    # both of that row's figures, and both records state the number so a one-sided edit is the cheap way
+    # in. geo.py's copy is compared to the ROW here, which needs no corpus.
+    note_reach = re.search(r"furthest point any centreline reaches,?\s*([\d.]+) yd", note)
+    assert note_reach, (
+        "geo.py's note no longer says how far the drawn centrelines reach from their green -- 'Out to the "
+        "furthest point any centreline reaches, <R> yd, ...'. That figure is the denominator of both "
+        "ceilings this grader applies to legal/11's closing row, and legal/11 states it too, so a note "
+        "that drops it leaves the record's copy with nothing to disagree with on a clone.")
+    assert float(note_reach.group(1)) == float(far.group(1)), (
+        f"geo.py's note puts the drawn centrelines' reach at {note_reach.group(1)} yd and legal/11's "
+        f"closing table row at {far.group(1)} yd. Both ceilings below are figure/reach, so whichever of "
+        f"the two this grader reads sets the error budget for the row that judges the whole line -- and "
+        f"the corpus check that pins it needs courses/, which a reader of this repository does not have.")
+    # ...AND IT HAS TO BE A DISTANCE A GOLF HOLE CAN HAVE, which is what a both-sided edit cannot buy.
+    # The reach is the furthest a drawn centreline's vertex gets from its own green, so it is at most the
+    # length of the hole; the longest hole ever built is under 1000 yd (Gunsan CC's par-7 12th, 964 yd).
+    # Nothing corpus-dependent in that, and it is the one bound that survives an editor changing both
+    # records at once -- the failure mode the live column's note calls irreducible.
+    assert max(radii) <= float(far.group(1)) <= 1000.0, (
+        f"legal/11's closing row states a reach of {far.group(1)} yd. It has to be at least the "
+        f"{max(radii)} yd of the furthest tick the map prints -- that row exists because the line runs "
+        f"past the last tick -- and at most the length of a golf hole, under 1000 yd. Every ceiling this "
+        f"grader applies to that row is figure/reach, so an implausible reach is an inflated error "
+        f"budget for the two figures in the column the record calls arithmetically impossible.")
     # ...and the same holds for every OTHER figure both records carry: the forensic account of where the
     # four retired numbers came from, and the relative offset the impossibility argument rests on. Those
     # were graded against the measurement in legal/11 ONLY, so geo.py's copies -- which are the half the
@@ -30797,9 +30825,11 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
     Both bounds above are `figure / reach`, so the reach is the denominator of the only argument the
     closing row has -- and it was read by a second, UNANCHORED `re.search` over the collapsed document
     that takes the FIRST match, while the uniqueness guard beside it counts TABLE rows only. One inserted
-    PROSE sentence naming a 5000.0 yd reach therefore bought a denominator 8.4x too large and both new
+    PROSE sentence naming a 5958.0 yd reach therefore bought a denominator 10x too large and both new
     checks accepted 9.9999 yd retired and 0.9999 yd live -- the exact figures they were written to
-    refuse. Reachable by honest drift too: a table row updated while a prose restatement lags bounds the
+    refuse. (Those two figures are `round(reach * 10, 1)` and its ratio to the row's own 595.8 yd, both
+    derived below from the live row rather than typed; this docstring said 5000.0 and 8.4x, which is what
+    the case used before it was derived.) Reachable by honest drift too: a table row updated while a prose restatement lags bounds the
     row against the stale reach, silently. The reach now comes from the ROW'S OWN match, so there is one
     reading of it and the uniqueness guard covers it.
 
@@ -30840,6 +30870,23 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
         ("the 300 yd tick's LIVE figure at 0.9999 yd, in both records at once",
          [("| 300 yd tick | 0.8891 yd | 0.0019 yd |", "| 300 yd tick | 0.8891 yd | 0.9999 yd |")],
          [("0.0022 and 0.0019 yd", "0.0022 and 0.9999 yd")]),
+        # THE ROW'S OWN REACH, one-sided. Both ceilings are figure/reach, so inflating the denominator
+        # in the row itself buys both of that row's figures the same multiple of error budget -- and on a
+        # clone the only thing that pinned the reach was a corpus check that needs courses/. geo.py
+        # states the same number, so the record's copy now has something to disagree with.
+        (f"the closing row's REACH inflated 10x in legal/11 alone, with the row's figures doctored to "
+         f"9.9999 yd retired and 0.9999 yd live",
+         [(f"out to {reach} yd | {retired_far} yd | {live_far} yd",
+           f"out to {round(float(reach) * 10, 1)} yd | 9.9999 yd | 0.9999 yd")],
+         []),
+        # ...AND BOTH-SIDED, which is the edit the live column's note calls irreducible. It is not
+        # irreducible for the REACH: that figure is a distance on a golf hole, and no hole is 5958 yd.
+        (f"the closing row's REACH inflated 10x in BOTH records at once, with the row's figures doctored",
+         [(f"out to {reach} yd | {retired_far} yd | {live_far} yd",
+           f"out to {round(float(reach) * 10, 1)} yd | 9.9999 yd | 0.9999 yd")],
+         [(f"reaches, {reach} yd", f"reaches, {round(float(reach) * 10, 1)} yd"),
+          (f"was {retired_far} yd against", "was 9.9999 yd against"),
+          (f"against {live_far} yd now", "against 0.9999 yd now")]),
         # THE BYPASS. One PROSE sentence above the table, naming a reach 8.4x the row's own, and the
         # same closing-row figures the two cases above are refused for. The denominator of both
         # ceilings has to come from the row being judged; an unanchored document-wide search for it
