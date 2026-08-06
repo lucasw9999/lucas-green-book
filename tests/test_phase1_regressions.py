@@ -55,19 +55,12 @@ from geo import mlat as _mlat, mlon as _mlon
 def _courses():
     """Course slugs that have the geometry needed to render a hole map.
 
-    Underscore-prefixed folders are scratch (staging, the cold-build test) and are skipped so a
-    transient directory cannot silently widen or narrow what the corpus tests measure."""
-    out = []
-    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
-        slug = os.path.basename(os.path.dirname(cj))
-        if slug.startswith("_"):
-            continue
-        # require EVERY file render_hole.load() reads. Requiring only osm_geom.json admitted
-        # half-built dirs whose holes then failed to render and were silently swallowed.
-        need = ("osm_geom.json", "osm_course.json")
-        if all(os.path.exists(os.path.join(ROOT, "courses", slug, f)) for f in need):
-            out.append(slug)
-    return out
+    ENUMERATED IN tests/conftest.py and delegated to from here, because conftest's `_bind_a_course`
+    fixture needs the same list and conftest cannot import a test module. One home for the rule: two
+    spellings of "is this a course?" is the drift this repo has already fixed in four other places.
+    """
+    from conftest import corpus_slugs
+    return corpus_slugs()
 
 
 # Floors are derived from the corpus actually present, never hardcoded to this machine's 12 courses.
@@ -1488,53 +1481,14 @@ def _no_network(request):
         socket.create_connection = real_create
 
 
-@pytest.fixture(autouse=True)
-def _bind_a_course():
-    """Bind COURSE for every test.
-
-    Nine test sites import render_green or config without binding COURSE, so they inherited whatever
-    an earlier test left -- or, run singly, config.py's hardcoded default. That default happens to be
-    built on this machine, so the crash was invisible here: on a tree without
-    the-reserve-at-spanos-park, `pytest -k contours_join` died with SystemExit and looked like a real
-    defect. Binding it here makes single-test and randomised-order runs behave like a full run.
-
-    It now also RESTORES the binding afterwards, so every test starts from the same course whatever the
-    one before it did. Binding without restoring left the suite order-dependent by construction: 69
-    sites in this file rebind COURSE and pop config/render_* out of sys.modules, so a test that ends
-    bound to a 5-tee course silently reconfigured the next one. That is not hypothetical -- running the
-    suite shuffled found a real IndexError in render_hole where a synthetic 2-tee fixture inherited a
-    5-tee binding, a bug production could not reach. File order and reverse order were both green.
-
-    Restoring here makes the isolation structural rather than something to remember. Verified after the
-    change: file order, reverse order, three shuffle seeds, and all 164 tests each in their own process.
-    """
-    prev = os.environ.get("COURSE")
-    # UNCONDITIONAL when there is a corpus. `if CORPUS and not prev` meant the binding was skipped
-    # whenever COURSE was already set -- which defeated the isolation this fixture's docstring promises,
-    # because the module-scoped synth_engine fixture is set up BEFORE any function-scoped fixture and
-    # binds COURSE=_synth_ticks during its own setup. Every test from the first synthetic one to the end
-    # of the session then saw prev="_synth_ticks", declined to rebind, and RESTORED it on teardown -- so
-    # the whole tail of the suite silently ran against a 2-hole, 1-tee authored course. That is what made
-    # three green tests fail in a full run and pass in isolation, and what turned the fixture's cleanup
-    # into a landmine: the moment courses/_synth_ticks stops existing, every later `import config` dies
-    # with "no course.json for COURSE='_synth_ticks'".
-    #
-    # Safe for the synthetic tests themselves: _engine(slug) hands back modules ALREADY imported against
-    # their course, so rebinding the env afterwards cannot reach them.
-    if CORPUS:
-        os.environ["COURSE"] = CORPUS[0]
-    try:
-        yield
-    finally:
-        # back to what this test started with, and drop the course-bound modules so the next import
-        # re-reads the env rather than reusing a module bound to someone else's course
-        if prev is None:
-            os.environ.pop("COURSE", None)
-        else:
-            os.environ["COURSE"] = prev
-        for m in ("config", "render_hole", "render_green", "geo",
-                  "fetch_trees", "fetch_hole_elev", "fetch_dem", "fetch_dem_hd"):
-            sys.modules.pop(m, None)
+# THE COURSE-BINDING FIXTURE -- `_bind_a_course` -- LIVES IN tests/conftest.py, and did not until this
+# round. It was here, autouse and function-scoped, and pytest applies an autouse fixture only to the
+# module that declares it: so the isolation README promises "after every test" covered this one file
+# while the other eight test modules in tests/ rebound COURSE, imported config and left the binding for
+# whatever ran next. That is precisely the leakage the shuffled-order advice beside that claim is about,
+# and it is the same argument conftest.py's own docstring already makes for the deletion guard -- which
+# was moved out of this file for it one round earlier. Named here so the move is greppable from where
+# the fixture used to be.
 
 
 def a_course():
@@ -34706,7 +34660,13 @@ def test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording()
 _SEAMLESS_RES = re.compile(
     r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b(?:\s+\w+){0,2}\s+"
     r"(?:seamless|mosaic|national\s+model|fallback|fill|DEM\b)"
-    r"|(?:seamless|mosaic|fallback|fill)\s+(?:DEM\s+|service\s+)?(?<![\d.])(\d[\d.]*)\s*"
+    # `(?<!non-)`: "a good NON-seamless 0.4 m surface" is a true sentence about the OTHER stage, and this
+    # alternative read the product word straight out of the middle of it. One such clause arrived with
+    # tests/test_r14_deadcode.py (0aef283) and it FAILED this grader at width 0, 1 and 2 -- the three the
+    # note above publishes as costing nothing -- so the shipped width appeared to have a false positive
+    # in it. The negation is not a claim about the product's resolution and never was; the first
+    # alternative was already immune, because it demands whitespace before the product word.
+    r"|(?<!non-)(?:seamless|mosaic|fallback|fill)\s+(?:DEM\s+|service\s+)?(?<![\d.])(\d[\d.]*)\s*"
     r"(?:m|metres?|meters?)\b",
     re.I)
 

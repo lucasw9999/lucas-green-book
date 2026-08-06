@@ -4,19 +4,28 @@
 # https://github.com/lucasw9999/lucas-green-book
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
-The guard that stands between an editing slip and the only copy of the corpus.
+The guards that stand between one test and the next, and between an editing slip and the only copy of
+the corpus.
 
-It lives in conftest.py because that is the ONLY file pytest loads for every test module in this
-directory. It used to be a session-autouse fixture inside test_phase1_regressions.py, whose own
-comment called itself "one choke point ... every deletion in this suite" -- which was not true of
-anything but that one file. `pytest tests/<any new file>` ran completely unguarded, and a second test
+Both live in conftest.py because that is the ONLY file pytest loads for every test module in this
+directory. The deletion guard used to be a session-autouse fixture inside test_phase1_regressions.py,
+whose own comment called itself "one choke point ... every deletion in this suite" -- which was not true
+of anything but that one file. `pytest tests/<any new file>` ran completely unguarded, and a second test
 module is the natural thing for the next person to add.
+
+`_bind_a_course` was in the same position and moved here for the same reason, one round later, once the
+"next person" had arrived: this directory now holds nine test modules and an autouse fixture applies
+only to the module (or, from here, the package) that declares it. README's promise that the COURSE
+binding is restored "after every test" was true of one file while eight others rebound COURSE, imported
+config, and left the binding for whatever ran next -- which is exactly the leakage the shuffled-order
+advice beside it is about, and how a real IndexError in render_hole hid for its whole life.
 
 What courses/ is, and why deletion is the interesting failure: a course folder holds ~300 MB of
 LiDAR, the derived 0.4 m green surfaces, and course.json -- a scorecard a human transcribed from
 published cards and cross-verified against club sources. The directory is gitignored by design, so
 there is no copy in history, none on a remote, none anywhere. Only laz/ can be fetched again.
 """
+import glob
 import os
 import sys
 
@@ -26,6 +35,96 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 _COURSE_DATA, _SCRATCH, _OUTSIDE = "course data", "scratch", "outside courses/"
+
+# Every file render_hole.load() reads. Requiring only osm_geom.json admitted half-built dirs whose
+# holes then failed to render and were silently swallowed.
+CORPUS_NEEDS = ("osm_geom.json", "osm_course.json")
+
+
+def corpus_slugs():
+    """Course slugs that have the geometry needed to render a hole map.
+
+    Underscore-prefixed folders are scratch (staging, the cold-build test) and are skipped so a
+    transient directory cannot silently widen or narrow what the corpus tests measure.
+
+    HERE RATHER THAN IN THE SUITE FILE because `_bind_a_course` below needs it and conftest.py cannot
+    import a test module. test_phase1_regressions._courses() delegates to this, so the rule has one
+    home: two spellings of "is this a course?" is the drift this repo has already fixed in four places
+    (see _classify's note on distribution.is_corpus_slug).
+    """
+    out = []
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        if all(os.path.exists(os.path.join(ROOT, "courses", slug, f)) for f in CORPUS_NEEDS):
+            out.append(slug)
+    return out
+
+
+@pytest.fixture(autouse=True)
+def _bind_a_course():
+    """Bind COURSE for every test IN THIS DIRECTORY, and restore it afterwards.
+
+    Nine test sites import render_green or config without binding COURSE, so they inherited whatever
+    an earlier test left -- or, run singly, config.py's hardcoded default. That default happens to be
+    built on this machine, so the crash was invisible here: on a tree without
+    the-reserve-at-spanos-park, `pytest -k contours_join` died with SystemExit and looked like a real
+    defect. Binding it here makes single-test and randomised-order runs behave like a full run.
+
+    It also RESTORES the binding afterwards, so every test starts from the same course whatever the one
+    before it did. Binding without restoring left the suite order-dependent by construction: sites all
+    over tests/ rebind COURSE and pop config/render_* out of sys.modules, so a test that ends bound to a
+    5-tee course silently reconfigured the next one. That is not hypothetical -- running the suite
+    shuffled found a real IndexError in render_hole where a synthetic 2-tee fixture inherited a 5-tee
+    binding, a bug production could not reach. File order and reverse order were both green.
+
+    HOW MANY SUCH SITES THERE ARE IS NOT RESTATED HERE. This docstring said "69 sites in this file",
+    which was a second copy of a figure README publishes and a grader re-derives -- over a DIFFERENT
+    population, because test_the_suite_reports_its_own_module_drop_count_correctly counts across
+    `tests/*.py` and this said "this file". The two disagreed the moment a sibling test module landed,
+    and the directory-wide count now moves with every one that arrives. One figure, one record: read it
+    off README, where that test pins it.
+
+    IN conftest.py, WHICH IS THE POINT. pytest applies an autouse fixture only to the module or package
+    that declares it, so while this lived in test_phase1_regressions.py the isolation covered exactly
+    one file -- and README went on promising it "after every test" while eight other modules in this
+    directory rebound COURSE with no restoration at all. conftest.py is the only file pytest loads for
+    every module here, which is the argument this file's own docstring already makes for the deletion
+    guard below.
+
+    Verified after the original change: file order, reverse order, three shuffle seeds, and all 164
+    tests each in their own process.
+    """
+    prev = os.environ.get("COURSE")
+    corpus = corpus_slugs()
+    # UNCONDITIONAL when there is a corpus. `if CORPUS and not prev` meant the binding was skipped
+    # whenever COURSE was already set -- which defeated the isolation this fixture's docstring promises,
+    # because the module-scoped synth_engine fixture is set up BEFORE any function-scoped fixture and
+    # binds COURSE=_synth_ticks during its own setup. Every test from the first synthetic one to the end
+    # of the session then saw prev="_synth_ticks", declined to rebind, and RESTORED it on teardown -- so
+    # the whole tail of the suite silently ran against a 2-hole, 1-tee authored course. That is what made
+    # three green tests fail in a full run and pass in isolation, and what turned the fixture's cleanup
+    # into a landmine: the moment courses/_synth_ticks stops existing, every later `import config` dies
+    # with "no course.json for COURSE='_synth_ticks'".
+    #
+    # Safe for the synthetic tests themselves: _engine(slug) hands back modules ALREADY imported against
+    # their course, so rebinding the env afterwards cannot reach them.
+    if corpus:
+        os.environ["COURSE"] = corpus[0]
+    try:
+        yield
+    finally:
+        # back to what this test started with, and drop the course-bound modules so the next import
+        # re-reads the env rather than reusing a module bound to someone else's course
+        if prev is None:
+            os.environ.pop("COURSE", None)
+        else:
+            os.environ["COURSE"] = prev
+        for m in ("config", "render_hole", "render_green", "geo",
+                  "fetch_trees", "fetch_hole_elev", "fetch_dem", "fetch_dem_hd"):
+            sys.modules.pop(m, None)
+
 
 
 def _fold(p):
