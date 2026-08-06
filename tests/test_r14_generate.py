@@ -409,6 +409,102 @@ def test_the_yardage_card_claims_a_rebuild_only_where_the_course_record_states_o
         _drop_generate()
 
 
+# A record's wording, and whether the book may print the year in it as a completed rebuild. Every
+# CLAIMS line below was MEASURED on the first version of the gate, whose docstring already said it
+# matched "past participles only" and that "'the rebuild is expected 2027' ... must not become a claim
+# that it happened": the two examples it named were handled and the future-PASSIVE and NEGATED phrasings
+# that reuse the same participle were not.
+_WORDINGS_THAT_ASSERT_NO_COMPLETED_REBUILD = [
+    # future passive -- the participle is there, the rebuild is not
+    ("the greens will be rebuilt in 2027", "CLAIMED 2027"),
+    ("greens are scheduled to be rebuilt in 2028", "CLAIMED 2028"),
+    ("the rebuild is planned for 2029", "no claim (the gate's own named example)"),
+    # NEGATED -- the record says it did NOT happen, and the year dates the last time it did
+    ("this course has not been rebuilt since 1990", "CLAIMED 1990"),
+    ("no rebuild; last renovated 1974 and unchanged", "CLAIMED 1974"),
+    ("never rebuilt; original 1926 Flynn routing intact", "no claim"),
+    # the year belongs to a DIFFERENT event than the rebuild
+    ("greens rebuilt after the 2024-12-17 LiDAR flight", "CLAIMED 2024"),
+    ("2021 LiDAR is pre-rebuild", "no claim (the gate's own named example)"),
+    # ...and the two shapes that already failed closed, which is correct and must stay that way
+    ("mid-2025", "no claim -- an unparseable year prints nothing"),
+    ("2025?", "no claim -- an unparseable year prints nothing"),
+]
+
+
+def test_a_rebuild_the_record_does_not_assert_as_completed_prints_no_year():
+    """The gate reads a year out of prose, so it has to refuse the prose that does not assert one.
+
+    _rebuild_year() ended the hardcoded "rebuilt in 2025" by reading the year from the course's own
+    record -- and its docstring claims it matches "past participles ONLY", because the sentence it
+    feeds is past tense: "this course WAS rebuilt in YYYY". Its two named counterexamples do fail
+    closed. But a past participle is exactly what English future-passives and negations are built out
+    of, and both were read as completed rebuilds:
+
+        'the greens will be rebuilt in 2027'          -> the book claimed 2027
+        'greens are scheduled to be rebuilt in 2028'  -> the book claimed 2028
+        'this course has not been rebuilt since 1990' -> the book claimed 1990
+        'no rebuild; last renovated 1974 and unchanged'   -> the book claimed 1974
+        'greens rebuilt after the 2024-12-17 LiDAR flight'   -> the book claimed 2024
+
+    Printing "this course was rebuilt in 1990" because the record said it had NOT been is the exact
+    class of unsupported printed claim this project forbids. LATENT today -- one course is built in
+    yardage mode and it genuinely was rebuilt in 2025 -- which is why it is graded on the wording and
+    not on the corpus: the corpus is one sample and the next record is hand-typed.
+
+    Both fields the corpus states this fact in are exercised, because the gate reads three and a
+    wording that is refused in one must be refused in all of them.
+    """
+    slug = _yardage_slug()
+    gen = _fresh_generate(slug)
+    try:
+        # the control: this course's real record DOES assert a completed rebuild, and must keep saying
+        # so -- its book and PDF are exported and legal/05 quotes the sentence verbatim.
+        real = gen._rebuild_year()
+        assert real and re.fullmatch(r"(?:19|20)\d{2}", real), (
+            f"{slug}'s record states a completed rebuild and the gate no longer reads it: {real!r}")
+        assert f"rebuilt in {real})" in gen.yardage_guide_panel().replace("\n    ", " "), \
+            "the control course stopped printing the rebuild year its own record states"
+
+        saved = dict(gen.config.COURSE)
+        try:
+            for field in ("_status", "dem_source", "rebuilt"):
+                for wording, was in _WORDINGS_THAT_ASSERT_NO_COMPLETED_REBUILD:
+                    gen.config.COURSE.clear()
+                    gen.config.COURSE.update(saved)
+                    for k in ("rebuilt", "_status", "dem_source"):
+                        gen.config.COURSE.pop(k, None)
+                    gen.config.COURSE[field] = wording
+                    where = f"{field}={wording!r} (was: {was})"
+
+                    assert gen._rebuild_year() is None, (
+                        f"{where}: the gate read {gen._rebuild_year()} out of wording that does not "
+                        f"assert a completed rebuild in that year")
+                    panel = gen.yardage_guide_panel()
+                    assert "rebuil" not in panel.lower(), (
+                        f"{where}: the guide card still claims a rebuild:\n  " + " ".join(
+                            s for s in re.split(r"(?<=[.)])\s+", re.sub(r"<[^>]+>", "", panel))
+                            if "rebuil" in s.lower()))
+                    # No year anywhere in the card's own claims (the copyright year lives after
+                    # &copy; and is not a claim about the course).
+                    claims = re.sub(r"<[^>]+>", "", panel).split("&copy;")[0]
+                    assert not re.search(r"\b(19|20)\d{2}\b", claims), (
+                        f"{where}: a year is printed on the card anyway: {claims[-300:]}")
+                    # ...and the reason every yardage-mode book DOES support still prints.
+                    assert "post-construction green-surface data" in claims, (
+                        f"{where}: refusing the year also dropped the supported reason")
+        finally:
+            gen.config.COURSE.clear()
+            gen.config.COURSE.update(saved)
+
+        # The control again, AFTER the mutations: the fixture put the record back and the year returns,
+        # so a "no claim" above cannot have been the gate quietly breaking for every input.
+        assert gen._rebuild_year() == real, \
+            "the record was not restored, so the refusals above prove nothing"
+    finally:
+        _drop_generate()
+
+
 # ---------------------------------------------------------------------------
 # M-3: two records, one reason
 # ---------------------------------------------------------------------------

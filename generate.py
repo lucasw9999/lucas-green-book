@@ -201,11 +201,52 @@ def yardage_hole_panel(hole, sheet_label):
 # the same clause (no sentence or semicolon between them), because the sentence printed from this is
 # past tense too -- "this course WAS rebuilt in YYYY". "the rebuild is expected 2027" and "2021 LiDAR is
 # pre-rebuild" must not become a claim that it happened, and neither matches.
-_REBUILT_RE = re.compile(r"\b(?:rebuilt|renovated|reconstructed|reopened)\b[^.;]{0,60}?"
-                         r"\b((?:19|20)\d{2})\b", re.I)
+_REBUILT_RE = re.compile(r"\b(?:rebuilt|renovated|reconstructed|reopened)\b(?P<gap>[^.;]{0,60}?)"
+                         r"\b(?P<year>(?:19|20)\d{2})\b", re.I)
+# ...and a past participle is what English builds its future passives and its negations out of, so the
+# participle alone does not mean it happened. The three vetoes below are what the docstring's claim
+# actually costs; each was MEASURED printing a completed rebuild before it existed.
+#
+# (a) THE YEAR DATES A DIFFERENT EVENT. Between the participle and the year, a relational preposition
+#     means the year is that preposition's object and not the rebuild's date:
+#     "greens rebuilt after the 2024-12-17 LiDAR flight" claimed 2024, the FLIGHT's year.
+_YEAR_DATES_ANOTHER_EVENT_RE = re.compile(
+    r"\b(?:after|before|since|until|till|prior|preced\w*|follow\w*|predat\w*|postdat\w*|pre|post)\b",
+    re.I)
+# (b) THE CLAUSE PUTS IT IN THE FUTURE. "the greens will be rebuilt in 2027" claimed 2027; "greens are
+#     scheduled to be rebuilt in 2028" claimed 2028. Deliberately NARROW, and clause-local rather than
+#     field-wide, because a record can legitimately be waiting for something else in the same breath as
+#     stating a finished rebuild -- poppy-ridge's own _status is "AWAITING ELEVATION DATA -- course fully
+#     rebuilt (Jay Blasi, reopened May 2025)", and its dem_source opens "PENDING post-2025 LiDAR". The
+#     modal there governs the DATA, not the rebuild, and no word-list can tell those apart: "awaiting"
+#     is therefore not in this list and "pending" is only ever consulted inside the matching clause.
+_NOT_YET_RE = re.compile(r"\b(?:will|shall|would|going\s+to|to\s+be|schedul\w+|slat\w+|plan\w+|"
+                         r"expect\w+|due|upcoming|propos\w+|project\w+|anticipat\w+|intend\w*|"
+                         r"pending|forthcoming)\b", re.I)
+# (c) THE CLAUSE NEGATES IT, or the record negates the rebuild anywhere in the field. Clause-local
+#     negation catches "this course has not been rebuilt since 1990", which claimed 1990 -- the year the
+#     record says it LAST was. The field-wide form is needed because the negation and the year can sit in
+#     different clauses: "no rebuild; last renovated 1974 and unchanged" claimed 1974. That one refuses
+#     the whole field, so it stays tight -- a negation adjacent to a rebuild WORD, not a negation
+#     anywhere: poppy-ridge says "2021 (pre-rebuild), which we will NOT use" and "intentionally NOT
+#     used", and neither negates a rebuild.
+_NEGATED_CLAUSE_RE = re.compile(r"\b(?:not|n[o']t|no|never|neither|nor|without|un\w+)\b", re.I)
+_NO_REBUILD_AT_ALL_RE = re.compile(r"\b(?:not|n[o']t|no|never|without)\b[^.;]{0,20}?"
+                                   r"\bre-?(?:buil\w*|novat\w*|construct\w*|open\w*)", re.I)
 # The fields of a course record that carry this fact today, in the order they are read. "rebuilt" is the
 # explicit one to set on a NEW course; the other two are where the corpus states it in prose.
 _REBUILT_FIELDS = ("rebuilt", "_status", "dem_source")
+
+
+def _clause_around(text, start, end):
+    """The sentence/clause of `text` containing text[start:end], bounded by "." and ";".
+
+    The same boundary _REBUILT_RE already uses for the gap between a participle and its year, so a
+    veto read from the clause is read from the same span the match was allowed to cross.
+    """
+    lo = max(text.rfind(".", 0, start), text.rfind(";", 0, start)) + 1
+    after = [i for i in (text.find(".", end), text.find(";", end)) if i != -1]
+    return text[lo:min(after)] if after else text[lo:]
 
 
 def _rebuild_year():
@@ -231,9 +272,32 @@ def _rebuild_year():
     greens"), so it is read from there. `"rebuilt": 2025` is read first and is the clean way to state it
     on a new course.
 
-    Refuses rather than guesses, twice over: nothing is claimed when no field states a rebuild, and
-    nothing is claimed when two fields state DIFFERENT years, because then the record disagrees with
-    itself and a printed year would be a choice this code is not entitled to make.
+    WHAT THIS DECIDES, AND WHAT IT DOES NOT. A regex cannot decide English, and this one is not trying
+    to. It decides one question -- "may the book print this year as a rebuild that HAPPENED?" -- and it
+    is built to answer "no" whenever it is unsure, because printing nothing is always the safe outcome
+    and the book has a complete, supported sentence without a year in it. Specifically it refuses:
+
+      * prose with no past participle and no year at all;
+      * a year the participle does not date: "rebuilt AFTER the 2024-12-17 flight" (_YEAR_DATES_...);
+      * a clause that puts the rebuild ahead of the record: "will be rebuilt in 2027", "scheduled to be
+        rebuilt in 2028", "the rebuild is planned for 2029" (_NOT_YET_RE);
+      * a clause that negates it, and a field that says a rebuild did not happen at all: "has not been
+        rebuilt since 1990", "no rebuild; last renovated 1974 and unchanged" (the two _NEGAT.../
+        _NO_REBUILD... patterns);
+      * a year it cannot parse: `"rebuilt": "mid-2025"` and `"2025?"` print nothing, which is correct;
+      * two fields stating DIFFERENT years, because then the record disagrees with itself and a printed
+        year would be a choice this code is not entitled to make;
+      * and ANY vetoed wording in ANY of the three fields refuses the whole answer, rather than
+        discarding that one field and printing a year found elsewhere.
+
+    It does NOT decide, and cannot: whether a modal governs the rebuild or something else in the same
+    clause (poppy-ridge's "AWAITING ELEVATION DATA -- course fully rebuilt ... 2025" is a clause where
+    a future word and a finished rebuild coexist, and the word lists are narrow precisely so that
+    record still reads); a participle and its year separated by a full stop; reported speech ("the club
+    says it was rebuilt in 2019"); a partial or phased rebuild described as a whole one; or whether the
+    year, or the record, is TRUE. A wording outside what it decides gets no claim, not a guess -- so the
+    way this gate fails is a card that is silent about a real rebuild, and the way it must never fail is
+    a card that announces one the record does not.
     """
     course = config.COURSE or {}
     years = set()
@@ -242,7 +306,15 @@ def _rebuild_year():
         if key == "rebuilt" and re.fullmatch(r"\s*(?:19|20)\d{2}\s*", val):
             years.add(val.strip())        # the explicit field may state the bare year
             continue
-        years.update(m.group(1) for m in _REBUILT_RE.finditer(val))
+        if _NO_REBUILD_AT_ALL_RE.search(val):
+            return None                   # the record says a rebuild did not happen
+        for m in _REBUILT_RE.finditer(val):
+            if _YEAR_DATES_ANOTHER_EVENT_RE.search(m.group("gap")):
+                return None               # the year dates something other than the rebuild
+            clause = _clause_around(val, m.start(), m.end())
+            if _NOT_YET_RE.search(clause) or _NEGATED_CLAUSE_RE.search(clause):
+                return None               # stated as future, or negated
+            years.add(m.group("year"))
     return years.pop() if len(years) == 1 else None
 
 
