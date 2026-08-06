@@ -5089,6 +5089,326 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
         f"with nothing checking it -- which is why it drifted unnoticed for two rounds.")
 
 
+# LICENCE FAMILIES, longest name first, so "AGPL" is never read as "GPL" and "0BSD" never as "BSD".
+# A FAMILY and not an exact string, because the two places a licence can be read from do not spell it
+# the same: `scipy` and `rasterio` publish the legacy Trove classifier "BSD License" while legal/10
+# publishes the SPDX "BSD-3-Clause", and without normalisation both FALSE-POSITIVE as a mismatch. The
+# copyleft flag travels with the family for the same reason the column exists: whether a dependency
+# constrains how this project's own code may be licensed is a property of the licence, not of the row.
+_LICENCE_FAMILIES = (
+    ("AGPL", r"AGPL|AFFERO\s+(?:GENERAL\s+PUBLIC|GPL)", True),
+    ("LGPL", r"LGPL|LESSER\s+GENERAL\s+PUBLIC", True),
+    ("GPL", r"\bGPL\b|GNU\s+GENERAL\s+PUBLIC", True),
+    ("MPL", r"\bMPL\b|MOZILLA\s+PUBLIC", True),
+    ("EPL", r"\bEPL\b|ECLIPSE\s+PUBLIC", True),
+    ("CDDL", r"\bCDDL\b|COMMON\s+DEVELOPMENT\s+AND\s+DISTRIBUTION", True),
+    ("CC-BY-SA", r"CC[- ]?BY[- ]?SA|SHAREALIKE", True),
+    ("0BSD", r"\b0BSD\b|BSD\s+ZERO", False),
+    ("BSD", r"\bBSD\b", False),
+    ("MIT", r"\bMIT\b", False),
+    ("APACHE", r"APACHE", False),
+    ("ZLIB", r"\bZLIB\b", False),
+    ("CC0", r"\bCC0\b", False),
+    ("ISC", r"\bISC\b", False),
+    ("PSF", r"\bPSF\b|PYTHON\s+SOFTWARE\s+FOUNDATION", False),
+    ("POLYFORM", r"POLYFORM", False),
+    ("PUBLIC-DOMAIN", r"\bUNLICENSE\b|PUBLIC\s+DOMAIN", False),
+)
+
+
+def _licence_families(text):
+    """The set of licence families a licence string names, and whether any of them is copyleft.
+
+    Each family's match is BLANKED once taken, so "GNU AFFERO GPL 3.0" reads as {AGPL} and not
+    {AGPL, GPL} -- an ordering bug there would report the AGPL dependency as merely GPL, which is the
+    one direction this whole record cares about.
+    """
+    left = (text or "").upper()
+    fams = set()
+    for fam, pat, _copyleft in _LICENCE_FAMILIES:
+        if re.search(pat, left):
+            fams.add(fam)
+            left = re.sub(pat, " ", left)
+    return fams, any(c for f, _p, c in _LICENCE_FAMILIES if f in fams)
+
+
+def _installed_licence(dist):
+    """What the INSTALLED metadata says `dist` is licensed under, or None when it publishes nothing.
+
+    The three places a wheel can put it, in the order PEP 639 supersedes them: `License-Expression`,
+    then the Trove `License ::` classifiers, then the free-text `License` field -- which is where
+    PyMuPDF puts its dual-licence sentence. Raises LookupError when the package is not installed, which
+    is a DIFFERENT answer from "installed and silent" and is reported as such: reading an absent parent
+    as a refutation is the defect d7446ad fixed one record over.
+    """
+    import importlib.metadata as md
+    meta = md.metadata(dist)                      # PackageNotFoundError subclasses LookupError
+    expr = (meta.get("License-Expression") or "").strip()
+    if expr:
+        return expr
+    trove = [c.split("::")[-1].strip() for c in (meta.get_all("Classifier") or [])
+             if "License ::" in c]
+    if trove:
+        return " AND ".join(trove)
+    free = (meta.get("License") or "").strip()
+    # A wheel that dumps the whole licence TEXT into that field is publishing the licence, but the first
+    # line is the only part that names it; PyMuPDF's is a one-line sentence, scipy's is a BSD copy.
+    return free.split("\n")[0].strip() or None
+
+
+def _legal10_licence_rows(doc):
+    """[(package, version, licence cell, copyleft cell)] from legal/10's two tables.
+
+    Same row filter `_legal10_verified_versions` uses -- a rankable version in column 2 -- so the header
+    and the `|---|` separator are skipped without matching on their text, and both tables are read: the
+    default install and the one optional row, which is the row the AGPL argument is about.
+    """
+    out = []
+    for line in doc.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [c.strip().strip("`*").strip().strip('"').strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 4 and cells[0] and _release(cells[1]):
+            out.append((cells[0], cells[1], cells[2], cells[3]))
+    return out
+
+
+def _grade_legal10_licence_columns(doc, licence_of, own_licence):
+    """Every check legal/10's Licence column, Copyleft column and PolyForm sentence have to pass.
+
+    `licence_of(dist)` returns the installed licence string, None when the package publishes none, and
+    raises LookupError when it is not installed. `own_licence` is this project's licence as the LICENSE
+    file itself names it. Raises AssertionError naming the defect; returns the (confirmed, uncheckable)
+    package lists so the caller can refuse a vacuous run.
+
+    A CALLABLE for the same reason the tick-table grader is one: the only way to know whether a check on
+    a legal record closes anything is to drive DOCTORED copies of that record through it. See
+    test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored.
+    """
+    rows = _legal10_licence_rows(doc)
+    assert len(rows) >= 9, (
+        f"legal/10's tables read as only {len(rows)} rows with a licence and a copyleft cell "
+        f"({[r[0] for r in rows]}). The document publishes one row per declared dependency plus the "
+        f"optional one; a parser that finds fewer is grading fewer, and the columns it stops reading are "
+        f"exactly the ones nothing read before.")
+    wrong, confirmed, uncheckable = [], [], []
+    for name, _version, said_lic, said_copy in rows:
+        dist = _norm_dist(name)
+        try:
+            measured = licence_of(dist)
+        except LookupError:
+            uncheckable.append(f"{name}: not installed here")
+            continue
+        if not measured:
+            uncheckable.append(f"{name}: installed metadata publishes no licence at all")
+            continue
+        said_fams, said_copyleft = _licence_families(said_lic)
+        got_fams, got_copyleft = _licence_families(measured)
+        if not got_fams:
+            uncheckable.append(f"{name}: {measured!r} names no licence family this file knows")
+            continue
+        if not said_fams:
+            wrong.append(f"{name}: legal/10's Licence column reads {said_lic!r}, which names no licence "
+                         f"at all; the installed metadata says {measured!r}")
+            continue
+        if said_fams != got_fams:
+            wrong.append(f"{name}: legal/10 publishes {said_lic!r} ({'+'.join(sorted(said_fams))}); the "
+                         f"installed metadata publishes {measured!r} "
+                         f"({'+'.join(sorted(got_fams))})")
+            continue
+        confirmed.append(name)
+        # THE COPYLEFT COLUMN, derived from the licence just confirmed rather than from a list here. It
+        # is the column the whole "deliberately excluded from the default install" argument rests on.
+        m = re.match(r"(yes|no)\b(.*)$", said_copy.strip(), re.I)
+        if not m:
+            wrong.append(f"{name}: legal/10's Copyleft? cell reads {said_copy!r}, which is neither yes "
+                         f"nor no. That column is the one a reader checks a compatibility claim against.")
+            continue
+        if (m.group(1).lower() == "yes") != got_copyleft:
+            wrong.append(f"{name}: legal/10's Copyleft? cell says {m.group(1).lower()!r} and "
+                         f"{measured!r} is {'copyleft' if got_copyleft else 'permissive'}")
+            continue
+        # ...and when that cell NAMES the licence beside the word, the name has to be the measured one.
+        beside, _c = _licence_families(m.group(2))
+        if beside and beside != got_fams:
+            wrong.append(f"{name}: legal/10's Copyleft? cell names {m.group(2).strip()!r} beside its "
+                         f"verdict; the installed metadata publishes {measured!r}")
+    assert not wrong, (
+        "legal/10's Licence or Copyleft? column does not say what the installed metadata says, and that "
+        "document's opening sentence is that it was verified from installed metadata. The whole reason "
+        "PyMuPDF is held out of the default install is that it is AGPL and copyleft, so a row that "
+        "understates either one publishes the conclusion without the premise:\n  " + "\n  ".join(wrong)
+        + "\n  Re-run the snippet under 'How to re-verify this file' and correct the table.")
+
+    # THE PROSE UNDER THE DEFAULT TABLE. "All permissive. None restricts how this project's own code is
+    # licensed" is the Copyleft column's summary, and it was graded by nothing while the column under it
+    # was too. Checked only over rows whose licence was actually measured.
+    default = doc.split("## Optional", 1)[0]
+    if re.search(r"All permissive", default):
+        offenders = []
+        for name, _v, _lic, _cp in _legal10_licence_rows(default):
+            try:
+                measured = licence_of(_norm_dist(name))
+            except LookupError:
+                continue
+            if measured and _licence_families(measured)[1]:
+                offenders.append(f"{name} is {measured!r}")
+        assert not offenders, (
+            "legal/10 says of its default-install table 'All permissive. None restricts how this "
+            "project's own code is licensed', and one of those rows is copyleft:\n  "
+            + "\n  ".join(offenders)
+            + "\n  That sentence is the reason a reader does not go looking for a compatibility problem "
+              "in the default install.")
+
+    # THE POLYFORM SENTENCE, which is the PREMISE of the incompatibility argument: AGPL-3.0 forbids
+    # imposing further restrictions, and the argument is that this project's own licence imposes one.
+    # Graded against the LICENSE file rather than against another copy of the sentence.
+    flowed = _flow(doc).replace("*", "")      # emphasis is presentation; a licence is not bold or plain
+    m = re.search(r"This project's code is ([^,]+?),", flowed)
+    assert m, (
+        "legal/10 no longer states what this project's own code is licensed under, in a form this can "
+        "read -- \"This project's code is <licence>, ...\". That sentence is the premise of the whole "
+        "AGPL-incompatibility argument: without it the paragraph concludes that the two licences do not "
+        f"compose without saying what the second one is. LICENSE says {own_licence!r}.")
+
+    def slug(text):
+        return re.sub(r"[^a-z0-9.]+", "-", re.sub(r"licen[sc]e", "", text.lower())).strip("-")
+
+    assert slug(m.group(1)) == slug(own_licence), (
+        f"legal/10 tells the reader this project's code is {m.group(1)!r}; LICENSE -- the licence text "
+        f"this repository actually ships -- is {own_licence!r}. The AGPL paragraph argues that the two "
+        f"do not compose BECAUSE this project's licence restricts commercial use, so a permissive name "
+        f"here refutes the record's own reason for holding an AGPL dependency out of the default "
+        f"install, and leaves the reader with the opposite of the licence he is bound by.")
+    return confirmed, uncheckable
+
+
+def _project_own_licence():
+    """This project's licence, as the LICENSE file it ships names itself in its own title."""
+    with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as fh:
+        first = fh.readline()
+    m = re.match(r"#\s*(.+?)\s*$", first)
+    assert m, (
+        f"LICENSE no longer opens with a `# <name>` title, so nothing in this tree says what this "
+        f"project is licensed under and legal/10's claim about it cannot be graded. It reads {first!r}.")
+    return m.group(1)
+
+
+def test_legal_10s_licence_and_copyleft_columns_are_the_ones_the_installed_metadata_publishes():
+    """legal/10's Licence column, Copyleft column and PolyForm sentence were graded by NOTHING.
+
+    Four checks stood over this document: every declared dependency has a row, no row invents a
+    dependency, the published tracked-file count is git's, and each published version is one
+    requirements.txt permits. Not one of them reads the Licence column, the Copyleft column, or the
+    sentence naming this project's own licence -- and `grep -rn 'legal/10'` outside this file returns a
+    single hit, legal/README.md's one-line index.
+
+    So the record could say the AGPL dependency is MIT and permissive WHILE THE ENTIRE "deliberately
+    excluded from the default install" ARGUMENT RESTS ON IT BEING AGPL, and the suite would be green.
+    Measured: PyMuPDF AGPL-3.0 -> MIT with copyleft yes -> no, numpy BSD -> GPL-3.0-or-later with no ->
+    yes, pyproj MIT -> AGPL-3.0 with no -> yes, and "This project's code is PolyForm" -> "MIT", all four
+    at once, reproduced the baseline suite exactly. That is the asymmetry the document's own opening
+    sentence says it exists to close, one column over from where it closed it.
+
+    Graded against the same source the document names as its own: installed metadata, read here through
+    `importlib.metadata` exactly as the "How to re-verify this file" snippet does. Three-valued, the
+    shape this project already uses elsewhere -- CONFIRMED, REFUTED, or UNCHECKABLE when the metadata
+    publishes no licence. `lazrs` is the one genuinely uncheckable row: it ships no
+    `License-Expression`, no Trove classifier and no `License` field, so this file records that rather
+    than inventing a verdict for it.
+
+    NO VERSION IS ASSERTED HERE and no licence is hard-coded here. A licence is a property of the
+    installed distribution, so a reader on a newer numpy is graded against his numpy -- which is the
+    machine-pinned-calibration defect this suite has fixed five times.
+
+    WHAT FAMILY MATCHING COSTS, named rather than left to be discovered: `scipy` and `rasterio` publish
+    only the legacy Trove classifier "BSD License", which does not say WHICH BSD. So for those two rows
+    "BSD-3-Clause" and "BSD-2-Clause" are indistinguishable to this check and swapping one for the other
+    passes. Without the normalisation both rows FALSE-POSITIVE instead, because legal/10 rightly
+    publishes the SPDX identifier. The clause count on a package whose metadata does not state it is a
+    coverage gap in the metadata, not one this file can close by tightening; `laspy` publishes
+    `License-Expression: BSD-2-Clause` and IS graded to the clause.
+    """
+    with open(os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    confirmed, uncheckable = _grade_legal10_licence_columns(doc, _installed_licence,
+                                                            _project_own_licence())
+    # A floor, so this cannot go green by finding nothing to check. Measured today: 8 of the 9 rows are
+    # confirmed from installed metadata and `lazrs` is the only one that publishes no licence at all.
+    # Five leaves room for three more packages to stop publishing metadata without a false failure, and
+    # refuses the vacuous run where an empty environment makes every row uncheckable.
+    assert len(confirmed) >= 5, (
+        f"only {len(confirmed)} of {len(_legal10_licence_rows(doc))} rows in legal/10 could be checked "
+        f"against installed metadata ({sorted(confirmed)}), so this test is mostly measuring nothing. "
+        f"Uncheckable:\n  " + "\n  ".join(uncheckable or ["none"])
+        + "\n  Install the dependency set (`pip install -r requirements.txt`) before trusting a pass.")
+
+
+def test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored():
+    """The mutation matrix for the columns above, because a grader on a legal record needs one.
+
+    Every case here reproduced the baseline suite EXACTLY before the grader existed. Each is applied to
+    the real legal/10 and driven through `_grade_legal10_licence_columns`; the file is never written.
+
+    The two directions matter separately. Understating a copyleft licence as permissive is how the
+    record would keep its conclusion and lose its premise. OVERstating a permissive one as copyleft is
+    the same defect pointing the other way -- it would tell a reader the default install carries an
+    obligation it does not, which is a false claim in a legal record even though it is the cautious
+    direction.
+    """
+    with open(os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    own = _project_own_licence()
+    _grade_legal10_licence_columns(doc, _installed_licence, own)   # the real record passes, or nothing
+                                                                  # below means anything
+
+    cases = [
+        ("the AGPL dependency published as MIT and permissive -- the record keeping its conclusion and "
+         "losing its premise",
+         [('"Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License"**', 'MIT**'),
+          ("**yes — AGPL-3.0**", "**no**")]),
+        ("the AGPL dependency's LICENCE alone published as MIT",
+         [('"Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License"**', 'MIT**')]),
+        ("the AGPL dependency's COPYLEFT cell alone flipped to no",
+         [("**yes — AGPL-3.0**", "**no**")]),
+        ("a permissive dependency published as GPL and copyleft (numpy)",
+         [("| numpy | 2.4.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | no |",
+           "| numpy | 2.4.4 | GPL-3.0-or-later | yes |")]),
+        ("a permissive dependency published as AGPL and copyleft (pyproj)",
+         [("| pyproj | 3.7.2 | MIT | no |", "| pyproj | 3.7.2 | AGPL-3.0 | yes |")]),
+        ("a permissive dependency's copyleft cell alone flipped to yes (pytest)",
+         [("| pytest | 9.0.3 | MIT | no |", "| pytest | 9.0.3 | MIT | yes |")]),
+        ("a BSD dependency published as MIT -- the family normalisation must not wave a real change "
+         "through while it forgives BSD-3-Clause vs 'BSD License'",
+         [("| scipy | 1.17.1 | BSD-3-Clause | no |", "| scipy | 1.17.1 | MIT | no |")]),
+        ("this project's own licence published as MIT, which is what the AGPL argument rests on NOT "
+         "being",
+         [("This project's code is **PolyForm\nNoncommercial 1.0.0**", "This project's code is **MIT**")]),
+        ("this project's own licence published under the wrong PolyForm variant",
+         [("This project's code is **PolyForm\nNoncommercial 1.0.0**",
+           "This project's code is **PolyForm Noncommercial 2.0.0**")]),
+    ]
+    waved = []
+    for what, edits in cases:
+        d = doc
+        for old, new in edits:
+            assert old in d, (
+                f"the mutation for {what!r} no longer applies -- legal/10's wording moved, so this case "
+                f"is measuring nothing. Re-read the tables and re-anchor it.")
+            d = d.replace(old, new, 1)
+        assert d != doc
+        try:
+            _grade_legal10_licence_columns(d, _installed_licence, own)
+        except AssertionError:
+            continue
+        waved.append(what)
+    assert not waved, (
+        "legal/10's licence columns accept a doctored record. Each of these was applied to the real "
+        "document and passed:\n  " + "\n  ".join(waved)
+        + "\n  This is a published legal record in a public repository, and the columns below the "
+          "version column are the ones a reader relies on.")
+
+
 def _norm_dist(name):
     """A distribution name in PEP 503 normalised form, so `PyMuPDF` and `pymupdf` are one package."""
     return re.sub(r"[-_.]+", "-", name.strip()).lower()
@@ -18459,6 +18779,30 @@ def test_the_tee_sample_is_named_and_counted_as_the_region_the_sampler_reaches()
         f"the six-metric-course median is published as {m2.group(1)}%; measured {six_med*100:.1f}% "
         f"over {metric}")
 
+    # 2b. legal/09 CARRIES THE SAME SHARE, and its copy was graded by nothing and NAMED NO STATISTIC. Item
+    #     1 read "a median over an axis-aligned box at the tee that a mapped tee covers about 13% of" --
+    #     and on this corpus the median share is 12.61% and the mean is 13.61%, so "about 13%" is the
+    #     median rounded and the mean is 14%. A bare "about 13%" is therefore a figure a reader cannot
+    #     check and half of the pair it might be. That record's own history includes this exact figure
+    #     being read as 13% when the six courses it was scoped to median 9.8%, so the statistic and the
+    #     scope both have to be on the page. Graded against the SAME live measurement as the module's
+    #     copy, so the two records cannot drift apart or together.
+    with open(os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md"), encoding="utf-8") as fh:
+        rep = _flow(fh.read()).replace("*", "")
+    m3 = re.search(r"a mapped tee covers a (corpus-median|median|corpus-mean|mean) ([\d.]+)% of", rep)
+    assert m3, (
+        "legal/09 item 1 no longer says how much of the tee box a mapped tee covers, in a form that NAMES "
+        "the statistic -- 'a mapped tee covers a corpus-median <P>% of'. It said 'about 13%', which is the "
+        f"median ({med * 100:.2f}%) rounded and is not the mean ({mean * 100:.2f}%); an unnamed statistic "
+        f"in a place where the two round to different integers is a figure nobody can check. Measured "
+        f"{live}.")
+    want = mean if "mean" in m3.group(1) else med
+    assert abs(float(m3.group(2)) - want * 100) < 0.05, (
+        f"legal/09 item 1 publishes the mapped tee's share of the box as a {m3.group(1)} of "
+        f"{m3.group(2)}%; measured over this corpus the median is {med * 100:.2f}% and the mean is "
+        f"{mean * 100:.2f}% over {len(shares)} pads. This is the region-error figure the bullet uses to "
+        f"argue why the printed heights moved, and `_tee_pads` publishes the same pair.")
+
     # 3. the window DOES clip -- and BY WHICH CRITERION. Three different counts describe this and they
     #    are not interchangeable: the AXIS half-extent is what the window actually applies
     #    (`abs(x-tx) < R and abs(y-ty) < R`), the RADIAL reach is the farthest vertex, and a ring can
@@ -23538,6 +23882,12 @@ _ELEV_BOUND_FIGS = (
      "the worst single hole's tee-to-green disagreement, and which hole it is"),
     ("chg_pc_lo", r"per.course medians from ([\d.]+) to [\d.]+ ft", "the best per-course median"),
     ("chg_pc_hi", r"per.course medians from [\d.]+ to ([\d.]+) ft", "the worst per-course median"),
+    # The RAW figure the range's upper end is rounded outward FROM. Without it on the page a reader
+    # cannot tell 0.63 from a typo, and the record cannot be checked for containment at all -- which is
+    # how "0.03 to 0.62 ft" stood against a measured 0.6243 that it EXCLUDES. `verify_elevation.py`
+    # carries the same sentence and has since the tool's own range was repaired.
+    ("chg_pc_raw", r"worst per.course median\s+measures ([\d.]+) ft",
+     "the raw worst per-course median the range's upper end is rounded outward from"),
     ("chg_pc_med", r"median of those eleven course medians is ([\d.]+) ft",
      "the median of the per-course medians"),
     ("chg_med", r"median over all \d+ holes is ([\d.]+) ft", "the corpus median"),
@@ -23638,6 +23988,47 @@ def test_legal_09s_elevation_bound_describes_the_corpus_that_is_actually_on_disk
     if float(fig["abs_pc_worst"].group(1)) > float(fig["abs_worst"].group(1)):
         bad.append(f"item 1's worst per-course absolute median ({fig['abs_pc_worst'].group(1)} m) "
                    f"exceeds its worst single green ({fig['abs_worst'].group(1)} m)")
+
+    # (d) THE RANGE HAS TO CONTAIN ITS OWN MEASUREMENT, and it did not. Item 1 published "per-course
+    #     medians from 0.03 to 0.62 ft" against a worst per-course median of 0.6243 ft, which 0.62
+    #     EXCLUDES. It passed only because a range ENDPOINT was graded as a POINT figure by nearest
+    #     rounding, and 0.62 is the correct two-digit rounding of 0.6243. `grade_bound` refuses exactly
+    #     that shape elsewhere in this file, and it is a defect already corrected three times in this
+    #     area -- 7-9x against a true 7.526-9.329, 72.2% against 72.2339, and this same 0.62 against
+    #     0.6243 in verify_elevation.py's own docstring. An endpoint must be rounded OUTWARD.
+    #     Needs no network: the raw figure is on the page beside the range, and the two records that
+    #     carry it are compared to each other here and to the live run below.
+    raw = float(fig["chg_pc_raw"].group(1))
+    if hi < raw - 1e-12:
+        bad.append(f"item 1 publishes the per-course medians as running up to {hi} ft and states the "
+                   f"worst one measures {raw} ft. A published range must CONTAIN the corpus it "
+                   f"describes; rounding an endpoint toward the middle is how it stops doing that")
+    elif hi - raw > 0.1:
+        bad.append(f"item 1 rounds its upper endpoint out to {hi} ft from a measured {raw} ft, which is "
+                   f"more than one rounding step of slack -- an endpoint that loose stops bounding")
+    if lo > raw + 1e-12:
+        bad.append(f"item 1's per-course range starts at {lo} ft, above the worst per-course median it "
+                   f"states ({raw} ft)")
+    # ...and the tool that PRODUCED both figures publishes the same range and the same raw figure. The
+    # tool's copies are graded against the live service in the network test below, so agreeing with them
+    # is what carries this record's figures back to a measurement on a checkout with no network.
+    with open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8") as fh:
+        ve_doc = _flow(fh.read())
+    for pat, mine, what in (
+            (r"per-course median of ([\d.]+)-[\d.]+ ft", lo, "the range's lower end"),
+            (r"per-course median of [\d.]+-([\d.]+) ft", hi, "the range's upper end"),
+            (r"the worst per-course median measures ([\d.]+) ft", raw,
+             "the raw worst per-course median")):
+        m = re.search(pat, ve_doc)
+        if m is None:
+            bad.append(f"tools/verify_elevation.py -- the producer of these figures, and the copy the "
+                       f"network test grades against the live service -- no longer publishes {what} "
+                       f"({pat!r}), so legal/09's {mine} is left with nothing behind it")
+        elif abs(float(m.group(1)) - mine) > 1e-9:
+            bad.append(f"legal/09 item 1 puts {what} at {mine} and tools/verify_elevation.py puts it at "
+                       f"{m.group(1)}. One run produced both; the two records went stale independently "
+                       f"once already, which is why they are compared digit for digit")
+
     assert not bad, (
         "legal/09 item 1 does not describe the corpus it was measured over. This bullet is the "
         "project's only bound on a whole class of vertical fault, and it has been wrong in both "
@@ -23665,15 +24056,15 @@ def test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today():
     Tolerance is taken from the PRECISION the document chose for each figure, so quoting fewer digits
     is allowed and quoting a digit the service does not support is not.
 
-    ONE FIGURE IS GRADED DIFFERENTLY, and the difference is the point: a RANGE endpoint. Rounding to
+    FOUR FIGURES ARE GRADED DIFFERENTLY, and the difference is the point: a RANGE endpoint. Rounding to
     the nearest is right for a point figure quoted to fewer digits and wrong for the end of a range --
     0.62 is the correct two-digit rounding of a worst per-course median of 0.6243 and it still EXCLUDES
     it, so a range published as 0.03-0.62 ft does not contain the corpus it describes. This file's own
-    `grade_bound` refuses exactly that shape elsewhere, and `verify_elevation.py`'s docstring carried
-    it. So the tool's range is graded here by CONTAINMENT plus one rounding step, against the same run.
-    legal/09's copy of that range still reads "from 0.03 to 0.62 ft" and needs the same repair; that
-    record is being confirmed elsewhere this round and is not corrected here, which is why the two
-    records currently differ in the last digit.
+    `grade_bound` refuses exactly that shape elsewhere. BOTH RECORDS CARRIED IT: the tool's docstring was
+    repaired first, and legal/09 went on publishing "from 0.03 to 0.62 ft" for as long as its endpoint was
+    graded here as a point figure. So both ranges -- the tool's and item 1's, four endpoints in all -- are
+    now graded by CONTAINMENT plus one rounding step against the same run, and item 1 states the raw
+    0.6243 beside its range so the outward rounding can be checked without the wire at all.
     """
     import subprocess
     fig = _elev_bound_published()
@@ -23725,17 +24116,43 @@ def test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today():
         "chg_pc_med": float(c_p.group(5)), "chg_pc_lo": float(c_p.group(3)),
         "over2": int(c_2.group(1)), "over3": int(c_3.group(1)),
     }
+    # The RAW worst per-course median is the same measurement as chg_pc_hi; item 1 publishes it beside the
+    # range precisely so the outward rounding can be checked, so it is graded as the POINT figure it is,
+    # to its own four decimals -- while the two ENDS of the range are graded by containment below.
+    live["chg_pc_raw"] = live["chg_pc_hi"]
     assert abs(live["chg_pc_lo"] - min(v["med"] for v in per.values())) <= 0.005, (
         f"the corpus block's best per-course median ({live['chg_pc_lo']}) is not the smallest the "
         f"per-course lines print ({min(v['med'] for v in per.values())}). One of the two is measuring "
         f"a different set of courses than the other.")
     off = []
+    # RANGE ENDPOINTS ARE NOT POINT FIGURES, and grading them as such is what let item 1 publish a range
+    # that excludes its own corpus: nearest rounding accepted "0.62" for a measured 0.6243 because 0.62
+    # IS its correct two-digit rounding, while the range 0.03-0.62 does not contain 0.6243 at all. They
+    # are graded by containment plus one rounding step, immediately after this loop -- the same way this
+    # test already grades the producer's copy of the same range.
+    _RANGE_ENDS = ("chg_pc_lo", "chg_pc_hi")
     for key, _pat, label in _ELEV_BOUND_FIGS:
+        if key in _RANGE_ENDS:
+            continue
         raw = fig[key].group(1)
         said = 0.0 if raw == "none" else float(raw)
         digits = len(raw.split(".")[1]) if "." in raw else 0
         if abs(said - live[key]) > 0.5 * 10 ** -digits + 1e-9:
             off.append(f"item 1 publishes {label} as {raw}; this run measured {live[key]:.4f}")
+    # ITEM 1'S OWN RANGE, by CONTAINMENT. Both ends must be rounded OUTWARD, so the range holds the corpus
+    # it describes; a step of more than one rounding unit is refused too, because an endpoint that loose
+    # has stopped bounding anything. This is the check "0.03 to 0.62 ft" needed and did not have.
+    for key, want, side, label in (("chg_pc_lo", live["chg_pc_lo"], "lo", "the best per-course median"),
+                                   ("chg_pc_hi", live["chg_pc_hi"], "hi", "the worst per-course median")):
+        got = float(fig[key].group(1))
+        contains = got <= want + 1e-12 if side == "lo" else got >= want - 1e-12
+        if not contains:
+            off.append(f"item 1 publishes {label} as {got:g}, which EXCLUDES the measured {want:.4g} -- "
+                       f"a published range must contain its own corpus, and rounding an endpoint toward "
+                       f"the middle is how it stops doing that")
+        elif abs(got - want) > 0.1:
+            off.append(f"item 1 publishes {label} as {got:g}; measured {want:.4g}, which is more than "
+                       f"one rounding step away")
     # And the two figures that name WHERE the worst case is.
     labels = {k: lab for k, _p, lab in _ELEV_BOUND_FIGS}
     worst_abs_slug = max((v.get("abs", -1.0), s) for s, v in per.items())[1]
@@ -27115,6 +27532,18 @@ _TICK_BANDS = {}
 # whenever the corpus is present, so this literal cannot drift from the ground either.
 _TICK_SOUTHMOST_LAT = 37.4529
 
+# A latitude NORTH OF EVERY COURSE this corpus holds, used to bound the LIVE column on a clone. That
+# column had no clone-side bound at all: 0.9999 yd in both records passed at every row. The live pair is
+# exact at the latitude it is taken at, so what it can be wrong by over the table's published reach is the
+# drift of geo.mlat/geo.mlon across that much latitude -- and that drift GROWS northward, so evaluating it
+# here rather than at 37.45N is the conservative direction and makes the bound hold for any course south of
+# it. Set well north of the contiguous United States, which is where every course in this corpus is, so
+# that adding one cannot silently invalidate the arithmetic. No figure for the corpus's own northern edge
+# is written here on purpose -- an uncheckable literal in a comment is what this file keeps finding -- and
+# the relation that actually matters, that the whole corpus lies south of this, is asserted off the corpus
+# below and reported with its measured value when it fails.
+_TICK_LIVE_BOUND_LAT = 60.0
+
 
 def _agrees_to_last_digit(text, measured, least=4):
     """Does the decimal string `text` state `measured` to its own last digit, at `least` decimals?
@@ -27327,9 +27756,24 @@ def _grade_tick_error_table(rec, note, measured):
         f"recomputed from the {retired_lat_scale} m/deg constant it names, at the {lat_s}N it names, it "
         f"is {100 * ceiling:.4f}%. An inflated ceiling would admit exactly the figures it exists to "
         f"refuse.")
-    impossible = [f"{R} yd tick: {published[R][0]} yd is {float(published[R][0]) / R * 100:.4f}% of the "
-                  f"radius, over the {100 * ceiling:.4f}% the retired pair can be wrong by"
-                  for R in sorted(published) if float(published[R][0]) > ceiling * R]
+    # EVERY PUBLISHED ROW, INCLUDING THE LAST ONE. This iterated `sorted(published)` -- the NUMERIC tick
+    # rows -- so the closing `| any centreline vertex, out to <R> yd |` row, the one that judges the whole
+    # drawn line, was exempt from the only argument the record makes about its own retired column. 9.9999
+    # yd passed there, 1.6784% of the 595.8 yd reach the row itself states and 5.6x the ceiling published
+    # two paragraphs below it. The reach comes from the row, so this needed no new input.
+    far_reach = re.search(r"any centreline vertex, out to ([\d.]+) yd", rec)
+    assert far_reach, (
+        "legal/11's closing tick-table row no longer says how far the drawn centrelines reach -- 'any "
+        "centreline vertex, out to <R> yd'. That reach is what the row's own figures are weighed against, "
+        "so without it the last row of the table is bounded by nothing on a clone with no courses/.")
+    ceiling_rows = [(f"{R} yd tick", float(R), published[R][0], published[R][1])
+                    for R in sorted(published)]
+    ceiling_rows.append((f"any centreline vertex, out to {far_reach.group(1)} yd",
+                         float(far_reach.group(1)), far.group(1), far.group(2)))
+    impossible = [f"{label}: {said} yd is {float(said) / R * 100:.4f}% of the "
+                  f"{'radius' if label.endswith('tick') else 'reach'}, over the "
+                  f"{100 * ceiling:.4f}% the retired pair can be wrong by"
+                  for label, R, said, _live in ceiling_rows if float(said) > ceiling * R]
     assert not impossible, (
         "a retired-model figure in legal/11's tick table cannot happen. The retired pair was "
         f"{retired_lat_scale} m/deg of latitude and {retired_lat_scale}*cos(lat) per degree of "
@@ -27338,6 +27782,52 @@ def _grade_tick_error_table(rec, note, measured):
         + "\n  ".join(impossible)
         + "\n  A figure above this bound is a 'worst anywhere beyond this tick' figure printed in a "
           "column headed by the tick, which is what the reader takes it for. Measure at the tick.")
+    # ...AND THE PUBLISHED WORST OFFSET ITSELF, unconditionally. It was weighed against this ceiling only
+    # when a corpus existed, so on a clone "+0.9999%" passed -- 3.3x the ceiling the SAME PARAGRAPH
+    # derives for it. A worst above its own bound is a contradiction inside one paragraph and needs no
+    # measurement to see; the corpus check in (d) is what pins it to the ground, this is what stops the
+    # paragraph refuting itself for a reader who has only the clone.
+    rel_said = re.search(_SHARED_REL_OFFSET[0][3], rec)
+    assert rel_said, (
+        "legal/11 no longer states the retired pair's worst relative offset, which is the figure its "
+        "whole impossibility argument is stated in.")
+    assert float(rel_said.group(1)) <= 100.0 * ceiling + 1e-9, (
+        f"legal/11 publishes the retired pair's worst relative offset as {rel_said.group(1)}% and derives "
+        f"a ceiling of {100 * ceiling:.4f}% for it in the same paragraph, from the "
+        f"{retired_lat_scale} m/deg constant at {lat_s}N. A worst cannot exceed its own bound. Whichever "
+        f"of the two is wrong, the paragraph a reader is asked to check the retired column against "
+        f"contradicts itself.")
+    # THE LIVE COLUMN, bounded by arithmetic instead of by nothing. Its six cells were graded against
+    # geo.py's copies of themselves and against the corpus, so on a clone 0.9999 yd in BOTH records passed
+    # at every row -- publishing the live model as four hundred times worse than the retired one it
+    # replaced. What bounds it without a corpus: the live model takes ONE pair of scales, geo.mlat/geo.mlon
+    # at the drawn line's centroid, and applies them to points up to the published reach away, so its
+    # relative error is bounded by how far those two scales drift across that much latitude (the geodesic-
+    # versus-planar term over 545 m is ~7e-9 relative and cannot matter here). Deliberately loose in three
+    # ways, so it bounds rather than calibrates: the FULL reach stands in for the half-span that actually
+    # separates a point from the frame's own latitude, the larger of the two scales is taken, and it is
+    # evaluated at _TICK_LIVE_BOUND_LAT rather than at the corpus's own latitudes because the drift grows
+    # northward. That is a bound to within about one order of magnitude. LAST-DIGIT GRADING OF THE LIVE
+    # COLUMN ON A CLONE IS IRREDUCIBLE: the failure mode is a both-sided edit, the two records are already
+    # compared digit for digit above, and this tree holds no third witness to the measurement.
+    reach_deg = float(far_reach.group(1)) * 0.9144 / _geo_live.mlat(_TICK_LIVE_BOUND_LAT)
+    live_ceiling = max(abs(scale(_TICK_LIVE_BOUND_LAT) / scale(_TICK_LIVE_BOUND_LAT + d) - 1.0)
+                       for scale in (_geo_live.mlat, _geo_live.mlon)
+                       for d in (-reach_deg, reach_deg))
+    unbounded = [f"{label}: {said} yd is {float(said) / R * 100:.4f}% of the "
+                 f"{'radius' if label.endswith('tick') else 'reach'}, over the "
+                 f"{100 * live_ceiling:.4f}% one pair of WGS84 scales can be wrong by over "
+                 f"{far_reach.group(1)} yd"
+                 for label, R, _retired, said in ceiling_rows if float(said) > live_ceiling * R]
+    assert not unbounded, (
+        "a live-model figure in legal/11's tick table cannot happen either. The live pair is exact at the "
+        f"latitude it is taken at, so over the {far_reach.group(1)} yd this table's own last row reaches "
+        f"it can be wrong by at most {100 * live_ceiling:.4f}% per unit length (evaluated at "
+        f"{_TICK_LIVE_BOUND_LAT}N, north of this corpus, because that drift grows with latitude):\n  "
+        + "\n  ".join(unbounded)
+        + "\n  This bounds the live column to within about an order of magnitude and no further. A cell "
+          "wrong in its last digit in BOTH records is not reachable from this tree at all -- re-run the "
+          "corpus grader.")
     # The record does not leave that ceiling as a percentage: it turns it into yardages per radius, and
     # THOSE are the numbers a reader weighs the old 0.43 / 0.73 / 0.99 against. Ungraded, the sentence
     # read "cannot be out by more than 0.90 yd, 200 by more than 1.60, or 300 by more than 2.90" and
@@ -27448,6 +27938,12 @@ def _grade_tick_error_table(rec, note, measured):
         "the southernmost latitude pinned in this file (%.4f) is not the corpus's (%.4f). That literal "
         "is what grades the record on a clone with no courses/, so it has to be the ground."
         % (_TICK_SOUTHMOST_LAT, counts["southmost_lat"]))
+    assert counts["northmost_lat"] < _TICK_LIVE_BOUND_LAT, (
+        "the latitude this file bounds the LIVE column at (%.1f deg N) is not north of the corpus, whose "
+        "northernmost hole-line centroid is %.4f deg N. The drift of geo.mlat/geo.mlon over the table's "
+        "reach GROWS with latitude, so a bound evaluated south of a course is not a bound for that "
+        "course's cells at all -- move _TICK_LIVE_BOUND_LAT north of the new corpus."
+        % (_TICK_LIVE_BOUND_LAT, counts["northmost_lat"]))
     assert abs(100.0 * ceiling - counts["retired_rel_bound_pct"]) <= 0.001, (
         "the ceiling legal/11 publishes (%.4f%%, at the latitude it names) is not the widest the retired "
         "pair is actually wrong by anywhere in this corpus (%.4f%%). The bound has to bound the corpus, "
@@ -27540,6 +28036,7 @@ def _tick_radius_errors(retired_lat_scale):
     worst_rel = 0.0
     bound_rel = 0.0
     southmost = 90.0
+    northmost = -90.0
 
     def keep(store, slot, cand):
         if slot not in store or cand[0] > store[slot][0]:
@@ -27570,6 +28067,7 @@ def _tick_radius_errors(retired_lat_scale):
             lat0 = sum(p["lat"] for p in line) / len(line)
             lon0 = sum(p["lon"] for p in line) / len(line)
             southmost = min(southmost, lat0)
+            northmost = max(northmost, lat0)
             gcla = sum(p["lat"] for p in green["geometry"]) / len(green["geometry"])
             gclo = sum(p["lon"] for p in green["geometry"]) / len(green["geometry"])
             same = (lambda a, b: abs(a["lat"] - b["lat"]) < 1e-9 and abs(a["lon"] - b["lon"]) < 1e-9)
@@ -27609,6 +28107,7 @@ def _tick_radius_errors(retired_lat_scale):
     counts["worst_retired_rel_pct"] = 100.0 * worst_rel
     counts["retired_rel_bound_pct"] = 100.0 * bound_rel
     counts["southmost_lat"] = southmost
+    counts["northmost_lat"] = northmost
     _TICK_ERRORS[key] = (per_tick, vertex, counts)
     return _TICK_ERRORS[key]
 
@@ -27908,6 +28407,101 @@ def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed
     assert ran == len(cases), (
         f"only {ran} of {len(cases)} mutations were exercised. Every case here is refusable on a clone -- "
         f"the geo.py ones because legal/11 quotes the same figures, the other two by arithmetic.")
+
+
+def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_is_stated_in():
+    """Two more clone-runnable holes in the same grader, and neither needs the gitignored corpus.
+
+      (1) THE CLOSING ROW WAS EXEMPT FROM THE CEILING. `impossible` iterated `sorted(published)`, which
+          holds the NUMERIC tick rows only, so `| any centreline vertex, out to 595.8 yd |` -- the row
+          the whole drawn line is judged by -- was never weighed against the bound. 9.9999 yd passed
+          there. That is 9.9999/595.8 = 1.6784% against the 0.3008% ceiling the record itself publishes
+          two paragraphs below the row: FIVE POINT SIX TIMES ABOVE IT, in the one column the record
+          calls arithmetically impossible. The reach is stated by the row, so closing it needed no new
+          input at all.
+
+      (2) THE PUBLISHED WORST OFFSET WAS COMPARED TO THE CEILING ONLY WITH A CORPUS. "+0.2975%" is the
+          figure the impossibility argument is stated in, and the same paragraph derives a ceiling of
+          "+0.3008%" for it -- so a worst above its own bound is a contradiction inside one paragraph,
+          visible without measuring anything. On a clone "+0.9999%" passed, three and a third times the
+          ceiling.
+
+    So the residual disclosed for this table -- that a clone can only be shown "sub-ceiling retired
+    figures" -- was WRONG in both directions it named: the closing row admitted 5.6x the ceiling and the
+    published worst admitted 3.3x it.
+
+    AND THE LIVE COLUMN, which had no clone-side bound of any kind. Its six cells were graded against
+    geo.py's copies of themselves and against the corpus, so on a clone 0.9999 yd in both records passed
+    at every row -- a live model published as four hundred times worse than the retired one it replaced.
+    It is now bounded by arithmetic: the live model takes ONE pair of scales, `geo.mlat`/`geo.mlon` at the
+    drawn line's centroid, and applies them to points up to the published reach away, so what it can be
+    wrong by per unit length is bounded by how far those two scales drift over that much latitude. That
+    is a bound to within about one order of magnitude, not to the last digit. LAST-DIGIT GRADING OF THE
+    LIVE COLUMN ON A CLONE IS IRREDUCIBLE and is stated as such rather than papered over: the failure
+    mode is a both-sided edit, the two records are already compared digit for digit, and there is no
+    third witness to the measurement anywhere in this tree.
+
+    Driven through `_grade_tick_error_table` on doctored copies, with `measured=None` so every case is
+    proved on a clone specifically. The files on disk are never written."""
+    with open(os.path.join(ROOT, "legal", "11_HORIZONTAL_EARTH_MODEL.md"), encoding="utf-8") as fh:
+        rec = " ".join(fh.read().split()).replace("−", "-").replace("*", "")
+    with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
+        note = _prose(fh.read())
+    _grade_tick_error_table(rec, note, None)   # the real records pass on a clone, or nothing below means
+                                               # anything
+
+    far = re.search(r"\|\s*any centreline vertex, out to ([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|"
+                    r"\s*([\d.]+) yd\s*\|", rec)
+    assert far, ("legal/11's closing tick-table row is no longer readable as `| any centreline vertex, "
+                 "out to <R> yd | <retired> yd | <live> yd |`, so the cases below measure nothing.")
+    reach, retired_far, live_far = far.group(1), far.group(2), far.group(3)
+
+    cases = [
+        (f"the closing row's RETIRED figure at {9.9999 / float(reach) * 100:.4f}% of its own "
+         f"{reach} yd reach, over five times the ceiling the record publishes",
+         [(f"out to {reach} yd | {retired_far} yd", f"out to {reach} yd | 9.9999 yd")],
+         [(f"was {retired_far} yd against", "was 9.9999 yd against")]),
+        ("the published worst relative offset above the ceiling the same paragraph derives for it",
+         [("worst relative offset over these 589 vertices is +0.2975%",
+           "worst relative offset over these 589 vertices is +0.9999%")],
+         [("at worst +0.2975% over these vertices", "at worst +0.9999% over these vertices")]),
+        ("the closing row's LIVE figure at 0.9999 yd, in both records at once",
+         [(f"out to {reach} yd | {retired_far} yd | {live_far} yd",
+           f"out to {reach} yd | {retired_far} yd | 0.9999 yd")],
+         [(f"against {live_far} yd now", "against 0.9999 yd now")]),
+        ("the 100 yd tick's LIVE figure at 0.9999 yd, in both records at once",
+         [("| 100 yd tick | 0.2962 yd | 0.0013 yd |", "| 100 yd tick | 0.2962 yd | 0.9999 yd |")],
+         [("radii is 0.0013,", "radii is 0.9999,")]),
+        ("the 300 yd tick's LIVE figure at 0.9999 yd, in both records at once",
+         [("| 300 yd tick | 0.8891 yd | 0.0019 yd |", "| 300 yd tick | 0.8891 yd | 0.9999 yd |")],
+         [("0.0022 and 0.0019 yd", "0.0022 and 0.9999 yd")]),
+    ]
+    waved = []
+    for what, rec_edits, note_edits in cases:
+        r, n = rec, note
+        for old, new in rec_edits:
+            assert old in r, (
+                f"the legal/11 mutation for {what!r} no longer applies ({old!r} is not in the record), so "
+                f"this case measures nothing. Re-read the table and re-anchor it.")
+            r = r.replace(old, new, 1)
+        for old, new in note_edits:
+            assert old in n, (
+                f"the geo.py mutation for {what!r} no longer applies ({old!r} is not in the note), so "
+                f"this case measures nothing. Re-read the note and re-anchor it.")
+            n = n.replace(old, new, 1)
+        assert (r, n) != (rec, note)
+        try:
+            _grade_tick_error_table(r, n, None)
+        except AssertionError:
+            continue
+        waved.append(what)
+    assert not waved, (
+        "the tick-error table's grader accepts a doctored record on a clone with no courses/, which is "
+        "the checkout a reader of a public repository has. Each of these was applied to the real "
+        "legal/11 and geo.py together and passed:\n  " + "\n  ".join(waved)
+        + "\n  Every one of them is refusable by arithmetic the grader already has -- the ceiling it "
+          "recomputes from the retired constant, and the drift of geo.mlat/geo.mlon over the reach the "
+          "table's own last row states.")
 
 
 def test_the_earth_models_published_spread_names_every_module_that_carries_it():
@@ -28869,6 +29463,16 @@ def distribution_is_corpus(slug):
 _SOURCE_NOUN = (r"(?:imagery|orthoimagery|orthophotos?|aerials?|photography|photos?|basemaps?|tiles?|"
                 r"rasters?|satellite|maps?|data|datasets?|LiDAR|DEMs?|elevation|point clouds?)")
 
+# The ordinary PROSE words SECURITY.md's graded sections open sentences with, and the only capitalised
+# openers `_security_claimed_sources` exempts. It used to exempt EVERY sentence opener and add back the
+# ones followed by a data-source noun, which left the hole open in the commonest shape English has:
+# "Esri was used for two greens." A brand name must never be added here -- the point of the list is that
+# it holds prose words, and three properties of it are graded in
+# test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sentence: it must be minimal
+# (every entry really opens a sentence in the live document), disjoint from the dataset shapes the first
+# pass claims, and overridable by a following data-source noun.
+_PROSE_OPENERS = ("Every", "In", "No", "Out", "See")
+
 
 def _security_claimed_sources(doc):
     """The data-source names SECURITY.md announces to the public, out of the sections that announce them.
@@ -28879,10 +29483,21 @@ def _security_claimed_sources(doc):
         half was the whole check and it closed its example rather than its class: "Esri imagery",
         "Maxar imagery" and "Google Earth imagery" are none of those shapes and each one passed.
       * any CAPITALISED word that is not the first word of its line and does not follow `.!?:` -- i.e.
-        not a sentence opener -- plus sentence openers immediately followed by a data-source noun. That
+        not a sentence opener -- plus sentence openers that are neither one of the ordinary prose words
+        this document really opens with (`_PROSE_OPENERS`) nor followed by a data-source noun. That
         catches Esri, Maxar, Nearmap, Vexcel, Bing and Planet without demanding legal/01 mention
         "Every", "In", "No", "Out" or "See", which are exactly the words this document opens lines and
         sentences with.
+
+        THE OPENER EXEMPTION WAS UNCONDITIONAL, and the hole it left was the commonest shape English
+        has: SENTENCE-OPENER + any noun outside `_SOURCE_NOUN`. "Esri was used for two greens.",
+        "Vexcel scans were used for one green." and the possessive "Esri's imagery is used for one
+        file." -- which defeats the noun rule even for a listed noun, because the follower pattern
+        demands `\\s+NOUN` and the apostrophe intervenes -- all passed the whole suite. Measured: 126 of
+        126 brand-by-predicate insertions passed before the allowlist, 0 after. So the exemption now
+        names the five prose words instead of the whole grammatical position, and adding an ordinary
+        opener costs one word in `_PROSE_OPENERS`, graded by
+        test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sentence.
 
     Tokens naming something in THIS repository are dropped, mechanically off the filesystem, so that
     cannot become a place to park a source name. A callable, not a block inside the test, because the
@@ -28903,7 +29518,9 @@ def _security_claimed_sources(doc):
                 before = line[:m.start()].rstrip()
                 opener = first or (before and before[-1] in ".!?:")
                 first = False
-                if not opener or re.match(r"\s+%s\b" % _SOURCE_NOUN, line[m.end():], re.I):
+                exempt = (opener and m.group(0) in _PROSE_OPENERS
+                          and not re.match(r"\s+%s\b" % _SOURCE_NOUN, line[m.end():], re.I))
+                if not exempt:
                     claimed.add(m.group(0))
     own = {p.split(".")[0].upper() for p in os.listdir(ROOT)} | {"SECURITY", "README", "PIPELINE"}
     return {t for t in claimed if t.upper() not in own}
@@ -28921,14 +29538,25 @@ def _legal01_documents_source(token, sources):
     Mechanical: a mention counts only in a `## ` section whose HEADING carries no removal or
     never-used marker, on a LINE that carries none either. Both levels are needed -- section 4's heading
     disclaims it while its licence line reads as ordinary prose, and section 5's per-source lines
-    disclaim individually under a heading that already does."""
+    disclaim individually under a heading that already does.
+
+    Matched on WORD BOUNDARIES, not by bare containment, so "Planet" is not documented by the word
+    "Planetary" and "Bing" is not documented by "Bingo". That is a narrowing of a false-NEGATIVE channel
+    rather than a fix for one: this remains a containment test at word granularity, so any word legal/01
+    happens to use on a non-disclaiming line reads as "documented" -- `_legal01_documents_source("Every",
+    ...)` is True. It does not reach the live records (legal/01 mentions Nearmap, Vexcel and Planet not at
+    all, and Esri, Maxar, Google, Apple and Bing only under disclaiming headings), and the forward half no
+    longer exempts sentence openers, so no ordinary prose word is passed to it from SECURITY.md. But a
+    brand whose name is also an English word would be waved through here, and that is a coverage gap this
+    file does not close."""
     disclaimed = (r"NOT used|never|no longer|REMOVED|FORMERLY|is gone|contains no|\bnot\b|\bno\b|"
                   r"neither|nothing")
     for part in re.split(r"(?m)^##\s+", sources):
         if re.search(disclaimed, part.split("\n", 1)[0], re.I):
             continue
         for line in part.split("\n"):
-            if token in line and not re.search(disclaimed, line, re.I):
+            if re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(token), line) \
+                    and not re.search(disclaimed, line, re.I):
                 return True
     return False
 
@@ -29005,6 +29633,123 @@ def test_the_public_source_summary_refuses_a_source_legal_01_only_names_to_discl
             f"legal/01 no longer reads as documenting {token!r} as a source in use, so the check above "
             f"would refuse the summary for naming a source this project does use. The negation markers "
             f"are matching a line that makes a positive statement -- re-derive them.")
+
+
+def test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sentence():
+    """The source check exempted every SENTENCE OPENER, and that is the DEFAULT shape of an added sentence.
+
+    The pass that catches an ordinary capitalised brand -- Esri, Maxar, Nearmap, Vexcel, Planet -- read
+    every capitalised word that is NOT the first word of its line and does not follow `.!?:`, and then
+    added back sentence openers that are immediately followed by a data-source noun. So the hole was
+    exactly SENTENCE-OPENER + any noun outside `_SOURCE_NOUN`, and beginning a sentence with its subject
+    is the commonest form in English. Measured through the real callables, each of these inserted into
+    SECURITY.md's data note passed:
+
+        'Esri was used for two greens.'          'Maxar orthomosaic was used.'
+        'Nearmap supplied the aerial reference for two courses.'
+        'Vexcel scans were used for one green.'  'Planet mosaics fill two gaps.'
+        "Esri's imagery is used for one file."
+
+    THREE REASONS IT IS REACHABLE BY AN HONEST EDIT rather than only by sabotage. (1) The subject-first
+    sentence is the default, so the hole is the default. (2) The POSSESSIVE breaks the exemption even
+    when the noun IS in `_SOURCE_NOUN`, because the follower pattern demands `\\s+NOUN` and the
+    apostrophe intervenes -- "Esri's imagery is used for one file." passed. (3) Plainly source-shaped
+    nouns are simply absent from that list: scans, coverage, products, feeds, contours, orthomosaic,
+    surveys, mosaics.
+
+    The exemption is now the other way round: an opener is exempt only if it is one of the ordinary
+    prose words this document really opens with, and only if a data-source noun does not follow it. That
+    allowlist is graded here too, because an allowlist is the obvious next place to park a brand:
+      * MINIMAL -- every entry must actually open a sentence in the two graded sections, so no word can
+        be parked for later use;
+      * DISJOINT FROM THE DATASET SHAPES -- no CamelCase, acronym or Name-digit token can be exempted,
+        so OpenStreetMap, USGS, 3DEP, ODbL and Sentinel-2 are unreachable through it;
+      * OVERRIDDEN BY THE NOUN -- an allowlisted word followed by a data-source noun is still claimed.
+
+    WHAT THIS DOES NOT CLOSE, stated rather than implied: a brand whose name is an ordinary English word
+    can still be exempted by adding BOTH a sentence that opens with it AND its own allowlist entry. That
+    is a deliberate, reviewable, one-word edit to a list this test says out loud is for prose words --
+    not the silent default it replaces. The residual is named here so the next reader does not have to
+    re-derive it.
+
+    Driven through the real callables on doctored copies; SECURITY.md and legal/01 are never written."""
+    with open(os.path.join(ROOT, "SECURITY.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    with open(os.path.join(ROOT, "legal", "01_DATA_SOURCES_AND_LICENSES.md"), encoding="utf-8") as fh:
+        sources = fh.read()
+
+    def undocumented(d):
+        return sorted(t for t in _security_claimed_sources(d) if not _legal01_documents_source(t, sources))
+
+    assert not undocumented(doc), (
+        f"the real SECURITY.md already fails this check ({undocumented(doc)}), so nothing below means "
+        f"anything. Either an ordinary prose opener is missing from _PROSE_OPENERS, or legal/01 stopped "
+        f"documenting a source the summary credits.")
+
+    # (a) THE ALLOWLIST IS MINIMAL. Measured off the live document rather than asserted: every exempt
+    #     word must really open a sentence in the graded sections, so the list cannot hold a name that
+    #     is there for a future edit to lean on.
+    openers = set()
+    for heading in ("A note on data", "Scope"):
+        sec = re.search(r"##\s*%s\s*(.+?)(?=\n##|\Z)" % re.escape(heading), doc, re.S)
+        assert sec, f"SECURITY.md no longer has a '## {heading}' section"
+        for line in re.sub(r"[*_`]", "", sec.group(1)).split("\n"):
+            first = True
+            for m in re.finditer(r"\b[A-Z][A-Za-z0-9]*(?:[-‑]\d+)?\b", line):
+                before = line[:m.start()].rstrip()
+                if first or (before and before[-1] in ".!?:"):
+                    openers.add(m.group(0))
+                first = False
+    parked = sorted(set(_PROSE_OPENERS) - openers)
+    assert not parked, (
+        f"_PROSE_OPENERS exempts {parked} from the source check and SECURITY.md's graded sections do not "
+        f"open a single sentence with any of them. An entry that exempts nothing the document says is an "
+        f"entry waiting for a source name to be written behind it. The openers in play are "
+        f"{sorted(openers)}.")
+
+    # (b) THE ALLOWLIST CANNOT REACH A DATASET-SHAPED NAME. The first pass claims those unconditionally,
+    #     so this asserts the two halves stay disjoint -- an exemption for "Sentinel-2" or "USGS" would
+    #     otherwise be one word away.
+    shape = re.compile(r"^(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)$")
+    shaped = sorted(w for w in _PROSE_OPENERS if shape.match(w))
+    assert not shaped, (
+        f"_PROSE_OPENERS contains the dataset-shaped token(s) {shaped}. Those are what the first pass "
+        f"exists to claim -- CamelCase, acronyms and Name-digit datasets -- and exempting one there is "
+        f"how 'Sentinel-2 imagery' or an acronym would walk straight back through.")
+
+    # (c) EVERY INSERTION SHAPE THAT USED TO PASS. Brand x predicate, at the start of a sentence and at
+    #     the start of a line, plus the possessive that defeated the noun rule. The brands are the ones
+    #     legal/01 either disclaims or never mentions, so every one of these is a public claim this
+    #     project cannot support.
+    brands = ("Esri", "Maxar", "Nearmap", "Vexcel", "Planet", "Google", "Bing", "Apple", "Landsat")
+    predicates = ("{b} was used for two greens.",
+                  "{b} orthomosaic was used.",
+                  "{b} scans were used for one green.",
+                  "{b} supplied the aerial reference for two courses.",
+                  "{b} mosaics fill two gaps.",
+                  "{b} coverage fills two gaps.",
+                  "{b}'s imagery is used for one file.")
+    waved = []
+    for b in brands:
+        for pred in predicates:
+            insert = pred.format(b=b)
+            for where, old, new in (("opening a sentence mid-paragraph",
+                                     "No commercial", insert + " No commercial"),
+                                    ("opening its own line",
+                                     "\n\nEvery distributed book", "\n\n" + insert + "\n\nEvery "
+                                     "distributed book")):
+                assert old in doc, (
+                    f"the doctoring anchor {old!r} is no longer in SECURITY.md, so this case measures "
+                    f"nothing. Re-read the data note and re-anchor it.")
+                if not undocumented(doc.replace(old, new, 1)):
+                    waved.append(f"{insert!r} {where}")
+    assert not waved, (
+        f"SECURITY.md can announce a data source to the public that legal/01 does not document, by the "
+        f"commonest sentence shape in English -- naming it first. {len(waved)} of "
+        f"{len(brands) * len(predicates) * 2} insertions passed:\n  " + "\n  ".join(waved[:12])
+        + ("\n  ..." if len(waved) > 12 else "")
+        + "\n  Esri is the live case: legal/01 records it as REMOVED and rebuilt from public-domain "
+          "NAIP, so the record would be contradicting the public summary.")
 
 
 def test_the_security_record_still_describes_this_repository():
