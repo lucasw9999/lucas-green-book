@@ -504,6 +504,40 @@ def depth_width_yd(meta):
     return ((fy - by) * my / 0.9144, (max(rxs) - min(rxs)) * mx / 0.9144)
 
 
+# The .grn panel a tournament card gives a green drawing, in inches. ONE spelling, because BOTH card
+# paths size a drawing against the same physical panel: render() for a measured green, _blank_green for
+# one we will not read. The blank path carried its own copy of the height with a hardcoded 0.18 in
+# footer allowance -- 4.180 in of room against render()'s 3.860 in for the same card -- so the two
+# paths computed a different available height for one piece of paper.
+#
+# WIDTH must match generate.py's CSS: card minus padding, minus the 1px flex gap, times the .grn share
+# (2.4 of 1.6+2.4). Measured in-browser at 2.010in.
+# Why 2.4/4.0 and not wider. 172 of 198 greens are limited by this 2.010 in column rather than by the
+# Rule 4.3 cap, so a wider share would draw them bigger -- but the hole map pays for it, and measured,
+# the trade is not worth taking:
+#     1.5/2.5 -> green 2.093 in (+4.2%), 101 of 198 hole maps shrink 6%
+#     1.4/2.6 -> green 2.177 in (+8.3%), 119 of 198 hole maps shrink 13%
+# Only the hole maps whose viewBox is SHORTER than 100*LAY_H/LAY_W are affected (108 of 198 are
+# height-limited today and lose nothing), which is why the cost lands on about half of them. And the 26
+# greens already at the legal cap gain zero from any of this. So the whole exchange buys 0.08 in on a
+# green that is already 2 in across, at the price of shrinking half the hole maps. Left alone
+# deliberately; do not re-open it without re-measuring those two lines.
+#
+# HEIGHT is the card minus its padding, minus the header, minus the FOOTER ALLOWANCE. That allowance
+# was a hardcoded 0.18 in, which assumed a ONE-LINE footer. It can be three: at 7.5pt with normal
+# leading a line is ~0.125 in, and a five-tee course prints "feeds ... %" then "Nyd deep * NB NW *
+# three tees" then the carry/elevation playline. 0.18 in under-reserves by up to 0.32 in, so a green
+# sized against it would be too tall for its panel -- and a blank card's footer is the same .foot flex
+# row plus playline_html, so it wraps the same way and needs the same reservation.
+# Precautionary: measured across the corpus, HEIGHT binds on 0 of 198 greens -- 172 are limited by the
+# 2.01 in column width and 26 by the Rule 4.3 cap, and the most height-limited green's blank-path
+# aspect (VBw/VBh = 0.5508) sits above the 0.5207 ratio at which height starts to bind -- so this
+# changes no output today. It is fixed because the day a tall narrow green meets a three-line footer,
+# the failure is a green clipped by its own panel, and nothing in the pipeline is watching for that.
+GRN_PANEL_W_IN = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)
+GRN_PANEL_H_IN = config.CARD_H_IN - 2*0.07 - 0.50 - (3*0.125 + 0.125)
+
+
 def _blank_green(meta, tournament, rebuilt=False):
     """A green we will NOT read. Draw the real outline -- that geometry IS measured, it comes from
     OSM -- with ruled lines to mark your own read, and say plainly why there are no arrows. Printing
@@ -568,9 +602,9 @@ def _blank_green(meta, tournament, rebuilt=False):
         # The scalar mean of the two axes, which is the ground scale tools/check_scale.py divides the
         # laid-out drawing by; render() sizes against the same mean for the same reason.
         px_m = ((xmax-xmin)*mlon(clat)/meta['W'] + (ymax-ymin)*mlat(clat)/meta['H']) / 2.0
-        grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)
-        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - 0.18
-        kf = min(0.36*px_m/4.572, grn_w_in/VBw, grn_h_in/VBh)   # legal ceiling, then fit the panel
+        # The SAME panel render() sizes a measured green into -- see GRN_PANEL_W_IN. This branch used to
+        # spell the height itself, with a one-line footer allowance render() had already replaced.
+        kf = min(0.36*px_m/4.572, GRN_PANEL_W_IN/VBw, GRN_PANEL_H_IN/VBh)  # legal ceiling, then the fit
         wattr, hattr = f'{VBw*kf:.3f}in', f'{VBh*kf:.3f}in'
         wrapopen = ('<div style="display:flex;align-items:center;justify-content:center;'
                     'width:100%;height:100%">'); wrapclose = '</div>'
@@ -1160,30 +1194,10 @@ def render(hole, tournament=False):
         # Nothing in the book said that before: "fit to page" on A4 happens to shrink a Letter sheet,
         # which is safe, but any deliberate enlargement is not.
         legal_kf = 0.36 * px_m / 4.572                                   # legal ceiling
-        # .grn column width must match generate.py's CSS: card minus padding, minus the 1px
-        # flex gap, times the .grn share (2.4 of 1.6+2.4). Measured in-browser at 2.010in.
-        # Why 2.4/4.0 and not wider. 172 of 198 greens are limited by this 2.010 in column rather than
-        # by the Rule 4.3 cap, so a wider share would draw them bigger -- but the hole map pays for it,
-        # and measured, the trade is not worth taking:
-        #     1.5/2.5 -> green 2.093 in (+4.2%), 101 of 198 hole maps shrink 6%
-        #     1.4/2.6 -> green 2.177 in (+8.3%), 119 of 198 hole maps shrink 13%
-        # Only the hole maps whose viewBox is SHORTER than 100*LAY_H/LAY_W are affected (108 of 198 are
-        # height-limited today and lose nothing), which is why the cost lands on about half of them. And
-        # the 26 greens already at the legal cap gain zero from any of this. So the whole exchange buys
-        # 0.08 in on a green that is already 2 in across, at the price of shrinking half the hole maps.
-        # Left alone deliberately; do not re-open it without re-measuring those two lines.
-        grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)        # .grn column width
-        # Footer allowance. This was a hardcoded 0.18 in, which assumed a ONE-LINE footer. It can be
-        # three: at 7.5pt with normal leading a line is ~0.125 in, and a five-tee course prints "feeds
-        # ... %" then "Nyd deep * NB NW * three tees" then the carry/elevation playline. 0.18 in
-        # under-reserves by up to 0.32 in, so a green sized against it would be too tall for its panel.
-        # Precautionary: measured across the corpus, HEIGHT binds on 0 of 198 greens -- 172 are limited
-        # by the 2.01 in column width and 26 by the Rule 4.3 cap -- so this changes no output today. It
-        # is fixed because the day a tall narrow green meets a three-line footer, the failure is a green
-        # clipped by its own panel, and nothing in the pipeline is watching for that.
-        foot_lines_in = 3 * 0.125 + 0.125                                # 3 footer lines + playline
-        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - foot_lines_in      # minus header + foot
-        fit_kf = min(grn_w_in/VBw, grn_h_in/VBh)                         # fit the whole frame
+        # The panel itself -- one spelling for this path and the blank one, which used to reserve a
+        # one-line footer and so gave itself 0.32 in more room for the same card. Every measurement and
+        # every reason behind the two numbers is at GRN_PANEL_W_IN; do not re-derive them here.
+        fit_kf = min(GRN_PANEL_W_IN/VBw, GRN_PANEL_H_IN/VBh)              # fit the whole frame
         kf = min(legal_kf, fit_kf)
         wattr, hattr = f'{VBw*kf:.3f}in', f'{VBh*kf:.3f}in'
         wrapopen = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%">'
