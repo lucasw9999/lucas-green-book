@@ -5450,28 +5450,70 @@ def test_legal_10s_licence_and_copyleft_columns_are_the_ones_the_installed_metad
     # machine, and the proof is a SECOND reading -- the raw metadata fields, not `_installed_licence`'s
     # answer restated. A hard floor cannot say this: `>= 5` against an actual 8 left room for three rows
     # to fall out of the check silently, and a row that falls out takes both of its published cells with
-    # it. Vacuity is refused by the same assertion: an empty environment makes every row not-installed,
-    # and every one of them is then named here with the reason this machine gives.
-    silent = []
+    # it.
+    #
+    # THE SECOND READING HAS TO READ WHAT THE FIRST ONE READS, and it did not: it took the `License-File`
+    # NAME instead of that file's TITLE. `lazrs` publishes its licence in that one place and nowhere else,
+    # so its second reading came back ['', '', '', 'LICENSE.txt'], which names no family -- and lazrs is
+    # the row that motivated the fourth source. Probed by making each of the nine rows go silent in turn:
+    # eight fired here, lazrs did not, so the only thing covering the row this floor was written for was
+    # the sibling doctoring test. The title is read below, from the same file the wheel ships.
+    #
+    # VACUITY IS REFUSED BY A LIVE MEASUREMENT, not by the accounting line under it. With all nine
+    # distributions simulated absent -- raising what importlib.metadata really raises, nothing
+    # uninstalled -- this test PASSED GREEN at confirmed == [] and uncheckable == 9, because an absent row
+    # continues out of this loop and 0 + 9 == 9. The retired `>= 5` floor did refuse exactly that state
+    # and said so ("only 0 of 9 rows could be checked ... so this test is mostly measuring nothing"),
+    # while the comment here claimed the replacement still did. So `readable` is collected as well as
+    # `silent`, and a run where NOTHING on the machine publishes a licence fails instead of passing.
+    def _licence_file_title(dist):
+        """The first non-empty line of the first `License-File` the wheel ships, or "".
+
+        The fourth place PEP 639 allows, and the only one `lazrs` uses. Read off the file rather than
+        off its NAME, which is what made this row invisible to the floor below.
+        """
+        for fname in (dist.metadata.get_all("License-File") or [])[:1]:
+            for cand in (f"licenses/{fname}", fname):
+                try:
+                    text = dist.read_text(cand)
+                except OSError:
+                    text = None
+                if text:
+                    return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        return ""
+
+    silent, readable = [], []
     for name, _v, _lic, _cp in rows:
-        if name in confirmed:
-            continue
         try:
-            meta = importlib.metadata.metadata(_norm_dist(name))
+            dist = importlib.metadata.distribution(_norm_dist(name))
         except _NOT_INSTALLED:
             continue                              # absent: unreadable, and proved so
+        meta = dist.metadata
         published = [(meta.get("License-Expression") or "").strip(),
                      " ".join(c.split("::")[-1].strip() for c in (meta.get_all("Classifier") or [])
                               if "License ::" in c),
                      (meta.get("License") or "").strip(),
-                     " ".join(meta.get_all("License-File") or [])]
-        if any(published) and _licence_families(" ".join(published))[0]:
+                     _licence_file_title(dist)]
+        if not (any(published) and _licence_families(" ".join(published))[0]):
+            continue                              # installed and genuinely silent: uncheckable, proved
+        readable.append(name)
+        if name not in confirmed:
             silent.append(f"{name}: publishes {[p for p in published if p]} and was not confirmed")
     assert not silent, (
         f"a row in legal/10 fell out of this check while its own installed metadata does publish a "
         f"licence, so its Licence and Copyleft cells are graded by nothing:\n  " + "\n  ".join(silent)
         + f"\n  Confirmed {sorted(confirmed)} of {len(rows)} rows; uncheckable:\n  "
         + "\n  ".join(uncheckable or ["none"]))
+    assert readable, (
+        f"not one of legal/10's {len(rows)} rows could be read on this machine, so this test confirmed "
+        f"nothing and its accounting line below is satisfied by 0 + {len(rows)} == {len(rows)}. That is "
+        f"the state the retired `>= 5` floor refused. The document publishes its own default-install "
+        f"table and `pip install -r requirements.txt` installs every row in it -- run that before "
+        f"trusting a pass here. Uncheckable:\n  " + "\n  ".join(uncheckable or ["none"]))
+    assert len(confirmed) >= len(readable), (
+        f"{len(readable)} rows publish a licence this file can read and only {len(confirmed)} were "
+        f"confirmed. Every readable row has to be graded, or the ones that fall out take both of their "
+        f"published cells with them: readable {sorted(readable)}, confirmed {sorted(confirmed)}.")
     assert len(confirmed) + len(uncheckable) == len(rows), (
         f"legal/10 has {len(rows)} rows and this graded {len(confirmed)} + {len(uncheckable)} of them. "
         f"A row that is neither confirmed nor reported uncheckable is a row nothing read.")
