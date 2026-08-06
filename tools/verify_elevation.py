@@ -103,6 +103,7 @@ sys.path.insert(0, ROOT)
 # The project's ONE figure of the Earth. Re-declaring it here is how the value stayed wrong through
 # two audits: ten files carried the literal and none imported it. See the note in geo.py.
 from geo import mlat, mlon      # noqa: E402 -- ROOT must be on sys.path first
+import surface_io               # noqa: E402 -- read_pair: the one definition of a readable pair
 
 # THE TEE REGION, and it is not the same question on this tool's two tee branches.
 #
@@ -344,7 +345,16 @@ def check_course(slug):
         meta_p = os.path.join(config.COURSE_DIR, "dem_hd", f"hole{hn:02d}.json")
         if not os.path.isfile(meta_p):
             continue
-        _meta = json.load(open(meta_p))
+        # THE PAIR, read as a pair -- surface_io.read_pair, this project's one definition of a surface
+        # worth measuring through. The sidecar was loaded here with json.load and the array below with
+        # np.load, so neither the shape the sidecar records nor its array_sha256 was checked, and a torn
+        # pair breaks BOTH halves of this tool's comparison at once: the polygon it samples the 3DEP
+        # reference over comes from the sidecar, and the absolute elevation it holds that reference
+        # against comes from the array beside it. The disagreement would then be reported as data, in
+        # the one line whose whole job is to bound our own processing.
+        # It raises rather than skipping the hole on purpose: a checker that quietly drops the one green
+        # whose pair is torn still prints a median and a worst case over "the corpus".
+        _a_raw, _meta, _digest = surface_io.read_pair(meta_p[:-len(".json")])
         gla, glo = _meta["green_center"]
         # The reference reads the green POLYGON, which IS the region the pipeline reads, so on the
         # green side what is left is disagreement about the data. At a MAPPED tee it reads the WHOLE
@@ -383,7 +393,7 @@ def check_course(slug):
         # in the one line whose job is to bound our own processing. It also skipped the >1e30 NoData
         # sentinels that green_elevation strips.
         try:
-            _a = np.load(meta_p.replace(".json", ".npy")).astype(float)
+            _a = _a_raw.astype(float)     # already checked against its sidecar; see read_pair above
             _a[~np.isfinite(_a)] = np.nan
             _a[np.abs(_a) > 1e30] = np.nan
             _gpx = fhe.np_green_mask(_a.shape, _meta) if hasattr(fhe, "np_green_mask") else None

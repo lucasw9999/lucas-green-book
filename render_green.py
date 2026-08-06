@@ -834,9 +834,13 @@ def render(hole, tournament=False):
             f"hole {hole} of {config.SLUG}: the green surface and its metadata do not match -- the\n"
             f"{torn}\n"
             f"  One of the two is from a different run, so the green ring would be placed on the wrong\n"
-            f"  ground. Rebuild that hole:\n"
+            f"  ground. Rebuild that hole, and RE-MEASURE ITS HEIGHT: fetch_hole_elev.py runs at\n"
+            f"  PIPELINE.md step 6, before this stage, and it read the same pair -- so hole_elev.json\n"
+            f"  already holds a figure measured through this tear, and rebuilding the surface alone\n"
+            f"  makes the render succeed while the card goes on printing that figure:\n"
             f"    COURSE={config.SLUG} ONLY={hole} OVERWRITE=1 python3 fetch_dem_hd.py\n"
-            f"    COURSE={config.SLUG} ONLY={hole} python3 fetch_dem.py")
+            f"    COURSE={config.SLUG} ONLY={hole} python3 fetch_dem.py\n"
+            f"    COURSE={config.SLUG} python3 fetch_hole_elev.py --write")
     # NoData sentinels must die before anything measures this surface. USGS 3DEP ships
     # -3.4028235e38; a single one of those makes the 15 cm contour loop iterate over a 3.4e38
     # range and the process is OOM-killed with no message at all (rc=137, zero output).

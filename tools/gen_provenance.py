@@ -30,7 +30,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 import distribution  # noqa: E402
-import surface_io  # noqa: E402  -- for DIGEST_KEY only; see _digest_coverage
+import surface_io  # noqa: E402  -- read_pair and DIGEST_KEY; see _seamless_cells and _digest_coverage
 OUT = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
 
 # The card suppresses any measured tee-to-green change under this as level -- generate.py's
@@ -115,8 +115,17 @@ def _seamless_cells(slug):
 
     render_green binds a course at import, so COURSE is pointed at the slug being measured -- which
     exists by construction here -- and put back. The measurement itself is course-agnostic.
+
+    THE ARRAY AND ITS SIDECAR ARE READ AS A PAIR, through surface_io.read_pair. The selection below
+    still reads each sidecar alone, because "is this green seamless?" is a question about the sidecar;
+    the MEASUREMENT is taken from a pair whose recorded shape and array_sha256 have been checked. It was
+    a bare json.load plus a bare np.load, and the figure this function publishes into a legal exhibit is
+    derived from BOTH halves -- the second differences come from the array, the metres-per-pixel they are
+    measured against come from the sidecar's bbox and W/H. A pair torn by commit_surface's two
+    os.replace calls would put a source cell in legal/03 that nothing measured, which is the exact
+    defect this function exists to have fixed (a hand-typed "1 m" that overstated resolution ~9x).
     """
-    metas = []
+    bases = []
     for p in sorted(glob.glob(os.path.join(ROOT, "courses", slug, "dem_hd", "hole*.json"))):
         try:
             with open(p, encoding="utf-8") as fh:
@@ -124,8 +133,8 @@ def _seamless_cells(slug):
         except (OSError, ValueError):
             continue
         if "seamless" in str(m.get("source", "")).lower() and os.path.exists(p[:-5] + ".npy"):
-            metas.append((p[:-5] + ".npy", m))
-    if not metas:
+            bases.append(p[:-5])
+    if not bases:
         return []
     prev = os.environ.get("COURSE")
     os.environ["COURSE"] = slug
@@ -139,8 +148,9 @@ def _seamless_cells(slug):
         else:
             os.environ["COURSE"] = prev
     out = []
-    for ap, m in metas:
-        arr = np.load(ap).astype("float64")
+    for b in bases:
+        raw, m, _digest = surface_io.read_pair(b)
+        arr = raw.astype("float64")
         arr[~np.isfinite(arr)] = np.nan
         arr[np.abs(arr) > 1e30] = np.nan
         xmin, ymin, xmax, ymax = m["bbox"]
