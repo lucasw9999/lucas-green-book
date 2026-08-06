@@ -9459,6 +9459,13 @@ def test_nothing_tracked_carries_a_work_identity_or_a_home_path():
 
     patterns = [
         (re.compile(r"/Users/[A-Za-z0-9_.-]+"), "an absolute home path (also unrunnable elsewhere)"),
+        # THE OTHER TWO PLATFORMS' HOME PATHS. The docstring has always said "an absolute home path" and
+        # the set matched macOS's spelling only, so `/home/<name>/...` (every Linux box, and every CI
+        # container this project could be built in) and `C:\Users\<name>\...` were the two shapes it
+        # named and did not look for. Both leak a username out of a PUBLIC repository exactly as
+        # /Users/<name> does, and both are just as unrunnable on anyone else's machine.
+        (re.compile(r"/home/[A-Za-z0-9_.-]+/"), "an absolute home path (Linux; unrunnable elsewhere)"),
+        (re.compile(r"[Cc]:\\+Users\\+[A-Za-z0-9_.-]+"), "an absolute home path (Windows)"),
         (re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]*apple\.com", re.I), "a work email address"),
         (re.compile(r"\b(?:luyao[a-z_]*|lu9999|luyao-wu)\b", re.I), "a work username"),
         (re.compile(r"\b[a-z0-9.-]*\.apple\.com\b", re.I), "an internal hostname"),
@@ -24682,6 +24689,24 @@ def test_the_provenance_record_dates_the_geometry_not_just_the_lidar():
     """
     with open(os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md"), encoding="utf-8") as f:
         prov = f.read()
+
+    def geometry_cell(slug):
+        """legal/03's Geometry cell for one course, keyed on the name that course.json publishes.
+
+        Per ROW, because the document-wide `f"extract **{want}**" not in prov` this replaces was
+        satisfied by ANY row carrying that date -- and every course in this corpus was fetched within
+        a few days of the others, so a row whose own geometry went undated passed on a neighbour's.
+        """
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
+            name = (json.load(fh).get("name") or "").strip()
+        for line in prov.splitlines():
+            if not line.lstrip().startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) > 2 and cells[0].strip("*` ") == name:
+                return name, cells[2]
+        return name, None
+
     checked, problems, seen = 0, [], collections.Counter()
     for slug in CORPUS:
         stamps = []
@@ -24698,15 +24723,29 @@ def test_the_provenance_record_dates_the_geometry_not_just_the_lidar():
             continue                      # no OSM extract at all (a yardage-mode course may have none)
         checked += 1
         want = min(stamps)[:10]
-        if f"extract **{want}**" not in prov:
+        name, cell = geometry_cell(slug)
+        if cell is None:
             problems.append(
-                f"{slug}: its oldest OSM extract is {want} and legal/03 does not say so. That table "
-                f"dates the LiDAR to the day; leaving the geometry undated means a reader cannot tell a "
-                f"current hole shape from one traced before the course was re-bunkered. Re-run "
-                f"tools/gen_provenance.py.")
-        if "not recorded" in prov and want:
-            # a row claiming no date while the file has one is worse than either alone
-            pass
+                f"{slug}: legal/03 has no table row for {name!r}, so its geometry is undated by "
+                f"omission. Re-run tools/gen_provenance.py.")
+            continue
+        if f"extract **{want}**" not in cell:
+            problems.append(
+                f"{slug}: its oldest OSM extract is {want} and legal/03's own row for it reads "
+                f"{' '.join(cell.split())[:120]!r}. That table dates the LiDAR to the day; leaving the "
+                f"geometry undated means a reader cannot tell a current hole shape from one traced "
+                f"before the course was re-bunkered. Re-run tools/gen_provenance.py.")
+        # A ROW CLAIMING NO DATE WHILE THE FILE HAS ONE is worse than either alone, and this branch was
+        # `pass`: 100% executed, unable to fail. It could not be written against the whole document
+        # either, because "not recorded" is what legal/03 says about a tile PROJECT LABEL and about
+        # missing tee ratings, in rows whose geometry is dated to the day. Scoped to the Geometry cell,
+        # it says what it was evidently meant to say.
+        if re.search(r"not recorded|\bnone\b", cell, re.I):
+            problems.append(
+                f"{slug}: legal/03's Geometry cell says {' '.join(cell.split())[:80]!r} while its "
+                f"extract on disk is dated {want}. A row that tells a reader the geometry's age was "
+                f"never recorded, about a file that records it, is worse than an undated row: it "
+                f"forecloses the question instead of leaving it open.")
     assert checked >= 10, f"only {checked} courses had an OSM extract to date"
     assert_no_course_skipped(seen, "test_the_provenance_record_dates_the_geometry_not_just_the_lidar")
     assert "Geometry carries a date for the same reason" in prov, (
@@ -32808,7 +32847,10 @@ def test_a_drained_pond_cannot_hide_behind_a_new_stream_in_the_shrink_guard(tmp_
         # ...and the same in the other direction: a lost stream is not covered by a new pond
         with pytest.raises(SystemExit) as ei:
             check(waterway=13, water=9)
-        assert "waterway 14 -> 13" in msg or "waterway 14 -> 13" in str(ei.value), (
+        # `... in msg or ... in str(ei.value)`: `msg` is the FIRST abort's message, captured for the
+        # pond case above, and it can never carry this one's text -- so the disjunct graded a stale
+        # string and could only ever widen what this accepts. Read the abort that just happened.
+        assert "waterway 14 -> 13" in str(ei.value), (
             "a lost watercourse was hidden by an added pond: %s" % ei.value)
         assert "ALLOW_HAZARD_SHRINK" in str(ei.value), str(ei.value)
 
@@ -33129,9 +33171,22 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
         "fetch_osm.py must name where the pre-re-fetch books are kept. Without the path this is "
         "another unlocatable claim, which is exactly what the surrounding comment complains of.")
     low = src.lower()
-    for want, why in (("greenbook.html", "say which artifact settled it"),
-                      ("water", "say what was compared")):
-        assert want in low, f"fetch_osm.py must {why}"
+    assert "greenbook.html" in low, "fetch_osm.py must say which artifact settled it"
+    # `assert "water" in low` stood here for the second half, and that word occurs 65 times in this
+    # module: it is satisfied by every hazard-guard comment, every census key and the shrink messages,
+    # so it could not fail whatever the paragraph said. What has to be there is the CLAIM -- that the
+    # two drawn water classes were counted on both sides and came out equal -- and it is asserted as a
+    # clause, over the flowed comment so a line wrap cannot hide it.
+    flowed = " ".join(re.sub(r"(?m)^\s*#\s?", "", src).split()).lower()
+    for pat, why in ((r"drawn water polygon count and the drawn watercourse polyline count are identical",
+                      "say that BOTH drawn water classes were counted and matched -- the areas and the "
+                      "lines are different lists in render_hole and the card footer prints them "
+                      "separately"),
+                     (r"no water was lost", "state the conclusion the counts support, or a reader takes "
+                      "the surrounding note about the lost caches for the answer")):
+        assert re.search(pat, flowed), (
+            f"fetch_osm.py must {why}. Its pre-re-fetch paragraph reads:\n  "
+            + flowed[max(0, flowed.find("pre-re-fetch") - 200):flowed.find("pre-re-fetch") + 400])
     m = re.search(r"(\d+) pre-re-fetch greenbook\.html files", src)
     assert m and int(m.group(1)) == 12, (
         "fetch_osm.py must say how many pre-re-fetch books survived; 12 were preserved")
