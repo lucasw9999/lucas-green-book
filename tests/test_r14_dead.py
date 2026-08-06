@@ -19,29 +19,32 @@ Because a genuinely unused import's removal changes no runtime behaviour by defi
 no red-then-green to show here. What CAN regress is the pathlib-based globbing this import was
 easy to mistake for, so that is what the tests below actually exercise.
 
-L-1 (geo.py:139, vulture -- `utm_epsg(lon)` has zero callers anywhere in the repo, including the
-test suite): NOT deleted. `git log -S'utm_epsg' --oneline` returns exactly one commit,
+L-1 (geo.py:139, vulture -- `utm_epsg(lon)` had zero callers anywhere in the repo, including the
+test suite): NOT deleted, and since a5b981a NOT callerless either. `git log -S'utm_epsg' --oneline`
+returned exactly one commit when the finding was written,
 d2b0d1073e259f9cf201d1fc15414fca0bcb58da ("Fix two latent data bugs: vertical units by guesswork,
 LiDAR chosen by date") -- the commit that ADDED the function, not one that removed a caller. Its
 message frames geo.py as the single shared home for "the same two facts ... previously derived
 independently in fetch_dem_hd.py and fetch_trees.py": vertical units, and the UTM zone. That same
 diff wired BOTH files to the new `geo.vertical_scale()` for the first fact, but never finished the
 second -- fetch_dem_hd.py and fetch_trees.py each kept their own hand-copied
-`UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)` instead of calling `geo.utm_epsg(lon)`,
-and both still do today (fetch_dem_hd.py:142, fetch_trees.py:46, byte-identical). Commit
-777157168ae70e59d77645616bce2c81744d06de ("Cap the hole-to-green binding, and stop fetch_dem_hd
-guessing a zone or a Z unit") later touched the three lines around fetch_dem_hd.py's copy --
-removing a silent longitude default of -121.0 -- but that diff (`git show 7771571 --
-fetch_dem_hd.py`) shows the zone FORMULA itself untouched; it did not migrate the call either.
-
-So this is DROPPED_USE, not harmless dead weight: geo.utm_epsg is exactly the kind of shared
+`UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)` instead of calling `geo.utm_epsg(lon)`.
+So it was DROPPED_USE rather than harmless dead weight: geo.utm_epsg is exactly the kind of shared
 function this module's own top-of-file note says nine OTHER re-declared constants cost two audits
-to catch, just never finished for this one fact. Fixing it means editing fetch_dem_hd.py and
-fetch_trees.py to call geo.utm_epsg(lon), which is outside this round's owned files (geo.py,
-tools/check_scale.py) -- reported here, not fixed.
+to catch, just never finished for this one fact.
 
-The tests below for L-1 are tripwires against exactly the divergence the finding describes, not a
-red-then-green proof of a change -- none was made to geo.py for this finding.
+THE MIGRATION IS FINISHED. a5b981a wired both files to `UTM = geo.utm_epsg(_LON)`, so the fact has
+one home at last and the two hand-copies are gone. What the L-1 test below grades therefore flipped
+with it: it used to be a tripwire pinning the duplicated line's exact text so the two copies could
+not drift apart silently, and it now grades the property that replaced that hazard -- both modules
+CALL geo.utm_epsg for the zone their surfaces and tree positions are built in, and neither spells
+the zone arithmetic itself. That is the property worth protecting from here on; the duplication it
+used to pin cannot come back without failing it.
+
+And geo.utm_epsg is NOT safe to delete, which is what the retired tripwire's own failure message
+said would follow from this migration. It said the opposite of what finishing the migration means:
+the function now has two real callers, and vulture's original zero-caller reading is what stopped
+being true.
 """
 import ast
 import os
@@ -131,51 +134,81 @@ def test_check_scale_pathlib_glob_calls_still_work(tmp_path, monkeypatch):
 
 
 # =================================================================================================
-# L-1 -- geo.py:139, `utm_epsg(lon)`, zero callers anywhere in the repo (vulture). NOT deleted --
-# see module docstring above for the DROPPED_USE evidence and the two commit shas.
+# L-1 -- geo.py:139, `utm_epsg(lon)`. Zero callers when vulture flagged it (DROPPED_USE, not dead
+# weight); two callers since a5b981a finished the migration d2b0d10 started. See the module
+# docstring above.
 # =================================================================================================
 
-_DUPLICATED_ZONE_FORMULA = 'UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)'
+# The arithmetic itself, as the two callers used to spell it inline. Kept only to name what must NOT
+# come back, and matched as the false-northing constant in EXECUTABLE code -- both files still quote
+# the retired line in a comment, on purpose, and a whole-file substring match would read those
+# quotations as the duplication they are recording the end of.
+_ZONE_FALSE_NORTHING = 26900
 
 
 @pytest.mark.parametrize("relpath", ["fetch_dem_hd.py", "fetch_trees.py"])
-def test_utm_epsg_dropped_use_is_still_duplicated_verbatim_in_its_intended_callers(relpath):
-    """Pins the exact hand-copied UTM-zone line in both files geo.py's own history names as the
-    intended callers of geo.utm_epsg().
+def test_both_intended_callers_get_their_utm_zone_from_geo_utm_epsg(relpath):
+    """Both files geo.py's own history names as the intended callers of geo.utm_epsg() call it, and
+    neither derives the zone itself.
 
-    This is a source match, and deliberately so -- unlike the discouraged `"utm_epsg" not in src`
-    pattern, it is not standing in for a behavioural proof of a change (there is none to prove
-    here: no edit was made to fix the dropped use). It is a tripwire: if this line's text ever
-    changes in EITHER file, this fails and says exactly where to look, rather than the two copies
-    silently drifting apart -- the specific failure mode geo.py's own module docstring exists to
-    prevent, playing out for this one fact anyway.
+    This REPLACES a tripwire that pinned the hand-copied line's exact text in both files. That was
+    the right guard while the duplication existed -- it would have caught the two copies drifting
+    apart, which is the failure mode geo.py's module docstring exists to prevent -- but a5b981a
+    migrated both callers to `UTM = geo.utm_epsg(_LON)`, so pinning the copies became a guard for a
+    hazard that no longer exists. Inverted rather than deleted: the duplication cannot return without
+    failing this, and the migration cannot be silently backed out either.
+
+    Read off the AST rather than the file text, in both directions. `26900` is the zone formula's
+    false-northing constant, and both files QUOTE the retired line in a comment recording why it is
+    gone, so a substring match over the source would fail on the very comments that document the fix.
+    And the call is graded as the value UTM is BOUND to, not merely as a call appearing somewhere:
+    UTM is what every Transformer in each file is constructed with, so a call whose result went
+    nowhere would leave the zone as unsourced as the copy did.
     """
     src = (pathlib.Path(ROOT) / relpath).read_text()
-    assert _DUPLICATED_ZONE_FORMULA in src, (
-        f"{relpath} no longer hand-duplicates geo.utm_epsg()'s formula verbatim. If it now calls "
-        f"geo.utm_epsg(lon) instead, the DROPPED_USE finding this file documents has been fixed "
-        f"and geo.utm_epsg is safe to delete -- update this test and this file's module docstring "
-        f"rather than leaving it to fail. If the formula changed by hand instead, that is the "
-        f"exact silent-drift bug the finding warned about.")
+    tree = ast.parse(src)
+
+    bound = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Assign)
+             and any(isinstance(t, ast.Name) and t.id == "UTM" for t in n.targets)
+             and isinstance(n.value, ast.Call)
+             and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == "utm_epsg"
+             and isinstance(n.value.func.value, ast.Name) and n.value.func.value.id == "geo"]
+    assert bound, (
+        f"{relpath} no longer binds UTM to geo.utm_epsg(...). Every Transformer in that file is "
+        f"built from UTM, so the zone every green surface or tree position is computed in would be "
+        f"coming from somewhere other than this project's one home for that fact -- which is the "
+        f"DROPPED_USE finding this file documents, reopened.")
+
+    copied = [n for n in ast.walk(tree)
+              if isinstance(n, ast.Constant) and isinstance(n.value, int)
+              and not isinstance(n.value, bool) and n.value == _ZONE_FALSE_NORTHING]
+    assert not copied, (
+        f"{relpath} spells the UTM zone formula's own {_ZONE_FALSE_NORTHING} in executable code "
+        f"again (line(s) {sorted({n.lineno for n in copied})}). Two copies of the zone arithmetic is "
+        f"exactly the silent-drift hazard geo.utm_epsg was added to end, and the zone decides which "
+        f"projection every green surface is built in.")
 
 
 @pytest.mark.parametrize("lon", [-179.9, -121.0, -122.4, -71.0, 0.0, 34.5, 179.9])
-def test_utm_epsg_matches_the_duplicated_inline_formula_numerically(lon):
-    """Cross-checks geo.utm_epsg(lon) against the SAME arithmetic the two duplicated copies use,
-    evaluated independently here rather than by importing fetch_dem_hd.py/fetch_trees.py (both run
-    course-bound code at import time that needs a real course.json to resolve). Paired with the
-    verbatim source match above: that one catches the duplicate's TEXT changing, this one would
-    additionally catch a change that kept the same textual shape but produced a different number
-    (e.g. a stray off-by-one), which a text match alone cannot.
+def test_utm_epsg_matches_the_zone_arithmetic_derived_independently(lon):
+    """Cross-checks geo.utm_epsg(lon) against the SAME arithmetic its two callers used to spell
+    inline, evaluated independently here rather than by importing fetch_dem_hd.py/fetch_trees.py
+    (both run course-bound code at import time that needs a real course.json to resolve). Paired
+    with the structural test above: that one catches the callers going back to deriving the zone
+    themselves, this one would catch geo.utm_epsg changing what it computes -- an off-by-one in the
+    zone, say -- which no structural check can see now that the callers hold no second copy to
+    disagree with.
     """
     duplicated = "EPSG:%d" % (26900 + int((lon + 180) / 6) + 1)
     assert geo.utm_epsg(lon) == duplicated
 
 
 def test_utm_epsg_matches_its_own_docstring_examples():
-    """Sanity check on the function itself, since nothing else in the suite calls it -- that
-    absence is the whole L-1 finding. Confirms it still computes what its own docstring claims:
-    26910 for a California longitude (zone 10), 26919 for a Massachusetts one (zone 19).
+    """Sanity check on the function itself. Nothing in the suite called it when L-1 was written --
+    that absence was the whole finding -- and fetch_dem_hd.py and fetch_trees.py call it now.
+    Confirms it still computes what its own docstring claims: 26910 for a California longitude
+    (zone 10), 26919 for a Massachusetts one (zone 19).
     """
     assert geo.utm_epsg(-121.0) == "EPSG:26910"
     assert geo.utm_epsg(-71.0) == "EPSG:26919"
