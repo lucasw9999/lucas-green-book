@@ -279,6 +279,21 @@
     "could be wrong."
   ],
   "build_mode": "full",
+  "_rebuilt": [
+    "OPTIONAL, and only ever printed by a build_mode 'yardage' book: the year this course was",
+    "rebuilt, as a bare year -- \"rebuilt\": 2025. The yardage guide card then says \"this course",
+    "was rebuilt in <year> with new greens\" as the reason its greens are blank. Leave it out and",
+    "the card gives the reason every yardage book supports (no trustworthy post-construction",
+    "green-surface data) with NO year, which is correct and is the safe default -- so set it only",
+    "if the year is a fact you can point at.",
+    "",
+    "A bare year is the clean way to state it. generate.py will also read one out of prose in",
+    "_status or dem_source, because the two local courses that state a rebuild state it there, but",
+    "it prints nothing rather than guess: 'mid-2025', '2025?', 'will be rebuilt in 2027',",
+    "'scheduled to be rebuilt in 2028', 'not rebuilt since 1990', 'no rebuild; last renovated",
+    "1974' and 'rebuilt after the 2024-12-17 LiDAR flight' all print no year at all. Do not rely",
+    "on the prose reader for a NEW course -- set this key."
+  ],
   "_greens_possibly_outdated": [
     "OPTIONAL: hole numbers whose greens were rebuilt AFTER the LiDAR flight. Those cards print",
     "the real map but are labelled 'pre-rebuild data' and the guide page names the holes.",
