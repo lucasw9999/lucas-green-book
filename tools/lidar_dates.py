@@ -37,6 +37,11 @@ except ImportError:                      # pragma: no cover - stdlib since 3.9
     ZoneInfo = None
 
 GPS_EPOCH = dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)
+# THE PLAUSIBILITY WINDOW a decoded date has to land in, hoisted out of tile_dates.plausible() so the
+# only other place that reasons about it -- MASS_BUCKETS below -- cannot drift away from the check that
+# actually decides whether a date is published.
+PLAUSIBLE_FROM = dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc)
+PLAUSIBLE_TO = dt.datetime(2040, 1, 1, tzinfo=dt.timezone.utc)
 LEAP_SECONDS = 18          # GPS - UTC since 2017-01-01; LiDAR here is all post-2017.
                            # A pre-2017 survey would need 17 (or 16 before 2015-07-01). The error is
                            # ONE SECOND, so it can only change the printed DATE for a flight within a
@@ -106,6 +111,35 @@ MAX_TILE_SPAN_DAYS = WORST_MEASURED_TILE_SPAN_DAYS * TILE_SPAN_MARGIN     # 200.
 MAX_ENDPOINT_GAP_S = 3600.0
 MAX_ISOLATED_VALUES = 8
 ENDPOINT_WINDOW = 64
+# WHAT THE CLUSTER-MASS COUNTER MAY ALLOCATE, ENFORCED RATHER THAN ASSERTED. _Extremes.add buckets every
+# gps_time in the tile at MAX_ENDPOINT_GAP_S and counts them with np.bincount. It used to offset that
+# bucket array by the CHUNK'S OWN lowest bucket, which makes the array SPAN-sized -- and a span is data,
+# so one junk-but-positive gps_time in a 2M-point chunk sized the allocation by itself:
+#     1e11 -> 27,692,129 buckets (0.22 GB)     1e12 -> 2.2 GB     1e15 -> 2.2 TB
+# REPRODUCED END TO END on a real LAZ carrying 3,000 clean returns plus one junk value: at 1e15 the tool
+# was SIGKILLed (exit 137) with no traceback and no refusal, and at 1e18 it died on an uncaught numpy
+# MemoryError. Both are the failure gps_to_utc's own docstring says this module fixed -- "crashed the
+# tool with a traceback rather than reporting 'no usable GPS time'" -- so the counter had regressed it.
+# The bound the old comment gave ("even a junk value four decades out only makes it ~350,000") is true
+# of a value four decades out and says nothing about one four millennia out: it was ASSERTED, not
+# enforced.
+#
+# So the array is offset by a FIXED window and values outside it are dropped before they can size
+# anything. The window is the 2000-2040 plausibility check tile_dates already applies, widened to cover
+# BOTH the adjusted and the unadjusted reading because tile_dates tries both. A value outside it cannot
+# be published under either reading, so dropping it from the mass count cannot change a printed date --
+# it can only leave an endpoint out there weighing 0, which refuses the tile, which is what tile_dates
+# does with such a value anyway. Measured over all 78 dated tiles in the corpus: every bucket used falls
+# in 54,838..118,657, inside a window of -102,578..525,840, so no real return is dropped.
+#
+# The ceiling is therefore a CONSTANT -- 628,419 buckets, 5.0 MB of int64 -- whatever the data says, and
+# it is enforced by construction rather than promised: bincount is asked for `b.max() - MASS_BUCKET_LO
+# + 1` buckets and b has been filtered to <= MASS_BUCKET_HI.
+_MASS_VALUE_LO = (PLAUSIBLE_FROM - GPS_EPOCH).total_seconds() + LEAP_SECONDS - 1_000_000_000
+_MASS_VALUE_HI = (PLAUSIBLE_TO - GPS_EPOCH).total_seconds() + LEAP_SECONDS
+MASS_BUCKET_LO = int(_MASS_VALUE_LO // MAX_ENDPOINT_GAP_S)
+MASS_BUCKET_HI = int(_MASS_VALUE_HI // MAX_ENDPOINT_GAP_S)
+MASS_BUCKETS = MASS_BUCKET_HI - MASS_BUCKET_LO + 1
 # WHAT THE 64-VALUE WINDOW CANNOT SEE, AND THE POINT CLOUD CAN. Everything above works on the extremes
 # window, and that is why one residue survived it: a junk cluster big enough to saturate the window
 # (measured: 32 or more readings) BECOMES the longest gap-free run inside it, so it is returned at
@@ -164,8 +198,9 @@ class _Extremes:
         self._hi = np.empty(0, dtype="float64")
         # HOW MANY POINTS EACH INSTANT HOLDS, bucketed at MAX_ENDPOINT_GAP_S -- the same "still the
         # same pass" distance the isolation walk already uses, so this adds no threshold to justify.
-        # One int per bucket: a 100-day acquisition is 2,400 of them, and even a junk value four
-        # decades out only makes it ~350,000. See MIN_ENDPOINT_CLUSTER_PTS for what it is for.
+        # One int per bucket that any point actually landed in: a 100-day acquisition is 2,400 of them,
+        # and a junk value cannot inflate it, because add() only counts buckets inside the fixed
+        # MASS_BUCKETS window. See MIN_ENDPOINT_CLUSTER_PTS for what it is for.
         self._mass = collections.defaultdict(int)
 
     def add(self, v):
@@ -181,13 +216,17 @@ class _Extremes:
         self._lo = np.sort(np.concatenate([self._lo, lo]))[:self.k]
         self._hi = np.sort(np.concatenate([self._hi, hi]))[-self.k:]
         # bincount, not unique: O(n) against unique's sort, on the hot path that reads every point of
-        # every tile. Offset by the chunk's own lowest bucket so the array is span-sized, not
-        # value-sized.
-        b = np.floor_divide(v, MAX_ENDPOINT_GAP_S).astype("int64")
-        b0 = int(b.min())
-        counts = np.bincount(b - b0)
+        # every tile. Offset by the FIXED MASS_BUCKETS window rather than by the chunk's own lowest
+        # bucket -- see MASS_BUCKETS for the one junk gps_time that turned that offset into an
+        # unbounded, data-sized allocation and an OOM kill. Filtered in FLOAT space, before any cast:
+        # a gps_time of 1e300 has no int64 to be cast to, and NaN and inf fail both comparisons.
+        keep = (v >= _MASS_VALUE_LO) & (v <= _MASS_VALUE_HI)
+        if not keep.any():
+            return
+        b = np.floor_divide(v[keep], MAX_ENDPOINT_GAP_S).astype("int64")
+        counts = np.bincount(b - MASS_BUCKET_LO)
         for i in np.flatnonzero(counts):
-            self._mass[b0 + int(i)] += int(counts[i])
+            self._mass[MASS_BUCKET_LO + int(i)] += int(counts[i])
 
     def cluster_mass(self, value):
         """How many points sit in `value`'s own temporal cluster -- its bucket and the two beside it,
@@ -390,11 +429,12 @@ def tile_dates(path, rings=()):
     None when it carries no usable GPS time.
 
     `first`/`last` are narrowed to the points lying over a green when `rings` is supplied and any
-    were found; `whole_first`/`whole_last` always span every point in the tile, so the caller can
-    contrast the two. Neither pair is a bare min/max: an endpoint must have another point within
-    MAX_ENDPOINT_GAP_S of it, so one bad clock reading can neither set the range nor pass unremarked.
-    `crs_placeable` is False when the tile declares no CRS, which is a fact about us rather than
-    about the survey.
+    were found; `whole_first`/`whole_last` span every point in the tile, so the caller can contrast
+    the two -- or are BOTH None when that set's own guards refuse it, which is not the same as a bare
+    min/max and is said out loud. Neither pair is a bare min/max: an endpoint must have another point
+    within MAX_ENDPOINT_GAP_S of it, so one bad clock reading can neither set the range nor pass
+    unremarked. `crs_placeable` is False when the tile declares no CRS, which is a fact about us
+    rather than about the survey.
 
     global_encoding bit 0 == 0 means GPS WEEK TIME: seconds since the start of the current GPS week,
     0..604800, with the week number recorded nowhere in the file. The absolute date is therefore NOT
@@ -493,11 +533,30 @@ def tile_dates(path, rings=()):
                   f"(raw range reaches {gps_to_utc(raw_lo)}..{gps_to_utc(raw_hi)}); no other point in "
                   f"the tile is within {MAX_ENDPOINT_GAP_S:.0f} s of them, so they date nothing")
         wres = whole_ext.endpoints()
-        wlo, whi = wres[:2] if wres else whole_ext.raw()
+        # NOT a bare min/max fallback. `wres is None` means the whole-tile set failed the SAME two
+        # guards the green-near set is held to -- the span bound and the cluster-mass floor -- and
+        # substituting whole_ext.raw() reported the very range they had just refused, so for the
+        # whole-tile set both guards were no-ops on the number that gets printed: the fallback is
+        # always equal to or wider than anything they would have allowed. And it said nothing.
+        # DEMONSTRATED on a tile whose greens date cleanly but whose whole set holds two pass-like
+        # epochs 401 days apart: it reported `whole 2012-06-21 .. 2013-07-27`, twice
+        # MAX_TILE_SPAN_DAYS, with no message of any kind. That pair is printed -- main() renders it as
+        # "over whole tiles the range would be X", whose whole job is to be the honest contrast against
+        # the green-narrowed range -- so an undefendable one is exactly the number this project does
+        # not print. Report nothing and say why instead; the caller carries None through.
+        # Only reachable when the GREENS dated: with no green points `dating is whole_ext`, so a
+        # refusal here has already returned above. A bad clock 2 km from any green still must not cost
+        # us a tile whose green returns are clean, which is why the tile itself survives this.
+        if wres is None:
+            wraw = whole_ext.raw()
+            print(f"    {os.path.basename(path)}: its WHOLE-tile gps_time range cannot be defended "
+                  f"(raw range {gps_to_utc(wraw[0])}..{gps_to_utc(wraw[1])}) -- the points over its "
+                  f"greens date cleanly, so the tile is still dated from those, but it reports no "
+                  f"whole-tile range to contrast against")
+        wlo, whi = wres[:2] if wres else (None, None)
         # A tile with times spanning years is raw (unadjusted) GPS time; sanity-check the result.
         def plausible(d):
-            return d is not None and (dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc) < d
-                                      < dt.datetime(2040, 1, 1, tzinfo=dt.timezone.utc))
+            return d is not None and PLAUSIBLE_FROM < d < PLAUSIBLE_TO
         first, last = gps_to_utc(lo, adjusted), gps_to_utc(hi, adjusted)
         if not plausible(first):
             adjusted = not adjusted
@@ -505,8 +564,9 @@ def tile_dates(path, rings=()):
         # The WHOLE-tile range, kept separate. main() used to build its "over whole tiles the range
         # would be" comparison out of the returned first/last -- which for a feeding tile is already
         # narrowed to the green points -- so the audit line understated the very range it exists to
-        # contrast against.
-        whole_first, whole_last = gps_to_utc(wlo, adjusted), gps_to_utc(whi, adjusted)
+        # contrast against. None when the set's own guards refused it, never a bare min/max.
+        whole_first = gps_to_utc(wlo, adjusted) if wlo is not None else None
+        whole_last = gps_to_utc(whi, adjusted) if whi is not None else None
         # ...and if the OTHER interpretation is implausible too, refuse. This used to return the
         # second result unchecked, so a tile with corrupt gps_time produced a nonsense date that was
         # written into course.json by --write and PRINTED in every book as "Measured from public USGS
@@ -606,6 +666,7 @@ def main():
     wholefirst = wholelast = None
     per_tile = {}
     nskip = 0
+    nwhole = nowhole = 0        # tiles whose whole-tile range is defendable, and tiles whose is not
     unplaceable = []
     for t in tiles:
         d = tile_dates(t, rings)
@@ -613,9 +674,14 @@ def main():
         if not d:
             print(f"  {name}: no GPS time"); continue
         first, last, nnear, crs_ok, wfirst, wlast = d
-        # accumulate the TRUE whole-tile range, not the green-narrowed one
-        wholefirst = wfirst if wholefirst is None else min(wholefirst, wfirst)
-        wholelast = wlast if wholelast is None else max(wholelast, wlast)
+        # accumulate the TRUE whole-tile range, not the green-narrowed one. A tile whose whole set its
+        # own guards refused contributes NOTHING here rather than a bare min/max -- see tile_dates.
+        if wfirst is not None:
+            wholefirst = wfirst if wholefirst is None else min(wholefirst, wfirst)
+            wholelast = wlast if wholelast is None else max(wholelast, wlast)
+            nwhole += 1
+        else:
+            nowhole += 1
         span = "" if day(first) == day(last) else f" .. {day(last)}"
         lf = first.astimezone(tz) if tz else first
         ll = last.astimezone(tz) if tz else last
@@ -660,9 +726,19 @@ def main():
     d1, d2 = day(allfirst), day(alllast)
     label = d1.isoformat() if d1 == d2 else f"{d1} to {d2}"
     if nskip:
-        w1, w2 = day(wholefirst), day(wholelast)
-        wl = w1.isoformat() if w1 == w2 else f"{w1} to {w2}"
-        print(f"  ({nskip} tile(s) cover no green; over whole tiles the range would be {wl})")
+        if wholefirst is None:
+            # Every tile that covers no green also failed to produce a defendable whole-tile range, so
+            # there is no contrast to draw. Saying that beats printing a range assembled from nothing.
+            print(f"  ({nskip} tile(s) cover no green, and no tile has a defendable whole-tile range "
+                  f"to contrast against)")
+        else:
+            w1, w2 = day(wholefirst), day(wholelast)
+            wl = w1.isoformat() if w1 == w2 else f"{w1} to {w2}"
+            # Name what the contrast is measured over. With a tile excluded for an undefendable whole
+            # set, "over whole tiles" would claim more tiles than were used.
+            of = "" if not nowhole else (f", over {nwhole} of {nwhole + nowhole} tiles -- the other "
+                                         f"{nowhole} hold no defendable whole-tile range")
+            print(f"  ({nskip} tile(s) cover no green; over whole tiles the range would be {wl}{of})")
     print(f"  => ACQUIRED: {label}")
     stated = config.COURSE.get("dem_source", "")
     for yr in (str(y) for y in range(2010, 2031)):

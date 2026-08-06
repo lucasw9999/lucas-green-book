@@ -9386,18 +9386,30 @@ def test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_round_guess()
 
     Measured over every tile this repo has dated, from the per-tile day pairs `--write` already records
     in each course.json's `lidar_flown.tiles` -- so the bound is checked against the artifact rather than
-    re-read from 12 GB of LAZ:
+    re-read from 12 GB of LAZ. All 39 recorded pairs, in the course's own timezone, which is what those
+    pairs and the printed label are both in:
 
-        philadelphia 18TVK475434 / 18TVK474434   100 days   (2024-12-17..2025-03-28, real, two epochs
+        philadelphia 18TVK475434 / 18TVK474434   100 days   (2024-12-17..2025-03-27, real, two epochs
                                                              of one PA_17County_D24 acquisition)
         Alameda 2021, 8 tiles                     11 days
-        everything else                            0 days
+        3 tiles                                    2 days
+        2 tiles                                    1 day
+        the remaining 24                           0 days
+
+    The 100-day pair used to be quoted here as ending 2025-03-28, which is its UTC end
+    (2025-03-28 02:49:50Z). The records, the label and the book are all LOCAL -- 2025-03-27
+    22:49:50-04:00 -- and reconciling the two is the whole reason course_tz exists; and the three
+    smaller families were collapsed into a single catch-all line of zeroes, which five tiles refute.
+    test_the_flight_span_figures_quoted_in_this_file_are_the_ones_on_disk re-derives all of it from the
+    records, so these numbers cannot drift again without failing.
 
     Independently re-measured off the point records at full resolution while writing this: the widest
     green-near span is 100.2301 d (philadelphia 18TVK475434) and the widest WHOLE-tile span 100.2614 d
     (18TVK474435, which feeds no green) -- and endpoints() is used for both sets, so the bound has to
-    clear the second. The next widest family is 11.07 d, so there is nothing between 11 and 100 to
-    calibrate against; the margin over the worst REAL case is the only honest way to set this.
+    clear the second. Then 36.7360 d (the-reserve t390135, whole tile, feeds no green) and then the
+    11.07 d Alameda family. This paragraph used to assert that no span had been measured between the
+    11-day family and the 100-day one, which t390135 refutes; the margin over the worst REAL case is
+    still the only honest way to set this, but not for want of anything in between.
 
     Asserted as a relationship, not a literal: the bound must clear the worst span the corpus actually
     holds by the stated margin, and must be far tighter than the retired 730. Tighten the corpus (or add
@@ -9499,8 +9511,9 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
     # is worse than the bug. So the discriminator is the one thing that separates a second EPOCH from a
     # second PASS: how far apart the two ends are, bounded by what a real acquisition in this corpus
     # actually spans. Measured over all 78 dated tiles, the widest is philadelphia 18TVK474435 at
-    # 100.2614 days (whole tile) and 18TVK475434 at 100.2301 (green-near); the next widest family is
-    # 11.07. MAX_TILE_SPAN_DAYS is now that measurement times 2.0, and endpoints() applies it across the
+    # 100.2614 days (whole tile) and 18TVK475434 at 100.2301 (green-near); then the-reserve t390135 at
+    # 36.7360 (whole tile), and then the 11.07-day Alameda family. MAX_TILE_SPAN_DAYS is now the widest
+    # of those times 2.0, and endpoints() applies it across the
     # two resolved ends -- the only place both are known before either is published.
     #
     # Live data confirmed unchanged after the change: every one of the 11 dated courses reports the same
@@ -9713,6 +9726,437 @@ def test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness
         f"all being proven")
     assert len(seen_courses) >= 11, (
         f"only {len(seen_courses)} courses re-dated; eleven have a recorded label: {sorted(seen_courses)}")
+
+
+def test_one_junk_gps_time_cannot_size_the_cluster_mass_counters_allocation(tmp_path):
+    """The cluster-mass counter turned a CLEAN REFUSAL into a SILENT KILL, and the bound that was meant
+    to stop it was a sentence in a comment.
+
+    _Extremes.add buckets every gps_time at MAX_ENDPOINT_GAP_S and counts them with np.bincount. It
+    offset that array by the CHUNK'S OWN lowest bucket -- "so the array is span-sized, not value-sized"
+    -- but a span IS data, so ONE junk-but-positive gps_time sized the allocation on its own. Measured
+    against this corpus's own lowest bucket (85,649):
+
+        1e11 -> 27,692,129 buckets (0.22 GB)    1e12 -> 2.2 GB    1e15 -> 2.2 TB
+
+    REPRODUCED END TO END on a real LAZ holding 3,000 clean returns plus one junk value: at 1e15 the
+    tool was SIGKILLed, exit 137, with no traceback and no refusal; at 1e18 it died on an uncaught
+    numpy MemoryError. Both are precisely the failure gps_to_utc's own docstring says this module
+    fixed -- "a corrupt gps_time ... can land tens of thousands of years out, and timedelta/datetime
+    raises OverflowError there -- which crashed the tool with a traceback rather than reporting 'no
+    usable GPS time'". Ten thousand years is ~3.2e11 s, ~0.7 GB per chunk, so the documented case was
+    inside the regression. The comment's bound -- "even a junk value four decades out only makes it
+    ~350,000" -- was ASSERTED, and describes a value four decades out rather than one four millennia
+    out.
+
+    Graded three ways, none of them a source-text match, because a comment cannot enforce a ceiling:
+
+      (1) the ceiling is DERIVED from the module's own plausibility window by independent arithmetic
+          here, so MASS_BUCKETS cannot be typed in or drift from the check that publishes dates;
+      (2) NO REAL RETURN IS DROPPED -- every flight date the corpus has RECORDED must fall inside the
+          window under the reading that produced it, re-derived from each course.json rather than
+          from a copy of the answer;
+      (3) END TO END, in a subprocess, over five junk magnitudes spanning seven orders of magnitude:
+          every one must exit 0 with the module's own refusal, and PEAK RSS MUST NOT GROW WITH THE
+          JUNK MAGNITUDE. That last clause is the enforcement: a data-sized allocation shows up as
+          memory that scales with the junk value, whichever numpy primitive is used to make it.
+    """
+    pytest.importorskip("laspy")
+    import datetime as dt
+    import subprocess
+
+    ld = _lidar_dates_module()
+
+    # (1) THE CEILING IS DERIVED, not typed. Independent arithmetic from the module's own epoch, leap
+    # seconds, plausibility window and bucket width -- the four facts the window is a consequence of.
+    lo_s = (ld.PLAUSIBLE_FROM - ld.GPS_EPOCH).total_seconds() + ld.LEAP_SECONDS - 1_000_000_000
+    hi_s = (ld.PLAUSIBLE_TO - ld.GPS_EPOCH).total_seconds() + ld.LEAP_SECONDS
+    want_lo = int(math.floor(lo_s / ld.MAX_ENDPOINT_GAP_S))
+    want_hi = int(math.floor(hi_s / ld.MAX_ENDPOINT_GAP_S))
+    assert (ld.MASS_BUCKET_LO, ld.MASS_BUCKET_HI) == (want_lo, want_hi), (
+        f"the mass counter's bucket window is {(ld.MASS_BUCKET_LO, ld.MASS_BUCKET_HI)} but the "
+        f"module's own plausibility window over BOTH gps_time readings gives {(want_lo, want_hi)}. "
+        f"The window has to be a consequence of the check that decides whether a date may be "
+        f"published, or it is a second threshold nobody measured")
+    assert ld.MASS_BUCKETS == want_hi - want_lo + 1
+    # ...and it has to actually BE a ceiling: a constant number of int64, not a function of the data.
+    assert ld.MASS_BUCKETS * 8 < 64 * 1024 * 1024, (
+        f"the mass counter can be asked for {ld.MASS_BUCKETS:,} buckets = "
+        f"{ld.MASS_BUCKETS * 8 / 1e6:.1f} MB. That is the allocation one junk gps_time used to size, "
+        f"so it has to stay small enough that no value can make it matter")
+
+    # (2) NO REAL RETURN IS DROPPED. Every date the corpus has recorded must sit inside the window,
+    # re-derived from the artifact `--write` produces rather than from a copy of the measurement.
+    outside, checked = [], 0
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            rec = json.load(fh).get("lidar_flown") or {}
+        for key in ("first", "last"):
+            if not rec.get(key):
+                continue
+            checked += 1
+            when = dt.datetime.fromisoformat(rec[key]).replace(tzinfo=dt.timezone.utc)
+            # the ADJUSTED reading, which is what every tile in this corpus uses
+            v = (when - ld.GPS_EPOCH).total_seconds() + ld.LEAP_SECONDS - 1_000_000_000
+            b = int(math.floor(v / ld.MAX_ENDPOINT_GAP_S))
+            if not (ld.MASS_BUCKET_LO <= b <= ld.MASS_BUCKET_HI):
+                outside.append(f"{slug} {key}={rec[key]} -> bucket {b}")
+    assert not outside, (
+        "a flight date this repo has PUBLISHED falls outside the mass counter's bucket window, so its "
+        "own returns would weigh nothing and the tile would be refused:\n  " + "\n  ".join(outside))
+    # Anti-vacuous only WHEN there is a corpus to be vacuous about. On a fresh clone courses/ is empty
+    # -- it is gitignored -- and parts (1) and (3) are the enforcement there, neither of which needs any
+    # course data. Demanding the floor unconditionally made this test one of the failures
+    # test_a_fresh_clone_gets_a_clean_suite exists to catch.
+    if glob.glob(os.path.join(ROOT, "courses", "*", "course.json")):
+        assert checked >= 20, \
+            f"only {checked} recorded endpoints checked; too few to say the window fits the corpus"
+
+    # (3) END TO END. A real LAZ, a real junk gps_time, a real subprocess -- the reproduction that
+    # found this. `_Extremes.add` is on the whole-tile path, so no green geometry is needed.
+    import laspy
+    import numpy as np
+    base = 308339030.0                       # a real Alameda-2021 adjusted GPS second: decodes to 2021
+    child = (
+        "import os,sys,resource\n"
+        f"sys.path.insert(0, {os.path.join(ROOT, 'tools')!r})\n"
+        "import lidar_dates as ld\n"
+        "print('RESULT', ld.tile_dates(sys.argv[1]))\n"
+        "r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        "print('PEAK', r if sys.platform == 'darwin' else r * 1024)\n"
+    )
+    peaks = {}
+    for mag in (1e11, 1e12, 1e15, 1e18, 1e300):
+        h = laspy.LasHeader(version="1.4", point_format=6)
+        h.global_encoding.gps_time_type = 1
+        las = laspy.LasData(h)
+        n = 3000                             # a pass-like crowd: well over MIN_ENDPOINT_CLUSTER_PTS
+        las.x = np.zeros(n + 1); las.y = np.zeros(n + 1); las.z = np.zeros(n + 1)
+        las.gps_time = np.concatenate([base + np.arange(n) * 0.01, [mag]])
+        p = tmp_path / f"junk_{mag:.0e}.laz"
+        las.write(str(p))
+        r = subprocess.run([sys.executable, "-c", child, str(p)],
+                           capture_output=True, text=True, timeout=900)
+        out = r.stdout + r.stderr
+        assert r.returncode == 0, (
+            f"a single gps_time of {mag:.0e} in an otherwise clean tile did not produce a refusal -- "
+            f"the process exited {r.returncode}. Negative is a signal: -9/137 is the OOM kill this "
+            f"counter's span-sized allocation caused, and 1 with an "
+            f"_ArrayMemoryError is the same fault caught by numpy instead of the kernel. Either way "
+            f"the tool crashed where it documents that it reports 'no usable GPS time'.\n"
+            f"{out[-1200:]}")
+        assert "RESULT None" in out, (
+            f"a tile whose only defect is one gps_time of {mag:.0e} must be REFUSED, not dated. "
+            f"Got:\n{out[-1200:]}")
+        assert "cannot be defended" in out, (
+            f"the refusal for junk {mag:.0e} printed no explanation; silently narrowing or dropping a "
+            f"published range is the mirror of silently widening it.\n{out[-1200:]}")
+        peaks[mag] = int(re.search(r"PEAK (\d+)", out).group(1))
+
+    # THE ENFORCEMENT: memory must not scale with the junk value. A span-sized allocation shows up
+    # here as a peak that climbs with the magnitude, whatever primitive built it.
+    lo_peak, hi_peak = peaks[1e11], max(peaks.values())
+    assert hi_peak - lo_peak < 256 * 1024 * 1024, (
+        f"peak memory GROWS WITH THE JUNK VALUE, so the allocation is still sized by the data rather "
+        f"than by a fixed window: "
+        + ", ".join(f"{m:.0e} -> {v / 1e6:.0f} MB" for m, v in sorted(peaks.items()))
+        + f". The ceiling MASS_BUCKETS promises is {ld.MASS_BUCKETS * 8 / 1e6:.1f} MB")
+
+
+def test_the_two_ends_of_a_flight_range_are_span_checked_and_something_watches_it():
+    """endpoints()'s own span refusal was UNWATCHED: deleting
+
+        if hi[0] - lo[0] > MAX_TILE_SPAN_DAYS * 86400.0: return None
+
+    left all six related tests green. The cluster-mass floor added later shadows it in every scenario
+    those tests build, because they separate a THIN junk cluster from a dense bulk -- so mass refuses
+    first and the span line never decides anything.
+
+    The case that isolates it is two clusters that are both PASS-LIKE. Mass cannot tell them apart --
+    that is the point of mass -- so only the span may refuse, and a tile holding two epochs 200+ days
+    apart is exactly what this module says cannot be dated at all. Asserted in both directions, so the
+    line cannot be satisfied by refusing everything: the same two dense clusters INSIDE the bound must
+    still publish, which is philadelphia's real 100-day two-epoch acquisition."""
+    import numpy as _np
+    ld = _lidar_dates_module()
+    base = 308339030.0
+    dense = 4 * ld.MIN_ENDPOINT_CLUSTER_PTS        # both ends far above the mass floor
+
+    def two_epochs(gap_days):
+        e = ld._Extremes()
+        e.add(_np.array([base + i * 0.01 for i in range(dense)]))
+        e.add(_np.array([base + gap_days * 86400.0 + i * 0.01 for i in range(dense)]))
+        return e
+
+    # Both ends are pass-like, so the mass floor CANNOT be what refuses -- prove that before relying
+    # on it, or this test drifts back into grading the same guard the others already grade.
+    wide = two_epochs(ld.MAX_TILE_SPAN_DAYS + 200.0)
+    raw = wide.raw()
+    assert min(wide.cluster_mass(raw[0]), wide.cluster_mass(raw[1])) >= ld.MIN_ENDPOINT_CLUSTER_PTS, (
+        "this fixture's two clusters are not both above the mass floor, so the cluster-mass test "
+        "would refuse it and the span check would still be unwatched")
+    assert wide.endpoints() is None, (
+        f"two pass-like clusters {ld.MAX_TILE_SPAN_DAYS + 200.0:.0f} days apart were accepted as one "
+        f"acquisition. Only endpoints()' span check can refuse this -- both ends clear the mass floor "
+        f"-- and this module's own note says a tile holding two epochs cannot be dated at all")
+
+    # ...and the same shape INSIDE the bound must still be published, or the span check is just a
+    # blanket refusal. philadelphia's PA_17County_D24 genuinely flew that ground twice, 100 d apart.
+    narrow = two_epochs(100.0)
+    got = narrow.endpoints()
+    assert got is not None, (
+        "two pass-like clusters 100 days apart are refused, so philadelphia's real "
+        "'2024-12-17 to 2025-03-27' range would collapse -- the span bound must clear the worst REAL "
+        "acquisition in the corpus")
+    assert 99.9 < (got[1] - got[0]) / 86400.0 < 100.1, (
+        f"the published span is {(got[1] - got[0]) / 86400.0:.4f} d, not the ~100 d the fixture holds")
+
+    # The boundary belongs to the bound itself, not to a rounding artefact either side of it.
+    assert two_epochs(ld.MAX_TILE_SPAN_DAYS - 1.0).endpoints() is not None, \
+        "a span one day INSIDE MAX_TILE_SPAN_DAYS is refused, so the bound is off by more than a day"
+    assert two_epochs(ld.MAX_TILE_SPAN_DAYS + 1.0).endpoints() is None, \
+        "a span one day OUTSIDE MAX_TILE_SPAN_DAYS is accepted, so the bound does not bind"
+
+
+def test_a_whole_tile_range_its_own_guards_refused_is_not_reported_anyway(tmp_path, capsys):
+    """tile_dates turned a whole-tile REFUSAL into an unguarded bare min/max, silently:
+
+        wlo, whi = wres[:2] if wres else whole_ext.raw()
+
+    So for the whole-tile set BOTH new guards -- the span bound and the cluster-mass floor -- were
+    no-ops on the reported value: the fallback is equal to or wider than anything they would have
+    allowed, and it printed no message of any kind.
+
+    DEMONSTRATED on a synthetic tile whose greens date cleanly but whose whole set holds two pass-like
+    epochs 401 days apart: it reported `whole 2012-06-21 .. 2013-07-27`, twice MAX_TILE_SPAN_DAYS,
+    with nothing said. That pair is not decoration -- main() prints it as "over whole tiles the range
+    would be X", the line whose whole job is to be the honest contrast against the narrowed range, and
+    `basis` promotes the whole-tile range to the PUBLISHED label when no tile holds a point over a
+    green. A number two guards have just rejected is not a contrast, and the project's rule is that a
+    number the data does not support is not printed.
+
+    The green-near half must keep working unchanged, because refusing a tile whose GREENS are clean
+    over a bad clock 2 km away is the mistake the module already refuses to make."""
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    import datetime as dt
+
+    ld = _lidar_dates_module()
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+    ring = [(lon - d, lat - d), (lon + d, lat - d), (lon + d, lat + d), (lon - d, lat + d)]
+    near = dt.datetime(2012, 6, 21, 20, 0, tzinfo=dt.timezone.utc)
+    far = dt.datetime(2013, 7, 27, 20, 0, tzinfo=dt.timezone.utc)
+    assert (far - near).days > ld.MAX_TILE_SPAN_DAYS, (
+        f"this fixture's two epochs are {(far - near).days} d apart, inside MAX_TILE_SPAN_DAYS "
+        f"({ld.MAX_TILE_SPAN_DAYS:.1f}), so the whole-tile set would be accepted and nothing is "
+        f"being tested")
+    f = _synthetic_laz(tmp_path / "two_epochs.laz", 26910, ring, near, far)
+
+    got = ld.tile_dates(f, [ring])
+    assert got is not None, (
+        "the tile stopped dating at all. Its GREEN returns are a single clean pass; a bad clock 2 km "
+        "away must not cost us a tile whose green returns are good -- that is why the range is "
+        "narrowed to the greens in the first place")
+    first, last, nnear, crs_ok, wfirst, wlast = got
+    assert first.date() == near.date() == last.date(), (
+        f"the green-near range moved to {first.date()}..{last.date()}; the far epoch is 2 km from the "
+        f"green and must not widen it")
+    assert nnear == PASS_LIKE_RETURNS and crs_ok is True, (nnear, crs_ok)
+
+    assert (wfirst, wlast) == (None, None), (
+        f"the whole-tile range came back as {wfirst}..{wlast} -- "
+        f"{(wlast - wfirst).days if wfirst and wlast else '?'} days, against a bound of "
+        f"{ld.MAX_TILE_SPAN_DAYS:.1f}. endpoints() REFUSED this set; reporting whole_ext.raw() "
+        f"instead publishes the very range the refusal rejected, and makes both of that set's guards "
+        f"no-ops on the number that gets printed")
+
+    # ...and the refusal has to be AUDIBLE. A silently absent contrast line is the same defect one
+    # step later: main() prints the whole-tile range as the honest counterweight to the narrowed one.
+    capsys.readouterr()                                  # discard the first call's output
+    ld.tile_dates(f, [ring])
+    out = capsys.readouterr().out
+    assert "WHOLE" in out and "cannot be defended" in out, (
+        f"declining to report the whole-tile range said nothing on stdout, so the audit line simply "
+        f"vanishes and nobody learns the tile holds two epochs. Got:\n{out}")
+
+    # The whole-tile set of a NORMAL tile must still be reported, or this fix has traded a wrong
+    # number for a missing one.
+    ok = _synthetic_laz(tmp_path / "one_epoch.laz", 26910, ring, near,
+                        near + dt.timedelta(days=3))
+    r2 = ld.tile_dates(ok, [ring])
+    assert r2 is not None and r2[4] is not None and r2[5] is not None, \
+        "a tile whose whole set spans 3 days must still report a whole-tile range"
+    assert (r2[5] - r2[4]).days == 3, f"whole-tile range collapsed to {r2[4]}..{r2[5]}"
+
+
+def test_the_sparsest_endpoint_cluster_is_re_measured_from_the_tile_it_names():
+    """SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS = 3432 was re-derived by NO test -- it was used only
+    RELATIONALLY (`MIN == int(SPARSEST / MARGIN)`, `MIN < SPARSEST`), which pins the ratio and leaves
+    the measurement free. That is the asymmetry with the sibling bound the comment says it copies:
+    MAX_TILE_SPAN_DAYS IS re-derived from every course.json by
+    test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_round_guess.
+
+    The number was confirmed exactly right when written -- castlewood-valley w6156n2055, green-near low
+    end, 3,432 points, 0.1944% of that set's 1,765,670 returns, the smallest of all 236 endpoint
+    clusters in the corpus by BOTH the absolute count and the fraction. The defect is that nothing kept
+    it right, so this re-measures the endpoint the constant NAMES and requires the published figures to
+    be what that endpoint actually holds. Costs about 6 s: one tile, streamed the way production
+    streams it.
+
+    Scope stated rather than implied. This pins the NUMERATOR to a live measurement. That it is still
+    the SPARSEST of the 236 is not re-swept here -- that costs 170 s of LAZ -- but the dangerous
+    direction is already covered: raise the constant and
+    test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness re-dates all 39
+    recorded tiles and this very endpoint stops dating."""
+    pytest.importorskip("laspy")
+    import laspy
+    import numpy as np
+
+    ld = _lidar_dates_module()
+    # The tile the constant NAMES. A name is an identifier, not a measurement -- every number below is
+    # read off the point records.
+    cdir = os.path.join(ROOT, "courses", "castlewood-valley-course")
+    tile = os.path.join(cdir, "laz",
+                        "USGS_LPC_CA_AlamedaCounty_2021_B21_w6156n2055.laz")
+    if not os.path.exists(tile):
+        pytest.skip("castlewood-valley w6156n2055 is not on disk (laz/ is refetchable and gitignored)")
+    rings = ld.green_rings(cdir)
+    assert rings, "castlewood-valley has no green geometry, so the green-near set cannot be rebuilt"
+
+    with laspy.open(tile) as f:
+        boxes = ld.green_boxes(f.header.parse_crs(), rings)
+        assert boxes, "the greens could not be placed in this tile's CRS"
+        ubox = (min(b[0] for b in boxes), max(b[1] for b in boxes),
+                min(b[2] for b in boxes), max(b[3] for b in boxes))
+        near = ld._Extremes()
+        for chunk in f.chunk_iterator(ld.CHUNK):
+            t = np.asarray(chunk.gps_time)
+            keep = t > 0
+            if not keep.any():
+                continue
+            x, y = np.asarray(chunk.x), np.asarray(chunk.y)
+            cand = keep & (x >= ubox[0]) & (x <= ubox[1]) & (y >= ubox[2]) & (y <= ubox[3])
+            idx = np.flatnonzero(cand)
+            if not idx.size:
+                continue
+            xs, ys = x[idx], y[idx]
+            sel = np.zeros(idx.size, dtype=bool)
+            for x0, x1, y0, y1 in boxes:
+                sel |= (xs >= x0) & (xs <= x1) & (ys >= y0) & (ys <= y1)
+            if sel.any():
+                near.add(t[idx[sel]])
+
+    res = near.endpoints()
+    assert res is not None, (
+        "castlewood-valley w6156n2055's green-near set no longer dates at all, so the endpoint the "
+        "sparsest-cluster measurement was taken from has gone -- the constant needs re-deriving")
+    mass = min(near.cluster_mass(res[0]), near.cluster_mass(res[1]))
+    assert ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS == mass, (
+        f"SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS says {ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS} but "
+        f"the endpoint it names holds {mass} points. MIN_ENDPOINT_CLUSTER_PTS is derived from it, so "
+        f"a stale numerator is a floor nobody measured -- re-measure the corpus and update both this "
+        f"constant and the figures quoted beside it")
+    # ...and the two figures published beside it, from the same stream.
+    assert near.n == 1_765_670, (
+        f"the comment says this green-near set holds 1,765,670 returns; it holds {near.n:,}. The "
+        f"0.1944% fraction quoted with it is that ratio, so both need re-deriving")
+    frac = 100.0 * mass / near.n
+    src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
+    assert f"{frac:.4f}%" in src, (
+        f"lidar_dates.py does not state the measured fraction {frac:.4f}% for this endpoint, so the "
+        f"percentage beside the count is unpinned")
+
+
+def test_the_flight_span_figures_quoted_in_this_file_are_the_ones_on_disk():
+    """Three published figures about the flight-date bounds did not reproduce, all of them in THIS
+    file's own docstrings -- which is the failure mode the project keeps hitting: a fix corrects the
+    sentence in the module and leaves the identical sentence in the sibling test.
+
+      * two sentences claim there is no measured span between the 11-day family and the 100-day one,
+        and that the 11.07-day family is the next widest after philadelphia. Both are FALSE:
+        the-reserve t390135 spans 36.7360 d whole-tile, between the two. lidar_dates.py's own comment
+        was corrected for exactly this and the test docstrings were not.
+      * the widest recorded pair is quoted with a March 28th end, sourced explicitly to "the per-tile
+        day pairs `--write` already records". Those pairs end on the 27th. The 28th is the UTC end
+        (02:49:50Z); the record, the label and the book are all LOCAL (22:49:50-04:00), which is the
+        whole reason course_tz exists.
+      * "everything else" is quoted as a single span of zero. Over the 39 recorded pairs the spans are
+        {0 d: 24, 1 d: 2, 2 d: 3, 11 d: 8, 100 d: 2} -- five tiles record one or two days.
+
+    Graded against the RECORDS, never against a copy of the corrected value: the day pairs in each
+    course.json are the same artifact test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_
+    round_guess calibrates the bound from, so if a course is re-dated this fails rather than drifting.
+
+    Every pattern below is assembled from fragments, for the reason _STALE_RESERVE8_SHORTFALL is: this
+    grader reads its own file, so a pattern written as one literal matches itself and the test can
+    never go green.
+    """
+    import datetime as dt
+
+    pairs, spans = {}, collections.Counter()
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            rec = (json.load(fh).get("lidar_flown") or {}).get("tiles") or {}
+        for name, pair in rec.items():
+            pairs[(slug, name)] = pair
+            spans[(dt.date.fromisoformat(pair[1]) - dt.date.fromisoformat(pair[0])).days] += 1
+    if not pairs:
+        pytest.skip("no course records a per-tile flight range yet")
+
+    with open(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    problems = []
+
+    # (1) THE WIDEST PAIR, as the records hold it -- not as UTC would render it.
+    widest = max(pairs.items(),
+                 key=lambda kv: (dt.date.fromisoformat(kv[1][1])
+                                 - dt.date.fromisoformat(kv[1][0])).days)
+    (_, wname), wpair = widest
+    for stale in re.finditer(r"\(\s*(\d{4}-\d\d-\d\d)\.\." + r"(\d{4}-\d\d-\d\d)", src):
+        if stale.group(1) == wpair[0] and stale.group(2) != wpair[1]:
+            problems.append(
+                f"tests:{src[:stale.start()].count(chr(10)) + 1} quotes an end of {stale.group(2)} "
+                f"for the widest recorded pair, but {wname} records {wpair[0]}..{wpair[1]}. The later "
+                f"date is the UTC end of a flight the record, the label and the book all state in "
+                f"local time")
+
+    # (2) THE SPAN DISTRIBUTION. A claim that everything outside the two named families is zero has to
+    # be true of the records.
+    others = {d: n for d, n in spans.items() if d not in (0, max(spans))}
+    catchall = re.compile(r"everything else" + r"\s+" + r"0 days")
+    for m in catchall.finditer(src):
+        if others:
+            problems.append(
+                f"tests:{src[:m.start()].count(chr(10)) + 1} says every other recorded pair spans 0 "
+                f"days, but {sum(others.values())} of them span {sorted(others)}. Full distribution: "
+                f"{dict(sorted(spans.items()))}")
+
+    # (3) THE CALIBRATION GAP. A claim that nothing lies between two spans is a claim about the corpus,
+    # so read the corpus: the module states every measured span family in one comment block, and any
+    # figure between the two named bounds refutes the gap. Whitespace-tolerant on purpose -- one of the
+    # two stale copies is broken across a comment continuation, and a single-line pattern missed it.
+    mod = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
+    between = sorted({float(m.group(1))
+                      for m in re.finditer(r"^#\s+\*?[^\n]*?\b(\d\d\.\d{4})\s*d", mod, re.M)
+                      if 11.0 < float(m.group(1)) < 100.0})
+    gap_claim = re.compile(r"nothing between" + r"[\s#]+11 and[\s#]+100"
+                           r"|next widest family is" + r"[\s#]+11\.07")
+    for m in gap_claim.finditer(src):
+        if between:
+            problems.append(
+                f"tests:{src[:m.start()].count(chr(10)) + 1} still claims nothing was measured "
+                f"between the 11-day and 100-day families, but lidar_dates.py itself records "
+                f"{between} d in that range (the-reserve t390135, whole tile). The module's comment "
+                f"was corrected for this and the sibling docstring was not")
+    assert not problems, "a flight-span figure in this file is not what the records hold:\n  " + \
+        "\n  ".join(problems)
 
 
 def test_every_distributed_book_disclaims_affiliation_with_the_club_it_names():
@@ -10135,10 +10579,14 @@ def test_the_lidar_listing_tells_an_unstable_order_apart_from_a_truncated_survey
     accepting that as the whole survey is the defect the paging was built for, and it must still refuse
     however many rows it was handed. Case (c) checks that a stalled walk never reaches the degrade path.
 
-    Also pinned here: the accumulated `total` must survive an over-the-end page. The reply for an offset
-    past the end has been seen to carry `total: 0`, and the loop took the LAST total it was told, so that
-    zero erased the real figure and turned the shortfall check into a no-op -- a truncated listing would
-    then have been accepted in silence. Case (d).
+    Also pinned here: the accumulated `total` must survive an over-the-end page, so the loop takes the
+    FIRST total it is told rather than the last. This was written against an over-the-end reply carrying
+    `total: 0`, which would have erased the real figure and turned the shortfall check into a no-op.
+    Measured live on all twelve course bboxes, that is not the shape this service sends: an over-the-end
+    reply answers the REAL total (bay-view 14, micke-grove 6) plus "The offset is greater than the total
+    number of results for this query. No items returned." The latch is correct either way and is kept,
+    but it defends against a reply TNM does not produce. Case (d) stubs the `total: 0` shape anyway,
+    because it is the one that would do damage.
 
     Stubbed, never the live producer: urlopen is monkeypatched throughout.
     """
@@ -10306,8 +10754,11 @@ def test_a_page_under_the_request_cap_does_not_end_a_listing_a_total_says_is_lon
         f"the refusal must account for the rows actually delivered once the listing was walked to its "
         f"end -- 300 of a stated 500: {str(e.value)!r}")
 
-    # (3) A SUB-CAP PAGE WITH NO TOTAL still ends the walk. This is the ordinary case on this corpus --
-    # 4 to 14 tiles, one request, no `total` field -- and it must not turn into a second request.
+    # (3) A SUB-CAP PAGE WITH NO TOTAL still ends the walk. Measured over all twelve course bboxes at
+    # every offset regime, this shape NEVER ARRIVES -- `total` is a top-level int on page one,
+    # mid-listing and past the end alike, 0 of 12 absent -- so the path is live-unreachable here and
+    # kept because this endpoint's reply shape has changed before. It must not turn into a second
+    # request.
     serve({0: {"items": every[:12]}})
     asked.clear()
     got = fetch_lidar.tnm_items()
@@ -10423,6 +10874,169 @@ def test_the_stalled_paging_refusal_names_an_offset_the_walk_actually_requested(
         assert len(asked) == 1 + fetch_lidar.TNM_STALL_PAGES, (
             f"{page_rows}-row pages: the walk made {len(asked)} requests ({asked}); a stall is one "
             f"productive page plus TNM_STALL_PAGES that add nothing.")
+
+
+def test_a_product_usgs_filtered_out_is_not_read_as_a_missing_tile(monkeypatch):
+    """`total` is USGS's count BEFORE its own download-URL filter, and nothing here knew that -- so a
+    perfectly healthy reply read as a damaged one on FIVE of the twelve courses, every fetch.
+
+    Measured live, page one, every course bbox:
+
+        bay-view          total=14 items=13     castlewood-valley total=7  items=6
+        callippe          total=41 items=40     monarch-bay       total=25 items=24
+        castlewood-hill   total=11 items=10     the other seven   total == items
+
+    and each of those five carries
+        filteredOut: "1 items have been removed because they don't have a download url"
+    which says exactly what happened. Unmodified, on the live bay-view bbox: 13 HTTP requests over
+    419 s, eight of them retrying the walk's own terminating page as "service busy", then
+
+        WARNING: TNM says it holds 14 LPC products ... but only 13 were distinct.
+        Reading that as an unstable listing order rather than a truncated survey ...
+        If a tile you expect is missing, re-run -- a different ordering will page differently.
+
+    Both halves false: the cause was stated in the reply, and the 14th product has no downloadURL on
+    any run, so re-running cannot help. Four faults with one root cause, and this covers all four:
+
+      (a) the diagnosis was invented rather than read;
+      (b) `_tnm_page` read `reply.get('message')`; THE LIVE KEY IS `messages`, PLURAL, and a LIST --
+          `message` is absent from every live reply, so USGS's own explanation was never seen;
+      (c) A HARD REFUSAL OF A HEALTHY SERVICE WAS ONE SORT ORDER AWAY. bay-view survived only because
+          its offset=13 page happened to re-serve one row, which pushed `served` to 14 and reached the
+          warn path. With the URL-less product sorting LAST -- same products, same total, different
+          order -- offset=13 comes back empty, `served` stays 13, and the run DIES on "ran out after
+          serving 13 rows ... That is a TRUNCATED listing". Same regression class as the 200+150+150
+          incident this module already suffered;
+      (d) a retry storm: an over-the-end reply carries the REAL total with `items: []`, so `total == 0`
+          never matched and the page was retried `tries` times at 10 s each.
+
+    The stall refusal must be untouched by all of this: a service that ignores `offset` and re-serves
+    page one still has to refuse, however many rows it hands over. Case (e).
+
+    Stubbed against the SHAPES MEASURED LIVE, never the live producer.
+
+    Imports fetch_lidar WITHOUT dropping it from sys.modules, unlike its four siblings here: every stub
+    below is keyed on `offset` alone, so which course bbox the module happens to be bound to cannot
+    change an answer. That keeps README's "drops modules from `sys.modules` at N sites" figure -- which
+    test_the_suite_reports_its_own_module_drop_count_correctly pins -- true without editing README.
+    """
+    os.environ.setdefault("COURSE", a_course())
+    fetch_lidar = _import_first_party("fetch_lidar")
+    monkeypatch.setattr(fetch_lidar.time, "sleep", lambda *_a, **_k: None)
+
+    asked = []
+
+    def serve(pages):
+        def _open(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            asked.append(int(re.search(r"[&?]offset=(\d+)", url).group(1)))
+            body = json.dumps(pages.get(asked[-1], {"total": 0, "items": []})).encode()
+
+            class _R:
+                def read(self_inner):
+                    return body
+            return _R()
+        monkeypatch.setattr(fetch_lidar.urllib.request, "urlopen", _open)
+
+    def item(i):
+        return {"sourceId": f"id{i}", "title": f"t{i}.laz",
+                "downloadURL": f"https://x/Projects/CA_Test_2021_B21/LAZ/{i}.laz"}
+
+    # The live wording, verbatim, because the count has to be read out of prose rather than an int.
+    FILTERED = "1 items have been removed because they don't have a download url"
+    SHOWN = [item(i) for i in range(13)]
+    PAST_END = ["The offset is greater than the total number of results for this query. "
+                "No items returned."]
+
+    # (b) FIRST, because everything else depends on it: the plural key has to be read at all.
+    serve({0: {"total": 14, "items": SHOWN, "filteredOut": FILTERED,
+               "messages": [f"Retrieved 14 item(s) Retrieved (1 through 200) {FILTERED}"],
+               "errors": []}})
+    asked.clear()
+    page = fetch_lidar._tnm_page(0, 8)
+    note = page[2]
+    assert note and FILTERED in str(note), (
+        f"_tnm_page did not read USGS's own explanation of the short page. The live key is `messages` "
+        f"(plural, a list); `message` is absent from every live reply. Got note={note!r}")
+    assert fetch_lidar._filtered_count(FILTERED) == 1, (
+        f"the filtered count is not being read out of {FILTERED!r} -- live it is that sentence, not an "
+        f"int, so a plain int() or a truthiness test loses the number")
+
+    # (a)+(d) THE LIVED bay-view SHAPE: one page, no invented diagnosis, no retry storm.
+    serve({0: {"total": 14, "items": SHOWN, "filteredOut": FILTERED,
+               "messages": [f"Retrieved 14 item(s) Retrieved (1 through 200) {FILTERED}"]},
+           13: {"total": 14, "items": [item(0)],           # the row TNM re-served live
+                "messages": ["Retrieved 14 item(s) Retrieved (14 through 213)"]},
+           14: {"total": 14, "items": [], "messages": PAST_END}})
+    asked.clear()
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        got = fetch_lidar.tnm_items()
+    out = buf.getvalue()
+    assert len(got) == 13, f"the 13 products USGS was willing to serve came back as {len(got)}"
+    assert asked == [0], (
+        f"the walk made {len(asked)} requests ({asked}) for a listing the FIRST reply fully accounted "
+        f"for: 13 shown + 1 filtered = the stated 14. Every extra request is a page past the end of a "
+        f"healthy listing, and live each one was retried 8 times at 10 s")
+    assert "unstable listing order" not in out and "re-run" not in out, (
+        f"a healthy reply still draws a diagnosis of the listing ORDER plus advice to re-run. USGS said "
+        f"why in `filteredOut`, and the URL-less product has no downloadURL on any run:\n{out}")
+    assert "WARNING" not in out, f"a fully accounted-for listing still warns:\n{out}"
+
+    # (c) THE SAME HEALTHY REPLY, URL-LESS PRODUCT LAST. This killed the course.
+    serve({0: {"total": 14, "items": SHOWN, "filteredOut": FILTERED,
+               "messages": [f"Retrieved 14 item(s) Retrieved (1 through 200) {FILTERED}"]},
+           13: {"total": 14, "items": [], "messages": PAST_END}})
+    asked.clear()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        got = fetch_lidar.tnm_items()
+    assert len(got) == 13, (
+        f"the same 13 healthy products came back as {len(got)} when the URL-less one sorts last. This "
+        f"raised SystemExit -- 'ran out after serving 13 rows ... That is a TRUNCATED listing' -- and "
+        f"killed the course, for a reply that differs from the accepted one only in ORDER")
+    assert asked == [0], f"requests {asked}"
+
+    # (d) IN ISOLATION: a genuinely short listing must refuse, but must not retry the empty page first.
+    serve({0: {"total": 20, "items": SHOWN},          # 13 shown, nothing filtered, 7 unexplained
+           13: {"total": 20, "items": [], "messages": PAST_END}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "TRUNCATED" in str(e.value), (
+        f"a listing 7 products short with nothing filtered is truncated and must refuse: {e.value!r}")
+    assert asked == [0, 13], (
+        f"the empty terminating page was requested {asked.count(13)} times ({asked}); an empty reply "
+        f"that STATES a total has answered the question, and retrying it 8 times at 10 s each is the "
+        f"~80 s per fetch this cost on five courses")
+
+    # (e) THE STALL REFUSAL IS INTACT. Pure repeat padding: every page re-serves page one, so `offset`
+    # is not being honoured and no accounting may excuse it.
+    serve({0: {"total": 400, "items": SHOWN}, 13: {"total": 400, "items": SHOWN},
+           26: {"total": 400, "items": SHOWN}, 39: {"total": 400, "items": SHOWN},
+           52: {"total": 400, "items": SHOWN}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "offset" in str(e.value), (
+        f"a service re-serving page one must still refuse -- accepting page one as the whole survey is "
+        f"the defect this paging was written for: {e.value!r}")
+    assert len(asked) == 1 + fetch_lidar.TNM_STALL_PAGES, (
+        f"the stall detector's request budget changed: {asked}")
+
+    # ...and a filtered product may never excuse a stall either. Same padding, with a filteredOut big
+    # enough to "account for" the whole shortfall on paper.
+    serve({0: {"total": 400, "items": SHOWN, "filteredOut": "387 items have been removed"},
+           13: {"total": 400, "items": SHOWN, "filteredOut": "387 items have been removed"},
+           26: {"total": 400, "items": SHOWN, "filteredOut": "387 items have been removed"},
+           39: {"total": 400, "items": SHOWN, "filteredOut": "387 items have been removed"}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "offset" in str(e.value), (
+        f"a filtered-product count let a service that ignores `offset` pass as healthy: {e.value!r}")
 
 
 def test_lidar_project_grouping_has_no_title_fallback():
