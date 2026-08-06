@@ -13978,10 +13978,27 @@ def test_the_export_tools_account_of_what_a_rebuild_costs_is_the_corpus_on_disk(
         f"{len(sizes)} courses built here; it is {worst} at {worst_bytes / 1e9:.1f} GB. "
         f"All of them: " + ", ".join(f"{s} {b / 1e9:.2f}" for s, b in
                                      sorted(sizes.items(), key=lambda kv: -kv[1])))
-    assert abs(said_gb - worst_bytes / 1e9) <= 0.05, (
-        f"tools/export_pdf.py bounds a course's LiDAR at {said_gb} GB; {worst} holds "
-        f"{worst_bytes / 1e9:.4f} GB. A bound quoted below the worst is the defect this replaced, and "
-        f"one quoted above it is a figure the corpus does not support.")
+    # THE BOUND, GRADED AS A BOUND. This was `abs(said_gb - worst/1e9) <= 0.05`, and 4.1 against a
+    # measured 4.0528 GB left 2.8 MB of DOWNWARD slack: any shrink of that course's laz/ past 2.8 MB
+    # tripped a test with nothing to do with the change -- a bound fitted by construction to the current
+    # byte count rather than a check on the claim. What the message claims is "up to <N> GB", so two
+    # things have to hold and neither is the byte count:
+    #   * IT MUST NOT UNDERSTATE. Quoted below the worst is the defect this replaced ("~300 MB", the
+    #     smallest non-zero course offered as the typical one), and the figure is published to one
+    #     decimal, so it is allowed the half-digit its own precision carries.
+    #   * IT MUST NOT WILDLY OVERSTATE. 10% is the line: a bound a tenth above the thing it bounds is
+    #     still a bound a reader can act on, and one further above it is a number nobody re-derived --
+    #     which is how "~300 MB" survived. That leaves this course room to lose 326 MB before an
+    #     unrelated change fails here.
+    assert said_gb + 0.05 >= worst_bytes / 1e9, (
+        f"tools/export_pdf.py bounds a course's LiDAR at {said_gb} GB and {worst} holds "
+        f"{worst_bytes / 1e9:.4f} GB. A bound quoted below the worst is the defect this replaced: it "
+        f"tells a reader a rebuild is cheaper than it is.")
+    assert said_gb <= worst_bytes / 1e9 * 1.10, (
+        f"tools/export_pdf.py bounds a course's LiDAR at {said_gb} GB against a measured worst of "
+        f"{worst_bytes / 1e9:.4f} GB ({worst}) -- more than 10% above it, which is a figure the corpus "
+        f"does not support rather than a bound over it. All of them: "
+        + ", ".join(f"{s} {b / 1e9:.2f}" for s, b in sorted(sizes.items(), key=lambda kv: -kv[1])))
     counted = {"twelve": 12, "eleven": 11, "thirteen": 13, "fourteen": 14, "fifteen": 15,
                "ten": 10, "nine": 9}.get(said_count)
     assert counted == len(sizes), (
@@ -14044,8 +14061,9 @@ def test_a_staged_book_left_by_a_kill_is_swept_before_the_next_export(tmp_path, 
     whole book -- but it is litter in the one directory that holds the only copy of everything, and it
     reads to the next person like a book something has seen.
 
-    Driven on a probe tree with a stubbed exporter, so no browser is launched and nothing in courses/ is
-    touched. The sweep is asserted to run BEFORE the export and to leave the real books alone."""
+    Driven on a probe tree with the BROWSER faked and export() itself real, so no Chromium is launched
+    and nothing in courses/ is touched. The sweep is asserted to run BEFORE the first book is written and
+    to leave the real books alone."""
     whole = _a_shipped_book_pdf() or _MINIMAL_PDF
     root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
     mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_sweep")
@@ -14057,28 +14075,77 @@ def test_a_staged_book_left_by_a_kill_is_swept_before_the_next_export(tmp_path, 
 
     seen = {}
 
-    def fake_export(items):
-        seen["staged_when_export_ran"] = os.path.exists(litter)
-        return list(items)
+    # THE REAL export(), WITH ONLY THE BROWSER REPLACED. This used to monkeypatch `export` itself with
+    # `lambda items: (mod.sweep_staged(items), fake_export(items))[1]` -- so the ordering assertion below
+    # graded THIS TEST'S OWN arrangement and nothing else. Moving the sweep in production to AFTER the
+    # export loop left it green, measured. Now the fake page records whether the stage was still on disk
+    # at the moment the first book was written, inside the real function, so relocating the call fails.
+    #
+    # playwright is faked through sys.modules rather than monkeypatched on the installed package, because
+    # export() imports it INSIDE the function and this test must not need a browser -- or the package --
+    # to grade an ordering.
+    import types
 
-    monkeypatch.setattr(mod, "export", lambda items: (mod.sweep_staged(items), fake_export(items))[1])
+    class _Page:
+        def goto(self, *a, **k):
+            pass
+
+        def emulate_media(self, *a, **k):
+            pass
+
+        def pdf(self, path=None, **k):
+            seen.setdefault("staged_when_export_ran", os.path.exists(litter))
+            with open(path, "wb") as fh:
+                fh.write(whole)
+
+    class _Browser:
+        def new_page(self):
+            return _Page()
+
+        def close(self):
+            pass
+
+    class _Chromium:
+        def launch(self, **k):
+            return _Browser()
+
+    class _PW:
+        chromium = _Chromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    pkg = types.ModuleType("playwright")
+    api = types.ModuleType("playwright.sync_api")
+    api.sync_playwright = lambda: _PW()
+    pkg.sync_api = api
+    monkeypatch.setitem(sys.modules, "playwright", pkg)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", api)
+    monkeypatch.setattr(mod, "_headless_shell", lambda: None)
     monkeypatch.setattr(sys, "argv", ["export_pdf.py"])
     rc = mod.main()
     said = capsys.readouterr().out
-    assert rc == 0, f"the stubbed export failed: rc={rc}, said {said!r}"
+    assert rc == 0, f"the export failed: rc={rc}, said {said!r}"
+    assert "staged_when_export_ran" in seen, (
+        f"the faked browser never wrote a book, so nothing was measured. export() said: {said!r}")
     assert not os.path.exists(litter), (
         f"a staged book left by a killed run survives the next export: {litter} is still there. "
         f"courses/<slug>/ is the one directory in this tree nothing sweeps.")
     assert seen.get("staged_when_export_ran") is False, (
-        "the sweep did not run before the export, so a run killed twice in the same place still "
-        "accumulates stages")
+        "the sweep did not run before the export wrote its first book, so a run killed twice in the same "
+        "place still accumulates stages")
     assert os.path.exists(pdf) and open(pdf, "rb").read() == whole, (
         "the sweep removed or damaged the real book beside the stage")
 
     # ...and the real export() calls it, rather than this test's own arrangement being the only caller.
+    # `_in_code` rather than a substring: `sweep_staged(` appears in this module as its own `def`, and the
+    # body is split off at `def export(` so it does not tokenise alone -- hence the synthetic header.
     src = open(os.path.join(ROOT, "tools", "export_pdf.py"), encoding="utf-8").read()
     body = src.split("def export(", 1)[1].split("\ndef ", 1)[0]
-    assert "sweep_staged(" in body, (
+    assert _in_code("sweep_staged(", body, header="def export("), (
         "export() no longer sweeps the stages before it writes, so the sweep exists and nothing on the "
         "path a user takes calls it")
 
@@ -14164,21 +14231,60 @@ def test_legal_06s_account_of_the_pdf_export_gate_is_the_one_the_gate_earns(tmp_
         f"and re-derives. It reads:\n  {said.strip()}")
     # A PRODUCTION CLAIM, and the negation matters -- the corrected record has to be able to SAY that
     # the gate cannot prove production, so the test is per clause: a clause that reaches a production
-    # phrase through a "prove" with no negation in front of it is the overclaim. This check caught its
-    # own author's first replacement wording, which is why it is written this way and not as a
+    # phrase through a proving verb with no negation in front of it is the overclaim. This check caught
+    # its own author's first replacement wording, which is why it is written this way and not as a
     # phrase ban.
-    overclaims = []
-    for m in re.finditer(r"produced from|came from|rendered from", said, re.I):
-        clause = said[said.rfind(".", 0, m.start()) + 1: m.end()]
-        verb = re.search(r"\bprov\w*", clause, re.I)
-        if verb and not re.search(r"\b(?:cannot|can ?not|does not|doesn't|never|not|no)\b",
-                                  clause[:verb.start()], re.I):
-            overclaims.append(clause.strip())
+    #
+    # WHAT IT CAN AND CANNOT DECIDE, said plainly rather than left to be discovered. This is
+    # classification on prose, and a regex will never decide English; what it does decide is the shape
+    # "<proving verb> ... <production phrase>", in a clause, with no negation before the verb. It was
+    # narrower than that in two ways that ordinary rewording walked straight through, all three measured:
+    #   * ONE VERB. `\bprov\w*` only, so "which ESTABLISHES that each PDF was produced from the HTML
+    #     currently on disk" and "it GUARANTEES the printed PDF came from the HTML now on disk" both
+    #     passed while making exactly the claim the record withdrew.
+    #   * THE VERB HAD TO COME FIRST. The clause was cut off at the production phrase, so "each PDF was
+    #     produced from the HTML ..., and this gate PROVES that" put the verb outside what was searched.
+    # The verb set and the clause both widened; the negation test still runs over whatever precedes the
+    # verb, wherever the verb sits, so the record can still state the refusal. WHAT IS STILL OPEN: a
+    # synonym outside the set (an "assures", a "means that"), and any claim made without a verb of this
+    # kind at all. Three probes below pin the three measured evasions so a future narrowing fails here.
+    _PROVING = (r"\b(?:prov(?:e|es|ed|en|ing)|establish(?:es|ed|ing)?|guarantee(?:s|d|ing)?|"
+                r"demonstrat(?:e|es|ed|ing)|confirm(?:s|ed|ing)?|certif(?:y|ies|ied)|"
+                r"verif(?:y|ies|ied)|attest(?:s|ed|ing)?|show(?:s|n)?)\b")
+    _NEGATED = (r"\b(?:cannot|can ?not|does not|doesn't|do not|don't|did not|didn't|never|not|no|"
+                r"nothing)\b")
+
+    def production_overclaims(text):
+        """Clauses in `text` that claim a proving verb over a production phrase, unnegated."""
+        out = []
+        for m in re.finditer(r"produced from|came from|rendered from|generated from", text, re.I):
+            head = text.rfind(".", 0, m.start()) + 1
+            tail = text[head:]
+            stop = tail.find(".", m.end() - head)          # the whole clause, verb-after included
+            clause = tail if stop < 0 else tail[:stop + 1]
+            for verb in re.finditer(_PROVING, clause, re.I):
+                if not re.search(_NEGATED, clause[:verb.start()], re.I):
+                    out.append(clause.strip())
+                    break
+        return out
+
+    overclaims = production_overclaims(said)
     assert not overclaims, (
         f"legal/06 claims the export gate proves what PRODUCED a PDF:\n  " + "\n  ".join(overclaims)
         + "\n  Measured above on a probe tree: a real book stamped against html it was never rendered "
           "from passes. The gate compares recorded digests to the files on disk; a stamp is a record, "
           "not a re-derivation of the rendering.")
+    # ...and the detector has to be able to FIRE. Each of these was measured passing the previous
+    # one-verb, verb-first form while making the exact claim the record withdrew, so each is appended to
+    # the real paragraph and required to be reported.
+    for evasion in (" It also establishes that each PDF was produced from the HTML currently on disk.",
+                    " Each PDF was produced from the HTML currently on disk, and this gate proves that.",
+                    " It guarantees the printed PDF came from the HTML now on disk."):
+        assert production_overclaims(said + evasion), (
+            f"the production-claim detector does not report {evasion.strip()!r}, which is the overclaim "
+            f"legal/06 withdrew, reworded. A guard that misses a plain rewording of the sentence it "
+            f"names is weaker than it says it is -- widen the verb set or the clause, do not narrow the "
+            f"docstring.")
 
 
 def _unjudgeable_pdf_books(bad, unjudgeable, total):
