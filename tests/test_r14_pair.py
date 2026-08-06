@@ -96,6 +96,54 @@ def _in_per_5yd(svg, meta):
 # The pair
 # --------------------------------------------------------------------------------------------------
 
+# The tear _torn_fixture commits, in metres PER AXIS. Both axes move, so the displacement is
+# TEAR_M*sqrt(2) = 7.07 m, not TEAR_M. Shared with the grader on green_elevation's published cost of a
+# tear, so the fixture and that figure cannot describe two different experiments -- which is what they
+# did: the docstring published a north-only triple while the fixture shifted north AND east.
+TEAR_M = 5.0
+
+
+def _torn_bbox(meta, north_m=TEAR_M, east_m=TEAR_M):
+    """meta's bbox displaced north_m north and east_m east, in degrees, about its own centre latitude."""
+    clat = meta["green_center"][0]
+    dlat, dlon = north_m / mlat(clat), east_m / mlon(clat)
+    x0, y0, x1, y1 = meta["bbox"]
+    return [x0 + dlon, y0 + dlat, x1 + dlon, y1 + dlat]
+
+
+def _green_mask(poly_px, W, H):
+    """render_green.point_in_poly over every cell centre, vectorised.
+
+    Byte-for-byte the same even-odd crossing test with the same 1e-12 guard on the denominator, run
+    over a meshgrid instead of two Python loops. The corpus grader below needs 396 of these masks and
+    the scalar form takes minutes; it is asserted cell-for-cell against render_green.point_in_poly on a
+    real green before it is trusted, so the shortcut cannot quietly become a different mask.
+    """
+    X, Y = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
+    inside = np.zeros((H, W), bool)
+    n = len(poly_px)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly_px[i]
+        xj, yj = poly_px[j]
+        inside ^= ((yi > Y) != (yj > Y)) & (X < (xj - xi) * (Y - yi) / (yj - yi + 1e-12) + xi)
+        j = i
+    return inside
+
+
+def _height_m(a, poly_px):
+    """green_elevation's own measurement -- the nanmedian inside the ring, in metres, or None.
+
+    Takes the ring ALREADY in pixels so a caller can place one array's cells by two different bboxes,
+    which is exactly what a torn pair is and therefore how its cost is measured.
+    """
+    H, W = a.shape
+    mask = _green_mask(poly_px, W, H)
+    if not mask.any() or np.all(np.isnan(a[mask])):
+        return None
+    return float(np.nanmedian(a[mask]))
+
+
 def _commit_torn_pair(base, arr_run2, meta_run1, arr_run1):
     """Write the torn pair surface_io.commit_surface's two os.replace calls can leave behind.
 
@@ -114,8 +162,9 @@ def _torn_fixture(tmp_path):
     """A dem_hd holding one honest pair (hole 4) and one torn pair (hole 7), from real geometry.
 
     Real geometry, because a torn bbox has to be a bbox that could plausibly have moved: run 1's
-    sidecar is run 2's shifted 5 m north-east, which is inside a single pixel of drift for these
-    surfaces and is what a re-traced OSM ring looks like.
+    sidecar is run 2's shifted TEAR_M north AND TEAR_M east, which is inside a single pixel of drift for
+    these surfaces and is what a re-traced OSM ring looks like. What that displacement costs the printed
+    height is published in green_elevation's docstring and graded below, off this same shift.
     """
     slug, hole, meta = _METAS[0]
     src = os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}")
@@ -127,10 +176,7 @@ def _torn_fixture(tmp_path):
     honest = dict(meta, hole=4)
     surface_io.commit_surface(str(dem / "hole04"), arr2, honest)
 
-    clat = meta["green_center"][0]
-    dlat, dlon = 5.0 / mlat(clat), 5.0 / mlon(clat)
-    x0, y0, x1, y1 = meta["bbox"]
-    run1 = dict(meta, hole=7, bbox=[x0 + dlon, y0 + dlat, x1 + dlon, y1 + dlat])
+    run1 = dict(meta, hole=7, bbox=_torn_bbox(meta))
     arr1 = arr2.copy()
     arr1[0, 0] = arr1[0, 0] + 0.01           # a different run's array, same dtype and shape
     _commit_torn_pair(str(dem / "hole07"), arr2, run1, arr1)
@@ -181,6 +227,113 @@ def test_a_torn_green_pair_cannot_write_a_hole_height(tmp_path, monkeypatch):
     assert abs(would_have - ok) * 3.28084 > 0.1, (
         f"the torn read must differ from the honest one for this fixture to be discriminating "
         f"(moved {abs(would_have - ok) * 3.28084:.3f} ft)")
+
+
+@needs_corpus
+def test_what_a_torn_bbox_costs_the_printed_height_is_the_tear_the_fixture_applies():
+    """green_elevation publishes what a torn bbox costs the printed green height. Recompute it.
+
+    Nothing graded that sentence, and it described a DIFFERENT EXPERIMENT from the one this file runs.
+    It published "a 5 m torn bbox moves the height by a median 0.18 ft, p95 0.60 ft, worst 1.04 ft";
+    those three reproduce to the digit, but only for a NORTH-ONLY 5 m shift, while `_torn_fixture`
+    shifts north AND east -- 7.07 m of displacement, which measures median 0.27 / p95 1.19 / worst 1.89
+    ft. The two readings were visibly inconsistent from inside the repo: 171d978's own message cites
+    bay-view 4 at 1.39 ft as its reproduction, and 1.39 is LARGER than the "worst 1.04 ft" published
+    three sentences above it, which one experiment cannot produce.
+
+    So BOTH triples are graded here, each against the shift it names, and the shift the fixture applies
+    is read out of the same TEAR_M the fixture uses. The direction of the old error was conservative --
+    the real cost is bigger than was published, so nothing was overclaimed as safe -- but a figure with
+    no producer is the defect this repo keeps finding, and this one had two producers disagreeing.
+
+    RECOMPUTED, never repeated: every figure below comes out of the corpus on this disk through
+    green_elevation's own arithmetic, and the docstring is parsed for what to compare against.
+    """
+    import fetch_hole_elev as fhe
+    import render_green as rg
+    doc = " ".join((fhe.green_elevation.__doc__ or "").split())
+
+    # (1) The tear the published triple is ABOUT, read out of the prose. If the prose stops naming the
+    # per-axis shift this fixture applies, the figures below are no longer figures about it.
+    m_axis = re.search(r"([\d.]+) m on EACH axis", doc)
+    assert m_axis and abs(float(m_axis.group(1)) - TEAR_M) < 1e-9, (
+        f"green_elevation must say what tear its published cost describes, in the {TEAR_M:g} m per axis "
+        f"_torn_fixture actually commits; the prose says {m_axis.group(1) if m_axis else 'nothing'}")
+
+    # (2) The mask shortcut, checked against the real thing before anything is measured with it.
+    slug0, hole0, meta0 = _METAS[0]
+    a0 = np.load(os.path.join(ROOT, "courses", slug0, "dem_hd", f"hole{hole0:02d}.npy"))
+    H0, W0 = a0.shape
+    p0 = rg.poly_to_px(meta0["polygon"], meta0["bbox"], W0, H0)
+    ref = np.array([[rg.point_in_poly(c + 0.5, r + 0.5, p0) for c in range(W0)] for r in range(H0)])
+    assert (ref == _green_mask(p0, W0, H0)).all(), (
+        f"the vectorised mask disagrees with render_green.point_in_poly on {slug0} hole {hole0}, so "
+        f"nothing measured with it is a measurement of what the pipeline reads")
+
+    def sweep(north_m, east_m):
+        """(|moved| ft, slug, hole) for every built pair, honest bbox against the displaced one."""
+        out = []
+        for slug, hole, meta in _METAS:
+            if meta.get("insufficient"):
+                continue                      # green_elevation states no height for these either
+            a = np.load(os.path.join(ROOT, "courses", slug, "dem_hd",
+                                     f"hole{hole:02d}.npy")).astype(float)
+            a[~np.isfinite(a)] = np.nan
+            a[np.abs(a) > 1e30] = np.nan
+            if np.all(np.isnan(a)):
+                continue
+            H, W = a.shape
+            h0 = _height_m(a, rg.poly_to_px(meta["polygon"], meta["bbox"], W, H))
+            h1 = _height_m(a, rg.poly_to_px(meta["polygon"],
+                                            _torn_bbox(meta, north_m, east_m), W, H))
+            if h0 is None or h1 is None:
+                continue
+            out.append((abs(h1 - h0) * 3.28084, slug, hole))
+        return out
+
+    def triple(rows):
+        v = sorted(r[0] for r in rows)
+        return (float(np.median(v)), float(np.percentile(v, 95)), max(v))
+
+    wrong = []
+    diag = sweep(TEAR_M, TEAR_M)
+    north = sweep(TEAR_M, 0.0)
+    for pat, rows, what in (
+            (r"on EACH axis.*?median ([\d.]+) ft, p95 ([\d.]+) ft, worst ([\d.]+) ft", diag,
+             f"the {TEAR_M:g} m-per-axis tear the fixture applies"),
+            (r"NORTH-ONLY [\d.]+ m shift.*?median ([\d.]+) ft, p95 ([\d.]+) ft, worst ([\d.]+) ft",
+             north, "the north-only shift")):
+        m = re.search(pat, doc)
+        if not m:
+            wrong.append(f"green_elevation publishes no median/p95/worst for {what} ({pat!r})")
+            continue
+        for label, pub, got in zip(("median", "p95", "worst"), [float(g) for g in m.groups()],
+                                   triple(rows)):
+            if abs(pub - got) >= 0.005:
+                wrong.append(f"{what}: docstring says {label} {pub} ft, this corpus measures "
+                             f"{got:.4f} ft over {len(rows)} pair(s)")
+
+    # The two holes the prose names by name, because an unnamed worst case cannot be re-found and
+    # bay-view 4 is the one 171d978's message quotes.
+    worst = max(diag)
+    m_worst = re.search(r"on EACH axis.*?worst [\d.]+ ft \(([a-z0-9-]+) (\d+)\)", doc)
+    if not m_worst:
+        wrong.append("green_elevation does not name the green its worst case belongs to")
+    elif (m_worst.group(1), int(m_worst.group(2))) != (worst[1], worst[2]):
+        wrong.append(f"docstring names {m_worst.group(1)} {m_worst.group(2)} as the worst green; this "
+                     f"corpus's worst is {worst[1]} {worst[2]} at {worst[0]:.4f} ft")
+    m_bv = re.search(r"bay-view 4 moves ([\d.]+) ft", doc)
+    bv = [r for r in diag if r[1] == "bay-view-golf-club" and r[2] == 4]
+    if bv and not m_bv:
+        wrong.append("green_elevation does not state what bay-view 4 moves, which is the single hole "
+                     "171d978's message reproduces the tear on")
+    elif bv and abs(float(m_bv.group(1)) - bv[0][0]) >= 0.005:
+        wrong.append(f"docstring says bay-view 4 moves {m_bv.group(1)} ft; this corpus measures "
+                     f"{bv[0][0]:.4f} ft")
+
+    assert not wrong, (
+        "green_elevation publishes a cost for a torn bbox that this corpus does not measure:\n  "
+        + "\n  ".join(wrong))
 
 
 @needs_corpus

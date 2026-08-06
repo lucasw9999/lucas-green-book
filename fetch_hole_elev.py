@@ -662,9 +662,20 @@ def green_elevation(hole):
     bbox and this function returned a number for it. PIPELINE.md runs this stage at step 6, before
     generate.py at step 7, so that number reached hole_elev.json FIRST; render_green refuses the same
     hole at render time, but its remedy named only the surface rebuild, after which the render succeeds
-    and hole_elev.json still holds the figure measured through the tear. Measured over the real 198
-    pairs, a 5 m torn bbox moves the height by a median 0.18 ft, p95 0.60 ft, worst 1.04 ft -- printed in
-    WHOLE FEET under a 3 ft floor, so this was a missing guard rather than a live wrong number.
+    and hole_elev.json still holds the figure measured through the tear.
+
+    WHAT A TEAR COSTS, measured over the real 198 pairs, for the tear the fixture in
+    tests/test_r14_pair.py actually commits -- a torn bbox 5.0 m on EACH axis, i.e. a north-east
+    displacement of 7.07 m: it moves the height by a median 0.27 ft, p95 1.19 ft, worst 1.89 ft
+    (castlewood-valley-course 12), and bay-view 4 moves 1.39 ft, which is the hole 171d978's message
+    quotes as its reproduction. A NORTH-ONLY 5.0 m shift is the cheaper half of the same experiment --
+    median 0.18 ft, p95 0.60 ft, worst 1.04 ft -- and that north-only triple is what this docstring used
+    to publish about a fixture displacing both axes, which is how the "worst" case published here came
+    out SMALLER than the single hole cited three sentences later. One experiment cannot do that, so both
+    triples are now stated with the shift each belongs to and both are recomputed from this corpus by
+    tests/test_r14_pair.py::test_what_a_torn_bbox_costs_the_printed_height_is_the_tear_the_fixture_applies.
+    Either way the figure is printed in WHOLE FEET under a 3 ft floor, so this was a missing guard rather
+    than a live wrong number.
 
     A TEAR STOPS THE RUN rather than returning None. The None arm of this function means "no height can
     honestly be stated for this hole", and generate.py then omits the line -- which PIPELINE.md's own
