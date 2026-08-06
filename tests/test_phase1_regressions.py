@@ -10687,7 +10687,39 @@ def test_no_commit_carries_a_work_identity():
 
 def test_no_homoglyphs_in_printed_strings():
     """Round 1: two U+0434 CYRILLIC SMALL LETTER DE shipped as 'yd' on the instruction card of
-    all 11 books. Only the em-dash is allowed to be non-ASCII in the engine sources."""
+    all 11 books.
+
+    TWO RULES, over two populations, because one glob covered ten of the repo's twenty-five modules.
+
+      * THE ENGINE (`*.py` at the root): only the em-dash may be non-ASCII. Unchanged, and the strict
+        one -- these are the modules that build the printed card.
+      * EVERY OTHER TRACKED MODULE (`tools/`, `tests/`): a character CONFUSABLE with ASCII. This scan
+        used to stop at the root, so a Cyrillic lookalike inside `tools/gen_provenance.py` -- which
+        writes a legal record -- or inside a tool's printed message was graded by nothing at all. The
+        strict rule cannot be extended to them, because they legitimately carry non-ASCII the engine
+        does not: the generators emit (c) and (tm) into the books, gen_provenance writes a
+        multiplication sign, a superscript two and a tick into legal/03. None of those is mistakable
+        for an ASCII character, which is what this test is about.
+
+    CONFUSABLE IS DECIDED MECHANICALLY, not by an allowlist, because an allowlist is where the next
+    lookalike gets parked: a character is confusable if it belongs to a script that shares letterforms
+    with Latin (Cyrillic, Greek, Armenian, Cherokee, Coptic), or is a fullwidth or mathematical variant
+    of one, or is an invisible character -- a non-ASCII space or a format control. U+0434 is the live
+    case and lands in the first class.
+    """
+    import unicodedata
+    CONFUSABLE_SCRIPTS = ("CYRILLIC", "GREEK", "ARMENIAN", "CHEROKEE", "COPTIC", "FULLWIDTH",
+                          "MATHEMATICAL")
+
+    def confusable(ch):
+        if unicodedata.category(ch) in ("Zs", "Cf", "Cc"):
+            return "an invisible or space character"
+        name = unicodedata.name(ch, "")
+        for script in CONFUSABLE_SCRIPTS:
+            if name.startswith(script):
+                return name
+        return None
+
     allowed = {0x2014}          # EM DASH
     bad = []
     for f in sorted(glob.glob(os.path.join(ROOT, "*.py"))):
@@ -10696,6 +10728,25 @@ def test_no_homoglyphs_in_printed_strings():
             if ord(ch) > 127 and ord(ch) not in allowed:
                 bad.append((os.path.basename(f), src[:i].count("\n") + 1, hex(ord(ch))))
     assert not bad, f"non-ASCII characters that would print as homoglyphs: {bad}"
+
+    lookalikes = []
+    others = (sorted(glob.glob(os.path.join(ROOT, "tools", "*.py")))
+              + sorted(glob.glob(os.path.join(ROOT, "tests", "*.py"))))
+    assert len(others) >= 8, f"only {len(others)} module(s) outside the engine found; the glob has stopped"
+    for f in others:
+        src = open(f, encoding="utf-8").read()
+        for i, ch in enumerate(src):
+            if ord(ch) <= 127:
+                continue
+            why = confusable(ch)
+            if why:
+                lookalikes.append(f"{os.path.relpath(f, ROOT)}:{src[:i].count(chr(10)) + 1} "
+                                  f"{hex(ord(ch))} {why}")
+    assert not lookalikes, (
+        "a character confusable with ASCII is in a tracked module outside the engine, where nothing "
+        "looked for one until now:\n  " + "\n  ".join(lookalikes[:12])
+        + "\n  Two U+0434 CYRILLIC SMALL LETTER DE once shipped as 'yd' on every instruction card; "
+          "these modules write a legal record and the messages a user reads while the pipeline runs.")
 
 
 def test_overpass_reply_validation_refuses_destructive_replies(tmp_path):
