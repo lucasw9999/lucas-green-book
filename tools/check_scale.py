@@ -42,7 +42,6 @@ Exit: 0 = every POCKET green conforms, 1 = one is over the limit or went unmeasu
       2 = no browser here, so nothing could be measured either way. The enlarged edition is
       reported on every one of those paths and gates none of them.
 """
-import glob
 import json
 import os
 import pathlib
