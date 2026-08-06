@@ -12296,8 +12296,7 @@ def test_the_two_render_modes_are_actually_different(gate_course):
         "the enlarged render must NOT pin an inch size, or the coach card cannot grow past the cap"
 
 
-@needs_corpus
-def test_the_printed_pdf_is_not_older_than_the_html_it_came_from():
+def test_the_printed_pdf_was_exported_from_the_html_beside_it():
     """The book that reaches a golf course is the PDF, and nothing in the repo produced it --
     PIPELINE.md said "headless Chrome --print-to-pdf, or Cmd+P", so every PDF was made by hand at an
     unknown time from an unknown HTML. They drifted: on 2026-07-29 all 12 PDFs dated 12:02 while the
@@ -12306,20 +12305,469 @@ def test_the_printed_pdf_is_not_older_than_the_html_it_came_from():
     printed 5-10-12-40-7 under a legend reading "Numbers = slope % there".
 
     Every honesty fix in this branch was invisible on paper. That is the worst failure mode this
-    project has: the HTML is not the artifact."""
+    project has: the HTML is not the artifact.
+
+    IT WAS NAMED FOR A COMPARISON IT NEVER MADE. It was called
+    `..._is_not_older_than_the_html_it_came_from` and export_pdf's own module docstring promised "a
+    test that fails when a PDF is older than its HTML", while stale() deliberately compares content
+    hashes and says why 44 lines below: an mtime gate false-positives on any copied or checked-out
+    tree, and a gate that cries wolf gets switched off. Measured: a PDF thirty days OLDER than its
+    HTML passed under that name. The name now states the comparison that actually runs.
+
+    IT WAS GATED ON THE WRONG SET. `@needs_corpus` keys on GEOMETRY (osm_geom.json + osm_course.json)
+    while this measures BOOKS, and the two are different sets. Both directions measured:
+      * geometry present, no book built -- the test RAN, export_pdf.pairs() returned [], and
+        `assert not outdated` passed having examined NOTHING.
+      * a book present with no geometry -- poppy-ridge's yardage-mode shape, which _books() exists to
+        cover -- it SKIPPED with "per-course data is gitignored; nothing to measure" on the very tree
+        where the CLI exited 1 and named the book as exported from a DIFFERENT html.
+    End to end on that tree: with one book's recorded source hash genuinely disagreeing the suite
+    reported 5 failed / 97 passed / 236 skipped, and after making it fresh again the SAME five, to the
+    test. So the domain is DERIVED FROM WHAT IS PRESENT, and cross-checked against a second
+    enumeration that does not share pairs()' glob -- BOOKS is keyed on course.json.
+
+    AND IT CLASSIFIED ON PROSE: `why.startswith("exported from")` against free text. Proven by a
+    two-step mutation, which is test_the_pdf_freshness_verdict_is_a_tag_and_not_the_wording_of_a_
+    sentence below. So the verdict is a TAG the tool returns, and every tag it can return has to be
+    classified here or this test fails rather than filing an unknown one under "cannot know"."""
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import export_pdf
+
+    # DERIVED FROM WHAT IS PRESENT. BOOKS is keyed on course.json; pairs() globs the html. Two
+    # enumerations of one set, so a glob that quietly stops matching -- or a course that quietly stops
+    # being a course -- fails here instead of silently shrinking the set this gate is measured over.
+    present = {os.path.join(ROOT, "courses", s, f)
+               for s in BOOKS for f in ("greenbook.html", "greenbook_coach.html")
+               if os.path.isfile(os.path.join(ROOT, "courses", s, f))}
+    if not present:
+        pytest.skip("no book is built here, so there is no printed artifact to compare (build one: "
+                    "COURSE=<slug> python3 generate.py, then python3 tools/export_pdf.py)")
+    covered = {h for h, _p in export_pdf.pairs()}
+    assert covered == present, (
+        "export_pdf.pairs() and this suite disagree about which books exist, so the freshness gate is "
+        "measured over the wrong set.\n  the gate does not cover: "
+        + f"{sorted(os.path.relpath(p, ROOT) for p in present - covered)}"
+        + "\n  the gate covers a book this suite does not know about: "
+        + f"{sorted(os.path.relpath(p, ROOT) for p in covered - present)}")
+
+    # CLASSIFY ON THE TAG, never on the sentence -- and partition it HERE rather than read the
+    # partition off export_pdf, because a partition the tool hands the test is one the tool can move
+    # on its own.
+    proven = {export_pdf.WRONG_SOURCE, export_pdf.WRONG_BYTES, export_pdf.TRUNCATED}
+    unknowable = {export_pdf.NOT_EXPORTED, export_pdf.UNSTAMPED}
+    assert proven | unknowable == set(export_pdf.REASONS), (
+        "export_pdf can return a verdict this test does not classify: "
+        f"{sorted(set(export_pdf.REASONS) - proven - unknowable)}. Decide HERE whether each one is a "
+        f"PROVEN defect or something the tree cannot tell us -- an unclassified tag falls into the "
+        f"'cannot know' half and skips, which is how a rewording once turned a proven-stale book green.")
     bad = export_pdf.stale()
-    # Only a PROVEN mismatch is a defect. "not exported" and "unverifiable" mean we cannot know,
-    # and a test must not assert what it cannot know.
-    outdated = [(p, why) for _h, p, why in bad if why.startswith("exported from")]
-    unknown = [p for _h, p, why in bad if not why.startswith("exported from")]
+    outdated = [(p, why) for _h, p, tag, why in bad if tag in proven]
+    unknown = [p for _h, p, tag, _why in bad if tag in unknowable]
+    # A test must not assert what it cannot know: a book nobody has exported, and one carrying no
+    # recorded source at all, are both unjudgeable. A PROVEN defect alongside them is still a failure.
     if unknown and not outdated:
-        pytest.skip(f"{len(unknown)} book(s) have no recorded source hash (export with "
-                    f"tools/export_pdf.py to make staleness checkable)")
+        pytest.skip(f"{len(unknown)} of {len(present)} book(s) carry no recorded source hash (export "
+                    f"with tools/export_pdf.py to make staleness checkable)")
     assert not outdated, ("the PRINTED book does not match the engine:\n   " +
                           "\n   ".join(f"{os.path.relpath(p, ROOT)} ({w})" for p, w in outdated) +
                           "\n  Re-export with: python3 tools/export_pdf.py")
+
+
+_MINIMAL_PDF = (b"%PDF-1.4\n"
+                b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+                b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+                b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 252 360]>>endobj\n"
+                b"trailer<</Root 1 0 R>>\n%%EOF\n")
+
+
+def _a_shipped_book_pdf():
+    """The bytes of a real shipped book, so a torn-write probe tears a real one. None on a fresh clone."""
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
+        if not os.path.basename(os.path.dirname(p)).startswith("_"):
+            with open(p, "rb") as fh:
+                return fh.read()
+    return None
+
+
+def _sha256(data):
+    """A digest computed HERE, so a stamp this suite writes is not the tool's own arithmetic echoed back."""
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
+
+
+def _probe_tree(tmp_path, books):
+    """A fake repo root holding `books` == {slug: (pdf bytes or None, stamp text or None)}.
+
+    Never the corpus, and not negotiable: every probe below writes a torn PDF or a lying stamp beside
+    a book, courses/ is gitignored with no copy in history and none on a remote, and conftest's
+    deletion guard refuses to let a fixture clean up after itself in there for exactly that reason.
+
+    Returns (root, {slug: (html, pdf)}). The html content is per-slug so two books never share a
+    source digest by accident.
+    """
+    root = tmp_path / "probe-root"
+    out = {}
+    for slug, (pdf_bytes, stamp) in books.items():
+        d = root / "courses" / slug
+        d.mkdir(parents=True)
+        html = d / "greenbook.html"
+        html.write_text(f"<html><body>{slug}</body></html>", encoding="utf-8")
+        pdf = d / "greenbook.pdf"
+        if pdf_bytes is not None:
+            pdf.write_bytes(pdf_bytes)
+        if stamp is not None:
+            (d / "greenbook.pdf.src").write_text(stamp, encoding="utf-8")
+        out[slug] = (str(html), str(pdf))
+    return root, out
+
+
+def _export_pdf_bound_to(root, tmp_path, edit=None, name="export_pdf_probe"):
+    """A COPY of tools/export_pdf.py, loaded under its own name and pointed at a fake `root`.
+
+    A copy, because these probes REWORD its messages, and a mutation landing in
+    sys.modules["export_pdf"] would hand the next test a rewritten gate. Loaded by spec rather than
+    importlib.import_module so nothing about the real module's identity is disturbed either.
+    """
+    import importlib.util
+    with open(os.path.join(ROOT, "tools", "export_pdf.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    if edit:
+        src = edit(src)
+    path = tmp_path / f"{name}.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.ROOT = str(root)
+    return mod
+
+
+def _one_book_per_verdict(tmp_path):
+    """A fake tree with one book per verdict export_pdf.stale() can reach. -> (root, {slug: (html, pdf)})
+
+    Named for the verdict each one is built to provoke, so the coverage assertion below reads as the
+    claim it is: every tag in REASONS is REACHABLE, not merely declared.
+    """
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    def stamp(slug, pdf_digest=None):
+        h = _sha256(f"<html><body>{slug}</body></html>".encode())
+        return f"html {h}\n" + (f"pdf {pdf_digest}\n" if pdf_digest else "")
+    return _probe_tree(tmp_path, {
+        "not-exported-gc": (None, None),                      # no PDF at all
+        "unstamped-gc": (whole, None),                        # a PDF, no record of its source
+        "wrong-source-gc": (whole, f"html {'0' * 64}\n"),     # the record names another html
+        "truncated-gc": (whole[:len(whole) // 10], stamp("truncated-gc")),   # a torn write
+        "wrong-bytes-gc": (whole, stamp("wrong-bytes-gc", "1" * 64)),        # not the exported bytes
+    })
+
+
+def test_the_pdf_freshness_verdict_is_a_tag_and_not_the_wording_of_a_sentence(tmp_path):
+    """MUTATION TEST. Rewording an error message must not reclassify a proven-stale printed book.
+
+    The gate above classified on `why.startswith("exported from")` against export_pdf.stale()'s free
+    text. A two-step mutation showed what that costs, on a tree with one book:
+      step A -- corrupt the .src stamp so the recorded hash genuinely disagrees with the html beside
+                it: the gate FAILED, with the right message.
+      step B -- the same corrupted stamp, and export_pdf's sentence reworded, nothing else: the gate
+                SKIPPED, under a skip message that was itself FALSE ("have no recorded source hash" --
+                the stamp was there, it simply did not match).
+    A sentence is for a human to read. The verdict has to be a value.
+
+    So this drives the real module over a tree built to provoke EVERY verdict it can reach, discovers
+    the sentences it actually produces, rewrites all of them in a copy of the source, and requires the
+    tags to come back unchanged. Discovered rather than listed, so a reason added later is rewritten
+    too instead of quietly escaping the mutation.
+    """
+    root, books = _one_book_per_verdict(tmp_path)
+    mod = _export_pdf_bound_to(root, tmp_path)
+
+    before = {}
+    for _h, p, tag, why in mod.stale():
+        before[os.path.basename(os.path.dirname(p))] = (tag, why)
+    assert set(before) == set(books), (
+        f"the probe tree provoked verdicts for {sorted(before)} but was built to provoke one per "
+        f"verdict from {sorted(books)}; a book that comes back CLEAN here is a hole in the gate")
+    assert {t for t, _w in before.values()} == set(mod.REASONS), (
+        f"only {sorted({t for t, _w in before.values()})} of export_pdf.REASONS "
+        f"{sorted(mod.REASONS)} are reachable, so a declared verdict is dead code -- either the probe "
+        f"tree no longer provokes it or nothing can")
+
+    # Every sentence the module produced, rewritten in a copy -- at the AST, and only the sentence.
+    # A textual replace cannot do it: one of these reasons is written as two adjacent string literals,
+    # so it exists in the module without existing in the source as a literal, and a probe that skipped
+    # it quietly would be the same class of hole this test exists to close.
+    sentences = sorted({w for _t, w in before.values()})
+
+    def reword(src):
+        import ast
+        tree = ast.parse(src)
+        n = 0
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "append" and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "bad"):
+                continue
+            arg = node.args[0]
+            assert isinstance(arg, ast.Tuple) and len(arg.elts) == 4, (
+                f"a verdict is no longer (html, pdf, tag, why): {ast.unparse(node)}")
+            arg.elts[3] = ast.Constant(value=f"reworded reason {n}")
+            n += 1
+        assert n == len(sentences), (
+            f"rewrote {n} verdict sentences, but the module reported {len(sentences)} distinct ones -- "
+            f"the probe is not reaching every place a reason is written")
+        return ast.unparse(ast.fix_missing_locations(tree))
+
+    mut = _export_pdf_bound_to(root, tmp_path, edit=reword, name="export_pdf_reworded")
+    after = {}
+    for _h, p, tag, why in mut.stale():
+        after[os.path.basename(os.path.dirname(p))] = (tag, why)
+    assert all(w.startswith("reworded reason") for _t, w in after.values()), (
+        f"the rewording did not take, so this test proves nothing: {sorted(after.values())}")
+    assert {s: t for s, (t, _w) in after.items()} == {s: t for s, (t, _w) in before.items()}, (
+        "rewording export_pdf's messages changed which VERDICT each book gets. The tag is supposed to "
+        "be the fact and the sentence a courtesy; if the two move together then the gate above is "
+        f"still reading prose.\n  before: {before}\n  after:  {after}")
+
+    # ...and the gate's own partition still fires on the rewritten copy. This is step B, run forward:
+    # the book whose stamp names another html must remain a PROVEN defect after the rewording, not
+    # drop into the half this suite is allowed to skip over.
+    proven = {mut.WRONG_SOURCE, mut.WRONG_BYTES, mut.TRUNCATED}
+    assert after["wrong-source-gc"][0] in proven, (
+        "a book whose recorded source hash disagrees with the html beside it is no longer a proven "
+        "defect once the message is reworded -- which is precisely the two-step mutation above")
+
+
+def test_an_interrupted_export_cannot_leave_a_book_the_gate_calls_fresh(tmp_path):
+    """export() wrote the PDF in place, and the stamp recorded only the HTML -- so a torn write passed.
+
+    Playwright's writer opens the destination "wb" (truncating; playwright/_impl/_helper.py's
+    async_writefile), and a re-export rewrites ALL 15 books including the 14 whose stamps already
+    match. Interrupt one -- Ctrl-C, a full disk -- and the printable book is destroyed while its stamp,
+    which was never rewritten because it already agreed, still names the current HTML. Measured on a
+    real shipped book: the file came back with ZERO pages and PyMuPDF's is_repaired set, and
+    `--check` said "all 1 PDF(s) match the HTML they were exported from" and exited 0.
+
+    That falsified README's claim that --check "proves the PDF you would actually print came from the
+    HTML on disk": it proved a NOTE beside the PDF named the current HTML. Two fixes, both graded here
+    by doing the damage rather than by reading the source:
+      * the export STAGES and renames, the convention this repo states four times for this exact class
+        (fetch_lidar.py, fetch_hole_elev.py, surface_io.py, fetch_trees.py), so an interrupted run
+        cannot leave a wreck where the book was;
+      * the stamp records the PDF's OWN digest as well, so a book replaced or damaged after the fact
+        is a verdict rather than a guess -- and a file with no trailer is refused whatever its stamp
+        says, which is the only thing standing between a torn write and the stamps already on disk.
+    """
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    html, pdf = books["probe-golf-club"]
+    mod = _export_pdf_bound_to(root, tmp_path)
+
+    # The stamp is written by the tool, so what a real export records is what is graded.
+    mod.write_stamp(pdf, html)
+    assert sorted(mod.read_stamp(pdf)) == ["html", "pdf"], (
+        f"a stamp this tool writes records {sorted(mod.read_stamp(pdf))}; without the PDF's own digest "
+        f"the gate can only prove that a NOTE beside the book names the current HTML")
+    assert mod.read_stamp(pdf)["html"] == _sha256(open(html, "rb").read())
+    assert mod.read_stamp(pdf)["pdf"] == _sha256(whole)
+    assert mod.stale() == [], f"a book just exported is not fresh: {mod.stale()}"
+
+    # THE STAGE IS DOT-PREFIXED. A leftover `greenbook.pdf.part` would land inside
+    # _courses_snapshot's watch (courses/*/*) and inside the coverage walk in
+    # test_the_read_only_guard_watches_every_file_a_real_course_holds; a dot-prefixed one is exempt in
+    # both, which is the same argument surface_io.staged_names makes for `.holeNN.json.part`.
+    staged = mod.staged_pdf(pdf)
+    assert os.path.dirname(staged) == os.path.dirname(pdf), "the stage must land beside the book"
+    assert os.path.basename(staged).startswith(".") and staged.endswith(".part"), (
+        f"the staged name {os.path.basename(staged)!r} is neither dot-prefixed nor a .part, so a "
+        f"leftover reads as course data the read-only guard has never seen")
+
+    # A TORN WRITE. This is what the interrupted "wb" leaves on disk.
+    with open(pdf, "wb") as fh:
+        fh.write(whole[:len(whole) // 10])
+    torn = mod.stale()
+    assert [t for _h, _p, t, _w in torn] == [mod.TRUNCATED], (
+        f"a book truncated to a tenth of itself, beside a stamp that still names the current HTML, "
+        f"comes back {torn} -- the gate calls the wreck fresh")
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+    if fitz is not None and whole is not _MINIMAL_PDF:
+        with fitz.open(pdf) as d:
+            assert d.page_count == 0 and d.is_repaired, (
+                "the torn probe still parses, so it is not the failure this test is about")
+
+    # A COMPLETE PDF THAT IS NOT THE EXPORT. The stage-and-rename cannot see this one; the recorded
+    # digest is the only thing that can. A byte flipped in the MIDDLE, so the header and the trailer
+    # are both still there and is_whole_pdf has nothing to object to.
+    mid = len(whole) // 2
+    changed = whole[:mid] + bytes((whole[mid] ^ 0xFF,)) + whole[mid + 1:]
+    assert changed != whole and len(changed) == len(whole), "the swap probe changed nothing"
+    with open(pdf, "wb") as fh:
+        fh.write(changed)
+    swapped = mod.stale()
+    assert [t for _h, _p, t, _w in swapped] == [mod.WRONG_BYTES], (
+        f"a complete PDF that is not the one that was exported comes back {swapped}; README's claim "
+        f"that --check proves the PDF you would print came from the HTML on disk rests on this")
+
+    # ...and restoring the exported bytes clears it, so the verdict is about the artifact and not about
+    # having been touched.
+    with open(pdf, "wb") as fh:
+        fh.write(whole)
+    assert mod.stale() == [], f"the exported bytes back on disk still read as stale: {mod.stale()}"
+
+
+def test_the_export_gate_refuses_an_option_it_does_not_understand_instead_of_writing(tmp_path,
+                                                                                    monkeypatch):
+    """`check = "--check" in sys.argv` was exact membership, and every other dash-argument was
+    silently discarded -- so a typo fell through to the branch that REWRITES all 15 books.
+
+    Measured on a genuinely stale book: `python3 tools/export_pdf.py -check` exported it and exited 0,
+    and the `--check` run that followed then returned 0 as well. The gate did not check; it made itself
+    true and said nothing. `--chek`, `--verify` and `-n` are the same fall-through.
+
+    A gate must refuse an argument it does not understand. Graded by counting export() calls, so
+    "refuses" means the writing branch was never entered rather than that a message was printed."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, f"html {'0' * 64}\n")})
+    mod = _export_pdf_bound_to(root, tmp_path)
+    assert [t for _h, _p, t, _w in mod.stale()] == [mod.WRONG_SOURCE], \
+        "the probe book is supposed to start out genuinely stale"
+
+    calls = []
+    monkeypatch.setattr(mod, "export", lambda items: calls.append(list(items)) or list(items))
+
+    def run(*argv):
+        del calls[:]
+        monkeypatch.setattr(sys, "argv", ["export_pdf.py", *argv])
+        return mod.main(), list(calls)
+
+    for bad_opt in ("-check", "--chek", "--verify", "-n", "--check=1"):
+        rc, wrote = run(bad_opt)
+        assert not wrote, (
+            f"{bad_opt!r} reached the branch that rewrites books. On a stale tree that EXPORTS, which "
+            f"makes the next --check pass -- the gate made itself true instead of checking.")
+        assert rc != 0, f"{bad_opt!r} was accepted and reported success (rc={rc})"
+
+    # ...and the two spellings that ARE the tool still work, or the refusal above broke it.
+    rc, wrote = run("--check")
+    assert rc == 1 and not wrote, f"--check on a stale book returned {rc} and wrote {wrote}"
+    rc, wrote = run()
+    assert rc == 0 and len(wrote) == 1, f"a bare run returned {rc} and exported {wrote}"
+
+
+def test_an_unverifiable_pdf_is_not_accused_of_being_printed_by_hand(tmp_path):
+    """"unverifiable (exported by hand; no source hash)" asserted a cause the tool cannot know, and it
+    was FALSE in the one case the tool itself produces.
+
+    export() writes the PDF and then writes its stamp. Interrupt a 15-book run between the two -- one
+    Ctrl-C -- and --check told the user the book was "exported by hand" and to "export with
+    tools/export_pdf.py", which is exactly what they were doing. Reproduced by removing a stamp beside
+    its book, which is byte-for-byte the state that interrupt leaves.
+
+    The tag carries the fact. The sentence has to name both ways a book gets here, or it misdirects
+    the reader in the case the tool caused itself."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    mod = _export_pdf_bound_to(root, tmp_path)
+    bad = mod.stale()
+    assert [t for _h, _p, t, _w in bad] == [mod.UNSTAMPED], (
+        f"a book with no stamp beside it comes back {bad}; provenance is unknown, not proven")
+    why = bad[0][3]
+    assert "hand" in why and "interrupt" in why, (
+        f"the reason reads {why!r}. A PDF with no recorded source is either hand-printed or the "
+        f"remains of a run interrupted between writing the book and writing its stamp -- the tool "
+        f"cannot tell which, and naming only the first tells a user who just pressed Ctrl-C to do the "
+        f"thing they were doing.")
+
+
+def test_a_slug_that_matches_no_book_is_not_reported_as_an_empty_corpus(tmp_path, monkeypatch,
+                                                                       capsys):
+    """"no built books found (build one first: COURSE=<slug> python3 generate.py)" was printed when
+    books ARE built and only the slug argument matched nothing -- `--check merion` rather than
+    `--check merion-golf-club`. Reproduced.
+
+    It sends the reader to rebuild a corpus that is already there, and the corpus is ~300 MB of LiDAR
+    per course. The empty-tree message is right where it is right, so both directions are checked."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, _books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    mod = _export_pdf_bound_to(root, tmp_path)
+    monkeypatch.setattr(mod, "export", lambda items: list(items))
+
+    monkeypatch.setattr(sys, "argv", ["export_pdf.py", "--check", "probe"])
+    rc = mod.main()
+    said = capsys.readouterr().out
+    assert rc != 0, "a slug that matches no book reported success"
+    assert "build one first" not in said, (
+        f"a book IS built and the slug simply matched nothing, and the tool says:\n  {said.strip()}")
+    assert "probe-golf-club" in said, (
+        f"the tool does not say which books it does have, so the reader cannot see that 'probe' is "
+        f"short for one of them:\n  {said.strip()}")
+
+    # ...and on a tree with no books at all that message is the correct one.
+    empty, _ = _probe_tree(tmp_path / "empty", {})
+    (empty / "courses").mkdir(parents=True, exist_ok=True)
+    mod.ROOT = str(empty)
+    monkeypatch.setattr(sys, "argv", ["export_pdf.py", "--check"])
+    rc = mod.main()
+    said = capsys.readouterr().out
+    assert rc != 0 and "build one first" in said, (
+        f"an empty tree no longer tells the reader to build a book: rc={rc}, said {said.strip()!r}")
+
+
+def test_the_headless_shell_is_the_revision_the_installed_playwright_declares(tmp_path, monkeypatch):
+    """_headless_shell()'s docstring said "the bundled chrome-headless-shell that matches the installed
+    Playwright build". Nothing consulted the installed build: it returned the LEXICOGRAPHICALLY
+    greatest cached directory, and that ordering is wrong at every digit-count boundary. Measured with
+    revisions 999, 1000 and 1208 cached, it picked 999.
+
+    The renderer milestone is load-bearing evidence in this suite -- /Creator and the Skia/PDF
+    milestone are how test_the_hand_made_aerial_master_is_recorded_as_unreproducible and PIPELINE.md
+    tell a tool-exported book from a hand-printed one -- so which binary prints the book is not an
+    implementation detail.
+
+    Graded against the revision the INSTALLED driver declares, read out of playwright's own
+    browsers.json here rather than from the tool's reader, so both sides are not one function."""
+    try:
+        import playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
+    declared = None
+    manifest = os.path.join(os.path.dirname(playwright.__file__), "driver", "package",
+                            "browsers.json")
+    assert os.path.isfile(manifest), f"playwright no longer ships {manifest}"
+    with open(manifest, encoding="utf-8") as fh:
+        for b in json.load(fh)["browsers"]:
+            if b.get("name") == "chromium-headless-shell":
+                declared = str(b["revision"])
+    assert declared, "playwright's browsers.json no longer declares a chromium-headless-shell revision"
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+
+    def cache(*revisions):
+        home = tmp_path / ("home-" + "-".join(str(r) for r in revisions) or "home-empty")
+        for r in revisions:
+            d = (home / "Library" / "Caches" / "ms-playwright"
+                 / f"chromium_headless_shell-{r}" / "chrome-headless-shell-mac-arm64")
+            d.mkdir(parents=True)
+            (d / "chrome-headless-shell").write_bytes(b"")
+        monkeypatch.setenv("HOME", str(home))
+        return export_pdf._headless_shell()
+
+    got = cache(999, declared, 1000)
+    assert got and f"chromium_headless_shell-{declared}/" in got, (
+        f"with the declared revision {declared} cached alongside decoys, the exporter picks {got!r}. "
+        f"The book must be printed by the build the installed Playwright drives.")
+
+    # ...and where the declared revision is NOT cached the newest one is the honest answer -- newest by
+    # REVISION NUMBER, which is the whole of the lexicographic defect.
+    got = cache(999, 1000, 1208)
+    assert got and "chromium_headless_shell-1208/" in got, (
+        f"with 999, 1000 and 1208 cached and nothing matching the installed build, the exporter picks "
+        f"{got!r}. Sorted as text, '999' is the greatest of those three.")
+
+    assert cache() is None, "an empty cache must report no shell rather than a path that is not there"
 
 
 def _pdf_numbers(pdf):
@@ -12422,7 +12870,7 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
 
     Sibling coverage, so this test does not have to carry it: PDF-vs-HTML faithfulness is
     test_every_number_printed_in_a_pdf_exists_in_its_html, and staleness is
-    test_the_printed_pdf_is_not_older_than_the_html_it_came_from, which hashes content rather than
+    test_the_printed_pdf_was_exported_from_the_html_beside_it, which hashes content rather than
     comparing mtimes."""
     try:
         import fitz
