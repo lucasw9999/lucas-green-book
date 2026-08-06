@@ -58,6 +58,54 @@ IG_QR = _data_uri(os.path.join(ROOT, "lucaswu.golf_qr_small.png"))
 
 DISTRIBUTABLE = distribution.is_distributable(config.COURSE)
 
+# THE REASON A BOOK MAY NOT BE SHARED IS STATED IN TWO RECORDS, and nothing tied their WORDS together.
+# The left half of each pair is what the card prints; the right half is what distribution.py's own reason
+# for the SAME refusal has to claim -- that reason is what tools/gen_provenance.py writes into
+# legal/03_PROVENANCE_BY_COURSE.md. The verdict already cannot disagree (both are keyed on the same data
+# facts, is_distributable and is_yardage); the two TEXTS still could, which is the same
+# claim-published-in-two-records-with-no-cross-check shape as the rest of this file's history.
+#
+# Each probe is a MINIMAL course record of that class, so the check asks distribution.py what it says
+# about the refusal itself and not about whichever course happens to be loaded -- flipping DISTRIBUTABLE
+# on a course whose record is fine (which the suite does, to reach the wording) must not trip it.
+#
+# The printed sentences are quoted verbatim in legal/05_DISCLAIMER_TEXT.md, which is generated FROM the
+# books, so they are the half that must not move; if distribution.py rewords a reason so that it no
+# longer makes the claim the card is printing, THIS build stops rather than shipping the disagreement.
+_REFUSALS = {
+    "yardage": (
+        {"build_mode": distribution.YARDAGE},
+        ("yardage mode", "blank greens"),
+        "<b>This copy is for personal use only &mdash; please do not share or redistribute "
+        "it</b>, because its greens are blank for want of trustworthy survey data and a reader "
+        "elsewhere cannot know that. Not for sale. All rights reserved."),
+    "unvouched": (
+        {"build_mode": "not-a-documented-build-mode"},
+        ("unrecognised build_mode", "unknown"),
+        "<b>This copy is for personal use only &mdash; please do not share or redistribute "
+        "it</b>, because this course's build record is not one this project can vouch for and a "
+        "reader elsewhere cannot know that. Not for sale. All rights reserved."),
+}
+
+
+def _refusal_sentence(kind):
+    """The printed reason for one refusal -- once distribution.py still gives that reason for it."""
+    probe, must_claim, sentence = _REFUSALS[kind]
+    ok, _label, why = distribution.distribution_status(probe)
+    missing = [c for c in must_claim if c not in why.lower()]
+    if ok or missing:
+        raise SystemExit(
+            f"generate.py prints a {kind!r} refusal on the card while distribution.py no longer gives "
+            f"that reason for it, so the book and legal/03_PROVENANCE_BY_COURSE.md would state "
+            f"different reasons for the same verdict.\n"
+            f"  the card says:      {sentence}\n"
+            f"  distribution.py:    {(why or '(it does not refuse this at all)')!r}\n"
+            + (f"  missing claim(s):   {', '.join(repr(m) for m in missing)}\n" if missing else "")
+            + f"  Reconcile the two. The card's wording is printed in a shipped book and quoted "
+              f"verbatim in legal/05_DISCLAIMER_TEXT.md, so restoring the reason in distribution.py is "
+              f"normally the cheaper half; changing the card means rebuilding that book and its PDF.")
+    return sentence
+
 
 def sharing_line():
     """The licence sentence -- and for a book that may NOT be shared, a licence that says so.
@@ -85,6 +133,11 @@ def sharing_line():
     greens are claimed only by the book that has them. The other refusals are typos in a hand-edited
     field, and what they were meant to say is unknown, so the sentence says that instead of guessing.
 
+    THE TWO TEXTS could still drift, which the verdict being shared does not fix: distribution.py holds
+    its own reason strings, legal/03 is generated from those, and these sentences were spelled here with
+    nothing comparing them. Each refusal is taken from _REFUSALS now, which pairs the printed sentence
+    with the claim distribution.py's reason for the same refusal must carry -- see _refusal_sentence().
+
     The yardage wording is quoted verbatim in legal/05_DISCLAIMER_TEXT.md; changing it invalidates that
     record. test_the_licence_sentence_never_states_a_reason_the_book_contradicts pins both branches.
     """
@@ -92,12 +145,8 @@ def sharing_line():
         return ("This book: free to share, not for sale &mdash; "
                 "CC&nbsp;BY-NC-ND&nbsp;4.0.")
     if distribution.is_yardage(config.COURSE):
-        return ("<b>This copy is for personal use only &mdash; please do not share or redistribute "
-                "it</b>, because its greens are blank for want of trustworthy survey data and a reader "
-                "elsewhere cannot know that. Not for sale. All rights reserved.")
-    return ("<b>This copy is for personal use only &mdash; please do not share or redistribute "
-            "it</b>, because this course's build record is not one this project can vouch for and a "
-            "reader elsewhere cannot know that. Not for sale. All rights reserved.")
+        return _refusal_sentence("yardage")
+    return _refusal_sentence("unvouched")
 
 
 def esc(s):
