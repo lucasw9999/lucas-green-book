@@ -10,7 +10,7 @@ greenbook/
   fetch_lidar.py         # download USGS 3DEP LiDAR tiles (via The National Map) -> laz/
   fetch_lidar_alameda.py #   Alameda County 2021 tile-name decoder (grabs all complementary copies)
   fetch_dem_hd.py        # raw LiDAR ground returns -> 0.4 m surface per green -> dem_hd/
-  fetch_dem.py           #   THEN seamless 1 m DEM for the greens fetch_dem_hd.py refused
+  fetch_dem.py           #   THEN the 3DEP seamless MOSAIC for the greens fetch_dem_hd.py refused
                          #   (fills gaps; ONLY=/OVERWRITE=1 to narrow or force it)
   fetch_trees.py         # LiDAR canopy trees -> trees_lidar.json (off greens/fairways/tees/bunkers)
   fetch_hole_elev.py     # tee-to-green height from the same LiDAR -> hole_elev.json (--write)
@@ -161,10 +161,17 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
 5. **Surfaces & trees.** `fetch_dem_hd.py` clips ground-classified returns to each green and
    interpolates a 0.4 m surface -> `dem_hd/`; `fetch_trees.py` extracts canopy trees ->
    `trees_lidar.json`, dropping any that fall on a green/fairway/tee/bunker. Then `fetch_dem.py`
-   fills the gaps: it writes a 1 m seamless surface for each green `fetch_dem_hd.py` refused and
-   leaves the 0.4 m ones alone, so the two compose per GREEN. Those cards print `1 m data`.
-   `lidar_coverage.py` then checks the tiles' data footprint really reaches every green and hole
-   centreline -- a tile can be present, correctly named, and hold no points where a green is.
+   fills the gaps: it writes a seamless-mosaic surface for each green `fetch_dem_hd.py` refused and
+   leaves the 0.4 m ones alone, so the two compose per GREEN. Those cards carry a coarse-data caveat
+   naming the source cell measured off that green's own array (`render_green.source_lattice`) — not a
+   product tier: 3DEP's seamless service is a MULTI-RESOLUTION MOSAIC, and at every green this stage
+   has run on it answered from the 1/9 arc-second tier, so the label used to say `1 m` and was wrong
+   by 2.7x E-W and 3.4x N-S.
+   `lidar_coverage.py` then checks every green and hole centreline against the tiles' HEADER bounding
+   boxes, and cross-checks `dem_hd/` for what the point cloud actually produced -- a rectangle can
+   prove a green is outside the survey, never that it is inside it. It STOPS the fetch on anything it
+   flags; `ALLOW_COVERAGE_GAPS=1` accepts gaps you have read (monarch-bay's holes 1, 17 and 18 are
+   permanently over the bay), `ALLOW_UNCHECKED_COVERAGE=1` builds with no check at all.
 6. **Elevation.** `fetch_hole_elev.py --write` measures each hole's tee-to-green height change from the
    same ground returns -- median Z at the back tee against the median of the green's own surface -- into
    `hole_elev.json`. Run it AFTER the surfaces exist, since it reads them. Skipping it is silent: the

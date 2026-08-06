@@ -6,7 +6,7 @@
 """
 High-resolution green surfaces from RAW LiDAR ground returns.
 
-Upgrade over fetch_dem.py (which used the gridded 1 m DEM): here we read the
+Upgrade over fetch_dem.py (which used the gridded seamless DEM): here we read the
 course's USGS 3DEP point cloud (4.7-27.9 pts/m^2 over a green in this corpus),
 keep ONLY ground-classified points (class 2), and interpolate a 0.4 m surface
 over each green — sampled on the same lat/lon grid render_green.py expects, so
@@ -30,7 +30,11 @@ OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 # trace of the surface pair's rename window, and evidence a dead run also leaves is not evidence.
 surface_io.sweep_staged(OUT)
 RES = 0.4                                   # target metres/pixel
-# replace a working 1 m fallback with a blank green. Parsed the way fetch_trees.py parses its two
+# OVERWRITE=1 lets a refused 0.4 m attempt replace a working seamless fallback with a blank green --
+# see keeps_existing_surface, whose guard this flag is the escape hatch for. (The sentence lost its
+# subject when this was promoted from a trailing comment on the assignment to a block above it, so it
+# has read as a fragment beginning "replace a working..." since fd1f1ca.) Parsed the way
+# fetch_trees.py parses its two
 # escape hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
 # OVERWRITE=no all mean YES, so the word "false" armed the one path in this stage that can turn a card
 # that prints a real read into a blank one. An explicit off must be off.
@@ -262,7 +266,12 @@ def keeps_existing_surface(meta_path, overwrite=False):
     """True when meta_path holds a READABLE surface that a refused 0.4 m attempt must not replace.
 
     The mirror of fetch_dem.keeps_existing_surface, with the seamless case INVERTED -- that one protects
-    good 0.4 m LiDAR from the coarse 1 m fill, this one protects ANY readable record from a blank green.
+    good 0.4 m LiDAR from the coarse seamless fill, this one protects ANY readable record from a blank
+    green. (Said "the coarse 1 m fill" here until this round. 7d8d131 corrected the other three notes in
+    this module and missed this one, and the reason is worth recording: the grader it measured them with
+    binds the figure to the product by ADJACENCY -- seamless, mosaic, national model, fallback, DEM --
+    and "fill" is not on that list, so the same claim in the same paragraph was invisible. The arrays
+    are measured 20 lines below.)
 
     The inline guard this replaced tested `fetch_dem.is_seamless(prev)`, so it protected only the 6
     seamless records in a 198-green corpus -- 3%. The other 192 are LiDAR-sourced, and re-running this
@@ -288,7 +297,11 @@ def keeps_existing_surface(meta_path, overwrite=False):
     except (OSError, ValueError):
         return False                        # unreadable: rebuilding it is the repair
     # Any positively-sourced record that is not itself a refusal. Deliberately NOT is_seamless: a
-    # seamless 1 m surface and a good 0.4 m one are both real reads, and both beat a blank green.
+    # seamless surface and a good 0.4 m one are both real reads, and both beat a blank green. (Said
+    # "seamless 1 m" here until this round: the six greens this corpus takes from that mosaic have
+    # arrays measuring 2.72 m E-W x 3.43 m N-S, so "1 m" overstated the one mark whose job is to say
+    # trust this green LESS. a60fcae corrected the string literals and the legal records and stopped
+    # short of comments, naming this note as one of the two it stopped short of.)
     return bool(str((prev or {}).get("source", "")).strip()) and not prev.get("insufficient")
 
 
@@ -413,15 +426,15 @@ def main():
         dens = round(dens_exact,1)
         # A green is only trustworthy if the surface was actually measured under it.
         insufficient = is_insufficient(nan_frac, dens_exact, uncovered)
-        # Do not trade a WORKING 1 m fallback for a refused 0.4 m attempt. This stage shares dem_hd/
+        # Do not trade a WORKING seamless fallback for a refused 0.4 m attempt. This stage shares dem_hd/
         # with fetch_dem.py, which fills the greens this one gives up on, and re-running this stage
         # alone -- an ordinary thing to do after changing the point filter -- overwrote that fill with
         # an insufficient=True record. The green then prints BLANK where it previously printed a real
-        # read labelled "1 m data": a card silently loses information, and the only symptom is the
-        # blank itself.
+        # read carrying the coarse-data caveat: a card silently loses information, and the only symptom
+        # is the blank itself.
         #
         # This is the exact mirror of the fault fetch_dem.keeps_existing_surface was written for, found
-        # on the same course: that one replaced good 0.4 m greens with the coarse 1 m ones, and cost
+        # on the same course: that one replaced good 0.4 m greens with the coarse mosaic ones, and cost
         # Monarch Bay 1.1 MB of precision without printing a dishonest word. Only one direction was
         # guarded. Same convention here, same escape hatch: OVERWRITE=1 to do it on purpose.
         #

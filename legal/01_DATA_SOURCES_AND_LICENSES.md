@@ -38,8 +38,12 @@ Every input used to build the books, its license, our obligation, and how we mee
 
 ## 2. USGS 3DEP elevation / LiDAR — green slope, contours, break arrows
 - **License:** **U.S. Government public domain** (17 U.S.C. §105 — no copyright in federal works).
-- **What we take:** raw elevation (seamless 1 m DEM and/or 3DEP LiDAR point clouds), via
-  `elevation.nationalmap.gov` and the USGS LPC archive (`fetch_dem*.py`, `fetch_lidar*.py`).
+- **What we take:** raw elevation (the seamless DEM mosaic and/or 3DEP LiDAR point clouds), via
+  `elevation.nationalmap.gov` and the USGS LPC archive (`fetch_dem*.py`, `fetch_lidar*.py`). That
+  service is **multi‑resolution**, so no single cell size describes it and this record names none: each
+  green records the source cell measured out of its own array (`render_green.source_lattice`), and at
+  the greens we have taken from it that is **2.72 m E-W x 3.43 m N-S** — 3DEP's 1/9 arc‑second tier,
+  not its 1 m tier. Graded against those arrays, never against this sentence.
 - **What we make:** we **compute** the slope %, iso‑elevation contours, downhill arrows, and
   depth grid ourselves (`render_green.py`). That analysis is **our own original work** over
   public‑domain data — we own the output.

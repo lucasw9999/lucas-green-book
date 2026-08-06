@@ -57,7 +57,7 @@ side of the half yard — each printed **one yard deeper** than the ground:
 
 Two of those four — `copper-valley` 16 and `micke-grove` 13 — had been moved the **wrong way** by an
 earlier partial fix, which corrected the raster's pixel anisotropy while leaving the datum wrong.
-`monarch-bay-golf-club` hole 1 is one of the greens that falls back to the 1 m seamless DEM; the other
+`monarch-bay-golf-club` hole 1 is one of the greens that falls back to the seamless DEM; the other
 three are 0.4 m LiDAR. The model error was the same either way — it was not a data‑quality difference.
 
 **This list is re‑measured, not transcribed.**

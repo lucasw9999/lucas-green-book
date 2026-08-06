@@ -9,8 +9,9 @@ The one rule for putting a green surface on disk.
 A green surface is TWO files -- dem_hd/holeNN.npy and dem_hd/holeNN.json -- and they only mean
 anything together: the array carries no georeference of its own, so the meta's bbox, polygon and
 green_center are what place every pixel. Both producers (fetch_dem_hd.py at 0.4 m from the point
-cloud, fetch_dem.py at 1 m from the seamless DEM) write into the same directory, so the rule lives
-here once rather than in each of them.
+cloud, fetch_dem.py at 0.5 m from the seamless mosaic, whose tier over this corpus's greens measures
+2.72 m E-W x 3.43 m N-S -- so 0.5 m is that stage's sampling and not its resolution) write into the
+same directory, so the rule lives here once rather than in each of them.
 """
 import glob
 import hashlib
@@ -205,11 +206,24 @@ def stamp_digest(base):
 
 
 def _sidecars(root):
-    """Every real course's surface sidecar bases under root/courses, sorted. Scratch dirs excluded."""
+    """Every real course's surface sidecar bases under root/courses, sorted. Scratch dirs excluded.
+
+    ENUMERATED FROM THE SURFACES, filtered by distribution.is_corpus_slug -- not from
+    distribution.course_slugs. Those two differ, and the difference was an unstampable failure:
+    course_slugs globs `courses/*/course.json`, while every corpus test that grades these surfaces globs
+    `courses/*/dem_hd/hole*.json` and drops only `_`-prefixed slugs. A directory holding SURFACES BUT NO
+    course.json is therefore graded -- required to carry a digest -- and invisible to `--stamp`, in the
+    one directory nothing can regenerate.
+
+    The scratch filter is the part that must stay, and it is the same predicate course_slugs uses, so a
+    fixture's meta still cannot be rewritten in place by the migration. What is dropped is the
+    course.json requirement, which was never what "is there a surface here to stamp" depends on.
+    """
     import distribution
     out = []
-    for slug in distribution.course_slugs(root):
-        for p in sorted(glob.glob(os.path.join(root, "courses", slug, "dem_hd", "hole*.json"))):
+    for p in sorted(glob.glob(os.path.join(root, "courses", "*", "dem_hd", "hole*.json"))):
+        slug = os.path.basename(os.path.dirname(os.path.dirname(p)))
+        if distribution.is_corpus_slug(slug):
             out.append(p[:-len(".json")])
     return out
 
@@ -276,7 +290,19 @@ def main(argv=None):
         changed = stamp_digest(b)
         after = _fingerprint(b + ".json")
         npy_after = _fingerprint(b + ".npy")
-        assert npy_before == npy_after, f"{b}.npy changed during a sidecar-only migration"
+        # RAISE, do not assert. `python -O` deletes an assert statement, and this is the only thing
+        # standing between an array that moved between the read and the write and a digest that
+        # certifies the moved one -- on the single write in this project that touches data with no copy
+        # anywhere (courses/ is gitignored; only laz/ is refetchable). Stop the run rather than finish
+        # the loop: every sidecar already written is correct, and continuing would stamp more metas
+        # against a corpus whose state is now unknown.
+        if npy_before != npy_after:
+            raise SystemExit(
+                f"ABORT after {wrote} sidecar(s): {b}.npy changed during a sidecar-only migration "
+                f"({npy_before} -> {npy_after}). This run reads each array and writes only its meta, so "
+                f"the array moving underneath means something else is writing to courses/ -- stamping "
+                f"the rest would certify arrays nobody measured. Stop that writer and re-run; the "
+                f"sidecars already stamped above are correct and this one was not written.")
         wrote += bool(changed)
         print(f"  {os.path.relpath(b + '.json', root)}: {before[0]}B {before[1][:12]} -> "
               f"{after[0]}B {after[1][:12]}")

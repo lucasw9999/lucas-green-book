@@ -140,8 +140,13 @@ def load_playing_surfaces():
 # A hole must have held at least this many markers before losing all of them counts as a LOSS rather
 # than churn. Same floor and same reason as fetch_osm._check_response's `oc[k] < 4` skip: a corridor
 # with one or two markers is a filter edge case, while the failures this has to catch take a hole from
-# tens or hundreds to zero (the smallest per-hole count in this corpus outside monarch-bay's three
-# survey-edge holes is 15).
+# tens or hundreds to zero.
+# Re-measured over the eleven stored layers. monarch-bay's three survey-edge holes -- 1, 17 and 18 --
+# are the corpus's only zeros, and
+#   the smallest per-hole count above them is 16, on monarch-bay 16 (then 19, on monarch-bay 7),
+#   and outside monarch-bay entirely it is 47, on philadelphia 11.
+# So a floor of 4 still sits clear of every real corridor. This was published as 15, a figure that
+# reproduces on no hole of any course.
 TREE_HOLE_FLOOR = 4
 
 

@@ -4,13 +4,19 @@
 # https://github.com/lucasw9999/lucas-green-book
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
-Generic per-green elevation for any course, from the USGS 3DEP seamless 1 m DEM
+Generic per-green elevation for any course, from the USGS 3DEP seamless DEM service
 (public domain) -- no per-course LiDAR tile picking required.
 
 Reads COURSE_DIR/osm_geom.json, matches each green to its hole (for approach
 bearing), downloads a small DEM patch per green via the 3DEP exportImage service
 sampled at 0.5 m/px, and writes COURSE_DIR/dem_hd/holeNN.{npy,json} -- the same
 format render_green.py consumes.
+
+That service is a MULTI-RESOLUTION MOSAIC, so 0.5 m/px is the sampling and NOT the resolution: at the
+only greens this stage has ever run on it answers from 3DEP's 1/9 arc-second tier, 2.72 m E-W x 3.43 m
+N-S. The recorded `source` therefore names the source cell MEASURED out of the reply's own resampling
+lattice (source_cell_clause) instead of asserting a tier -- it said "1 m" for the life of the project,
+which the cards and legal/03 both republished.
 
 The recorded bbox is the one the REPLY carries, never the one this asked for. ArcGIS exportImage
 adjusts the bbox to the requested `size`'s aspect ratio in the IMAGE SR -- degrees here -- while
@@ -23,11 +29,11 @@ Run it AFTER fetch_dem_hd.py, not instead of it. This stage FILLS GAPS: it share
 fetch_dem_hd.py and skips any green that already holds a good 0.4 m LiDAR surface, so the two
 compose per GREEN rather than per course -- which is what a bayside course needs, where most
 greens have ground returns and a few over water have none. It used to rewrite every hole it was
-given, silently replacing 0.4 m greens with the coarse 1 m DEM (Monarch Bay: 3,889,124 bytes
+given, silently replacing 0.4 m greens with the coarse seamless one (Monarch Bay: 3,889,124 bytes
 against 4,973,620).
 
 Run:  COURSE=<slug> python3 fetch_dem_hd.py     # first: 0.4 m where LiDAR allows
-      COURSE=<slug> python3 fetch_dem.py        # then: 1 m for the greens it refused
+      COURSE=<slug> python3 fetch_dem.py        # then: the seamless mosaic for the ones it refused
       ONLY=14,16 ...                            # restrict to specific holes (a comma-separated
                                                 #   list of numbers; ranges are refused, not guessed)
       OVERWRITE=1 ...                           # replace a good 0.4 m surface on purpose
@@ -49,11 +55,11 @@ surface_io.sweep_staged(OUT)
 # replace a good 0.4 m surface on purpose. Parsed the way fetch_trees.py parses its two escape
 # hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
 # OVERWRITE=no all mean YES, so the word "false" armed the path that trades every 0.4 m LiDAR green
-# for the coarse 1 m DEM -- the exact loss keeps_existing_surface below exists to prevent. An
+# for the coarse seamless mosaic -- the exact loss keeps_existing_surface below exists to prevent. An
 # explicit off must be off.
 OVERWRITE = os.environ.get("OVERWRITE", "").lower() not in ("", "0", "false", "no")
 def is_seamless(meta):
-    """True when this surface came from the 1 m seamless DEM rather than 0.4 m LiDAR ground returns.
+    """True when this surface came from the seamless mosaic rather than 0.4 m LiDAR ground returns.
 
     One spelling of the test, matching generate.py and tools/gen_provenance.py."""
     return "seamless" in str((meta or {}).get("source", "")).lower()
@@ -63,11 +69,11 @@ def keeps_existing_surface(meta_path, overwrite=False):
     """True when meta_path already holds a GOOD 0.4 m LiDAR surface that must not be replaced.
 
     This stage shares dem_hd/ with fetch_dem_hd.py and used to rewrite every hole it was given, so
-    running it without ONLY= silently replaced every 0.4 m green with the coarse 1 m one and said
-    nothing about the better data it had just discarded. The books stayed HONEST -- each card prints
-    "1 m data" -- but a whole course quietly lost its precision. Found cold-building Monarch Bay:
-    the result was 3,889,124 bytes against the committed 4,973,620, with "1 m data" on greens that
-    have real LiDAR.
+    running it without ONLY= silently replaced every 0.4 m green with the coarse seamless one and said
+    nothing about the better data it had just discarded. The books stayed HONEST -- each such card
+    prints the source cell its own array measures -- but a whole course quietly lost its precision.
+    Found cold-building Monarch Bay: the result was 3,889,124 bytes against the committed 4,973,620,
+    with a coarse-data mark on greens that have real LiDAR.
 
     An INSUFFICIENT LiDAR surface is not worth keeping: that is exactly the gap this stage fills. An
     unreadable file is not worth keeping either -- rebuilding it is the repair.
@@ -81,7 +87,7 @@ def keeps_existing_surface(meta_path, overwrite=False):
         return False
     # Ask the SAME question the rest of the engine asks, the same way. generate.py (twice) and
     # tools/gen_provenance.py all test `'seamless' in source` -- generate.py to decide whether the
-    # card prints the "1 m data" honesty label, gen_provenance to count fallbacks in the legal
+    # card prints the coarse-data honesty label, gen_provenance to count fallbacks in the legal
     # record. Testing `"lidar" in source` here instead made this the one reader with the OPPOSITE
     # polarity over the same hand-written prose field: reword the producer string and the write
     # guard and the printed label would move in opposite directions, and one of them is the label
@@ -205,7 +211,57 @@ def served_pixel_aspect(bbox, W, H):
     return float("inf") if lo == 0 else hi / lo
 
 
-def sampling_note(bbox, W, H):
+def source_cell_clause(arr, px_x, px_y):
+    """(clause, warning or None) naming the SOURCE grid a reply was resampled from. "" if no array.
+
+    The other half of the provenance claim, and the half that was pure assertion. `sampling_note`
+    below has always described the OUTPUT sampling -- 0.5 m per pixel, square in metres -- and that
+    part was measured. The SOURCE resolution was the literal string "1 m", typed once, and 3DEP's
+    seamless ImageServer is a MULTI-RESOLUTION MOSAIC: at the six greens this stage has actually run
+    on it serves the 1/9 arc-second tier, 2.72 m E-W x 3.43 m N-S at that latitude. Six cards, the
+    guide note and two lines of legal/03 published a resolution 2.7x and 3.4x better than the data,
+    about 9x in area, on the one label that exists to say trust this green LESS.
+
+    An aspect test cannot ever catch this: PIXEL_ASPECT_MAX compares the served pixel's two sides to
+    each other, so every tier of the mosaic passes it identically. What catches it is the resampling
+    lattice in the pixels themselves -- see render_green.source_lattice, which needs no network and
+    works on the 198 arrays already on disk.
+
+    CROSS-CHECKED LIVE ONCE, on 2026-08-05, against the service's own catalog (`/query` with
+    `LowPS < 20` at monarch-bay hole 1's green centre): the finest raster covering that point is
+    `CA_AlamedaCounty_2021_B21` at LowPS 1, and the next is OID 11875
+    `ned19_n37x75_w122x25_ca_sanfrancisocoast_2010` at LowPS 3.4358 in WebMercator -- which is
+    3.4358*cos(37.69 deg) = 2.7189 m on the ground -- inside the 2.70-2.73 m E-W range the six arrays
+    measure, and 0.23% from hole 1's own 2.7250 m. (This read "= 2.720 m ... to three decimals" and
+    neither half held: the arithmetic gives 2.719, and that green's array gives 2.725.) "ned19" is
+    literally NED 1/9 arc-second. Its AcquisitionDate is 2011-04-03. That date is NOT
+    published anywhere in this repo and must not be: the offline lattice is what any future run can
+    re-derive from its own artifacts, whereas which raster the default mosaic rule resolves to is a
+    property of the service on the day. legal/03 says instead that this build decodes no acquisition
+    date for that raster, which is exactly true and is gradeable without a network. A stage that
+    recorded the served OID and date per green would close that gap properly.
+
+    Fails LOUD rather than quiet when the lattice cannot be found: publishing the served pixel as the
+    source cell would understate the coarseness, which is the dangerous direction for this label.
+
+    render_green is imported lazily so this module keeps importing in an environment that has not
+    built a course yet, the same way fetch_hole_elev.py reaches for it.
+    """
+    if arr is None:
+        return "", None
+    import render_green
+    lat = render_green.source_lattice(arr, px_x, px_y)
+    if not lat["resampled"]:
+        return (", source cell NOT MEASURED",
+                f"no resampling lattice was found in this reply ({lat['flat_ew']*100:.1f}% / "
+                f"{lat['flat_ns']*100:.1f}% of its second differences sit at the float32 floor, "
+                f"against the {render_green.SOURCE_LATTICE_FLAT_MIN*100:.0f}% a resampled patch "
+                f"needs), so the grid it was sampled from is unknown. The recorded source says so "
+                f"rather than naming the 0.5 m pixel, which would overstate the resolution")
+    return (f", {lat['cell_ew_m']:.2f} m E-W x {lat['cell_ns_m']:.2f} m N-S source cell", None)
+
+
+def sampling_note(bbox, W, H, arr=None):
     """(source string, warning or None) -- the provenance claim this patch's pixels actually support.
 
     The whole squareness of this stage's grid rested on ONE query parameter, `adjustAspectRatio=false`,
@@ -221,9 +277,14 @@ def sampling_note(bbox, W, H):
     bbox is read off the GeoTIFF either way, so it degrades to merely anisotropic rather than
     mis-georeferenced, which is the decision
     test_a_seamless_green_records_the_extent_its_array_actually_covers exists to hold. What must not
-    survive is the CLAIM: `source="USGS 3DEP seamless 1 m @0.5m sampling"` is what
-    tools/gen_provenance.py prints into legal/03, and on an anisotropic grid it is false. So the source
-    string states the sampling the pixels support, and the caller prints the warning.
+    survive is the CLAIM: this string is what tools/gen_provenance.py prints into legal/03, and on an
+    anisotropic grid the sampling half of it is false. So the source string states the sampling the
+    pixels support, and the caller prints the warning.
+
+    It also used to state a SOURCE resolution -- "USGS 3DEP seamless 1 m" -- that nothing measured and
+    that was wrong at every green this stage ever wrote. That clause now comes from the array; see
+    source_cell_clause. The two halves are separate because they fail separately: a reply can be
+    square in metres and still come from a tier three times coarser than the label claimed.
 
     Every consumer tests `"seamless" in source.lower()` (fetch_dem.is_seamless, generate.py,
     gen_provenance._greens), so both spellings keep that word.
@@ -232,17 +293,20 @@ def sampling_note(bbox, W, H):
     clat = (ymin + ymax) / 2.0
     mx = (xmax - xmin) * mlon(clat) / W
     my = (ymax - ymin) * mlat(clat) / H
+    cell, cell_warn = source_cell_clause(arr, abs(mx), abs(my))
     aspect = served_pixel_aspect(bbox, W, H)
     if aspect <= PIXEL_ASPECT_MAX:
-        return "USGS 3DEP seamless 1 m @0.5m sampling", None
-    return ("USGS 3DEP seamless 1 m, sampled "
+        return f"USGS 3DEP seamless mosaic{cell} @0.5m sampling", cell_warn
+    aniso = (f"served pixels are {aspect:.4f}x from square in metres ({mx:.4f} m E-W vs {my:.4f} m "
+             f"N-S). exportImage did not honour adjustAspectRatio=false -- 1/cos(lat) is "
+             f"{1 / math.cos(math.radians(clat)):.4f} here, so check the request parameters against "
+             f"the current ArcGIS REST API. The surface is still placed correctly (its bbox is read "
+             f"off the GeoTIFF), but render_green's gauss(arr, 3.0) is one sigma in PIXELS, so the read "
+             f"is blurred unequally, and the '@0.5m sampling' provenance claim is NOT being recorded")
+    return (f"USGS 3DEP seamless mosaic{cell}, sampled "
             f"{mx:.3f} m E-W x {my:.3f} m N-S (ANISOTROPIC, not 0.5 m square)",
-            f"served pixels are {aspect:.4f}x from square in metres ({mx:.4f} m E-W vs {my:.4f} m "
-            f"N-S). exportImage did not honour adjustAspectRatio=false -- 1/cos(lat) is "
-            f"{1 / math.cos(math.radians(clat)):.4f} here, so check the request parameters against "
-            f"the current ArcGIS REST API. The surface is still placed correctly (its bbox is read "
-            f"off the GeoTIFF), but render_green's gauss(arr, 3.0) is one sigma in PIXELS, so the read "
-            f"is blurred unequally, and the '@0.5m sampling' provenance claim is NOT being recorded")
+            aniso if cell_warn is None else aniso + " -- and " + cell_warn)
+
 
 
 def _served_patch(raw):
@@ -287,7 +351,7 @@ def only_holes(raw):
 
     It used to keep the digit tokens and drop the rest, so `ONLY=1-9` silently meant EVERY hole -- and
     the "ONLY holes:" acknowledgement sits inside `if only:`, so it printed nothing either. On the stage
-    that replaces 0.4 m LiDAR surfaces with the coarse 1 m DEM, and next to OVERWRITE=1 in the same
+    that replaces 0.4 m LiDAR surfaces with the coarse seamless one, and next to OVERWRITE=1 in the same
     usage block, a typo that DOUBLES the scope of the run is the one way a scope filter must not fail.
 
     Ranges stay unsupported on purpose: the documented syntax is a comma-separated list (`ONLY=14,16`
@@ -356,11 +420,11 @@ def main():
         hn = int(ref); line = h['geometry']
         # FILL GAPS, do not overwrite better data. This stage shares dem_hd/ with fetch_dem_hd.py,
         # which builds 0.4 m LiDAR surfaces, and it used to rewrite every hole it was given -- so
-        # running it without ONLY= silently replaced every 0.4 m green with the coarse 1 m one and
-        # said nothing about the better data it had just discarded. The books stayed HONEST (each
-        # card prints "1 m data") but a whole course quietly lost its precision. Found cold-building
-        # Monarch Bay: the result was 3,889,124 bytes against the committed 4,973,620, with "1 m
-        # data" on greens that have real LiDAR.
+        # running it without ONLY= silently replaced every 0.4 m green with the coarse seamless one
+        # and said nothing about the better data it had just discarded. The books stayed HONEST
+        # (each such card prints the source cell its own array measures) but a whole course quietly
+        # lost its precision. Found cold-building Monarch Bay: the result was 3,889,124 bytes
+        # against the committed 4,973,620, with a coarse-data mark on greens that have real LiDAR.
         if keeps_existing_surface(f"{OUT}/hole{hn:02d}.json", OVERWRITE):
             skipped.append(hn)
             continue
@@ -435,10 +499,14 @@ def main():
         if flat:
             print(f"hole {hn}: CONSTANT surface across the green ({relief*100:.1f} cm of relief) -- "
                   f"outside 3DEP coverage, not a flat green; no slope will be printed")
-        # The provenance claim this patch's pixels actually support. "@0.5m sampling" is only true if
-        # the service honoured adjustAspectRatio=false, which nothing checked -- and that string is what
-        # gen_provenance prints into legal/03. Measured off the served bbox and the array's own shape.
-        _source, _aniso = sampling_note([xmin, ymin, xmax, ymax], W, H)
+        # The provenance claim this patch's pixels actually support -- BOTH halves measured. "@0.5m
+        # sampling" is only true if the service honoured adjustAspectRatio=false, which nothing
+        # checked; and the SOURCE resolution used to be the hardcoded words "1 m", which was wrong at
+        # every green this stage has ever written (3DEP's seamless service is a multi-resolution
+        # mosaic and answered here from its 1/9 arc-second tier). Both come off the artifact now: the
+        # aspect from the served bbox and the array's own shape, the source cell from the resampling
+        # lattice in the pixels. That string is what gen_provenance prints into legal/03.
+        _source, _aniso = sampling_note([xmin, ymin, xmax, ymax], W, H, arr)
         if _aniso:
             print(f"hole {hn}: !! {_aniso}")
         # ONE unit: the array carries no georeference, so an array beside a stale bbox is a printed
@@ -462,7 +530,7 @@ def main():
     if skipped:
         print(f"\nkept the existing 0.4 m LiDAR surface on {len(skipped)} green(s): "
               f"{', '.join(str(h) for h in sorted(skipped))}\n"
-              f"  This stage only FILLS GAPS. To replace a good surface with the 1 m DEM anyway, "
+              f"  This stage only FILLS GAPS. To replace a good surface with the seamless one anyway, "
               f"re-run with OVERWRITE=1.")
     print(f"\nWrote {done} greens -> {OUT}")
 

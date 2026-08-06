@@ -55,9 +55,14 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
     ARTIFACT. (Until this was corrected the gate measured the SCREEN layout while the README
     claimed print media — so a print‑only CSS rule could have enlarged a green past the cap without
     tripping it. Screen and print layouts were in fact identical, so no shipped number was wrong.)
-  - The exported **PDF is checked separately**: `tools/export_pdf.py --check` proves each PDF was
-    produced from the HTML currently on disk (by recorded content hash), and a test reads the printed
-    card size straight out of the PDF's crop marks and compares it to the 4.25 × 7 in limit.
+  - The exported **PDF is checked separately**: beside each book `tools/export_pdf.py --check`
+    records a digest of the HTML **and** a digest of the exported PDF, then re‑derives both from the
+    files on disk. So it proves the PDF beside a book is byte‑for‑byte the file that tool exported,
+    and that the export was recorded against the HTML now sitting beside it — a stale export, a book
+    printed by hand and a half‑written one are each named rather than assumed. It re‑renders nothing,
+    so it cannot prove the bytes were *produced* from that HTML: the stamp is a record, and a book
+    stamped by hand against the current HTML passes. Separately, a test reads the printed card size
+    straight out of the PDF's crop marks and compares it to the 4.25 × 7 in limit.
 - **Per‑hole, not per‑book.** Scale is computed per green, so it legitimately varies (roughly 1:500
   to 1:944; median 1:588). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
   becomes unusable for reading the green — the rest of the book stays fine.

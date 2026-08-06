@@ -27,6 +27,7 @@ mutation applied (assert the old string was present) AND that the module you imp
 import collections.abc
 import glob
 import importlib
+import importlib.metadata
 import json
 import math
 import os
@@ -120,14 +121,18 @@ def _assert_examined(holes, labels, errors, what, per_hole=MIN_LABELS_PER_HOLE):
 
 
 def _restore_course(prev):
-    """Point COURSE back at something that exists after a synthetic course is torn down."""
+    """Point COURSE back at something that exists after a synthetic course is torn down.
+
+    `generate` is dropped with the rest because it binds config, DISTRIBUTABLE and HOLE_ELEV at IMPORT
+    time -- a generate left in sys.modules is a generate still bound to the previous course, and
+    _fresh_generate() below routes through here rather than adding a second pop site for it."""
     if prev is not None:
         os.environ["COURSE"] = prev
     elif CORPUS:
         os.environ["COURSE"] = CORPUS[0]
     else:
         os.environ.pop("COURSE", None)
-    for m in ("config", "render_hole", "render_green", "fetch_trees"):
+    for m in ("config", "render_hole", "render_green", "fetch_trees", "generate"):
         sys.modules.pop(m, None)
 
 
@@ -139,6 +144,37 @@ def _engine(slug):
     import config
     import render_hole
     return config, render_hole
+
+
+def _sand_the_engine_sees(rh, em, line, bunkers):
+    """The bunkers render_hole actually puts on THIS hole's card, in the engine's own frame.
+
+    Every test that re-derives the carry rule has to start from the same sand the engine starts from,
+    and four of them did not: they took every `golf=bunker` way on the course and applied only the
+    along-line filters, skipping the CORRIDOR pre-filter that builds `bunkers` in render_hole --
+    `edge_within(g, CORRIDOR_M['bunker'])`, the nearest EDGE of the ring within 40 m of the DRAWN
+    polyline. That makes the test's window population a strict SUPERSET: 144 merged windows against the
+    engine's 137, differing on ten holes, six of them in window COUNT (bay-view 9, callippe 15,
+    micke-grove 11, the-reserve 10 and 14, valley-hi 2) and four in a window's EDGES (callippe 1 and 2,
+    merion 10 and 15).
+
+    It already published wrong figures. render_hole's landing-bound note named micke-grove 11 at 8.5031
+    as one of four kept windows tighter than the worst green-bounded one; that window does not exist in
+    the engine -- it is built from ways 1315241570/1315241571, which come 2.2 m and 8.4 m off the CHORD
+    but more than 40 m off the drawn polyline, so the engine never selects them. Three windows are
+    tighter, not four.
+
+    The refusal SETS happen to agree today, so nothing mis-fires; a re-fetch that moves one phantom
+    window over the bound would make a test demand a refusal the engine cannot make.
+
+    `edge_within` itself is not re-implemented -- frac_len_within is the engine's own closed-form
+    boundary-length measure, and a second copy of it here is a second thing to keep in step.
+    """
+    line_em = [em(q["lat"], q["lon"]) for q in line]
+    buf = rh.CORRIDOR_M["bunker"]
+    return [g for g in bunkers
+            if rh.frac_len_within([em(q["lat"], q["lon"]) for q in (g.get("geometry") or [])],
+                                  line_em, buf) > 0.0]
 
 
 def _dist_to_poly(pt, poly, em):
@@ -2686,12 +2722,26 @@ def test_no_book_quietly_headlines_a_shorter_tee():
                            + "\n  ".join(offenders))
 
 
+# The coarse-data mark, matched by SHAPE rather than by the resolution it happens to print. It read
+# "GREEN &middot; 1 m data" for the life of the project and that figure was wrong by 2.7x E-W and 3.4x
+# N-S, so any test that pins the literal pins the defect: relabelling the six greens honestly would
+# have made the caveat test below report all six as UNMARKED. "pre-rebuild data" is excluded because it
+# is the other caveat and says nothing about resolution.
+_COARSE_LABEL = re.compile(r'<div class="minilab">GREEN &middot; (?!pre-rebuild)([^<]*?) data')
+
+
 @needs_corpus
 def test_every_printed_caveat_matches_the_data_behind_it():
     """The governing rule of this project, checked against the shipped books rather than a fixture.
 
     Three caveats are the honesty rule made concrete, and each is a claim about the DATA:
-      * "1 m data"        -- this green came from the coarser seamless model, not the point cloud
+      * a measured source cell ("GREEN . 2.7x3.4 m data") -- this green came from the coarser seamless
+        mosaic, not the point cloud. Matched by SHAPE here, never by a literal resolution: this test
+        read `"GREEN &middot; 1 m data" in blk` while that label was itself the defect, so relabelling
+        the six greens honestly would have made this test report all six as missing their caveat. What
+        it polices is PRESENCE and ABSENCE against the metas; whether the printed figure is the one the
+        array measures is graded by
+        test_the_card_prints_the_source_cell_its_own_array_measures.
       * "pre-rebuild data" -- the course was rebuilt after the flight, so the map may be stale
       * no slope at all    -- the gate refused to read this surface
     Every one is tested somewhere on a synthetic surface, which proves the rule fires. None was
@@ -2707,7 +2757,7 @@ def test_every_printed_caveat_matches_the_data_behind_it():
     exactly the coarse ones, and a green printing a slope must not be one the gate refused.
 
     Note for whoever next edits this: split panels on `<div class="panel ` and filter, not on
-    `panel hole">`. The guide card's own explanation of "1 m data" otherwise lands inside the
+    `panel hole">`. The guide card's own explanation of the coarse mark otherwise lands inside the
     preceding hole's block and reads as a mislabelled card -- which is exactly the false alarm this
     test was written after chasing.
     """
@@ -2740,12 +2790,13 @@ def test_every_printed_caveat_matches_the_data_behind_it():
             checked += 1
             seen_courses[ref] += 1   # past the gates: counts WORK, not intent
             coarse = "seamless" in str(meta.get("source", "")).lower()
-            says_coarse = "GREEN &middot; 1 m data" in blk
+            mark = _COARSE_LABEL.search(blk)
+            says_coarse = bool(mark)
             if coarse and not says_coarse and hn not in stale:
-                problems.append(f"{ref} hole {hn}: built from the 1 m seamless model but the card "
+                problems.append(f"{ref} hole {hn}: built from the coarser seamless mosaic but the card "
                                 f"does not say so -- the read looks as sharp as a LiDAR one")
             if says_coarse and not coarse:
-                problems.append(f"{ref} hole {hn}: card says \"1 m data\" but the green was built "
+                problems.append(f"{ref} hole {hn}: card says {mark.group(0)!r} but the green was built "
                                 f"from {meta.get('source')!r} -- disclaiming data that is good")
 
             says_stale = "pre-rebuild data" in blk
@@ -2758,7 +2809,7 @@ def test_every_printed_caveat_matches_the_data_behind_it():
             if refused and not no_slope:
                 problems.append(f"{ref} hole {hn}: the gate refused this surface but the card still "
                                 f"prints a slope -- a number the data does not support")
-            if no_slope and re.search(r"&middot; \d+\.\d%", blk):
+            if no_slope and re.search(r"&middot; (?:[a-z]+ )?\d+\.\d%", blk):
                 problems.append(f"{ref} hole {hn}: card says no slope printed, yet prints one")
     assert checked >= expected_geometry_holes() - 18, (
         f"only {checked} cards checked of {expected_geometry_holes()} holes with geometry -- a course is being "
@@ -2940,7 +2991,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
     Three placements, each meaningless or misleading if it strays outside the outline:
       * downhill ARROWS. One poking past the edge says the ball rolls that way off a surface that is
         not green -- a bank or a bunker face. render_green already tests the tip plus a forward head
-        allowance, so this re-tests the ARTIFACT: 12,161 drawn arrows, tips and all three arrowhead
+        allowance, so this re-tests the ARTIFACT: 12,146 drawn arrows, tips and all three arrowhead
         vertices, against the outline drawn beside them.
       * the HOLE map's pin ring, placed at the green's CENTROID. A centroid is not guaranteed to lie
         inside its own polygon -- a strongly kidney-shaped green can put it on the apron -- so this is
@@ -3129,6 +3180,40 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
     So the swatches are compared against heat_color(0), heat_color(2.5) and heat_color(5.0) -- the ramp
     evaluated, not copied. All 11 books match exactly today.
 
+    AND AT THE MAP'S OWN STRENGTH. Matching the fill was not enough: render() draws the heat layer as
+    `<g opacity="{HEAT_OPACITY}">` beneath the contours and arrows over bare paper, so no cell on any
+    map is ever the ramp's own RGB -- while this legend drew its three rects at full strength. Every
+    swatch printed darker and more saturated than the ground it explains, by that same 0.62 squeeze,
+    and two of the three then keyed to the wrong band (nearest swatch in Rec.709 grey):
+
+        slope    swatch (was)      map cell        nearest swatch to that map cell
+        0.0%     150,205,150       190,224,190     flat   -- correct
+        2.5%     206,170,60        225,202,134     FLAT   -- amber ground matched the flat key
+        5.0%     150, 40, 32       190,122,117     AMBER  -- the reddest cell the card can draw
+                                                            matched the 2.5% swatch, 2.5 points flat
+
+    THAT 5% CELL WAS PUBLISHED ONE GREY LEVEL HIGH IN R, and inconsistently with its own table:
+    150,205,150 and 150,40,32 share R = 150, so both composite to exactly 189.90, and the 0% row
+    rounded that to 190 while the 5% row rounded the same number up one further. The map-cell column is
+    the analytic composite `255 - HEAT_OPACITY*(255 - c)`, rounded, and all three are derived below
+    rather than typed -- the same triples appear in generate._heat_swatches and here, which is the
+    two-records shape this suite keeps finding. The wrong value is not written out anywhere in this
+    function: the scan below reads this function's own prose, and quoting the defect would flag it.
+
+    MEASURED IN CHROMIUM, the two opacity paths do not agree with each other and neither is exactly the
+    analytic value. The map draws its cells inside `<g opacity="0.62">` -- GROUP opacity -- while the
+    key gives each rect its own `opacity="0.62"`; screenshotted over white under print media, every
+    channel of all three map cells comes out ONE level below the corresponding key swatch, and the key
+    matches the analytic rounding exactly. One level, on bands 35 to 90 levels apart, so not one
+    nearest-swatch assignment in this table changes and the fix this test exists for still holds. The
+    analytic figure is what is published because it is what can be derived; no browser reading is
+    written down here, because a third record nothing grades is how the 5% cell went wrong.
+
+    That is the failure the ramp fix was written for ("a 3.6% cell matched the FLAT swatch") re-entering
+    through the compositing instead of through the hues, and it survived this test because the test
+    compared the two INTENDED colours while the page composites only one of them. Fixed by drawing the
+    key at the map's opacity, so both sides of the comparison go through the same composite.
+
     The "(>=5%)" in the legend text is checked too, because it is the one number in the sentence: the
     ramp saturates at 5% by construction (t = slope/5, clamped), so 5% and 50% draw the identical red.
     That is what makes the claim true, and a change to the divisor would falsify the printed number
@@ -3136,10 +3221,12 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
 
     NOT asserted, having measured it: that "longer = steeper" holds for every arrow. Length is
     2.2 + 3.4*min(slope/smax, 1) against a 92nd-percentile smax, so the steepest arrows share one
-    length -- 7.3% of 12,161 arrows sit at their green's cap, median 7.4% per green, worst 13.3%. The cap
+    length -- 7.4% of 12,146 arrows sit at their green's cap, median 7.6% per green, worst per green
+    14.9% (monarch-bay 9). The cap
     is right rather than wrong: without it a single outlier pixel would shrink every other arrow to
-    nothing. The legend is a fair simplification of the ordinary case, and the card carries slope
-    numbers and colour as well, so the tail is not unreadable -- just not distinguishable by length.
+    nothing. The card also carries slope numbers and colour, so the tail is not unreadable -- just not
+    distinguishable by length. What the legend DOES have to say, and now does, is that the length is
+    scaled to one green: see test_the_arrow_legend_says_the_length_is_scaled_to_that_green.
     """
     cfg, _rh = _engine(a_course())
     import render_green
@@ -3161,6 +3248,12 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
         assert got == want, (
             f"{ref}/{os.path.basename(p)}: the legend shows {got} but the map's ramp is {want} -- a "
             f"reader matching a patch to a swatch would misread the slope")
+        ops = re.findall(r'<rect[^>]*?\bopacity="([\d.]+)"', g.group(1))
+        assert [float(o) for o in ops] == [render_green.HEAT_OPACITY] * 3, (
+            f"{ref}/{os.path.basename(p)}: the legend's swatches carry opacity {ops} but the map's "
+            f"heat layer prints at {render_green.HEAT_OPACITY}, so every swatch is a deeper colour "
+            f"than any cell it explains -- and the reddest cell the map can draw then sits nearer the "
+            f"2.5% swatch than the 5% one")
         # the sentence's own number must be where the ramp actually saturates
         assert re.search(r"red \(&ge;5%\)|red \(\u22655%\)", html), (
             f"{ref}/{os.path.basename(p)}: the colour legend no longer states the 5% saturation point")
@@ -3168,6 +3261,708 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
     # and the ramp really does saturate at 5, or the printed number is wrong
     assert render_green.heat_color(5.0) == render_green.heat_color(50.0), \
         "the legend says red at >=5% but the ramp keeps changing above 5"
+
+    # THE COMPOSITED TRIPLES, derived. The three "map cell" colours are quoted in this docstring and in
+    # generate._heat_swatches, and the 5% one was high by one level in R in both -- contradicting its
+    # own 0% row, which composites from the same R = 150 to the same 189.90. They are
+    # the figures that carry the argument for drawing the key at the map's opacity, so they are computed
+    # from the ramp and HEAT_OPACITY and required wherever they are stated.
+    op = render_green.HEAT_OPACITY
+    composited = []
+    for c in want:
+        rgbv = [int(x) for x in c[c.index("(") + 1:-1].split(",")]
+        composited.append(tuple(round(255 - op * (255 - v)) for v in rgbv))
+    assert len(set(composited)) == 3, f"the composited ramp is no longer three colours: {composited}"
+    stale, seen = [], 0
+    stops = [tuple(int(x) for x in c[c.index("(") + 1:-1].split(",")) for c in want]
+    for rel, fn in ((os.path.join("tests", "test_phase1_regressions.py"),
+                     "test_the_colour_legend_shows_the_colours_the_map_actually_uses"),
+                    ("generate.py", "_heat_swatches")):
+        prose = _func_prose(os.path.join(ROOT, rel), fn)
+        for m in re.finditer(r"\(?(\d{3}),\s*(\d{2,3}),\s*(\d{2,3})\)?", prose):
+            trip = tuple(int(g) for g in m.groups())
+            if trip in composited:
+                seen += 1
+            elif trip not in stops:
+                # NOT tolerated to within a level: the wrong 5% cell was high by exactly one, so any
+                # tolerance here would have accepted it. A triple in these two passages is either the
+                # ramp's own stop or the composite of one.
+                stale.append(f"{rel}/{fn} states {trip} as a composited map colour; measured from the "
+                             f"ramp at HEAT_OPACITY={op} the three are {composited}")
+    assert seen >= 4, (
+        f"only {seen} of the composited map-cell colours are still stated across this docstring and "
+        f"generate._heat_swatches. They are the measurement that says the key must be drawn at the "
+        f"map's opacity, so deleting them must not be how this passes; measured: {composited}")
+    assert not stale, ("a published composited map colour is not what the ramp composites to:\n  "
+                       + "\n  ".join(stale))
+
+
+# Phrases that scope "longer = steeper" to ONE green. A list rather than one string because the
+# legend is prose that gets re-edited for space, and the requirement is the SCOPE, not the sentence.
+_PER_GREEN_SCOPE = ("on that green", "on this green", "that green only", "each green",
+                    "per green", "within one green", "one green at a time")
+
+
+def _cards_of(path):
+    """[(hole, card html)] for every hole/green card in one built book."""
+    with open(path, encoding="utf-8") as fh:
+        html = fh.read()
+    out = []
+    for blk in re.split(r'(?=<div class="panel (?:hole|green)[^"]*")', html)[1:]:
+        hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
+        if hn:
+            out.append((int(hn.group(1)), blk))
+    return out
+
+
+def _median_local_slope_pct(slug, hole):
+    """render_green.green_summary's `med_slope` for one green, in percent, off the array on disk.
+
+    The quantity the black numbers are drawn from -- a PER-CELL slope, median over the putting surface --
+    as opposed to `tilt_pct`, the whole-surface plane fit the footer prints. The worked example in
+    green_honesty quotes both, and attached the wrong one to the wrong noun, so both are measured.
+    """
+    import numpy as np
+    config, _rh = _engine(slug)                     # ONE module-drop site, shared -- see README's count
+    import geo                                      # noqa: E402
+    import render_green as rg                       # noqa: E402
+    p = os.path.join(config.COURSE_DIR, "dem_hd", f"hole{hole:02d}.json")
+    with open(p, encoding="utf-8") as fh:
+        meta = json.load(fh)
+    arr = np.load(p[:-5] + ".npy").astype(float)
+    H, W = arr.shape
+    poly = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+    mask = np.array([[rg.point_in_poly(c + 0.5, r + 0.5, poly) for c in range(W)] for r in range(H)])
+    clat = meta["green_center"][0]
+    xmin, ymin, xmax, ymax = meta["bbox"]
+    _surf, _core, S = rg.green_summary(arr, mask, (xmax - xmin) * geo.mlon(clat) / W,
+                                       (ymax - ymin) * geo.mlat(clat) / H)
+    return float(S["med_slope"])
+
+
+def _footer_and_slope_labels():
+    """{(book, hole): (footer pct, [black slope numbers], footer text)} off the SHIPPED books.
+
+    Both figures as a reader meets them: the footer percentage `green_honesty` prints and the per-cell
+    slope numbers `render_green` draws on the map. They are DIFFERENT quantities -- a least-squares
+    plane over the whole putting surface against the slope at one cell -- and the books contained only
+    one definition of "slope %".
+    """
+    out = {}
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        if os.path.basename(os.path.dirname(p)).startswith("_"):
+            continue
+        rel = os.path.join(os.path.basename(os.path.dirname(p)), os.path.basename(p))
+        for hole, blk in _cards_of(p):
+            fm = re.search(r'<div class="foot"><span>(.*?)</span>', blk, re.S)
+            if not fm:
+                continue
+            pm = re.search(r'&middot;\s*(?:[a-z]+\s+)?([\d.]+)%', fm.group(1))
+            if not pm:
+                continue
+            gm = re.search(r'<div class="grn">(.*?)</div>\s*</div>', blk, re.S)
+            seg = gm.group(1) if gm else blk
+            blacks = sorted(int(x) for x in
+                            re.findall(r'font-size="4\.6"[^>]*>(\d+)</text>', seg))
+            out[(rel, hole)] = (float(pm.group(1)), blacks, fm.group(1))
+    return out
+
+
+@needs_corpus
+def test_the_footer_percentage_is_not_read_as_the_legend_s_slope_number():
+    """Every green footer prints a percentage that no legend row in any of the 15 books defines.
+
+    29 distinct legend rows ship across the corpus. The only ones containing "%" are the two "Black
+    numbers = slope % there" variants, "Colour = steepness ... (>=5%)", and `_no_fall_note` on two
+    books -- which references the figure ("The measured slope % still prints") without defining it. So
+    the card's ONLY definition of a slope percentage is per-cell slope at a labelled point, and the
+    footer figure is a least-squares plane over the whole putting surface: a different quantity, from a
+    different derivation, printed in the same units two lines away.
+
+    They disagree in the direction that reads as flatter. Measured over all 198 greens by parsing the
+    shipped SVGs: the footer sits BELOW every black number on the same card on 134 of them, median
+    0.5 pp, worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black numbers of
+    6,7,8,8,10,10,10, on a green whose median local slope is 4.8% over the whole surface (those seven
+    labelled points median 8). The 4.8% is the SURFACE's, not the labels': this sentence used to read
+    "black numbers ... whose own median local slope is 4.8%", which attaches a whole-surface median to
+    seven labelled points that themselves median 8, and so understates the gap it exists to show.
+    On 106 of the 170 greens carrying no (faint)
+    and no no-clear-fall qualifier, so nothing on the card warns the reader either. A junior applying
+    the card's only definition reads copper-valley 6 as dead flat.
+
+    Fixed with one word rather than a legend row, because card space is the binding constraint here and
+    monarch-bay's guide card has 1.19 px of clearance: the figure now prints as "overall N%", which is
+    self-defining beside "slope % there" and costs no row. Graded three ways -- the word is present on
+    every footer, the legend still defines the black numbers, and the disagreement figures that justify
+    the change are re-derived from the shipped SVGs rather than quoted.
+    """
+    rows = _footer_and_slope_labels()
+    if not rows:
+        pytest.skip("no book built")
+    unlabelled = [k for k, v in rows.items()
+                  if not re.search(r"&middot;\s+[a-z]+\s+[\d.]+%", v[2])]
+    assert not unlabelled, (
+        f"{len(unlabelled)} green footer(s) print a bare percentage, and the only definition of a "
+        f"slope percentage on the card is the legend's per-cell 'slope % there'. A reader applying it "
+        f"to a whole-surface plane fit reads a green with 10% faces as nearly flat: "
+        f"{sorted(unlabelled)[:6]}")
+
+    # the legend must still define the black numbers, or the word above distinguishes nothing
+    defined = 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        if "<b>Black numbers</b> = slope % there" in html:
+            defined += 1
+    assert defined >= 13, (
+        f"only {defined} of the built books still define the black numbers as 'slope % there'; the "
+        f"footer's own label is only meaningful against that definition")
+
+    # ...and the figures that justify it, re-derived from the shipped SVGs rather than quoted
+    pocket = {k: v for k, v in rows.items() if k[0].endswith("greenbook.html")}
+    gaps = {k: min(v[1]) - v[0] for k, v in pocket.items() if v[1]}
+    below = {k: g for k, g in gaps.items() if g > 0}
+    ordered = sorted(gaps.values())
+    med = ordered[len(ordered) // 2] if len(ordered) % 2 else \
+        (ordered[len(ordered) // 2 - 1] + ordered[len(ordered) // 2]) / 2
+    worst = max(below.values())
+    noqual = {k: v for k, v in pocket.items()
+              if "(faint)" not in v[2] and "no clear fall" not in v[2]}
+    nq_below = [k for k, v in noqual.items() if v[1] and v[0] < min(v[1])]
+    src = _func_prose(os.path.join(ROOT, "generate.py"), "green_honesty")
+    problems = []
+    for pat, got, label in (
+            (r"below every black number on the same card on (\d+) of them", len(below),
+             "greens whose footer is below every black number"),
+            (r"median\s+([\d.]+) pp", med, "the median gap over all 198"),
+            (r"worst ([\d.]+) pp", worst, "the worst gap"),
+            (r"On (\d+) of the \d+ greens that carry no", len(nq_below),
+             "unqualified greens whose footer is below every black number"),
+            (r"On \d+ of the (\d+) greens that carry no", len(noqual), "unqualified greens")):
+        said = _published_figures(src, pat, "green_honesty's comment")
+        if abs(said[0] - got) > 0.06:
+            problems.append(f"green_honesty publishes {label} as {said[0]:g}; measured {got:.4g}")
+
+    # THE WORKED EXAMPLE, in both records. It was ungraded, and its ANTECEDENT was wrong: it read
+    # "black numbers 6,7,8,8,10,10,10 whose own median local slope is 4.8%", and 4.8126% is
+    # green_summary's `med_slope` over the WHOLE SURFACE -- the median of those seven labelled points is
+    # 8. The figure was right and the thing it was attached to was not, which reads as though the labels
+    # themselves average 4.8 and so understates the very gap the sentence exists to demonstrate. Both
+    # quantities are now named and both are measured here, off the shipped card and off the array.
+    ex = [(k, v) for k, v in pocket.items() if k[0].startswith("copper-valley") and k[1] == 6]
+    if ex:
+        import numpy as np
+        (_k, v), = ex
+        nums = sorted(v[1])
+        surf_med = _median_local_slope_pct("copper-valley-golf-club", 6)
+        pt_med = float(np.median(nums))
+        for where, text in (("green_honesty's comment", src),
+                            ("this test's own docstring",
+                             test_the_footer_percentage_is_not_read_as_the_legend_s_slope_number.__doc__)):
+            said = _published_figures(text, r"footer of ([\d.]+)% beside black numbers", where)
+            if abs(said[0] - v[0]) > 0.06:
+                problems.append(f"{where} says copper-valley 6 prints a footer of {said[0]:g}%; the "
+                                f"shipped card prints {v[0]:g}%")
+            m = re.search(r"black numbers (?:of )?([\d, ]*\d)", _flow(text))
+            assert m, (f"{where} no longer lists copper-valley 6's black numbers, so the worked "
+                       f"example has nothing to compare against; the card shows {nums}")
+            listed = sorted(int(x) for x in re.findall(r"\d+", m.group(1)))
+            if listed != nums:
+                problems.append(f"{where} lists copper-valley 6's black numbers as {listed}; the "
+                                f"shipped card shows {nums}")
+            said = _published_figures(text, r"median local slope is ([\d.]+)% over the whole surface",
+                                      where)
+            if abs(said[0] - surf_med) > 0.06:
+                problems.append(f"{where} puts copper-valley 6's median local slope over the surface "
+                                f"at {said[0]:g}%; measured {surf_med:.4f}%")
+            said = _published_figures(text, r"those seven labelled points median ([\d.]+)", where)
+            if abs(said[0] - pt_med) > 0.06:
+                problems.append(f"{where} says the labelled points themselves median {said[0]:g}; "
+                                f"measured {pt_med:g} over {nums}. This is the antecedent that was "
+                                f"wrong: the 4.8% belongs to the surface, not to these numbers.")
+    assert not problems, ("the figures that justify labelling the footer percentage are not the ones "
+                          "the shipped cards give:\n  " + "\n  ".join(problems))
+
+
+# The colour a WORD names, in sRGB. CSS named colours where one exists; "amber" is the standard
+# traffic amber, which is not a CSS name. Every word is graded on HUE, and additionally on LIGHTNESS
+# when it carries an explicit lightness modifier -- "dark", "light", "pale", "deep", "bright" -- because
+# that modifier is the part of the word that makes a claim the ink can contradict. "dark red" named ink
+# 30 L* away from darkred; plain "red" is 4.9 L* away, so dropping the modifier was the whole fix.
+_COLOUR_WORDS = {"green": (0, 128, 0), "red": (255, 0, 0), "yellow": (255, 255, 0),
+                 "amber": (255, 191, 0), "orange": (255, 165, 0), "brown": (165, 42, 42),
+                 "tan": (210, 180, 140), "blue": (0, 0, 255), "grey": (128, 128, 128),
+                 "dark red": (139, 0, 0), "dark green": (0, 100, 0), "light green": (144, 238, 144),
+                 "pale yellow": (255, 255, 224), "deep red": (139, 0, 0)}
+_LIGHTNESS_MODIFIER = re.compile(r"\b(dark|light|pale|deep|bright)\b", re.I)
+# Tolerances, set from the measurement rather than guessed. The three shipped inks sit 0.0, 0.1 and
+# 4.1 degrees of hue from the words that now name them; "yellow" sat 15.2 degrees from the 2.5% ink.
+# 10 clears the worst pass by 2.4x and refuses the failure by 1.5x.
+_HUE_TOL, _LSTAR_TOL = 10.0, 10.0
+
+
+def _srgb_lstar(rgb):
+    """CIE L* of an sRGB triple. Perceived lightness, which is what a lightness WORD claims."""
+    def lin(c):
+        c /= 255.0
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    y = 0.2126729 * lin(rgb[0]) + 0.7151522 * lin(rgb[1]) + 0.0721750 * lin(rgb[2])
+    f = y ** (1 / 3) if y > 216 / 24389 else (841 / 108) * y + 4 / 29
+    return 116 * f - 16
+
+
+def _hue_deg(rgb):
+    r, g, b = rgb
+    mx, mn = max(rgb), min(rgb)
+    if mx == mn:
+        return 0.0
+    d = mx - mn
+    h = ((g - b) / d) % 6 if mx == r else ((b - r) / d + 2 if mx == g else (r - g) / d + 4)
+    return h * 60.0
+
+
+@needs_corpus
+def test_the_colour_words_name_the_ink_the_page_actually_carries():
+    """fcec32c moved the legend SWATCHES onto the composited ink and left the WORDS on the ramp.
+
+    The map draws its heat cells at HEAT_OPACITY over white, so no cell is ever the ramp's own RGB --
+    which is why the swatches are now drawn at that opacity. The sentence beside them was not moved.
+    Measured in chrome-headless-shell under print media at device_scale_factor=4, reading the centre
+    pixel of each shipped swatch:
+
+        stop     declared ramp    ink on the page   hue    L*
+        0%       150,205,150      190,224,190       120.0  86.0
+        2.5%     206,170,60       225,202,134        44.8  81.8
+        >=5%     150, 40, 32      190,122,117         4.1  58.2
+
+    "amber" (pocket) was already EXACT -- amber is hue 44.9, L* 81.0. The other two were not. The
+    enlarged deck said "yellow" for ink 15.2 degrees of hue and 15.3 L* away from yellow; the ink only
+    reaches hue 60 at about 1.5% slope, not at the 2.5% stop, and coach_about_card emits no
+    _heat_swatches() at all, so the enlarged reader has no key to correct the word against. The pocket
+    said "dark red" for ink 30.1 L* lighter than darkred -- between indianred (53.4) and rosybrown
+    (63.6) -- so a junior hunting a dark red patch to find >=5% ground would not find one.
+
+    Both fixed by taking the false part out rather than adding words: "yellow" -> "amber" (measured
+    exact, same length) and "dark red" -> "red" (SHORTER, and drops a lightness claim the ink cannot
+    support -- plain red is 4.1 degrees and 4.9 L* away). Graded from the ramp and HEAT_OPACITY, so a
+    retuned ramp fails here rather than shipping a word that no longer describes the page.
+    """
+    import render_green as rg
+    op = rg.HEAT_OPACITY
+    ink = {}
+    for pct in (0.0, 2.5, 5.0):
+        c = [int(x) for x in re.findall(r"\d+", rg.heat_color(pct))]
+        ink[pct] = tuple(round(255 - op * (255 - v)) for v in c)
+
+    books = [p for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html")))
+             if not os.path.basename(os.path.dirname(p)).startswith("_")]
+    problems, graded = [], 0
+    for p in books:
+        rel = os.path.join(os.path.basename(os.path.dirname(p)), os.path.basename(p))
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        m = re.search(r"([a-z]+(?: [a-z]+)?)\s+flat\s*&rarr;\s*([a-z]+(?: [a-z]+)?)\s*&rarr;\s*"
+                      r"([a-z]+(?: [a-z]+)?)\s*\(&ge;5%\)", html)
+        if not m:
+            continue                      # a yardage-mode book prints no colour row
+        graded += 1
+        for word, pct in zip(m.groups(), (0.0, 2.5, 5.0)):
+            word = " ".join(word.split()).lower()
+            if word not in _COLOUR_WORDS:
+                problems.append(f"{rel}: the colour legend names {word!r} at the {pct:g}% stop and "
+                                f"nothing here knows what colour that word means, so the claim cannot "
+                                f"be checked against the ink. Add it to _COLOUR_WORDS with a source.")
+                continue
+            ref = _COLOUR_WORDS[word]
+            dh = abs(_hue_deg(ref) - _hue_deg(ink[pct]))
+            dh = min(dh, 360 - dh)
+            if dh > _HUE_TOL:
+                problems.append(f"{rel}: the {pct:g}% stop is called {word!r} (hue "
+                                f"{_hue_deg(ref):.1f}) and the ink on the page is hue "
+                                f"{_hue_deg(ink[pct]):.1f} -- {dh:.1f} degrees apart")
+            if _LIGHTNESS_MODIFIER.search(word):
+                dl = abs(_srgb_lstar(ref) - _srgb_lstar(ink[pct]))
+                if dl > _LSTAR_TOL:
+                    problems.append(
+                        f"{rel}: the {pct:g}% stop is called {word!r}, which claims a lightness of "
+                        f"L* {_srgb_lstar(ref):.1f}; the ink on the page is L* "
+                        f"{_srgb_lstar(ink[pct]):.1f} -- {dl:.1f} apart. A reader looking for that "
+                        f"shade will not find it on any card.")
+    assert graded >= 13, f"only {graded} colour legends graded -- build the books first"
+    assert not problems, ("a colour WORD in the legend does not describe the ink the page carries:\n  "
+                          + "\n  ".join(problems))
+
+
+@needs_corpus
+def test_the_gutter_legend_does_not_deny_a_sum_the_engine_computes_exactly():
+    """The legend said the two gutter numbers "do not add up", and on every straight par 3 they do.
+
+    render_hole sets `ft_exact = float(total_yd - yd)` on a straight par 3 precisely so they sum to the
+    card, and `par3_exact_from_tee`'s docstring says the opposite of the legend: "tee, tick and green
+    are collinear and the two numbers MUST sum to the card ... A par 4 or 5 is excluded because
+    (card - to_green) would mix a walked measure with a straight-line one."
+
+    Measured off the shipped SVGs against each course's card yardage for the tee the book is built on:
+    72 of the 74 printed par-3 gutter pairs sum exactly to the card, on 43 of 44 holes, across 11 of 11
+    slope courses. The two that do not are both on copper-valley 13, the corpus's one non-straight par 3
+    (arc/chord 1.0237), which `par3_exact_from_tee`'s straightness guard refuses on purpose -- so the
+    exceptions are the guard working, not the claim holding. Of the 743 par-4 and par-5 pairs the sum
+    runs card-54 to card+12, median -3. The warning was right on the rows the engine scales
+    proportionally and wrong on exactly the rows it computes exactly.
+
+    Scoped rather than deleted, and the scoped sentence is SHORTER than the one it replaces: "on a par 4
+    or 5 they need not add up". "need not" rather than "do not" because 62 sum exactly by coincidence on
+    those 743, and a card should not make a claim about its own arithmetic that its own arithmetic
+    breaks.
+    """
+    p3, p3_exact, p3_holes, courses, other, other_exact = 0, 0, set(), set(), [], 0
+    p3_all_holes = set()
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+        slug = os.path.basename(os.path.dirname(p))
+        cfg = _engine(slug)[0]
+        if cfg.BUILD_MODE != "full":
+            continue
+        for hole, blk in _cards_of(p):
+            i, j = blk.find('<div class="lay">'), blk.find('<div class="grn">')
+            if i < 0:
+                continue
+            rows = {}
+            for mm in re.finditer(r'<text x="[\d.]+" y="([\d.]+)"[^>]*'
+                                  r'fill="(#2f5a26|#7a4a12)"[^>]*>(\d+)</text>', blk[i:j]):
+                rows.setdefault(round(float(mm.group(1)), 1), {})[mm.group(2)] = int(mm.group(3))
+            card, par = cfg.HOLES[hole][cfg.BACK_I], cfg.HOLES[hole][0]
+            for d in rows.values():
+                if len(d) < 2:
+                    continue
+                tot = d["#2f5a26"] + d["#7a4a12"]
+                if par == 3:
+                    p3 += 1
+                    p3_all_holes.add((slug, hole))
+                    if tot == card:
+                        p3_exact += 1
+                        p3_holes.add((slug, hole))
+                        courses.add(slug)
+                else:
+                    other.append(tot - card)
+                    other_exact += bool(tot == card)
+    assert p3_exact and other, (f"only {p3_exact} exact par-3 and {len(other)} par-4/5 gutter pairs "
+                                f"found; both kinds are needed or this test cannot tell the legend is "
+                                f"over-broad")
+
+    problems = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        rel = os.path.join(os.path.basename(os.path.dirname(p)), os.path.basename(p))
+        with open(p, encoding="utf-8") as fh:
+            txt = re.sub(r"<[^>]+>", "", fh.read())
+        txt = " ".join(txt.split())
+        for m in re.finditer(r"[^.]*\badd up\b[^.]*\.", txt):
+            s = m.group(0)
+            if not re.search(r"par 4 or 5|par 4s and 5s|except on a par 3|not on a par 3", s, re.I):
+                problems.append(f"{rel}: the gutter legend claims the two numbers do not add up "
+                                f"without excluding the par 3s, and {p3_exact} printed par-3 pairs on "
+                                f"{len(p3_holes)} holes across {len(courses)} courses sum to the card "
+                                f"exactly, by construction: {s.strip()[:140]}")
+    doc = test_the_gutter_legend_does_not_deny_a_sum_the_engine_computes_exactly.__doc__
+    for pat, got, label in (
+            (r"(\d+) of the (\d+) printed par-3 gutter pairs sum exactly", p3_exact,
+             "the exact-sum par-3 pairs"),
+            (r"\d+ of the (\d+) printed par-3 gutter pairs", p3, "the printed par-3 pairs"),
+            (r"on (\d+) of (\d+) holes", len(p3_holes), "the holes carrying them"),
+            (r"on \d+ of (\d+) holes", len(p3_all_holes), "the par-3 holes with printed pairs"),
+            (r"across (\d+) of \d+ slope courses", len(courses), "the courses"),
+            (r"Of the (\d+) par-4 and par-5 pairs", len(other), "the par-4/5 pairs"),
+            (r"because (\d+) sum exactly by coincidence", other_exact, "the coincidental sums"),
+            (r"card-(\d+) to card\+\d+", -min(other), "the largest shortfall"),
+            (r"card-\d+ to card\+(\d+)", max(other), "the largest overshoot")):
+        said = _published_figures(doc, pat, "this test's docstring")
+        if abs(said[0] - got) > 0.5:
+            problems.append(f"this test's docstring publishes {label} as {said[0]:g}; measured {got}")
+    assert not problems, ("the gutter legend denies a sum the engine computes exactly, or the "
+                          "measurement behind it has drifted:\n  " + "\n  ".join(problems))
+
+
+@needs_corpus
+def test_the_enlarged_about_block_does_not_name_a_product_its_own_greens_deny():
+    """The enlarged deck credited every printed surface figure to "public-domain USGS 3DEP LiDAR".
+
+    The SAME CARD's guide row says 6 of monarch-bay's greens "had no usable point cloud" and come from
+    the seamless mosaic instead -- so on the one enlarged book where it matters, the About block named a
+    product its own greens deny, in the direction that OVERSTATES data quality. The pocket twin already
+    carried the correct product-neutral wording ("USGS 3DEP elevation (a U.S. Government work)"), which
+    makes this the third instance of the two-edition drift green_honesty's docstring records.
+
+    Graded both ways: no book may credit a specific 3DEP PRODUCT while any of its own greens is
+    seamless-sourced, and the two editions must use ONE phrase, because that is what stops the next
+    edit from fixing one and leaving the other.
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    NEUTRAL = "<b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work)"
+    problems, phrases, graded = [], {}, 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        slug = os.path.basename(os.path.dirname(p))
+        if slug.startswith("_"):
+            continue
+        rel = os.path.join(slug, os.path.basename(p))
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        # Bounded to the clause, and NOT stopped at the first ";" -- "&nbsp;" carries one, which cut
+        # the captured phrase to "<b>public-domain USGS&nbsp" and made this grade nothing.
+        m = re.search(r"are computed by the\s+maker from\s+(.{0,140}?);\s*par\b", html, re.S)
+        if not m:
+            continue
+        graded += 1
+        phrase = " ".join(m.group(1).split())
+        phrases.setdefault(phrase, []).append(rel)
+        seam = sorted(h for (s, h), v in cells.items() if s == slug and v[3])
+        if seam and re.search(r"\bLiDAR\b|point cloud", phrase):
+            problems.append(f"{rel} credits every computed figure to {phrase!r}, and holes {seam} of "
+                            f"this course come from the seamless mosaic instead -- the same card says "
+                            f"so two rows above")
+    assert graded >= 13, f"only {graded} About blocks graded -- build the books first"
+    if len(phrases) > 1:
+        problems.append(f"the two editions credit the elevation source differently, which is how one "
+                        f"gets corrected and the other does not: "
+                        f"{ {k: len(v) for k, v in phrases.items()} }")
+    assert NEUTRAL in " ".join(phrases), (
+        f"no book carries the product-neutral wording any more; the phrase(s) in use are "
+        f"{sorted(phrases)}")
+    assert not problems, ("an About block names an elevation product its own greens deny:\n  "
+                          + "\n  ".join(problems))
+
+
+@needs_corpus
+def test_the_yardage_legend_names_the_tee_the_big_number_comes_from():
+    """The yardage book said "The big number is the featured tee" and it is the BACK tee.
+
+    `yardage_hole_panel` headlines `row[BACK_I]` labelled `BACK_NAME`. `config.FEATURED` is a different
+    thing: whichever tee course.json happens to name first. On poppy-ridge -- the only yardage-mode
+    course, so the only book that ships this sentence -- FEATURED is White at 6022 yd while BACK_NAME is
+    Orange at 7010 yd, and hole 1 headlines "610 Orange". The sentence named a tee 988 yd shorter than
+    the one the card is built on, for a junior deciding which row of the table is theirs.
+
+    scorecard_panel's own comment already records why the engine abandoned the term everywhere else:
+    "FEATURED is only whichever of the pair course.json happens to name first: on 6 of 12 courses it is
+    the FORWARD tee". Graded against the card rather than against the word: the tee the legend names must
+    be the tee whose yardage is actually in the big number.
+    """
+    graded = 0
+    problems = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+        slug = os.path.basename(os.path.dirname(p))
+        cfg = _engine(slug)[0]
+        if cfg.BUILD_MODE != "yardage":
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        m = re.search(r"The big number is the <b>([^<]+)</b>", html)
+        assert m, f"{slug}: the yardage legend no longer says what the big number is"
+        graded += 1
+        said = m.group(1).strip().lower()
+        # what the card ACTUALLY headlines
+        heads = {(int(re.search(r'<div class="hnum">(\d+)</div>', blk).group(1)),
+                  re.search(r'class="ymain"[^>]*>(\d+)</span><span class="ylab"[^>]*>([^<]+)<',
+                            blk).group(1),
+                  re.search(r'class="ymain"[^>]*>(\d+)</span><span class="ylab"[^>]*>([^<]+)<',
+                            blk).group(2))
+                 for _h, blk in _cards_of(p)
+                 if re.search(r'class="ymain"', blk)}
+        names = {h[2] for h in heads}
+        assert names == {cfg.BACK_NAME}, (
+            f"{slug}: the hole cards headline {sorted(names)}; config.BACK_NAME is {cfg.BACK_NAME!r}")
+        for hole, yd, name in sorted(heads):
+            want = cfg.HOLES[hole][cfg.BACK_I]
+            if int(yd) != want:
+                problems.append(f"{slug} hole {hole} headlines {yd} {name}; row[BACK_I] is {want}")
+        if "back tee" not in said:
+            problems.append(
+                f"{slug}: the legend calls the big number the {said!r} while every card headlines "
+                f"{cfg.BACK_NAME} = row[BACK_I]. config.FEATURED is {cfg.FEATURED!r}, a different tee "
+                f"on this course by {abs(sum(cfg.HOLES[h][cfg.BACK_I] for h in cfg.HOLES) - sum(cfg.HOLES[h][cfg.FI] for h in cfg.HOLES))} yd")
+    assert graded, "no yardage-mode book built, so this legend row was not graded"
+    assert not problems, ("the yardage legend names a tee the big number does not come from:\n  "
+                          + "\n  ".join(problems))
+
+
+@needs_corpus
+def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
+    """"Longer = steeper" is true within one green and false across a book, so it has to say which.
+
+    Arrow length is `2.2 + 3.4*min(m/smax, 1)` where `smax = max(percentile(slope[putt], 92), 1.0)` --
+    the 92nd percentile of THAT GREEN's own putting surface. So a full-length arrow does not mean a
+    slope; it means "about as steep as this green gets", and the slope it stands for is a different
+    number on every card. Measured over the shipped corpus:
+
+        smax runs 2.885% (philadelphia 16) to 9.028% (bay-view 8), a 3.13x range
+        EVERY book has an internal spread: 1.50x (monarch-bay) ... 3.13x (philadelphia); merion 2.93x
+        193 of 198 greens draw an arrow within 0.05 view units of the 5.6 cap, 190 exactly at it
+        the printed tilt barely tracks it, r = 0.658 over 198 greens: philadelphia 18 prints 2.6%
+        with its arrows calibrated to 9.03%, philadelphia 6 prints 4.9% with 7.64% -- the graphic and
+        the number rank those two greens OPPOSITELY, in the same book
+
+    THE NORMALISATION IS CORRECT AND MUST NOT BE REMOVED to satisfy this test. render_green's own
+    note says why: on a global scale one outlier pixel shrinks every other arrow on every green to
+    nothing. The defect is the LEGEND, which stated the rule with no scope at all in all 14 of its
+    instances, inviting exactly the one comparison the drawing cannot support -- arrow length between
+    two holes. Within a card the reader is right, and the card also carries an ABSOLUTE colour ramp
+    and a printed tilt %, which is what makes the qualifier sufficient rather than a retraction.
+
+    Anti-vacuous in both directions. The spread is measured before the wording is required, so if a
+    future change put arrow length on one scale across a book this fails on the premise and says the
+    requirement is obsolete, instead of demanding a qualifier that has stopped being true.
+    """
+    import numpy as np
+
+    def mask_of(poly, W, H):
+        X, Y = np.meshgrid(np.arange(W)+0.5, np.arange(H)+0.5)
+        inside = np.zeros((H, W), bool)
+        n = len(poly); j = n-1
+        for i in range(n):
+            xi, yi = poly[i]; xj, yj = poly[j]
+            inside ^= ((yi > Y) != (yj > Y)) & (X < (xj-xi)*(Y-yi)/(yj-yi+1e-12)+xi)
+            j = i
+        return inside
+
+    # --- the premise: how far apart are two greens' arrow scales inside ONE book? ------------------
+    # Walks _green_surfaces() through _engine() rather than dropping sys.modules by hand: this suite
+    # publishes its own count of module-drop sites in README, and an extra one here would falsify it.
+    per_book, seen = collections.defaultdict(list), collections.Counter()
+    arrows = []
+    for slug, hole, meta, H, W in _green_surfaces():
+        _engine(slug)
+        import render_green as rg
+        arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy"))
+        x0, y0, x1, y1 = meta["bbox"]
+        px_x = (x1-x0)*_mlon(meta["green_center"][0])/W
+        px_y = (y1-y0)*_mlat(meta["green_center"][0])/H
+        poly_px = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+        mask = mask_of(poly_px, W, H)
+        if mask.sum() < 50:
+            continue
+        arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)
+        _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
+        putt = S["putt"]
+        if not putt.any():
+            continue
+        # render_green's own rule for the length scale, deliberately mirrored: the premise under test
+        # IS that rule, so re-deriving it is the measurement, not a duplicate of the code.
+        smax = max(float(np.percentile(S["slope"][putt], 92)), 1.0)
+        per_book[slug].append((smax, hole))
+        # ...and the arrow POPULATION and how much of it sits at the length cap. Four figures about
+        # this were published across two docstrings and none was derived: the corpus total was 12,161
+        # against a real 12,146, the per-green median and worst capped fractions were both low, and the
+        # count of greens reaching the cap was 186 against 190. Emitting is mirrored exactly, including
+        # the point_in_poly cull, because the percentages are OF the arrows that reach paper.
+        n = nc = n5 = 0
+        for r in range(3, H-3, 6):
+            for c in range(3, W-3, 6):
+                if not putt[r, c]:
+                    continue
+                mm = S["slope"][r, c]
+                if mm < 0.4:
+                    continue
+                L = 2.2 + 3.4*min(mm/smax, 1.0)
+                vx, vy = S["dcol"][r, c], S["drow"][r, c]
+                nn = math.hypot(vx, vy) or 1
+                vx, vy = vx/nn*L, vy/nn*L
+                ex, ey = c+0.5+vx, r+0.5+vy
+                if not (rg.point_in_poly(ex, ey, poly_px)
+                        and rg.point_in_poly(ex+vx*0.28, ey+vy*0.28, poly_px)):
+                    continue
+                n += 1
+                nc += mm >= smax
+                n5 += L >= 5.6 - 0.05
+        if n:
+            arrows.append((n, nc, n5))
+        seen[slug] += 1
+    assert_no_course_skipped(seen, "test_the_arrow_legend_says_the_length_is_scaled_to_that_green")
+    spreads = {}
+    for slug, vals in per_book.items():
+        lo, hi = min(vals), max(vals)
+        spreads[slug] = (hi[0]/lo[0], lo, hi)
+    worst = max(spreads.values(), key=lambda v: v[0])
+    assert worst[0] >= 1.25, (
+        f"no book's arrow scale varies by more than {worst[0]:.2f}x between its own greens, so "
+        f"'longer = steeper' may no longer need a per-green scope. If the normalisation was made "
+        f"global, delete this test rather than the legend wording -- but re-read render_green's note "
+        f"on why one outlier pixel used to shrink every arrow first. Per book: "
+        f"{ {k: round(v[0], 2) for k, v in sorted(spreads.items())} }")
+
+    # --- so every legend instance that states the rule must scope it to one green -----------------
+    problems, checked = [], 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        for row in re.findall(r'<div class="legrow">(.*?)</div>', html, re.S):
+            flat = re.sub(r"<[^>]+>", "", row)
+            flat = flat.replace("&mdash;", "--").replace("&nbsp;", " ")
+            flat = re.sub(r"\s+", " ", flat).strip()
+            if "steeper" not in flat.lower() or "longer" not in flat.lower():
+                continue
+            checked += 1
+            if not any(s in flat.lower() for s in _PER_GREEN_SCOPE):
+                problems.append(
+                    f"{ref}/{os.path.basename(p)}: {flat!r} states 'longer = steeper' with no scope. "
+                    f"Arrow length is normalised to each green's own 92nd-percentile slope, which "
+                    f"spans {worst[1][0]:.2f}%-{worst[2][0]:.2f}% inside one book, so a reader "
+                    f"comparing two holes by arrow length is reading a scale that moved between them")
+    assert checked >= 14, (
+        f"only {checked} arrow-legend instances found across the built books; the corpus prints 14 "
+        f"(11 pocket colour books + 3 enlarged). A legend this test cannot find is a legend it cannot "
+        f"grade")
+    assert not problems, ("the arrow legend does not say the length is scaled per green:\n  "
+                          + "\n  ".join(problems[:6]))
+
+    # --- and every published figure about that cap, derived -----------------------------------------
+    # Four of them, across this docstring and the colour legend's, and not one was graded: the corpus
+    # arrow total (12,161 published, 12,146 measured -- and 12,161 was also the denominator of a THIRD
+    # passage), the per-green median and worst capped fractions (7.4% and 13.3% published, 7.6% and
+    # 14.9% measured) and the number of greens reaching the cap (186 published, 190 measured).
+    #
+    # ON THE UNROUNDED L, not on the shipped SVG's coordinates. The SVG writes x2/y2 at one decimal,
+    # which moves a length by up to 0.07 -- more than the 0.05 band one of these figures is about -- so
+    # the artifact cannot answer it. The TOTAL is the one figure both agree on, and it does: 12,146
+    # counted off the shipped `<line>` elements and 12,146 re-derived here.
+    import statistics
+    tot = sum(n for n, _c, _5 in arrows)
+    cap_n = sum(c for _n, c, _5 in arrows)
+    fr = [c/n for n, c, _5 in arrows]
+    facts = {
+        "arrow total": (tot, re.compile(r"(\d{2},\d{3}) (?:drawn )?arrows")),
+        "capped share of all arrows": (round(100*cap_n/tot, 1),
+                                       re.compile(r"([\d.]+)% of \d{2},\d{3} arrows sit at their")),
+        "median per-green capped share": (round(100*statistics.median(fr), 1),
+                                          re.compile(r"median ([\d.]+)% per green")),
+        "worst per-green capped share": (round(100*max(fr), 1),
+                                         re.compile(r"worst per green\s+([\d.]+)%")),
+        "greens within 0.05 of the cap": (sum(1 for _n, _c, n5 in arrows if n5),
+                                          re.compile(r"(\d+) of \d+ greens draw an arrow within")),
+        "greens at the cap": (sum(1 for _n, c, _5 in arrows if c),
+                              re.compile(r"within 0\.05 view units of the [\d.]+ cap, (\d+) exactly")),
+    }
+    stale, hits = [], collections.Counter()
+    for fn in ("test_the_arrow_legend_says_the_length_is_scaled_to_that_green",
+               "test_the_colour_legend_shows_the_colours_the_map_actually_uses",
+               "test_nothing_is_drawn_off_the_putting_surface"):
+        prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
+        for label, (real, pat) in facts.items():
+            for m in pat.finditer(prose):
+                hits[label] += 1
+                said = float(m.group(1).replace(",", ""))
+                if said != float(real):
+                    stale.append(f"{fn} says {m.group(0)!r}; measured over {len(arrows)} greens the "
+                                 f"{label} is {real}")
+    missing = [k for k in facts if not hits[k]]
+    assert not missing, (
+        f"the arrow-cap figures {missing} are no longer stated anywhere. They are what says 'longer = "
+        f"steeper' saturates, which is the premise of the legend wording this test requires, so "
+        f"deleting one must not be how it passes. Measured: { {k: v[0] for k, v in facts.items()} }")
+    assert not stale, ("a published figure about the arrow length cap is not what it measures:\n  "
+                       + "\n  ".join(stale))
 
 
 @needs_corpus
@@ -3410,6 +4205,27 @@ def test_no_tree_marker_sits_on_a_playing_surface():
         return c
 
     total, offenders, seen = 0, [], collections.Counter()
+    # THE VOCABULARY BELOW IS A SECOND COPY of fetch_trees.py's, and this scan reads the STORED
+    # artifact -- built by whatever vocabulary was live when it was written. So the engine can drop a
+    # kind and this test stays green until someone re-fetches. Measured: deleting 'bunker' from
+    # fetch_trees.py leaves the whole suite at its baseline (303 passed, 1 skipped, unchanged), while
+    # 784 of the corpus's 799 bunker polygons stop being protected -- the other 15 have a centroid
+    # inside a green, fairway or tee and are still excluded by that -- across ALL 11 courses,
+    # philadelphia 129 down to bay-view 25. The next fetch_trees run would draw tree dots in bunkers,
+    # which is exactly what the README sentence above says cannot happen. So cross-check the two
+    # copies here: it is the one direction an artifact scan structurally cannot see.
+    SURFACE_KINDS = ("green", "fairway", "tee", "bunker")
+    with open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8") as fh:
+        ft_src = fh.read()
+    m = re.search(r"t\.get\('golf'\)\s+in\s+\(([^)]*)\)", ft_src)
+    assert m, ("fetch_trees.py's playing-surface golf vocabulary could not be read; if the expression "
+               "moved, move this cross-check with it rather than dropping it")
+    engine_kinds = {s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()}
+    assert engine_kinds == set(SURFACE_KINDS), (
+        f"fetch_trees.py excludes markers on golf={sorted(engine_kinds)} but this scan tests "
+        f"{sorted(SURFACE_KINDS)}. The scan reads a STORED layer, so a kind the engine has stopped "
+        f"excluding is invisible here until the next re-fetch, and a kind the engine has ADDED is one "
+        f"this scan never looks for.")
     for ref in CORPUS:
         tp = os.path.join(ROOT, "courses", ref, "trees_lidar.json")
         cp = os.path.join(ROOT, "courses", ref, "osm_course.json")
@@ -3422,7 +4238,7 @@ def test_no_tree_marker_sits_on_a_playing_surface():
         surfaces = []
         for e in elements:
             kind = (e.get("tags") or {}).get("golf")
-            if kind in ("green", "fairway", "tee", "bunker") and e.get("geometry"):
+            if kind in SURFACE_KINDS and e.get("geometry"):
                 surfaces.append((kind, [(q["lon"], q["lat"]) for q in e["geometry"]]))
         if not surfaces:
             continue
@@ -4278,6 +5094,462 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
         f"with nothing checking it -- which is why it drifted unnoticed for two rounds.")
 
 
+# WHAT "NOT INSTALLED HERE" RAISES. `importlib.metadata.PackageNotFoundError` does NOT subclass
+# LookupError -- its MRO is ModuleNotFoundError -> ImportError -> Exception -- and the licence graders
+# below caught LookupError alone with a comment asserting the subclassing. So the not-installed arm was
+# unreachable and both graders died with an uncaught PackageNotFoundError on the install README
+# documents, because requirements.txt marks the AGPL row `# OPTIONAL:` and pip leaves it out. Both are
+# named rather than the ImportError parent, so an import error from somewhere else is still a failure.
+_NOT_INSTALLED = (LookupError, importlib.metadata.PackageNotFoundError)
+
+
+# LICENCE FAMILIES, longest name first, so "AGPL" is never read as "GPL" and "0BSD" never as "BSD".
+# A FAMILY and not an exact string, because the two places a licence can be read from do not spell it
+# the same: `scipy` and `rasterio` publish the legacy Trove classifier "BSD License" while legal/10
+# publishes the SPDX "BSD-3-Clause", and without normalisation both FALSE-POSITIVE as a mismatch. The
+# copyleft flag travels with the family for the same reason the column exists: whether a dependency
+# constrains how this project's own code may be licensed is a property of the licence, not of the row.
+_LICENCE_FAMILIES = (
+    ("AGPL", r"AGPL|AFFERO\s+(?:GENERAL\s+PUBLIC|GPL)", True),
+    ("LGPL", r"LGPL|LESSER\s+GENERAL\s+PUBLIC", True),
+    ("GPL", r"\bGPL\b|GNU\s+GENERAL\s+PUBLIC", True),
+    ("MPL", r"\bMPL\b|MOZILLA\s+PUBLIC", True),
+    ("EPL", r"\bEPL\b|ECLIPSE\s+PUBLIC", True),
+    ("CDDL", r"\bCDDL\b|COMMON\s+DEVELOPMENT\s+AND\s+DISTRIBUTION", True),
+    ("CC-BY-SA", r"CC[- ]?BY[- ]?SA|SHAREALIKE", True),
+    ("0BSD", r"\b0BSD\b|BSD\s+ZERO", False),
+    ("BSD", r"\bBSD\b", False),
+    ("MIT", r"\bMIT\b", False),
+    ("APACHE", r"APACHE", False),
+    ("ZLIB", r"\bZLIB\b", False),
+    ("CC0", r"\bCC0\b", False),
+    ("ISC", r"\bISC\b", False),
+    ("PSF", r"\bPSF\b|PYTHON\s+SOFTWARE\s+FOUNDATION", False),
+    ("POLYFORM", r"POLYFORM", False),
+    ("PUBLIC-DOMAIN", r"\bUNLICENSE\b|PUBLIC\s+DOMAIN", False),
+)
+
+
+def _licence_families(text):
+    """The set of licence families a licence string names, and whether any of them is copyleft.
+
+    Each family's match is BLANKED once taken, so "GNU AFFERO GPL 3.0" reads as {AGPL} and not
+    {AGPL, GPL} -- an ordering bug there would report the AGPL dependency as merely GPL, which is the
+    one direction this whole record cares about.
+    """
+    left = (text or "").upper()
+    fams = set()
+    for fam, pat, _copyleft in _LICENCE_FAMILIES:
+        if re.search(pat, left):
+            fams.add(fam)
+            left = re.sub(pat, " ", left)
+    return fams, any(c for f, _p, c in _LICENCE_FAMILIES if f in fams)
+
+
+def _installed_licence(dist):
+    """(what the INSTALLED metadata says `dist` is licensed under, is-it-an-SPDX-expression), or (None, ..).
+
+    The four places a wheel can put it, in the order PEP 639 supersedes them: `License-Expression`,
+    then the Trove `License ::` classifiers, then the free-text `License` field -- which is where
+    PyMuPDF puts its dual-licence sentence -- and finally the TITLE of the licence file the wheel
+    ships under `License-File`, which is the only place `lazrs` publishes its licence at all. The
+    second flag is True only for `License-Expression`, because that field is the only one of the four
+    that states a licence in SPDX and can therefore be graded to the CLAUSE rather than to the family.
+
+    Raises `importlib.metadata.PackageNotFoundError` when the package is not installed, which is a
+    DIFFERENT answer from "installed and silent" and is reported as such by the caller: reading an
+    absent parent as a refutation is the defect d7446ad fixed one record over. That exception is NOT a
+    LookupError -- its MRO is ModuleNotFoundError -> ImportError -- and a comment here used to assert
+    that it was, which made the caller's not-installed arm dead code and killed both graders outright
+    on the install README documents (PyMuPDF is marked `# OPTIONAL:` and pip leaves it out).
+    """
+    import importlib.metadata as md
+    d = md.distribution(dist)                     # raises md.PackageNotFoundError, see _NOT_INSTALLED
+    meta = d.metadata
+    expr = (meta.get("License-Expression") or "").strip()
+    if expr:
+        return expr, True
+    trove = [c.split("::")[-1].strip() for c in (meta.get_all("Classifier") or [])
+             if "License ::" in c]
+    if trove:
+        return " AND ".join(trove), False
+    free = (meta.get("License") or "").strip()
+    # A wheel that dumps the whole licence TEXT into that field is publishing the licence, but the first
+    # line is the only part that names it; PyMuPDF's is a one-line sentence, scipy's is a BSD copy.
+    if free.split("\n")[0].strip():
+        return free.split("\n")[0].strip(), False
+    # THE SHIPPED LICENCE FILE, and only its title. A row whose three FIELDS are silent was uncheckable,
+    # so both its cells could say anything -- `lazrs | MIT | no` -> `AGPL-3.0 | yes` passed, which is the
+    # exact shape the AGPL argument turns on. Its wheel does publish the licence: `License-File:
+    # LICENSE.txt`, whose first line reads "MIT License". Only the FIRST declared file and only its first
+    # non-empty line, because a licence body matches several families at once (numpy ships seventeen of
+    # them) and a title that names no family leaves the row uncheckable, which is the safe answer.
+    for name in (meta.get_all("License-File") or [])[:1]:
+        for cand in (f"licenses/{name}", name):
+            text = d.read_text(cand)
+            if text:
+                title = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+                return title or None, False
+    return None, False
+
+
+def _legal10_licence_rows(doc):
+    """[(package, version, licence cell, copyleft cell)] from legal/10's two tables.
+
+    Same row filter `_legal10_verified_versions` uses -- a rankable version in column 2 -- so the header
+    and the `|---|` separator are skipped without matching on their text, and both tables are read: the
+    default install and the one optional row, which is the row the AGPL argument is about.
+    """
+    out = []
+    for line in doc.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [c.strip().strip("`*").strip().strip('"').strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 4 and cells[0] and _release(cells[1]):
+            out.append((cells[0], cells[1], cells[2], cells[3]))
+    return out
+
+
+def _grade_legal10_licence_columns(doc, licence_of, own_licence):
+    """Every check legal/10's Licence column, Copyleft column and PolyForm sentence have to pass.
+
+    `licence_of(dist)` returns `(installed licence string or None, is-it-SPDX)` and raises one of
+    `_NOT_INSTALLED` when the package is not installed. `own_licence` is this project's licence as the
+    LICENSE file itself names it. Raises AssertionError naming the defect; returns the
+    (confirmed, uncheckable) package lists so the caller can refuse a vacuous run.
+
+    A CALLABLE for the same reason the tick-table grader is one: the only way to know whether a check on
+    a legal record closes anything is to drive DOCTORED copies of that record through it. See
+    test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored, and
+    test_legal_10s_licence_grader_runs_where_the_OPTIONAL_dependency_is_absent for the absence arm --
+    which was dead code until 2026-08-06 because PackageNotFoundError is not a LookupError.
+    """
+    rows = _legal10_licence_rows(doc)
+    assert len(rows) >= 9, (
+        f"legal/10's tables read as only {len(rows)} rows with a licence and a copyleft cell "
+        f"({[r[0] for r in rows]}). The document publishes one row per declared dependency plus the "
+        f"optional one; a parser that finds fewer is grading fewer, and the columns it stops reading are "
+        f"exactly the ones nothing read before.")
+    wrong, confirmed, uncheckable = [], [], []
+    for name, _version, said_lic, said_copy in rows:
+        dist = _norm_dist(name)
+        try:
+            measured, is_spdx = licence_of(dist)
+        except _NOT_INSTALLED:
+            uncheckable.append(f"{name}: not installed here")
+            continue
+        if not measured:
+            uncheckable.append(f"{name}: installed metadata publishes no licence at all")
+            continue
+        said_fams, said_copyleft = _licence_families(said_lic)
+        got_fams, got_copyleft = _licence_families(measured)
+        if not got_fams:
+            uncheckable.append(f"{name}: {measured!r} names no licence family this file knows")
+            continue
+        if not said_fams:
+            wrong.append(f"{name}: legal/10's Licence column reads {said_lic!r}, which names no licence "
+                         f"at all; the installed metadata says {measured!r}")
+            continue
+        if said_fams != got_fams:
+            wrong.append(f"{name}: legal/10 publishes {said_lic!r} ({'+'.join(sorted(said_fams))}); the "
+                         f"installed metadata publishes {measured!r} "
+                         f"({'+'.join(sorted(got_fams))})")
+            continue
+        # ...AND TO THE CLAUSE, for every row whose wheel publishes an SPDX `License-Expression`. Family
+        # normalisation collapses BSD-2-Clause and BSD-3-Clause, which is load-bearing for a wheel that
+        # publishes only the legacy Trove "BSD License" -- that classifier does not say which BSD, so
+        # demanding the clause there would false-positive on the SPDX identifier legal/10 rightly prints.
+        # Where the metadata DOES state it in SPDX there is nothing to forgive, and forgiving it anyway
+        # let `laspy | BSD-2-Clause` -> `BSD-3-Clause` pass while the docstring above claimed that row
+        # was graded to the clause.
+        if is_spdx and " ".join(said_lic.split()).lower() != " ".join(measured.split()).lower():
+            wrong.append(f"{name}: legal/10 publishes {said_lic!r}; the installed metadata publishes the "
+                         f"SPDX expression {measured!r}, which states the clause exactly")
+            continue
+        confirmed.append(name)
+        # THE COPYLEFT COLUMN, derived from the licence just confirmed rather than from a list here. It
+        # is the column the whole "deliberately excluded from the default install" argument rests on.
+        m = re.match(r"(yes|no)\b(.*)$", said_copy.strip(), re.I)
+        if not m:
+            wrong.append(f"{name}: legal/10's Copyleft? cell reads {said_copy!r}, which is neither yes "
+                         f"nor no. That column is the one a reader checks a compatibility claim against.")
+            continue
+        if (m.group(1).lower() == "yes") != got_copyleft:
+            wrong.append(f"{name}: legal/10's Copyleft? cell says {m.group(1).lower()!r} and "
+                         f"{measured!r} is {'copyleft' if got_copyleft else 'permissive'}")
+            continue
+        # ...and when that cell NAMES the licence beside the word, the name has to be the measured one.
+        beside, _c = _licence_families(m.group(2))
+        if beside and beside != got_fams:
+            wrong.append(f"{name}: legal/10's Copyleft? cell names {m.group(2).strip()!r} beside its "
+                         f"verdict; the installed metadata publishes {measured!r}")
+    assert not wrong, (
+        "legal/10's Licence or Copyleft? column does not say what the installed metadata says, and that "
+        "document's opening sentence is that it was verified from installed metadata. The whole reason "
+        "PyMuPDF is held out of the default install is that it is AGPL and copyleft, so a row that "
+        "understates either one publishes the conclusion without the premise:\n  " + "\n  ".join(wrong)
+        + "\n  Re-run the snippet under 'How to re-verify this file' and correct the table.")
+
+    # THE PROSE UNDER THE DEFAULT TABLE. "All permissive. None restricts how this project's own code is
+    # licensed" is the Copyleft column's summary, and it was graded by nothing while the column under it
+    # was too. Checked only over rows whose licence was actually measured.
+    default = doc.split("## Optional", 1)[0]
+    if re.search(r"All permissive", default):
+        offenders = []
+        for name, _v, _lic, _cp in _legal10_licence_rows(default):
+            try:
+                measured, _spdx = licence_of(_norm_dist(name))
+            except _NOT_INSTALLED:
+                continue
+            if measured and _licence_families(measured)[1]:
+                offenders.append(f"{name} is {measured!r}")
+        assert not offenders, (
+            "legal/10 says of its default-install table 'All permissive. None restricts how this "
+            "project's own code is licensed', and one of those rows is copyleft:\n  "
+            + "\n  ".join(offenders)
+            + "\n  That sentence is the reason a reader does not go looking for a compatibility problem "
+              "in the default install.")
+
+    # THE POLYFORM SENTENCE, which is the PREMISE of the incompatibility argument: AGPL-3.0 forbids
+    # imposing further restrictions, and the argument is that this project's own licence imposes one.
+    # Graded against the LICENSE file rather than against another copy of the sentence.
+    flowed = _flow(doc).replace("*", "")      # emphasis is presentation; a licence is not bold or plain
+    m = re.search(r"This project's code is ([^,]+?),", flowed)
+    assert m, (
+        "legal/10 no longer states what this project's own code is licensed under, in a form this can "
+        "read -- \"This project's code is <licence>, ...\". That sentence is the premise of the whole "
+        "AGPL-incompatibility argument: without it the paragraph concludes that the two licences do not "
+        f"compose without saying what the second one is. LICENSE says {own_licence!r}.")
+
+    def slug(text):
+        return re.sub(r"[^a-z0-9.]+", "-", re.sub(r"licen[sc]e", "", text.lower())).strip("-")
+
+    assert slug(m.group(1)) == slug(own_licence), (
+        f"legal/10 tells the reader this project's code is {m.group(1)!r}; LICENSE -- the licence text "
+        f"this repository actually ships -- is {own_licence!r}. The AGPL paragraph argues that the two "
+        f"do not compose BECAUSE this project's licence restricts commercial use, so a permissive name "
+        f"here refutes the record's own reason for holding an AGPL dependency out of the default "
+        f"install, and leaves the reader with the opposite of the licence he is bound by.")
+    return confirmed, uncheckable
+
+
+def _project_own_licence():
+    """This project's licence, as the LICENSE file it ships names itself in its own title."""
+    with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as fh:
+        first = fh.readline()
+    m = re.match(r"#\s*(.+?)\s*$", first)
+    assert m, (
+        f"LICENSE no longer opens with a `# <name>` title, so nothing in this tree says what this "
+        f"project is licensed under and legal/10's claim about it cannot be graded. It reads {first!r}.")
+    return m.group(1)
+
+
+def test_legal_10s_licence_and_copyleft_columns_are_the_ones_the_installed_metadata_publishes():
+    """legal/10's Licence column, Copyleft column and PolyForm sentence were graded by NOTHING.
+
+    Four checks stood over this document: every declared dependency has a row, no row invents a
+    dependency, the published tracked-file count is git's, and each published version is one
+    requirements.txt permits. Not one of them reads the Licence column, the Copyleft column, or the
+    sentence naming this project's own licence -- and `grep -rn 'legal/10'` outside this file returns a
+    single hit, legal/README.md's one-line index.
+
+    So the record could say the AGPL dependency is MIT and permissive WHILE THE ENTIRE "deliberately
+    excluded from the default install" ARGUMENT RESTS ON IT BEING AGPL, and the suite would be green.
+    Measured: PyMuPDF AGPL-3.0 -> MIT with copyleft yes -> no, numpy BSD -> GPL-3.0-or-later with no ->
+    yes, pyproj MIT -> AGPL-3.0 with no -> yes, and "This project's code is PolyForm" -> "MIT", all four
+    at once, reproduced the baseline suite exactly. That is the asymmetry the document's own opening
+    sentence says it exists to close, one column over from where it closed it.
+
+    Graded against the same source the document names as its own: installed metadata, read here through
+    `importlib.metadata` exactly as the "How to re-verify this file" snippet does. Three-valued, the
+    shape this project already uses elsewhere -- CONFIRMED, REFUTED, or UNCHECKABLE, and a row may be
+    uncheckable only where THIS MACHINE proves it cannot be read: the package is absent, or every place
+    a wheel can publish a licence is silent, or what it publishes names no family this file knows. That
+    is asserted per row against a second reading of the raw metadata, so the floor is a live measurement
+    and not a number. It used to be `len(confirmed) >= 5` against an actual 8 -- three rows could have
+    gone silent, taking their Licence and Copyleft cells out of the check, before anything fired.
+
+    `lazrs` was the row that showed why a hard floor is not enough. It publishes no `License-Expression`,
+    no Trove classifier and no `License` field, so it came back uncheckable and BOTH its cells could say
+    anything: `MIT | no` -> `AGPL-3.0 | yes` passed. Its wheel does publish the licence, in the fourth
+    place PEP 639 allows -- `License-File: LICENSE.txt`, whose title line reads "MIT License" -- so that
+    file's title is now the last source `_installed_licence` tries, and all nine rows are graded. NOTE
+    for whoever owns legal/10: its re-verify snippet enumerates the first three sources only, so it
+    prints nothing for that row; the fourth is within the record's stated method ("installed metadata")
+    but not within its one-liner.
+
+    NO VERSION IS ASSERTED HERE and no licence is hard-coded here. A licence is a property of the
+    installed distribution, so a reader on a newer numpy is graded against his numpy -- which is the
+    machine-pinned-calibration defect this suite has fixed five times.
+
+    WHAT FAMILY MATCHING COSTS, named rather than left to be discovered: a wheel that publishes only the
+    legacy Trove classifier "BSD License" does not say WHICH BSD, so for those rows "BSD-3-Clause" and
+    "BSD-2-Clause" are indistinguishable to this check and swapping one for the other passes -- `scipy`
+    and `rasterio` are in that state today. Without the normalisation both rows FALSE-POSITIVE instead,
+    because legal/10 rightly publishes the SPDX identifier. That is a coverage gap in the metadata, not
+    one this file can close by tightening. WHERE THE METADATA DOES STATE THE CLAUSE, in an SPDX
+    `License-Expression`, the record's cell is now compared to it EXACTLY -- there is nothing to forgive
+    there, and forgiving it anyway is what made this docstring's old claim that `laspy` "IS graded to the
+    clause" false: `BSD-2-Clause` -> `BSD-3-Clause` passed.
+    """
+    with open(os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    rows = _legal10_licence_rows(doc)
+    confirmed, uncheckable = _grade_legal10_licence_columns(doc, _installed_licence,
+                                                            _project_own_licence())
+    # THE FLOOR, MEASURED RATHER THAN CHOSEN. Every row is either confirmed or proved unreadable on this
+    # machine, and the proof is a SECOND reading -- the raw metadata fields, not `_installed_licence`'s
+    # answer restated. A hard floor cannot say this: `>= 5` against an actual 8 left room for three rows
+    # to fall out of the check silently, and a row that falls out takes both of its published cells with
+    # it. Vacuity is refused by the same assertion: an empty environment makes every row not-installed,
+    # and every one of them is then named here with the reason this machine gives.
+    silent = []
+    for name, _v, _lic, _cp in rows:
+        if name in confirmed:
+            continue
+        try:
+            meta = importlib.metadata.metadata(_norm_dist(name))
+        except _NOT_INSTALLED:
+            continue                              # absent: unreadable, and proved so
+        published = [(meta.get("License-Expression") or "").strip(),
+                     " ".join(c.split("::")[-1].strip() for c in (meta.get_all("Classifier") or [])
+                              if "License ::" in c),
+                     (meta.get("License") or "").strip(),
+                     " ".join(meta.get_all("License-File") or [])]
+        if any(published) and _licence_families(" ".join(published))[0]:
+            silent.append(f"{name}: publishes {[p for p in published if p]} and was not confirmed")
+    assert not silent, (
+        f"a row in legal/10 fell out of this check while its own installed metadata does publish a "
+        f"licence, so its Licence and Copyleft cells are graded by nothing:\n  " + "\n  ".join(silent)
+        + f"\n  Confirmed {sorted(confirmed)} of {len(rows)} rows; uncheckable:\n  "
+        + "\n  ".join(uncheckable or ["none"]))
+    assert len(confirmed) + len(uncheckable) == len(rows), (
+        f"legal/10 has {len(rows)} rows and this graded {len(confirmed)} + {len(uncheckable)} of them. "
+        f"A row that is neither confirmed nor reported uncheckable is a row nothing read.")
+
+
+def test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored():
+    """The mutation matrix for the columns above, because a grader on a legal record needs one.
+
+    Every case here reproduced the baseline suite EXACTLY before the grader existed. Each is applied to
+    the real legal/10 and driven through `_grade_legal10_licence_columns`; the file is never written.
+
+    The two directions matter separately. Understating a copyleft licence as permissive is how the
+    record would keep its conclusion and lose its premise. OVERstating a permissive one as copyleft is
+    the same defect pointing the other way -- it would tell a reader the default install carries an
+    obligation it does not, which is a false claim in a legal record even though it is the cautious
+    direction.
+    """
+    with open(os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    own = _project_own_licence()
+    _grade_legal10_licence_columns(doc, _installed_licence, own)   # the real record passes, or nothing
+                                                                  # below means anything
+
+    cases = [
+        ("the AGPL dependency published as MIT and permissive -- the record keeping its conclusion and "
+         "losing its premise",
+         [('"Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License"**', 'MIT**'),
+          ("**yes — AGPL-3.0**", "**no**")]),
+        ("the AGPL dependency's LICENCE alone published as MIT",
+         [('"Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License"**', 'MIT**')]),
+        ("the AGPL dependency's COPYLEFT cell alone flipped to no",
+         [("**yes — AGPL-3.0**", "**no**")]),
+        ("a permissive dependency published as GPL and copyleft (numpy)",
+         [("| numpy | 2.4.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | no |",
+           "| numpy | 2.4.4 | GPL-3.0-or-later | yes |")]),
+        ("a permissive dependency published as AGPL and copyleft (pyproj)",
+         [("| pyproj | 3.7.2 | MIT | no |", "| pyproj | 3.7.2 | AGPL-3.0 | yes |")]),
+        ("a permissive dependency's copyleft cell alone flipped to yes (pytest)",
+         [("| pytest | 9.0.3 | MIT | no |", "| pytest | 9.0.3 | MIT | yes |")]),
+        ("a BSD dependency published as MIT -- the family normalisation must not wave a real change "
+         "through while it forgives BSD-3-Clause vs 'BSD License'",
+         [("| scipy | 1.17.1 | BSD-3-Clause | no |", "| scipy | 1.17.1 | MIT | no |")]),
+        # THE CLAUSE COUNT, where the metadata states it. Family normalisation collapses every BSD
+        # variant, for every row -- which is load-bearing for the two rows whose wheels publish only the
+        # legacy Trove "BSD License", and was a hole for the rows that publish an SPDX
+        # `License-Expression`. The docstring above claimed laspy "IS graded to the clause" and it was
+        # not: BSD-2-Clause -> BSD-3-Clause passed.
+        ("a dependency whose metadata publishes an SPDX expression, published under the wrong CLAUSE "
+         "of the same family (laspy)",
+         [("| laspy | 2.7.0 | BSD-2-Clause | no |", "| laspy | 2.7.0 | BSD-3-Clause | no |")]),
+        # THE ROW WHOSE METADATA FIELDS ARE ALL SILENT. It was UNCHECKABLE, so both its cells could say
+        # anything: MIT/no -> AGPL-3.0/yes passed, in the one column the whole "deliberately excluded
+        # from the default install" argument is about.
+        ("the row whose three metadata FIELDS publish nothing, published as copyleft AGPL (lazrs)",
+         [("| lazrs | 0.8.1 | MIT | no |", "| lazrs | 0.8.1 | AGPL-3.0 | yes |")]),
+        ("this project's own licence published as MIT, which is what the AGPL argument rests on NOT "
+         "being",
+         [("This project's code is **PolyForm\nNoncommercial 1.0.0**", "This project's code is **MIT**")]),
+        ("this project's own licence published under the wrong PolyForm variant",
+         [("This project's code is **PolyForm\nNoncommercial 1.0.0**",
+           "This project's code is **PolyForm Noncommercial 2.0.0**")]),
+    ]
+    waved = []
+    for what, edits in cases:
+        d = doc
+        for old, new in edits:
+            assert old in d, (
+                f"the mutation for {what!r} no longer applies -- legal/10's wording moved, so this case "
+                f"is measuring nothing. Re-read the tables and re-anchor it.")
+            d = d.replace(old, new, 1)
+        assert d != doc
+        try:
+            _grade_legal10_licence_columns(d, _installed_licence, own)
+        except AssertionError:
+            continue
+        waved.append(what)
+    assert not waved, (
+        "legal/10's licence columns accept a doctored record. Each of these was applied to the real "
+        "document and passed:\n  " + "\n  ".join(waved)
+        + "\n  This is a published legal record in a public repository, and the columns below the "
+          "version column are the ones a reader relies on.")
+
+
+def test_legal_10s_licence_grader_runs_where_the_OPTIONAL_dependency_is_absent():
+    """The graders above ERRORED OUT in this project's own documented default install.
+
+    `importlib.metadata.PackageNotFoundError` does NOT subclass `LookupError` -- its MRO is
+    ModuleNotFoundError -> ImportError -> Exception -- and both graders caught `LookupError`, with a
+    comment beside the raise asserting the subclassing and a docstring promising the absent package "is
+    reported as such". So the `uncheckable.append(f"{name}: not installed here")` arm was UNREACHABLE
+    dead code, and requirements.txt marks PyMuPDF `# OPTIONAL:` so `pip install -r requirements.txt`
+    never installs it: on the install README documents, both tests died with an uncaught
+    PackageNotFoundError, and the AGPL row the whole check exists for is the one that killed them.
+
+    Loud rather than silent -- but a grader that cannot run where it is documented to run grades nothing,
+    and the docstring's own remedy ("install the dependency set before trusting a pass") is the state
+    that triggered it, because that install is precisely the one that leaves PyMuPDF out.
+
+    SIMULATED, never uninstalled: the grader takes `licence_of` as a callable for exactly this reason, so
+    the absence is injected by raising what `importlib.metadata` really raises. The package whose absence
+    is simulated is READ OUT of legal/10's optional table rather than named here, so this follows the
+    record if the optional row ever changes.
+    """
+    import importlib.metadata as md
+    with open(os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    optional = [r[0] for r in _legal10_licence_rows(doc.split("## Optional", 1)[1])]
+    assert len(optional) == 1, (
+        f"legal/10's optional table reads as {optional}; this test simulates the absence of the one "
+        f"package the record holds OUT of the default install, which is the AGPL row the whole licence "
+        f"check exists for. Re-read the record and re-anchor it.")
+    absent = _norm_dist(optional[0])
+
+    def licence_of(dist):
+        if dist == absent:
+            raise md.PackageNotFoundError(dist)     # what an uninstalled package really raises
+        return _installed_licence(dist)
+
+    confirmed, uncheckable = _grade_legal10_licence_columns(doc, licence_of,
+                                                           _project_own_licence())
+    assert optional[0] not in confirmed and any(u.startswith(optional[0] + ":") for u in uncheckable), (
+        f"with {optional[0]} absent the grader neither confirmed nor reported it: confirmed "
+        f"{sorted(confirmed)}, uncheckable {uncheckable}. An absent package is a THIRD answer -- reading "
+        f"it as a refutation is the defect d7446ad fixed one record over, and reading it as a pass is "
+        f"the one this file exists to stop.")
+
+
 def _norm_dist(name):
     """A distribution name in PEP 503 normalised form, so `PyMuPDF` and `pymupdf` are one package."""
     return re.sub(r"[-_.]+", "-", name.strip()).lower()
@@ -4702,6 +5974,50 @@ def test_no_test_carries_the_same_skip_condition_twice():
     assert not dupes, (
         "a test carries the same mark more than once. pytest treats the duplicate as a no-op, so it is "
         "invisible in the run output and reads as a second, different guard:\n  " + "\n  ".join(dupes))
+
+
+def test_every_test_this_repo_cites_by_name_exists():
+    """This codebase argues in prose and cites the test that grades each claim. A dead citation is a
+    reader following a pointer to nothing, and nothing here noticed one.
+
+    render_hole.py:238 named the fetch-box pre-flight test `..._uses_the_widest_corridor_...`. The real
+    test is `..._measures_...`, and it has never been called anything else -- the citation was wrong the
+    day it was written. A second one, in this file, named a rating test by a function name that does not
+    exist either. Both point at exactly the guard a sceptical reader would go read to check the
+    paragraph they are standing in, which is the worst place to be wrong.
+
+    A PREFIX counts as a hit, because the house style wraps long names across comment lines and a
+    fragment of a real name is a formatting artifact rather than a stale pointer. `test_phase1_
+    regressions` is the module and is exempt. Both spellings that survived the prefix rule were real.
+    Neither dead name is written out in full here, for the reason _STALE_RESERVE8_SHORTFALL is
+    assembled rather than spelled: this scan reads its own docstring, and the first draft matched it.
+    """
+    import glob as _glob
+    files = (sorted(_glob.glob(os.path.join(ROOT, "*.py")))
+             + sorted(_glob.glob(os.path.join(ROOT, "tools", "*.py")))
+             + sorted(_glob.glob(os.path.join(ROOT, "tests", "*.py"))))
+    defined = set()
+    sources = {}
+    for f in files:
+        with open(f, encoding="utf-8") as fh:
+            sources[f] = fh.read()
+        defined |= set(re.findall(r"^def (test_\w+)", sources[f], re.M))
+    assert len(defined) > 200, f"only {len(defined)} test functions found; the scan is not reading them"
+    dead, cited = [], 0
+    for f, src in sources.items():
+        for m in re.finditer(r"\btest_[a-z0-9_]{10,}\b", src):
+            name = m.group(0)
+            if name == "test_phase1_regressions":
+                continue
+            cited += 1
+            if any(d.startswith(name) for d in defined):
+                continue
+            dead.append(f"{os.path.relpath(f, ROOT)}:{src[:m.start()].count(chr(10)) + 1} cites "
+                        f"{name}, which no module defines")
+    assert cited > 100, f"only {cited} test-name citations found; the scan is not reading the prose"
+    assert not dead, (
+        "a comment or docstring cites a test by a name nothing defines, so a reader who goes to check "
+        "the claim finds no such guard:\n  " + "\n  ".join(dead))
 
 
 def test_no_test_skips_itself_when_one_of_this_repos_own_modules_is_missing(tmp_path):
@@ -5183,6 +6499,15 @@ def test_the_scorecard_panel_agrees_with_every_hole_card():
                           + "\n  ".join(problems[:10]))
 
 
+# The worked example of sand running past a printed carry, in the two shapes the carry tests state it.
+# Hand-typed for three generations -- philadelphia 1, then micke-grove 13 twice over -- and stale each
+# time, because the card it names keeps becoming a card the engine declines to print a carry for. Read
+# back out of the prose and required to be the worst LIVE case, so it maintains itself.
+_CARRY_ILLUSTRATION = re.compile(
+    r"([a-z][a-z-]+) (\d+) prints \"carry (\d+)\" for sand occupying the line out to (\d+) yd")
+_CARRY_UNSTATED = re.compile(r"on ([a-z][a-z-]+) (\d+) that is (\d+) yd of unstated sand")
+
+
 @needs_corpus
 def test_a_printed_carry_never_overstates_what_it_clears():
     """"carry 224" is a number a junior clubs against off the tee, so it must err SHORT, never long.
@@ -5198,16 +6523,25 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         including parts up to 45 m off the line. Erring short is the right direction.
 
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
-        "Clearing it needs more than N", which is false where the sand is long: micke-grove 13 prints
-        "carry 207" for sand occupying the line out to 290 yd, so clearing it needs 290. Sand runs a
+        "Clearing it needs more than N", which is false where the sand is long:
+        the-reserve 16 prints "carry 177" for sand occupying the line out to 322 yd, so clearing it
+        needs 322. Sand runs a
         median 23 yd past the printed number and up to 145. The number is right -- it is where the sand
         starts -- so the sentence was corrected rather than the figure.
 
-        THAT EXAMPLE USED TO BE philadelphia 1's "carry 213" out to 308, and it went stale the same way
-        the 126 below did: that card stopped printing a carry at all when the landing test arrived (see
-        test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for -- its sand reached 7.6 yd PAST
-        the green front, so there was nowhere to lay up). Twice now the illustration has been a card the
-        engine later declined to print. The measured figures below are the durable part.
+        THAT EXAMPLE HAS NOW GONE STALE THREE TIMES, AND IS NO LONGER WRITTEN DOWN. It was
+        philadelphia 1's "carry 213" out to 308; then micke-grove 13's "carry 207" out to 290, until
+        e0648c6 made that card print "no carry: sand to the green" instead (its window leaves 6.15 yd
+        to land in, so the landing rule withdrew the figure) -- and the paragraph above went on
+        describing a carry the card does not print, in the PRESENT TENSE, in the very docstring that
+        warned "twice now the illustration has been a card the engine later declined to print".
+        218a244 cleaned up the other two instances of exactly this and missed these.
+
+        So the illustration is no longer chosen by hand. It is required to BE the worst live case --
+        the same card the paragraph below already names as the worst -- and the card, the printed
+        carry, the far edge and the shortfall are all compared against this run's own measurement
+        below. Nothing here has to be maintained: when the corpus moves, the failure names the card
+        that replaced it.
 
         THE 145 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
         (see render_hole.edge_within) gave the-reserve 16 the 3,562 m^2 waste bunker it had been
@@ -5228,7 +6562,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
     import math
     import statistics
     IN_LINE_M = 15.0
-    checked, problems, past = 0, [], []
+    checked, problems, past, cases = 0, [], [], []
     seen_courses = collections.Counter()
     for ref in CORPUS:
         book = os.path.join(ROOT, "courses", ref, "greenbook.html")
@@ -5237,8 +6571,8 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         with open(book, encoding="utf-8") as fh:
             html = fh.read()
         assert "where fairway sand <b>starts</b>" in html and "can run well past N" in html, (
-            f"{ref}: the guide no longer says the sand can run past the printed carry -- on "
-            f"micke-grove 13 that is 83 yd of unstated sand")
+            f"{ref}: the guide no longer says the sand can run past the printed carry -- "
+            f"on the-reserve 16 that is 145 yd of unstated sand")
         cfg, rh = _engine(ref)
         try:
             course, geom = rh.load()
@@ -5275,6 +6609,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             card = info["card_yd"]
             for near, _far in carries:
                 past.append(_far - near)          # how far the sand runs BEYOND the printed number
+                cases.append((_far - near, ref, hn, near, _far))   # ...and which card, for the example
                 checked += 1
                 seen_courses[ref] += 1   # past the gates: counts WORK, not intent
                 if not (80 <= near <= 300):
@@ -5341,6 +6676,43 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         f"{med:.1f} yd over {len(past)} shipped carries, against a worst case of {worst:.0f}, and it is "
         f"what says the hedge is about the usual case and not one outlier")
 
+    # ...AND THE WORKED EXAMPLE, tied to the same measurement. The median and the worst were pinned
+    # here; the CARD illustrating them was still typed by hand, and went stale for the THIRD time --
+    # philadelphia 1's "carry 213", then micke-grove 13's "carry 207", which e0648c6 replaced with
+    # "no carry: sand to the green" while this docstring went on describing it in the present tense.
+    # 218a244 fixed the other two instances of that and missed these. So the illustration is required
+    # to be the worst LIVE case, and its four figures are read back out of the prose and compared.
+    # The failure message names the replacement, so the next drift costs a retype and not a diagnosis.
+    wpast, wref, whole, wnear, wfar = max(cases)
+    assert wpast == worst, f"the worst case {worst} is not the one in `cases` ({wpast}) -- same list"
+    ill, illseen = [], 0
+    for fn in ("test_a_printed_carry_never_overstates_what_it_clears",
+               "test_the_carry_legend_says_sand_because_water_is_not_quantified"):
+        prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
+        for m in _CARRY_ILLUSTRATION.finditer(prose):
+            illseen += 1
+            said = (m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+            if said != (None, 0, 0, 0) and not (
+                    wref.startswith(said[0]) and said[1] == whole
+                    and said[2] == wnear and said[3] == wfar):
+                ill.append(f"{fn} illustrates the hedge with {m.group(0)!r}; the worst live case is "
+                           f"{wref} {whole}, which prints carry {wnear} for sand out to {wfar} "
+                           f"({wpast} yd past)")
+        for m in _CARRY_UNSTATED.finditer(prose):
+            illseen += 1
+            if not (wref.startswith(m.group(1)) and int(m.group(2)) == whole
+                    and int(m.group(3)) == wpast):
+                ill.append(f"{fn} says {m.group(0)!r}; the worst live case is {wref} {whole} with "
+                           f"{wpast} yd of sand past its printed carry {wnear}")
+    assert illseen >= 2, (
+        f"only {illseen} worked example(s) of sand running past a printed carry were found in the two "
+        f"carry tests. That example has gone stale three times, twice while the prose around it warned "
+        f"about exactly that, so it is graded rather than trusted -- if the wording moved, move "
+        f"_CARRY_ILLUSTRATION/_CARRY_UNSTATED with it. The live worst is {wref} {whole}: carry "
+        f"{wnear}, sand to {wfar}, {wpast} yd past.")
+    assert not ill, ("a worked example of sand past a printed carry names the wrong card:\n  "
+                     + "\n  ".join(ill))
+
 
 @needs_corpus
 def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
@@ -5348,7 +6720,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     is nowhere to land, and the number invites a shot the hole does not have.
 
     render_hole had already made exactly this argument -- in the comment above its par-3 suppression,
-    about the-reserve 8 ("sand ending FOUR YARDS short of the green front ... the near edge is the one
+    about the-reserve 8 ("sand ending 2.24 yd short of the green front ... the near edge is the one
     number on that card a player could act on and be wrong about") and merion 13. But it acted on PAR,
     and no part of that reasoning is a property of par. Re-measured over the 198 geometry cards after
     the WGS84 per-axis migration, SEVEN printed windows on seven PAR 4s had no landing area either --
@@ -5366,8 +6738,13 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     says what this test needs said: a gap this small along the played line is not a separate decision,
     it is one obstacle -- which is why three bunkers 3.8 yd apart print one carry. A strip of grass
     too narrow to separate two bunkers is too narrow to land in, so the green front joins that merge.
-    It is not a new threshold, and picking one would have been a guess; the corpus leaves a clean break
-    either side of it (worst kept 8.7 yd, best dropped 3.4).
+    It is not a new threshold, and picking one would have been a guess. The break either side of it is
+    real but the figures are METRIC-DEPENDENT, so see
+    test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to, which derives every one
+    of them from the corpus and grades the prose in render_hole.py against them. By THIS test's measure
+    the worst kept is 17.1187 yd (callippe 8) and the best dropped -0.8540 (monarch-bay 14); by the
+    rule's own, 8.8428 (castlewood-hill 10) and 6.1489 (micke-grove 13). Those read 8.4352 / -0.4795 and
+    8.7456 / 3.4251 until micke-grove 13 stopped printing a carry -- it held BOTH worst-kept records.
 
     Only the FURTHEST printed window is checked here, because the merge already guarantees more than
     CARRY_MERGE_GAP_YD of clear ground after every other one. The unguarded boundary was the one
@@ -5421,15 +6798,30 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
                 return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             near, far = carries[-1]                    # the sand nearest the green
-            reach = far
-            for g in bunkers:
+            # THE WHOLE OBSTACLE, not the part the carry filters happened to admit. `reach` used to grow
+            # only over bunkers whose near edge fell INSIDE the printed window (+-2 yd), which stops at
+            # the first strip of grass wider than 2 yd -- and CARRY_MERGE_GAP_YD already says a strip
+            # narrower than 8 yd is not two decisions, it is one obstacle. So the reach chains: any
+            # in-corridor sand starting within the merge gap of where the reach has got to is part of the
+            # same obstacle. micke-grove 13 is the case -- printed window 206.71-289.69, then 6.15 yd of
+            # grass, then sand from 295.84 to 306.14, which is PAST the 298.44 green front. Under the old
+            # +-2 metric that card measured 8.44 yd of landing area and passed; under this one it has
+            # -7.70 and there is nowhere to lay up at all.
+            spans = []
+            for g in _sand_the_engine_sees(rh, em, line, bunkers):
                 al = [along_yd(q["lat"], q["lon"]) for q in g["geometry"]]
                 of = [abs((em(q["lat"], q["lon"])[0] - tee[0]) * perp[0]
                           + (em(q["lat"], q["lon"])[1] - tee[1]) * perp[1]) for q in g["geometry"]]
                 if not al or min(of) > 30.0:
                     continue
-                if near - 2 <= min(al) <= far + 2:     # a bunker inside the printed window
-                    reach = max(reach, max(al))
+                spans.append((min(al), max(al)))
+            reach, grew = far, True
+            while grew:
+                grew = False
+                for a0, b0 in spans:
+                    if (near - rh.CARRY_MERGE_GAP_YD <= a0 <= reach + rh.CARRY_MERGE_GAP_YD
+                            and b0 > reach):
+                        reach, grew = b0, True
             checked += 1
             seen_courses[ref] += 1
             if front - reach <= rh.CARRY_MERGE_GAP_YD:
@@ -5446,9 +6838,142 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
                           + "\n  ".join(problems[:8]))
 
 
+@needs_corpus
+def test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept():
+    """Every window the landing rule KEPT has to reach the card. `carries[:3]` truncated the fourth.
+
+    merion 15 is a 415 yd par 4 with FOUR kept windows -- 88.95-98.75, 171.84-204.32, 219.13-240.19 and
+    299.15-308.40, the last with 51.89 yd of fairway beyond it and a green front at 360.29. The rule kept
+    all four; `[:3]` printed three, and because nothing was refused there was no `sand_to_green` mark
+    either, so the card read "green 29 ft above * carry 89 / 172 / 219" with a reachable fairway bunker
+    unnamed. That is verbatim the defect be4da7e was written to fix -- "nothing distinguished 'no more
+    sand' from 'sand we declined to number'" -- on the one hole its own comment cites as having four.
+
+    THE CAP WENT RATHER THAN GAINING A MARK, because a mark would have to say something true and there
+    is nothing true to say: the sand does NOT run to the green there, it stops 52 yd short, so
+    CARRY_REFUSED_MARK would be a false claim. The fourth figure, by contrast, is supported by exactly
+    the same projection, chord and tee shift as the other three. Printing it adds no wrong number and
+    omits no reachable hazard, which is the only combination this book accepts.
+
+    Measured, because the cap was a space budget: merion 15 is the ONLY card in the corpus with more than
+    three kept windows, so the cap fired once in 198. Adding " / 299" costs the playline 25.96 px pocket
+    and 27.66 px enlarged, against 146.02 and 132.36 px of slack -- and the tightest playline in the
+    corpus is a different card entirely (merion 10 enlarged, 20.20 px). See
+    test_the_playline_is_never_clipped_by_its_own_nowrap, which is what would catch a re-fetch that made
+    a list too long, and which fails loudly rather than truncating.
+    """
+    import math
+    short, checked = [], 0
+    seen_courses = collections.Counter()
+    for ref in CORPUS:
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            par = cfg.HOLES[hn][0] if hn in cfg.HOLES else None
+            if par == 3 or not info.get("carry_origin_known"):
+                continue          # the two gates that null the whole carry row
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+
+            def em(la, lo):
+                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            perp = (uy, -ux)
+            shift = ((info["card_yd"] - info["arc_yd"])
+                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+
+            def along_yd(la, lo):
+                e, n = em(la, lo)
+                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+
+            def off_m(la, lo):
+                e, n = em(la, lo)
+                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
+            total = info["card_yd"]
+            raw, greenside = [], []
+            for g in _sand_the_engine_sees(rh, em, line, bunkers):
+                al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                if not al:
+                    continue
+                near, far = min(al), max(al)
+                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                    continue
+                (greenside if near > total - 40 else raw).append((near, far))
+            raw.sort()
+            merged = []
+            for a, b in raw:
+                if merged and a - merged[-1][1] <= rh.CARRY_MERGE_GAP_YD:
+                    merged[-1][1] = max(merged[-1][1], b)
+                else:
+                    merged.append([a, b])
+            kept = []
+            for i, (a, b) in enumerate(merged):
+                nxt = ([merged[i + 1][0]] if i + 1 < len(merged) else []) + [n for n, f in greenside
+                                                                            if f > b]
+                if min(nxt + [front]) - b > rh.CARRY_MERGE_GAP_YD:
+                    kept.append((a, b))
+            printed = info.get("carries") or []
+            checked += 1
+            seen_courses[ref] += 1
+            if len(printed) < len(kept):
+                short.append(
+                    f"{ref} hole {hn}: the landing rule kept {len(kept)} windows "
+                    f"({', '.join(f'{a:.2f}-{b:.2f}' for a, b in kept)}) and the card prints "
+                    f"{len(printed)} ({printed}) with no mark -- the list ends before the sand does, "
+                    f"and the dropped window has {min([n for n, f in greenside if f > kept[-1][1]] + [front]) - kept[-1][1]:.2f} yd "
+                    f"of landing area beyond it, so it is a carry the hole really has")
+    assert checked >= 100, f"only {checked} cards checked -- build the books first"
+    assert_no_course_skipped(
+        seen_courses, "test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept")
+    assert not short, ("a card's carry list is silently truncated:\n  " + "\n  ".join(short[:8]))
+
+
 # The card's own words for a carry the landing rule refused to print. One spelling, shared by the
 # engine flag, the footer phrase and this test, so the three cannot drift into two idioms.
 CARRY_REFUSED_MARK = "no carry: sand to the green"
+
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                 "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+
+# One row of the nine-row record of the refused windows, as it is typed in the docstring below:
+#   merion 1   277.97-306.66  front 298.66  -8.00  reach 333.39  -34.74  keeps 172/212/245
+# Every column is compared to the run that produced it -- six of the nine rows had gone stale.
+_REFUSED_TABLE_ROW = re.compile(
+    r"([a-z][a-z-]*) (\d+) (\d+\.\d\d)-(\d+\.\d\d) front (\d+\.\d\d) ([+-]\d+\.\d\d) "
+    r"reach (\d+\.\d\d) ([+-]\d+\.\d\d) keeps (nothing|\d+(?:/\d+)*)")
+
+# The two claims render_hole.py and generate.py both make about the window whose carry is withheld.
+# They are the stated reason the card prints NO digit for it, so both are graded, and both are worded
+# identically in the two files so one pattern reads both. The far edge and the CHAINED REACH are
+# different measurements: the reach is at or past the green front on all nine, the window's own far
+# edge on only four, and a sentence that named neither attached the reach's property to the edge.
+_FAR_EDGE_CLAIM = re.compile(
+    r"at or past the green front on ([a-z]+) of the nine and short of it by up to "
+    r"(\d+\.\d\d) yd on the other ([a-z]+)")
+_REACH_CLAIM = re.compile(r"every one of the ([a-z]+) REACHES at or past the green front")
 
 
 @needs_corpus
@@ -5457,28 +6982,53 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
 
     test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for withdraws a carry wherever the sand
     leaves no room to land short of the green. That is correct and it is not the whole duty: on FIVE of
-    the eight cards it fires on, the card keeps an EARLIER carry and drops only the last window, so the
+    the nine cards it fires on, the card keeps an EARLIER carry and drops only the last window, so the
     printed list simply ends before the sand does and nothing on the card says a further, closer sand
     cluster was measured and declined. Re-derived over the 198 geometry cards (window, green front,
     landing area by the rule's own metric, then the reach of every bunker inside that window):
 
-        merion 1          277.97-306.66  front 298.66   -8.00   reach 315.70  -17.04   keeps 172/212/245
-        merion 10         226.72-284.12  front 253.45  -30.67   reach 284.12  -30.67   keeps  95/164
-        castlewood-v 8    286.65-309.74  front 311.61   +1.87   reach 324.66  -13.04   keeps 195/250
-        copper-valley 3   293.56-312.39  front 315.69   +3.31   reach 316.17   -0.48   keeps 178
-        monarch-bay 14    273.28-283.35  front 286.78   +3.43   reach 287.63   -0.85   keeps 226
-        callippe 12       272.34-293.33  front 293.60   +0.27   reach 306.84  -13.24   keeps nothing
+        merion 1          277.97-306.66  front 298.66   -8.00   reach 333.39  -34.74   keeps 172/212/245
+        merion 10         226.72-284.12  front 253.45  -30.67   reach 284.12  -30.67   keeps 95/164
+        castlewood-v 8    286.65-309.74  front 311.61   +1.87   reach 346.85  -35.24   keeps 195/250
+        copper-valley 3   293.56-312.39  front 315.69   +3.31   reach 327.41  -11.71   keeps 178
+        monarch-bay 14    273.28-283.35  front 286.78   -6.06   reach 287.63   -0.85   keeps 226
+        callippe 12       272.34-293.33  front 293.60   -0.88   reach 324.16  -30.56   keeps nothing
         micke-grove 3     293.83-309.26  front 296.77  -12.49   reach 309.26  -12.49   keeps nothing
-        philadelphia 1    212.11-306.99  front 299.42   -7.57   reach 314.88  -15.46   keeps nothing
+        micke-grove 13    206.71-289.69  front 298.44   +6.15   reach 306.14   -7.70   keeps nothing
+        philadelphia 1    212.11-306.99  front 299.42   -7.65   reach 328.90  -29.48   keeps nothing
 
-    merion 1 is the eighth case and it was missing from the record: the landing rule cost it no printed
-    FIGURE, because it has four merged windows and `[:3]` would have truncated the fourth anyway -- but
-    the reader-facing defect is identical, and worse, since that card prints three carries above sand
-    that runs 17 yd past its green front.
+    EVERY COLUMN OF THAT TABLE IS NOW DERIVED HERE, because six of the nine rows had gone stale and
+    nothing read them. e0648c6 changed two of the metrics at once -- it bounded the landing area by the
+    greenside sand the `total_yd - 40` filter drops, and it re-seeded `reach` from the rounded far edge
+    and chained it across any strip of grass narrower than CARRY_MERGE_GAP_YD -- and then re-measured
+    only the row it was writing about (micke-grove 13). The rest kept their pre-e0648c6 values:
+
+        reach, stale on five      merion 1 315.70/-17.04, castlewood-v 8 324.66/-13.04,
+                                  copper-valley 3 316.17/-0.48, callippe 12 306.84/-13.24,
+                                  philadelphia 1 314.88/-15.46
+        landing, stale on three   callippe 12 +0.27, monarch-bay 14 +3.43, philadelphia 1 -7.57
+                                  -- each the GREEN-front margin, from before the greenside bound
+
+    The landing drift is the one that matters, because that column is what the refusal turns on:
+    callippe 12 reads +0.27 yd of room where the rule sees -0.88 (a greenside bunker opens at 292.45,
+    1 yd inside the window's own far edge), and monarch-bay 14 reads +3.43 where the rule sees -6.06.
+    Both still refuse, so no card moved -- but the published table stated a margin the code does not
+    use, in the column a reader would check the decision against.
+
+    merion 1 is one of the two cases that were missing from the record: the landing rule cost it no
+    printed FIGURE, because its fourth merged window is the refused one, so the three it prints are the
+    three it keeps -- but the reader-facing defect is identical, and worse, since that card prints three
+    carries above sand that runs 17 yd past its green front. micke-grove 13 is the other, and it was
+    missing for a different reason: its landing area was measured to the GREEN front alone (8.75 yd)
+    rather than to the greenside sand at 295.84 that comes first, so the rule kept a carry the hole has
+    no room for.
 
     The reach column is the load-bearing one. It includes the greenside sand the carry filter drops via
-    `near_yd > total_yd - 40`, and under it every one of the eight is NEGATIVE: the sand reaches at or
-    past the green front on all of them. That is what makes the words on the card true.
+    `near_yd > total_yd - 40`, and it chains across any strip of grass narrower than CARRY_MERGE_GAP_YD,
+    because that constant already calls a strip that narrow one obstacle rather than two decisions.
+    Under it every one of the nine is NEGATIVE: the sand reaches at or past the green front on all of
+    them. That is what makes the words on the card true -- and on micke-grove 13 the chaining is what
+    makes it true, since 6.15 yd of grass at 289.69 separates the two bunkers.
 
     WHAT IS NOT PRINTED, AND WHY. The far edge is a supported number -- same projection, same chord,
     same tee shift as every printed carry -- and printing it was rejected. On merion 10 it is 284 with
@@ -5556,9 +7106,11 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
-            # The engine's own carry filters, re-derived from the OSM rings.
-            raw = []
-            for g in bunkers:
+            # The engine's own carry filters, re-derived from the OSM rings -- and from the engine's own
+            # sand (see _sand_the_engine_sees), which this loop did not start from either.
+            in_corr = _sand_the_engine_sees(rh, em, line, bunkers)
+            raw, greenside = [], []
+            for g in in_corr:
                 al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                 of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                 if not al:
@@ -5567,6 +7119,7 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 if near > total - 40:
+                    greenside.append((near, far))
                     continue
                 raw.append((near, far))
             raw.sort()
@@ -5576,11 +7129,21 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                     merged[-1][1] = max(merged[-1][1], b)
                 else:
                     merged.append([a, b])
-            refused = []
+            refused, keeps, land_of = [], [], {}
             for i, (a, b) in enumerate(merged):
-                beyond = min(merged[i + 1][0], front) if i + 1 < len(merged) else front
+                # The greenside sand `total_yd - 40` drops is a bound on a lay-up even though it is not
+                # a tee carry -- the same asymmetry the mark's own wording already relied on. micke-grove
+                # 13's window is bounded by sand at 295.84, not by its 298.44 green front.
+                nxt = ([merged[i + 1][0]] if i + 1 < len(merged) else []) + [n for n, f in greenside
+                                                                            if f > b]
+                beyond = min(nxt + [front])
                 if beyond - b <= rh.CARRY_MERGE_GAP_YD:
                     refused.append((a, b))
+                    # kept for the published table: this is the RULE'S landing margin, greenside bound
+                    # included, which is the column three rows of it had from before that bound existed.
+                    land_of[(a, b)] = beyond - b
+                else:
+                    keeps.append(a)
             par = cfg.HOLES[hn][0] if hn in cfg.HOLES else None
             # The two gates that already null the carries null the mark too: with no corroborated
             # origin the whole along-line frame is untrustworthy, and a par 3 has no lay-up decision
@@ -5615,17 +7178,29 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                                 f"lay-up the hole has no room for, the far one a shot past the green.")
             if want:
                 # what makes the words true: the sand really does reach the green, measured with the
-                # greenside sand the carry filter drops
-                reach = max(b for _a, b in refused)
-                for g in bunkers:
+                # greenside sand the carry filter drops, and chained across any strip of grass narrower
+                # than CARRY_MERGE_GAP_YD -- that constant already calls a strip that narrow one obstacle
+                # rather than two decisions, and it is why the card can say "sand to the green" over
+                # micke-grove 13's 6.15 yd of grass at 289.69-295.84. Stopping at a 2 yd tolerance made
+                # that card measure 8.75 yd SHORT of its green and read as an over-claim.
+                spans = []
+                for g in in_corr:
                     al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                     of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
                     if not al or min(of) > 30.0:
                         continue
-                    for a, b in refused:
-                        if a - 2 <= min(al) <= b + 2:
-                            reach = max(reach, max(al))
-                marked.append((ref, hn, front - reach))
+                    spans.append((min(al), max(al)))
+                reach, grew = max(b for _a, b in refused), True
+                lo = min(a for a, _b in refused)
+                while grew:
+                    grew = False
+                    for a0, b0 in spans:
+                        if (lo - rh.CARRY_MERGE_GAP_YD <= a0 <= reach + rh.CARRY_MERGE_GAP_YD
+                                and b0 > reach):
+                            reach, grew = b0, True
+                rn, rf = refused[-1]
+                marked.append(dict(ref=ref, hole=hn, near=rn, far=rf, front=front,
+                                   land=land_of[(rn, rf)], reach=reach, keeps=sorted(keeps)))
                 if front - reach > 0:
                     problems.append(
                         f"{ref} hole {hn}: the card says {CARRY_REFUSED_MARK!r} but the sand stops "
@@ -5636,11 +7211,267 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         seen_courses, "test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green")
     assert not problems, ("a card withholds a carry without saying so:\n  "
                           + "\n  ".join(problems[:8]))
-    # the eight measured cases, so a change that stops the rule firing cannot leave this vacuous
-    assert len(marked) >= 8, (
-        f"only {len(marked)} card(s) print {CARRY_REFUSED_MARK!r}; eight windows in this corpus have "
+    # the nine measured cases, so a change that stops the rule firing cannot leave this vacuous
+    assert len(marked) >= 9, (
+        f"only {len(marked)} card(s) print {CARRY_REFUSED_MARK!r}; nine windows in this corpus have "
         f"no landing area (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14, "
-        f"callippe 12, micke-grove 3, philadelphia 1), so the rule or the frame has moved")
+        f"callippe 12, micke-grove 3 and 13, philadelphia 1), so the rule or the frame has moved")
+
+    # ---- the nine-row table above, and the two prose claims about it, graded ----------------------
+    # Six of the nine rows had a stale column and nothing read them, because e0648c6 changed the
+    # landing metric AND the reach metric and then re-measured only the row it was writing about. A
+    # table is exactly the shape this repo's standing lesson names: one figure, two records, no
+    # cross-check. So every column is compared to the run that just produced it.
+    live = {(m["ref"], m["hole"]): m for m in marked}
+    rows = _REFUSED_TABLE_ROW.findall(
+        _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                    "test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green"))
+    assert len(rows) == len(marked), (
+        f"the published table has {len(rows)} rows and the rule refuses {len(marked)} windows "
+        f"({sorted(live)}). The table is the only record of which cards this mark fires on, so a row "
+        f"may not simply go missing -- add or remove the row, do not loosen this.")
+    bad = []
+    for short, hole, near, far, front, landing, reach, margin, keeps in rows:
+        hit = [k for k in live if k[0].startswith(short) and k[1] == int(hole)]
+        if not hit:
+            bad.append(f"the table names {short} {hole}, which no longer refuses a window "
+                       f"(refusals: {sorted(live)})")
+            continue
+        m = live[hit[0]]
+        got_keeps = "/".join(str(round(x)) for x in m["keeps"]) or "nothing"
+        for label, said, real in (("window near", near, m["near"]), ("window far", far, m["far"]),
+                                  ("green front", front, m["front"]),
+                                  ("landing margin", landing, m["land"]),
+                                  ("reach", reach, m["reach"]),
+                                  ("front-reach margin", margin, m["front"] - m["reach"])):
+            if f"{real:+.2f}" != said and f"{real:.2f}" != said:
+                bad.append(f"{short} {hole}: the table says {label} {said}, measured {real:+.2f}")
+        if keeps.strip() != got_keeps:
+            bad.append(f"{short} {hole}: the table says keeps {keeps.strip()!r}, "
+                       f"measured {got_keeps!r}")
+    assert not bad, ("the published record of the refused windows is not what the rule measures:\n  "
+                     + "\n  ".join(bad))
+
+    # THE TWO PROSE CLAIMS, in the engine and in the generator. Both said the refused window's FAR
+    # EDGE "is at or past the green front on all nine" -- which is the CHAINED REACH's property, not
+    # this edge's. Measured, the window's own far edge falls short on five, so a claim used to justify
+    # withholding a digit was false on the majority of the cases it named. Two metrics, one sentence,
+    # and e0648c6 grew the set from eight to nine and put the worst counter-example into it.
+    n_far = sum(1 for m in marked if m["far"] >= m["front"])
+    n_reach = sum(1 for m in marked if m["reach"] >= m["front"])
+    worst_short = max((m["front"] - m["far"] for m in marked if m["far"] < m["front"]), default=0.0)
+    num = {v: k for k, v in _NUMBER_WORDS.items()}
+    stale, seen = [], 0
+    for rel in ("render_hole.py", "generate.py"):
+        prose = _prose(open(os.path.join(ROOT, rel), encoding="utf-8").read())
+        for m in _FAR_EDGE_CLAIM.finditer(prose):
+            seen += 1
+            said_at, said_by, said_rest = m.group(1), float(m.group(2)), m.group(3)
+            if (_NUMBER_WORDS.get(said_at.lower()) != n_far
+                    or _NUMBER_WORDS.get(said_rest.lower()) != len(marked) - n_far
+                    or f"{said_by:.2f}" != f"{worst_short:.2f}"):
+                stale.append(
+                    f"{rel} says {m.group(0)!r}; measured, the refused window's far edge is at or "
+                    f"past the green front on {n_far} of {len(marked)} ({num.get(n_far, n_far)}) and "
+                    f"short of it by up to {worst_short:.2f} yd on the other "
+                    f"{num.get(len(marked) - n_far, len(marked) - n_far)}")
+        for m in _REACH_CLAIM.finditer(prose):
+            seen += 1
+            if _NUMBER_WORDS.get(m.group(1).lower()) != n_reach:
+                stale.append(f"{rel} says {m.group(0)!r}; the chained reach is at or past the green "
+                             f"front on {n_reach} of {len(marked)} refused windows")
+    assert seen >= 4, (
+        f"only {seen} of the four published claims about the refused window's far edge and its "
+        f"chained reach were found (render_hole.py and generate.py each state both). The card prints "
+        f"no digit for that window BECAUSE of these two claims, so they may not be deleted to pass -- "
+        f"if the wording moved, move _FAR_EDGE_CLAIM/_REACH_CLAIM with it.")
+    assert not stale, ("a published claim about the refused window's edges is not what it measures:\n  "
+                       + "\n  ".join(stale))
+
+
+# The pre-migration spelling of the-reserve 8's shortfall, assembled rather than written, for the reason
+# _SCROLLHEIGHT_CLAMP_CLAIM is at module scope: the test that scans for this shape would otherwise match
+# its own prose, and it did -- three of the eight hits in its first red run were its own docstring.
+# Split across the concatenation so no line of this file contains the phrase itself.
+_STALE_RESERVE8_SHORTFALL = re.compile(r"\bfour" + r"\s+" + r"yards\b", re.I)
+
+
+@needs_corpus
+def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
+    """the-reserve 8's sand was said to end FOUR YD short of its green front. It is 2.24.
+
+    That hole is the worked example for BOTH carry suppressions -- the par-3 rule and the landing rule --
+    so its shortfall is quoted in four passages across render_hole.py and this file. The figure was right
+    before the WGS84 per-axis migration; the same commit that re-measured every other number on that card
+    recorded 2.24 (218.03 - 215.79) and then repeated the old one in a NEW comment beside it. A figure
+    four passages quote and nothing grades goes stale once and then propagates.
+
+    Re-derived here from the OSM rings through the engine's own frame -- and from the engine's own sand,
+    which this test did not start from either: see _sand_the_engine_sees. the-reserve 8's figures do not
+    move under the pre-filter, but the test was one re-fetch away from measuring a window off a bunker
+    the card does not draw. Required in every passage that states it, so the next migration cannot leave
+    one behind.
+
+    Note what the number is and is not: 215.79 is the far edge of the window the CARRY FILTERS keep, so
+    2.24 yd is the shortfall of the printed decision. The full waste complex reaches 234.83 -- 16.81 yd
+    PAST the green front -- once the greenside sand `near_yd > total_yd - 40` drops is counted. Both are
+    true of that hole and they answer different questions; the passages quote the first.
+    """
+    import math
+    ref = "the-reserve-at-spanos-park"
+    if ref not in CORPUS:
+        pytest.skip(f"{ref} has no geometry on disk")
+    cfg, rh = _engine(ref)
+    course, geom = rh.load()
+    import geo
+    loc = cfg.COURSE.get("location") or {}
+    lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+    greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+    bunkers = [g for g in course
+               if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+    hole = lines[8]["geometry"]
+    green, gend, tend = geo.match_green(hole, greens)
+    _svg, info = rh.render_hole(8, cfg.HOLES)
+    la0 = sum(q["lat"] for q in hole) / len(hole)
+    lo0 = sum(q["lon"] for q in hole) / len(hole)
+
+    def em(la, lo):
+        return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
+    tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+    L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+    ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+    perp = (uy, -ux)
+    shift = ((info["card_yd"] - info["arc_yd"])
+             if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+
+    def along_yd(la, lo):
+        e, n = em(la, lo)
+        return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+
+    def off_m(la, lo):
+        e, n = em(la, lo)
+        return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+    front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
+    total = info["card_yd"]
+    raw = []
+    for g in _sand_the_engine_sees(rh, em, hole, bunkers):
+        al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+        of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+        if not al:
+            continue
+        near, far = min(al), max(al)
+        if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+            continue
+        if near > total - 40:
+            continue
+        raw.append((near, far))
+    assert raw, "the-reserve 8's waste complex no longer passes the carry filters at all"
+    raw.sort()
+    merged = []
+    for a, b in raw:
+        if merged and a - merged[-1][1] <= rh.CARRY_MERGE_GAP_YD:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    a, b = merged[-1]
+    shortfall = front - b
+    assert 0 < shortfall < 8.0, (
+        f"the-reserve 8's sand now ends {shortfall:.2f} yd short of its green front, outside the range "
+        f"these passages describe; re-read them before editing")
+    want = f"{shortfall:.2f}"
+    problems = []
+    for rel in ("render_hole.py", os.path.join("tests", "test_phase1_regressions.py")):
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            src = fh.read()
+        for m in _STALE_RESERVE8_SHORTFALL.finditer(src):
+            problems.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} still says "
+                            f"{m.group(0)!r}; the-reserve 8's sand ends {want} yd short of its green")
+        # ...and each file that describes the hole must carry the measured figure
+        if "the-reserve 8" in src and want not in src:
+            problems.append(f"{rel} describes the-reserve 8 but does not state the measured "
+                            f"{want} yd shortfall anywhere, so nothing pins it")
+    assert not problems, "the-reserve 8's shortfall is published stale:\n  " + "\n  ".join(problems)
+
+
+# Every spelling of "how many printed figures CARRY_MERGE_GAP_YD is in charge of". Three phrasings
+# across two files, one number, and nothing derived it -- so when e0648c6's greenside-sand bound took
+# the total from 128 to 119, f7c22bc re-measured the one sentence it was editing and left the other two
+# saying 118. The repo then published both numbers at once. Anchored on distinct prose rather than on a
+# bare "(\d+) figures", because the same paragraph also states how many figures the bound COST ("8
+# figures across 8 of 198 cards"), which is a different count and must not be dragged along.
+_CARRY_FIGURE_COUNT_CLAIMS = (
+    r"governing\s+(\d+)\s+printed figures",
+    r"in charge of\s+(\d+)(?:\s+printed)?\s+figures",
+    r"\b128\s*->\s*(\d+)\b",
+)
+
+
+@needs_corpus
+def test_every_published_count_of_the_printed_carry_figures_is_what_the_books_print():
+    """Two passages said the bound governs 118 figures and two said 119. The books print 119.
+
+    CARRY_MERGE_GAP_YD decides whether each carry window reaches a card, and both passages that argue
+    for keeping an INHERITED value lean on how much it governs -- "the honest headline for a bound
+    governing N printed figures", "a measured replacement would be a guess in charge of N figures". The
+    size of N is the whole force of that argument, so it is load-bearing prose, and it was written down
+    in four places and derived in none.
+
+    e0648c6 moved the number: counting the greenside sand the `total_yd - 40` filter drops took the
+    corpus from 128 printed carry figures to 119. f7c22bc corrected the one occurrence it was writing
+    about -- the "Cost:" line, which spells the total as a before-and-after pair -- and left its two
+    siblings at 118, while a test docstring had already been updated to 119. So the repo simultaneously
+    published 118 and 119 for one measurement, which is strictly worse than publishing one wrong
+    figure, because a reader cannot tell which of the two records was the maintained one.
+
+    NO PHRASE THIS SCAN MATCHES IS WRITTEN OUT HERE, for the reason
+    test_a_printed_carry_never_overstates_what_it_clears gives beside its own scan: the patterns read
+    every one of these three files, this one included, so a docstring that quoted the defect verbatim
+    would both flag itself and inflate the `seen` count that keeps deletion from being the easy way out.
+    The first red run of this test did exactly that.
+
+    COUNTED OFF THE SHIPPED PAGES, not off the engine, and that is the point: the claim is about
+    figures a reader can see, so the measurement reads `carry <b>...</b>` out of the pocket books and
+    counts the digits inside. An engine-side count would re-derive the same rule the sentence is
+    defending and could agree with it while the cards printed something else. The ENLARGED edition is
+    excluded deliberately -- it re-prints three courses' carries through the same shared
+    `playline_html`, so counting it would double 54 of these figures and the claim is about the corpus
+    of 198 cards.
+    """
+    printed, by_course = 0, collections.Counter()
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        for m in re.finditer(r"carry <b>([^<]*)</b>", html):
+            n = len(re.findall(r"\d+", m.group(1)))
+            printed += n
+            by_course[ref] += n
+    assert printed > 50, (
+        f"only {printed} carry figures found across the pocket books -- build them first, or the "
+        f"count these sentences are graded against is not the corpus's")
+
+    stale, seen = [], 0
+    for rel in ("render_hole.py", "generate.py", os.path.join("tests", "test_phase1_regressions.py")):
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            src = fh.read()
+        # Comment blocks wrap these sentences across lines, so match the prose with the `#` gutters and
+        # the line breaks flattened away; the matched phrase is quoted back instead of a line number.
+        flat = re.sub(r"\s+", " ", re.sub(r"^[ \t]*#", "", src, flags=re.M))
+        for pat in _CARRY_FIGURE_COUNT_CLAIMS:
+            for m in re.finditer(pat, flat):
+                seen += 1
+                if int(m.group(1)) != printed:
+                    stale.append(f"{rel} says {m.group(0)!r}; the pocket books print {printed} carry "
+                                 f"figures ({dict(sorted(by_course.items()))})")
+    assert seen >= 4, (
+        f"only {seen} published statement(s) of how many printed figures the landing bound governs "
+        f"were found, and there were four. Both arguments for inheriting CARRY_MERGE_GAP_YD rest on "
+        f"that count, so deleting the sentence must not be how this passes -- if the wording moved, "
+        f"move the pattern in _CARRY_FIGURE_COUNT_CLAIMS with it.")
+    assert not stale, ("a published count of the printed carry figures is not what the books print:\n  "
+                       + "\n  ".join(stale))
 
 
 def _playline_text_by_hole(html):
@@ -5669,8 +7500,9 @@ def test_the_playline_is_never_clipped_by_its_own_nowrap():
     the card on every card of every book, in both editions, including the four that were deliberately
     over-filled while writing this.
 
-    The row is the card's most crowded: it carries the measured tee-to-green height, up to three carry
-    figures, and (see carry_phrase) the refusal mark for a window with no landing area. Measured in the
+    The row is the card's most crowded: it carries the measured tee-to-green height, one carry figure per
+    window the landing rule keeps (four, on merion 15), and (see carry_phrase) the refusal mark for a
+    window with no landing area. Measured in the
     same chrome-headless-shell tools/export_pdf.py exports with, under print media:
 
         merion 10 enlarged   'green 5 ft above . carry 95 / 164 . no carry: sand to the green'   20.20 px
@@ -5747,14 +7579,305 @@ def test_the_playline_is_never_clipped_by_its_own_nowrap():
 
 
 @needs_corpus
+def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to():
+    """CARRY_MERGE_GAP_YD decides whether a carry is printed, and its margin was published unqualified.
+
+    render_hole said "the corpus leaves a clean break either side of it: worst KEPT landing area 8.7 yd
+    (micke-grove 13), best DROPPED 3.4 (monarch-bay 14)". Every figure there was right and the sentence
+    is still misleading, because there are TWO measures in play and it named neither:
+
+      * THE RULE'S OWN -- `beyond = min(next merged window, greenside sand, green front)`, unrounded
+        edges. The worst kept window the rule can DECIDE is castlewood-hill 10 at 8.8428, bounded by
+        greenside sand, and the best dropped is micke-grove 13 at 6.1489. Margin over the 8.0 bound:
+        0.8428, and that is the thinner of the two, so it is the honest headline.
+      * THE SUPPRESSION TEST'S -- last printed window only, `reach` seeded from the ROUNDED printed far
+        edge and chained across strips of grass narrower than CARRY_MERGE_GAP_YD. Worst kept 17.1187
+        (callippe 8), a margin of 9.1187.
+
+    Neither figure was wrong; the omission was which one it was. Both headlines used to be micke-grove
+    13's -- 8.7456 by the rule's own measure and 8.4352 by the suppression test's, since rounding 289.69
+    up to 290 costs 0.31 yd -- and that card stopped printing a carry when "the next sand" started
+    counting the greenside sand `total_yd - 40` drops. The thinner measure changed hands with it.
+
+    AND THREE KEPT WINDOWS ARE TIGHTER THAN 8.8428, which the sentence's word "worst" denies:
+    copper-valley 17 (8.2538), merion 5 (8.5073), monarch-bay 2 (8.5827). All three are bounded by the
+    NEXT MERGED WINDOW, and the merge guarantees a gap above CARRY_MERGE_GAP_YD between two merged
+    windows by construction -- so they are tautological and can never be dropped. Greenside sand gets no
+    such guarantee: it never entered the merge, which is why micke-grove 13 could sit at 6.1489. That is
+    exactly why the qualification matters: 8.8428 is the worst of the 82 KEPT windows the rule decides
+    and 8.2538 the worst of all 124 kept, and a reader cannot tell which claim was made.
+
+    IT SAID FOUR, AND THE FOURTH WAS A PHANTOM. This test used to take every `golf=bunker` way on the
+    course and apply only the along-line filters, skipping the corridor pre-filter that builds `bunkers`
+    in render_hole -- so its population was a strict superset of the engine's, 144 merged windows against
+    137, and micke-grove 11 grew a second window at 8.5031 out of two ways the engine never selects.
+    The counts went with it: the published 86 and 132 were counts of KEPT windows measured over that
+    superset, described as "windows this rule can actually decide" and "all". See _sand_the_engine_sees.
+
+    THAT COUNT WAS GRADED BY `str(len(tighter)) in rh_src`, WHICH IS NOT A CHECK. It is a substring test
+    for one digit in a 1,400-line file, and every count from 0 to 9 passes it. Proven vacuous by
+    mutation: the published sentence was rewritten to claim ZERO kept windows are tighter than 8.7456 --
+    flatly false, and the precise claim the qualification exists to deny -- and this test still passed.
+    The count is now read back OUT of the sentence and compared, and every named window's margin has to
+    sit beside its own hole number, because each of these figures already appears elsewhere in the same
+    comment block and so proves nothing about the list it is supposed to be in.
+
+    WHY THE BOUND IS STILL THE MERGE GAP, argued rather than inherited. It was introduced as a bare `8`
+    for readability alone ("printing 149 163 167 spends the card's scarcest resource on noise"), so it
+    was never measured for this purpose -- and it should not now be replaced by a measured one, because
+    there is nothing here to measure it against. The physical question is "is N yards a landing area for
+    a junior's tee shot", which needs dispersion data this project does not have; inventing a number for
+    it would put a guess in charge of 119 printed figures, which is the move this codebase refuses
+    everywhere else. What the corpus CAN say is that the decision is insensitive to the value: every
+    window the rule decides sits at 6.1489 or below, or 8.8428 or above, so any bound in that 2.6940 yd
+    gap produces the identical corpus outcome and 8.0 is not doing arithmetic anybody could tune. That
+    gap was 5.3205 yd wide before the greenside sand was counted, so the bound is MORE load-bearing than
+    it was, not less -- true either way, and it still decides no card. What
+    was missing was not a better number but a graded one -- so all of them are derived here, and a
+    re-fetch that lands a window inside the gap fails HERE instead of quietly picking a side.
+    """
+    import math
+    rh_src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
+    kept, dropped, printed_last = [], [], []
+    seen_courses = collections.Counter()
+    for ref in CORPUS:
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+
+            def em(la, lo):
+                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            perp = (uy, -ux)
+            shift = ((info["card_yd"] - info["arc_yd"])
+                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+
+            def along_yd(la, lo):
+                e, n = em(la, lo)
+                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+
+            def off_m(la, lo):
+                e, n = em(la, lo)
+                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
+            total = info["card_yd"]
+            in_corr = _sand_the_engine_sees(rh, em, line, bunkers)
+            raw, greenside = [], []
+            for g in in_corr:
+                al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                if not al:
+                    continue
+                near, far = min(al), max(al)
+                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                    continue
+                if near > total - 40:
+                    greenside.append((near, far))   # not a tee carry; still a bound on a lay-up
+                    continue
+                raw.append((near, far))
+            raw.sort()
+            merged = []
+            for a, b in raw:
+                if merged and a - merged[-1][1] <= rh.CARRY_MERGE_GAP_YD:
+                    merged[-1][1] = max(merged[-1][1], b)
+                else:
+                    merged.append([a, b])
+
+            def reach_of(a, b):
+                """The whole obstacle a printed window belongs to -- the suppression test's own metric.
+
+                Chains across any in-corridor sand starting within CARRY_MERGE_GAP_YD of where the reach
+                has got to, because that constant already declares a strip that narrow to be one obstacle
+                rather than two decisions. Seeded from the ROUNDED printed far edge, which is what makes
+                this measure differ from the rule's own.
+                """
+                r, grew = b, True
+                spans = []
+                for g in in_corr:
+                    al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    if not al or min(of) > 30.0:
+                        continue
+                    spans.append((min(al), max(al)))
+                while grew:
+                    grew = False
+                    for a0, b0 in spans:
+                        if (a - rh.CARRY_MERGE_GAP_YD <= a0 <= r + rh.CARRY_MERGE_GAP_YD and b0 > r):
+                            r, grew = b0, True
+                return r
+            for i, (a, b) in enumerate(merged):
+                # THREE kinds of bound, and only one of them is tautological. The next MERGED window is
+                # more than CARRY_MERGE_GAP_YD away by construction; greenside sand and the green front
+                # are not, so those are the boundaries this rule actually decides.
+                cands = [(front, "green")]
+                if i + 1 < len(merged):
+                    cands.append((merged[i + 1][0], "mergenext"))
+                cands += [(n, "greenside") for n, f in greenside if f > b]
+                beyond, kind = min(cands)
+                rec = (beyond - b, ref, hn, kind)
+                (kept if beyond - b > rh.CARRY_MERGE_GAP_YD else dropped).append(rec)
+                seen_courses[ref] += 1
+            # ...and the suppression test's own measure, on the window that is actually PRINTED
+            cs = info.get("carries") or []
+            if cs:
+                near, far = cs[-1]
+                printed_last.append((front - reach_of(near, far), ref, hn))
+    assert len(kept) >= 100 and dropped, f"only {len(kept)} kept / {len(dropped)} dropped -- build first"
+    assert_no_course_skipped(
+        seen_courses, "test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to",
+        exempt={"bay-view-golf-club": "the engine selects no in-corridor sand window on any of its "
+                                      "holes, which is why it prints no carry at all -- there is no "
+                                      "landing decision here to measure. It DID contribute one until "
+                                      "the corridor pre-filter arrived: hole 9's 100.94-117.57 window "
+                                      "is built from sand the engine never puts on the card."})
+    bound = 8.0
+
+    # (1) THE TAUTOLOGY, measured rather than asserted in prose: a window bounded by the NEXT MERGED
+    # WINDOW can never be dropped, because the merge already put more than CARRY_MERGE_GAP_YD between
+    # them. That argument covers only that one kind of bound -- greenside sand never entered the merge,
+    # so a greenside-bounded window can sit anywhere, and micke-grove 13 sits at 6.1489.
+    taut = [k for k in kept if k[3] == "mergenext"]
+    assert taut, ("no kept window is bounded by the next merged window; the corpus cannot show the "
+                  "tautology")
+    assert all(k[0] > bound for k in taut), (
+        "a window bounded by the next MERGED window came in at or below the merge gap, which the merge "
+        "makes impossible -- the two uses of CARRY_MERGE_GAP_YD have come apart")
+    assert not [d for d in dropped if d[3] == "mergenext"], (
+        f"{len([d for d in dropped if d[3] == 'mergenext'])} dropped window(s) are bounded by the next "
+        f"MERGED window, which the merge makes impossible, so the tautology published in render_hole.py "
+        f"is now false")
+
+    # (2) THE FIGURES, derived, and each required in render_hole.py's prose to 4 dp.
+    decidable = [k for k in kept if k[3] != "mergenext"]
+    worst_kept_any = min(kept)
+    worst_kept_green = min(decidable)
+    best_dropped = max(dropped)
+    worst_printed = min(printed_last)
+    tighter = [k for k in kept if k[0] < worst_kept_green[0]]
+    figures = {
+        f"{worst_kept_green[0]:.4f}": f"worst KEPT that the rule decides, rule metric "
+                                     f"({worst_kept_green[1]} hole {worst_kept_green[2]}, "
+                                     f"{worst_kept_green[3]}-bounded)",
+        f"{worst_kept_any[0]:.4f}": f"worst KEPT of all, rule metric, bounded by the next merged window "
+                                   f"and so tautological ({worst_kept_any[1]} hole "
+                                   f"{worst_kept_any[2]})",
+        f"{best_dropped[0]:.4f}": f"best DROPPED, rule metric ({best_dropped[1]} hole "
+                                  f"{best_dropped[2]}, {best_dropped[3]}-bounded)",
+        f"{worst_printed[0]:.4f}": f"worst kept by the suppression test's metric ({worst_printed[1]} "
+                                   f"hole {worst_printed[2]})",
+        f"{worst_kept_green[0] - bound:.4f}": "the thinnest real margin over the bound",
+    }
+    missing = {v: k for k, v in figures.items() if k not in rh_src}
+    assert not missing, (
+        "render_hole.py's landing-bound note no longer carries these measured figures, so its published "
+        "margin has gone stale (this is a re-measurement, not an opinion):\n  "
+        + "\n  ".join(f"{n} = {w}" for w, n in sorted(missing.items())))
+    assert str(len(tighter)) in rh_src and "tautolog" in rh_src.lower(), (
+        f"{len(tighter)} kept window(s) are tighter than the worst green-bounded one, all of them "
+        f"sand-bounded and so tautological. render_hole.py must say how many and say they are "
+        f"tautological, or 'worst KEPT' reads as a claim about every window")
+    # ...AND THE COUNT HAS TO BE ATTACHED TO THE FIGURE IT QUALIFIES. `str(len(tighter)) in rh_src` is a
+    # bare substring test for one digit in a 1,400-line file, so every count from 0 to 9 satisfies it.
+    # PROVEN VACUOUS by mutation: the published sentence was rewritten to claim ZERO kept windows are
+    # tighter than 8.7456 -- flatly false, and the exact claim the qualification exists to make -- and
+    # this test still passed. So the count is read out of the sentence and compared, and each named
+    # window's own margin has to sit beside its hole number rather than merely appear somewhere in the
+    # file (every one of these figures already appears in some other paragraph of the same block).
+    # The leading `#` goes with the newline: this block wraps mid-phrase, so "copper-valley 17 at" and
+    # "8.2538" are on consecutive comment lines and a naive whitespace collapse leaves a hash between.
+    flat = " ".join(re.sub(r"(?m)^[ \t]*#[ \t]?", "", rh_src).split())
+    m = re.search(r"(\d+) kept windows? (?:are|is) tighter than ([0-9]+\.[0-9]{4})", flat)
+    assert m, (
+        f"render_hole.py no longer states how many kept windows are tighter than the worst window the "
+        f"rule can decide, in a form that can be graded. Measured: {len(tighter)} tighter than "
+        f"{worst_kept_green[0]:.4f}. Write it as '<N> kept windows are tighter than <figure>'.")
+    assert (int(m.group(1)), m.group(2)) == (len(tighter), f"{worst_kept_green[0]:.4f}"), (
+        f"render_hole.py says {m.group(0)!r}; measured over this corpus it is {len(tighter)} kept "
+        f"window(s) tighter than {worst_kept_green[0]:.4f}. A count checked only by `str(n) in src` is "
+        f"satisfied by any single digit anywhere in the file -- which is how this sentence could have "
+        f"claimed zero and passed.")
+    unnamed = [f"{t[1]} hole {t[2]} at {t[0]:.4f}" for t in sorted(tighter)
+               if f"{t[2]} at {t[0]:.4f}" not in flat]
+    assert not unnamed, (
+        "render_hole.py names the tighter kept windows one by one, and these are not in that list with "
+        "their own margin beside their hole number:\n  " + "\n  ".join(unnamed)
+        + "\n  The list is the whole qualification: without it 'worst KEPT' reads as a claim about "
+          "every window, and a figure quoted without its hole cannot be checked.")
+    # ...AND THE POPULATION COUNTS THOSE TWO FIGURES ARE THE WORST OF. The note read "8.7456 is the worst
+    # of the 86 windows this rule can actually decide; 8.2538 is the worst of all 132". Both numbers were
+    # counts of KEPT windows -- neither is a count of decidable windows and neither is a count of all --
+    # and both came from the pre-filter-free superset. Four counts are in play and all four are derived
+    # here, so the sentence cannot describe one and print another.
+    dec_all = len([x for x in kept + dropped if x[3] != "mergenext"])
+    allw = len(kept) + len(dropped)
+    for pat, want in ((r"worst of the (\d+) KEPT windows the rule decides", (len(decidable),)),
+                      (r"worst of all (\d+) kept", (len(kept),)),
+                      (r"(\d+) of the corpus's (\d+) windows are decidable", (dec_all, allw))):
+        got = re.search(pat, flat)
+        assert got, (
+            f"render_hole.py's landing-bound note no longer carries the population count matching "
+            f"{pat!r}. Measured: {len(decidable)} kept decidable, {len(kept)} kept, {dec_all} decidable "
+            f"of {allw} windows in all.")
+        assert tuple(int(g) for g in got.groups()) == want, (
+            f"render_hole.py says {got.group(0)!r}; measured over the engine's own sand population it "
+            f"is {want}. These were published as 86 and 132, which were counts of KEPT windows wearing "
+            f"the words 'can actually decide' and 'all'.")
+
+    for phrase in ("rule's own", "suppression test"):
+        assert phrase in rh_src.lower(), (
+            f"render_hole.py's landing-bound note does not name {phrase!r}, so a reader cannot tell "
+            f"which of the two measures each published figure belongs to -- which is the whole defect")
+
+    # (3) THE GAP IS STILL A GAP. If a re-fetch puts a decidable window between the best dropped and the
+    # worst kept, the value of the bound starts deciding cards and has to be argued, not inherited.
+    assert worst_kept_green[0] > best_dropped[0] + 1.0, (
+        f"the landing decision is no longer insensitive to the bound: the worst kept window the rule "
+        f"decides is {worst_kept_green[0]:.4f} yd ({worst_kept_green[1]} hole {worst_kept_green[2]}) and "
+        f"the best dropped {best_dropped[0]:.4f} ({best_dropped[1]} hole {best_dropped[2]}). "
+        f"CARRY_MERGE_GAP_YD was chosen for readability and inherited here on the argument that the "
+        f"corpus cannot tell one value in the gap from another. Re-argue it before shipping.")
+    assert best_dropped[0] < bound < worst_kept_green[0], (
+        f"the bound {bound} no longer sits between the best dropped ({best_dropped[0]:.4f}) and the "
+        f"worst kept decidable ({worst_kept_green[0]:.4f}) window")
+    assert worst_printed[0] > bound, (
+        f"the suppression test's own worst kept window is {worst_printed[0]:.4f} yd, at or below the "
+        f"{bound} bound -- the two measures now disagree about a shipped card")
+
+
+@needs_corpus
 def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings():
     """The green's height must come from the GREEN, not from the patch the green sits in.
 
     green_elevation() took the median of the whole dem_hd .npy, and that array is the green's bounding
-    box padded by fetch_dem_hd.MARGIN_M = 12 m on every side -- a region 5.5x the green's area, of which
-    a corpus-median 82% is not green. Because a green is usually a raised pad surrounded by fairway and
-    bunker, the figure read LOW: the interior median is higher on 137 of 171 holes, mean +0.458 ft,
-    one-sided at p = 2.7e-15. It moved 102 printed integers.
+    box padded by fetch_dem_hd.MARGIN_M = 12 m on every side -- a region a corpus-median 5.5x the
+    green's area, of which a corpus-median 82% is not green. Because a green is usually a raised pad
+    surrounded by fairway and bunker, the figure read LOW: the interior median is higher on all but a
+    few holes, and by how much is measured at the end of this test rather than restated here -- this
+    docstring's own "mean +0.458 ft" was one of the four disagreeing copies that pin now grades. It
+    moved 102 printed integers.
 
     The polygon was in the SAME meta file the whole time, and render_green.py rasterises it to measure
     every slope figure the card prints. So the test is a comparison between the two readers of one file:
@@ -5768,7 +7891,8 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
     """
     import numpy as np
     checked = agreed_with_patch = 0
-    problems = []
+    problems, shift_ft = [], []
+    region_x, not_green, region_geom, not_green_geom, collar_m = [], [], [], [], []
     for slug in CORPUS:
         cdir = os.path.join(ROOT, "courses", slug)
         rp = os.path.join(cdir, "hole_elev.json")
@@ -5801,6 +7925,29 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
             checked += 1
             inside = float(np.nanmedian(a[mask]))
             whole = float(np.nanmedian(a))
+            shift_ft.append((inside - whole) * 3.28084)
+            # The SIZE of that region, for the three records that publish it -- graded at the end. Two
+            # measures of one thing: the pixels this mask keeps (the population the whole-patch median
+            # actually averaged) and the polygon's own area in metres (what the records call "the
+            # green's area"). And the collar itself, read back off the patch rather than off the
+            # constant: half the difference between the patch and the green's own bounding box.
+            region_x.append(mask.size / float(mask.sum()))
+            not_green.append(100.0 * (1.0 - mask.sum() / mask.size))
+            xmin, ymin, xmax, ymax = meta["bbox"]
+            sx, sy = _mlon(meta["green_center"][0]), _mlat(meta["green_center"][0])
+            ring = [((lo - xmin) * sx, (la - ymin) * sy) for la, lo in meta["polygon"]]
+            area = abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2)
+                           in zip(ring, ring[1:] + ring[:1]))) / 2.0
+            box = (xmax - xmin) * sx * (ymax - ymin) * sy
+            if area > 0:
+                region_geom.append(box / area)
+                not_green_geom.append(100.0 * (1.0 - area / box))
+            collar_m.append((((xmax - xmin) - (max(p[1] for p in meta["polygon"])
+                                               - min(p[1] for p in meta["polygon"]))) * sx / 2.0,
+                             slug, hn))
+            collar_m.append((((ymax - ymin) - (max(p[0] for p in meta["polygon"])
+                                               - min(p[0] for p in meta["polygon"]))) * sy / 2.0,
+                             slug, hn))
             if abs(gz - inside) > 0.02:
                 problems.append(f"{slug} hole {hn}: recorded green_z_m {gz:.2f} m is not the median over "
                                 f"the green polygon ({inside:.2f} m). Whole-patch median is {whole:.2f} m "
@@ -5818,6 +7965,135 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
         f"{agreed_with_patch} of {checked} recorded heights equal the WHOLE-PATCH median, which is what "
         f"the collar bug produced. Either the mask is not being applied or it is selecting the whole "
         f"array.")
+
+    # HOW BIG that region error is, which three records publish and NOTHING measured -- so they had
+    # drifted apart from each other as well as from the corpus. Four values were in the tree for one
+    # quantity: `green_elevation` said "a mean +0.478 ft, positive on 140 of them" over 177 holes,
+    # this docstring said "mean +0.458 ft" over 171, `_tee_pads` said "+0.47 ft" and legal/09 item 1
+    # said "+0.46 ft". The difference is measured right here, hole by hole, and has been all along --
+    # the loop above already had both medians in hand and threw the difference away.
+    # The tolerance is taken from the PRECISION each record chose, so a two-decimal claim is held to
+    # two decimals and the four-decimal derivation to four. Publishing fewer digits is allowed;
+    # publishing a digit the corpus does not support is not.
+    mean_ft = float(np.mean(shift_ft))
+    pos = sum(1 for v in shift_ft if v > 0)
+    with open(os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md"), encoding="utf-8") as fh:
+        rec09 = _flow(fh.read())
+    SENTENCE = r"correcting only the green end would have shifted every height in the book by \+([\d.]+) ft"
+    stale = []
+    for where, text, pat in (
+            ("fetch_hole_elev.green_elevation", _fhe_prose(),
+             r"substituting the interior moves (\d+) holes by a mean \+([\d.]+) ft, positive on (\d+)"),
+            ("fetch_hole_elev._tee_pads", _fhe_prose(), SENTENCE),
+            ("legal/09 item 1", rec09, SENTENCE)):
+        m = re.search(pat, text)
+        if not m:
+            stale.append(f"{where} no longer publishes this shift in a form this test can read "
+                         f"({pat!r}); measured mean {mean_ft:+.4f} ft over {len(shift_ft)} holes, "
+                         f"positive on {pos}")
+            continue
+        g = list(m.groups())
+        said = float(g[1] if len(g) == 3 else g[0])
+        digits = len(g[1 if len(g) == 3 else 0].split(".")[1])
+        if abs(said - mean_ft) > 0.5 * 10 ** -digits + 1e-9:
+            stale.append(f"{where} publishes +{said} ft; measured {mean_ft:+.4f} ft over "
+                         f"{len(shift_ft)} holes")
+        if len(g) == 3 and (int(g[0]), int(g[2])) != (len(shift_ft), pos):
+            stale.append(f"{where} publishes {g[0]} holes, positive on {g[2]}; measured "
+                         f"{len(shift_ft)} holes, positive on {pos}")
+    assert not stale, (
+        "the size of the collar region error is published in three records and measured in none of "
+        "them. It is the number that says how much the correction was worth, and legal/09 cites it in "
+        "the one bullet a reader goes to for what the printed heights are worth:\n  "
+        + "\n  ".join(stale))
+    # The one-sidedness carries a p-value, so the p-value is derived here too rather than trusted: an
+    # exact binomial tail on the same count the sentence beside it publishes. A statistic quoted from a
+    # method nobody can name is the "mean 0.27 ft" failure in a different costume.
+    import math
+    m = re.search(r"positive on (\d+) of them, which a one-sided sign test puts at p = ([\d.]+e-\d+)",
+                  _fhe_prose())
+    assert m, ("fetch_hole_elev no longer states the sign-test p for that shift in a readable form; "
+               f"measured {pos} of {len(shift_ft)} positive")
+    exact = sum(math.comb(len(shift_ft), i) for i in range(pos, len(shift_ft) + 1)) / 2.0 ** len(shift_ft)
+    assert abs(float(m.group(2)) - exact) <= 0.05 * exact, (
+        f"fetch_hole_elev publishes p = {m.group(2)} for {m.group(1)} of {len(shift_ft)} holes higher; "
+        f"an exact one-sided binomial tail on {pos} of {len(shift_ft)} is {exact:.2g}")
+
+    # HOW BIG THE REGION WAS -- the sentence one clause earlier, and the same defect one step earlier.
+    # "a 12 m collar, 5.5x the green's area, 82% of it not green" is one measurement of one region
+    # published by green_elevation, by this docstring and by legal/09 item 1, and until now compared
+    # with the corpus by nothing. Every copy agrees today, which is precisely when it is worth pinning:
+    # the ungraded copy is the one left behind when MARGIN_M, a green polygon or the corpus moves, and
+    # then a reader has three numbers and no arbiter. That is how the shift figure beside it reached
+    # four values for one quantity.
+    # WHICH STATISTIC has to be in the sentence, not just the value. These are corpus MEDIANS, and the
+    # failure message reports the corpus means beside them, so a re-deriver who reached for the other
+    # statistic can see which figure he computed rather than filing the difference as a defect. An
+    # unlabelled ratio is the median-quoted-as-something-else shape this file has already corrected
+    # twice at the tee end.
+    # These are POINT figures, not range endpoints, so the grader is nearest-rounding at the precision
+    # each sentence chose; grade_bound's round-outward rule is for bounds, and at their own stated
+    # precision all three copies do contain the measurement, so no published digit moves with this pin.
+    import fetch_dem_hd
+    assert region_x and region_geom and collar_m, "no green patch measured; nothing to grade"
+    worst = max(collar_m, key=lambda t: abs(t[0] - fetch_dem_hd.MARGIN_M))
+    assert abs(worst[0] - fetch_dem_hd.MARGIN_M) <= 0.1, (
+        f"the dem_hd patches on disk are not the green's bounding box padded by fetch_dem_hd.MARGIN_M "
+        f"= {fetch_dem_hd.MARGIN_M:g} m: {worst[1]} hole {worst[2]} has {worst[0]:.3f} m between the "
+        f"two on one axis. The three records that call this region a {fetch_dem_hd.MARGIN_M:g} m "
+        f"collar would then be describing the constant and not the arrays every figure here is "
+        f"measured over.")
+    x_med, ng_med = float(np.median(region_x)), float(np.median(not_green))
+    xg_med, ngg_med = float(np.median(region_geom)), float(np.median(not_green_geom))
+    live = (f"measured over {len(region_x)} greens: a corpus-median {x_med:.4f}x the green's area "
+            f"({xg_med:.4f}x by the polygon's own area in metres), of which a corpus-median "
+            f"{ng_med:.4f}% is not green ({ngg_med:.4f}% the same way); collar "
+            f"{float(np.median([c[0] for c in collar_m])):.3f} m. The corpus MEANS, which no record "
+            f"here publishes, are {float(np.mean(region_x)):.4f}x and {float(np.mean(not_green)):.4f}%")
+    measured = {"collar": (("fetch_dem_hd.MARGIN_M", fetch_dem_hd.MARGIN_M),),
+                "x": (("over the .npy pixels the mask keeps", x_med),
+                      ("over the polygon's own area in metres", xg_med)),
+                "ng": (("over the .npy pixels the mask keeps", ng_med),
+                       ("over the polygon's own area in metres", ngg_med))}
+    unit = {"collar": " m", "x": "x", "ng": "%"}
+    what = {"collar": "the collar padded onto the green's bounding box",
+            "x": "the region as a multiple of the green's area",
+            "ng": "the share of that region that is not green"}
+    mine = re.sub(r"\s+", " ",
+                  test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings.__doc__
+                  or "")
+    region = []
+    for where, text, pat, keys in (
+            ("fetch_hole_elev.green_elevation", _fhe_prose(),
+             r"padded by fetch_dem_hd\.MARGIN_M = ([\d.]+) m on all four sides", ("collar",)),
+            ("fetch_hole_elev.green_elevation", _fhe_prose(),
+             r"a median over a region a corpus-median ([\d.]+)x the green's area, of which a "
+             r"corpus-median ([\d.]+)% is not green", ("x", "ng")),
+            ("this test's docstring", mine,
+             r"padded by fetch_dem_hd\.MARGIN_M = ([\d.]+) m on every side -- a region a corpus-median "
+             r"([\d.]+)x the green's area, of which a corpus-median ([\d.]+)% is not green",
+             ("collar", "x", "ng")),
+            ("legal/09 item 1", rec09,
+             r"a median over the green plus a ([\d.]+) m collar, a corpus-median ([\d.]+)% of which is "
+             r"not green", ("collar", "ng"))):
+        mm = re.search(pat, text)
+        if not mm:
+            region.append(f"{where} no longer publishes {' and '.join(what[k] for k in keys)} in a "
+                          f"form this test can read ({pat!r}). {live}")
+            continue
+        for said_s, key in zip(mm.groups(), keys):
+            said = float(said_s)
+            digits = len(said_s.split(".")[1]) if "." in said_s else 0
+            for how, want in measured[key]:
+                if abs(said - want) > 0.5 * 10 ** -digits + 1e-9:
+                    region.append(
+                        f"{where} publishes {said_s}{unit[key]} for {what[key]}; {want:.4f}"
+                        f"{unit[key]} {how} does not round to it at the {digits}-decimal precision "
+                        f"that sentence chose. {live}")
+    assert not region, (
+        "the region the OLD green height was a median over is described by three records and measured "
+        "by none of them -- one figure, three unchecked copies, which is the state every drifted "
+        "number in this area was in before it drifted:\n  " + "\n  ".join(region))
 
 
 @needs_corpus
@@ -6037,8 +8313,12 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     (The ratio read 1.0003 here, in the caveat's failure message and in the commit that added
     both. 1.0003 is chord/arc, 551.181/551 -- the reciprocal of the published figure, and reading a
     chord/arc as an arc/chord is what turns a straightness measure into a bend. It was the one figure in
-    this docstring nothing asserted.) It is not a dogleg phenomenon at all, and the legend now names
-    the cause instead: two different measures. (The mismatch is not even one-signed -- 125 of 1046 rows
+    this docstring nothing asserted.) It is not a dogleg phenomenon at all. The legend named the cause
+    instead -- two different measures -- and that was the SECOND wrong version of one sentence: on a
+    straight par 3 render_hole computes the from-tee number AS card minus to-green, so those two are the
+    same measure and DO sum exactly, on 72 of the 74 printed par-3 pairs. It is now scoped to a par 4 or
+    5, where the two measures really do differ, and is shorter than either version it replaces. (The
+    mismatch is not even one-signed -- 125 of 1046 rows
     sum HIGH, 750 low, 171 exactly. 18 of the 125 high rows sit on holes bent past 1.02, including
     philadelphia 17 above, so "straight holes overshoot" is false too.)
 
@@ -6113,11 +8393,17 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
         # Whitespace-insensitive: the enlarged edition's source wraps this sentence across lines, so a
         # literal regex could only ever have matched the pocket copy -- which is half the reason the
         # enlarged edition went ungraded.
-        assert re.search(r"different\s+measures,\s+so\s+they\s+do\s+<b>not</b>\s+add\s+up",
-                         " ".join(html.split()) or html), (
+        # SCOPED, and that is the third correction to this one sentence. It blamed the dogleg, then it
+        # said the two measures never add up -- and on a straight par 3 render_hole computes
+        # ft_exact = card - to_green precisely so they DO, exactly, on 72 of the 74 printed par-3 pairs.
+        # See test_the_gutter_legend_does_not_deny_a_sum_the_engine_computes_exactly. So what is
+        # required here is the explanation AND the par-4-or-5 scope, not a fixed string.
+        flat = " ".join(html.split()) or html
+        assert re.search(r"from the tee \(walked\)[^.]*par 4 or 5[^.]*add\s+up", flat), (
             f"{os.path.basename(bf)} ({ref}): the guide card no longer explains why the two gutter "
-            f"numbers do not sum -- a reader who adds them finds up to 54 yd of unexplained "
-            f"discrepancy. It must not blame the DOGLEG either: "
+            f"numbers need not sum on a par 4 or 5 -- a reader who adds them finds up to 54 yd of "
+            f"unexplained discrepancy, and an UNSCOPED denial is false on every straight par 3, where "
+            f"they sum exactly by construction. It must not blame the DOGLEG either: "
             + (f"{said_str.group(2)} of the {said_str.group(1)}" if said_str else "most of the")
             + f" pairs on holes this engine calls straight do not add up, worst "
             + (f"{said_worst.group(1)} yd on a hole of arc/chord {said_worst.group(4)}"
@@ -6492,6 +8778,308 @@ def test_the_worst_straight_rows_ratio_is_a_rounding_artefact_and_the_docstring_
     assert re.search(r"round", prose, re.I), (
         "the gutter docstring no longer names ROUNDING as the cause of its 0.9997, which is the only "
         "thing that makes that figure and the geometry agree")
+
+
+BANK_NOTE_MIN_YD = 1.0
+
+# The four figures that carry the argument for NOT moving the depth datum, as render_green.bank_run_yd
+# and the test below each spell them. Both records had the same two wrong (median 2.75 for 2.7399, and
+# 23 both-ends movers for 28), so both are read. Deliberately case-sensitive on "both ends": the same
+# passages say "trims 1.2 m of collar off BOTH ends of every green", which is a different statement.
+_DATUM_ALL = re.compile(r"(?:ALL|all) (\d+) printed depths")
+_DATUM_MEDIAN = re.compile(r"median (\d+\.\d+) yd")
+_DATUM_FRONT = re.compile(r"moves (\d+) (?:printed )?depths")
+_DATUM_BOTH = re.compile(r"both ends[:,]?\s+(?:moves\s+)?(\d+)")
+
+
+@needs_corpus
+def test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth():
+    """"30yd deep" with a 6-yd bank at the BACK is 24 yd of green, and the card has to say which.
+
+    The depth and the 5-yd ladder are both measured between the two points where the OSM green polygon
+    crosses the line of play, and at EITHER end that crossing can be on ground the same card's legend
+    disowns: "over 10% is bank or bunker face, not putting surface". Walked down the play line at 0.01
+    view-unit steps, the leading run steeper than SLOPE_LABEL_MAX_PCT is:
+
+        BACK EDGE -- 14 greens, and the dangerous end
+        copper-valley 3       6.51 yd of a printed 30   21.6% of the depth
+        castlewood-valley 5   3.91 of 27                14.5%
+        bay-view 5            3.06 of 27                11.2%   (also 1.13 at the front)
+        copper-valley 6       2.51 of 24                10.4%   (also 3.58 at the front)
+        bay-view 16           2.08 of 27                 7.6%
+        castlewood-hill 14    2.03 of 24                 8.6%
+        castlewood-valley 10  1.86 of 39                 4.8%
+        merion 13             1.68 of 22                 7.7%
+        castlewood-valley 11  1.55 of 32                 4.9%
+        copper-valley 18      1.46 of 18                 8.1%
+        the-reserve 1         1.45 of 30                 4.9%
+        castlewood-hill 11    1.12 of 18                 6.1%
+        castlewood-valley 3   1.09 of 34                 3.2%
+        merion 10             1.06 of 29                 3.7%
+
+        FRONT EDGE -- 9 greens
+        micke-grove 2         5.33 of 22                  24%
+        copper-valley 6       3.58 of 24                  15%
+        castlewood-valley 16  3.21 of 30                  11%
+        castlewood-hill 10    3.15 of 28                  11%
+        castlewood-valley 12  2.64 of 40                   7%
+        merion 6              2.32 of 34                   7%
+        philadelphia 18       2.28 of 37                   6%
+        bay-view 13           1.31 of 22                   6%
+        bay-view 5            1.13 of 27                   4%
+
+    21 distinct greens of 198 carry a note; the median green is 0.00 at either end -- a tail, not a
+    corpus-wide bias. copper-valley 3 is the worked case for the back and micke-grove 2 for the front:
+    micke-grove 2's ladder rules rungs at 5, 10, 15, 20 from the front crossing, so its "5" sits at the
+    top of a 5.33 yd bank and the puttable green runs from the 5 rung back.
+
+    THE BACK EDGE IS THE MORE DANGEROUS OF THE TWO, AND IT WAS DISCLOSED SECOND. 41bde68 fixed the
+    front and said honestly that it was leaving the back out as outside its subject. A front bank makes
+    the depth and the ladder start early, so it overstates the green IN FRONT of the pin -- a junior
+    clubs short, which this project's governing rule calls the safe direction. A back bank overstates
+    how far BACK the pin can be: copper-valley 3 prints 30yd deep when 6.51 of those yards are bank, so
+    a reader placing a back pin clubs LONG into it. render_hole already names too-long as the dangerous
+    direction. Two greens carry both notes (copper-valley 6, bay-view 5), and bay-view 5's card was
+    already disclosing its 1.13 yd front bank while saying nothing about 3.06 yd at the back.
+
+    THE DATUM IS NOT MOVED, and that is a measured decision rather than a preference. Three candidates,
+    all measured over the 198 shipped greens:
+
+      * re-base on `S['putt']` (the natural suggestion): moves ALL 198 printed depths, median 2.74 yd,
+        worst 9.64 (copper-valley 3, 30 -> 20). Most of that is not bank at all -- `putt` is
+        `erode(mask, 3) & (slope <= 10)`, so it also trims 1.2 m of collar off BOTH ends of every
+        green, which is a statistical device for fitting a plane and not a claim about where the green
+        stops.
+      * trim only the leading steep run: moves 12 printed depths, worst 5.33.
+      * trim both ends: moves 28, worst 6.51.
+
+    ALL FOUR OF THOSE FIGURES ARE DERIVED BELOW, because two of them were wrong in both records at
+    once. The median re-basing shift was published as 2.75; it is 2.7399. The both-ends trim was
+    published as 23 movers; it is 28 -- and that one understated the case AGAINST the trim this
+    paragraph exists to reject, which is the argument's own side, since the whole point is "look how
+    many printed depths this would move". No threshold variant yields 23. Two records, one figure,
+    nothing comparing either to the corpus.
+
+    Either trim breaks two things this suite already guards. The drawn OUTLINE runs through that same
+    bank -- it is the polygon, and test_no_printed_words_fall_outside_the_card... plus the blank-card
+    frame test exist to keep the printed depth and the drawing in one frame -- so a trimmed depth would
+    contradict the picture beside it. And
+    test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measured checks every printed
+    depth against the true WGS84 geodesic of its own chord to 1e-4 yd, which is how a 0.3% earth-model
+    error was caught; that check only exists because depth is a pure function of the polygon. Re-based
+    on the elevation model, the test's "truth" would have to re-derive the slope walk too, and it would
+    stop being an independent measurement of the earth.
+
+    So the polygon stays the datum -- it is also the datum render_hole projects `green_front_yd` from --
+    and the CARD discloses the bank, at whichever end has one, on the cards where it is more than the
+    printed depth's own 1-yard resolution. The reader then has both true statements: the mapped green is
+    30 yd front to back, and the back 7 of those are bank, so the pin can only be short of that.
+
+    BANK_NOTE_MIN_YD is 1.0 rather than 0.5, and the ORIGINAL reason for that has since been measured
+    away. It was a flake argument: 0.5 is where a bank starts moving the rounded depth, callippe 7's
+    front run measures 0.5013 yd -- 0.13 inch from that boundary -- and two independent implementations
+    pinned across a cliff that thin would flake. Measured since, they cannot: the engine's scanline
+    rasteriser and this test's point-in-pixel one produce BIT-IDENTICAL masks on all 198 greens, so the
+    two walks agree to 0.000000 yd at both ends and no floor here is a flake. 1.0 is kept for the reason
+    that survives -- it is the resolution the depth itself is printed at -- and it is shared by both ends
+    rather than split, because a yard of bank is a yard of bank whichever edge it is on.
+
+    THE COST IS STATED, and it is longer at the back. Runs under the floor go unannounced: front
+    callippe 3 (0.854) and philadelphia 11 (0.767); back castlewood-valley 12 (0.995), copper-valley 15
+    (0.730), the-reserve 4 (0.685), copper-valley 13 (0.629), castlewood-hill 12 (0.620), merion 4
+    (0.588), valley-hi 16 (0.542). castlewood-valley 12 sits 0.005 yd under the floor, which is
+    deliberate rather than overlooked: both implementations round it identically, so it is a stable
+    omission and not a coin toss, and it is disclosed here instead of being papered over by moving the
+    floor to catch one green.
+
+    Measured here independently of the renderer: this walks its own rasterised mask and its own play
+    line, so a bug in the engine's own measurement cannot satisfy it.
+    """
+    import statistics
+    import numpy as np
+
+    def mask_of(poly, W, H):
+        X, Y = np.meshgrid(np.arange(W)+0.5, np.arange(H)+0.5)
+        inside = np.zeros((H, W), bool)
+        n = len(poly); j = n-1
+        for i in range(n):
+            xi, yi = poly[i]; xj, yj = poly[j]
+            inside ^= ((yi > Y) != (yj > Y)) & (X < (xj-xi)*(Y-yi)/(yj-yi+1e-12)+xi)
+            j = i
+        return inside
+
+    want, seen, alt = {}, collections.Counter(), {}
+    for slug, hole, meta, H, W in _green_surfaces():
+        _engine(slug)
+        import render_green as rg
+        arr = np.load(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.npy"))
+        x0, y0, x1, y1 = meta["bbox"]
+        px_x = (x1-x0)*_mlon(meta["green_center"][0])/W
+        px_y = (y1-y0)*_mlat(meta["green_center"][0])/H
+        mask = mask_of(rg.poly_to_px(meta["polygon"], meta["bbox"], W, H), W, H)
+        if mask.sum() < 50:
+            continue
+        arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)
+        _surf, _core, S = rg.green_summary(arr, mask, px_x, px_y)
+        slope = S["slope"]
+        theta, cx, cy = rg.approach_frame(dict(meta, W=W, H=H))
+        _mx, my = rg.screen_m_per_unit(theta, px_x, px_y)
+        rp = [rg.rot(x, y, cx, cy, theta) for x, y in rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)]
+        fy, by, midx = rg.play_line_span(rp)
+
+        def bank_from(edge_y, toward_y):
+            """The leading over-10% run inward from one mapped edge, walked here rather than called.
+
+            Both ends from one local function, for the same reason the engine has one walk: two copies
+            would be two things to keep in step, and the point of this check is that it is an
+            INDEPENDENT re-derivation -- its own rasterised mask, its own play line, its own steps.
+            """
+            span = abs(edge_y - toward_y)
+            sgn = 1.0 if toward_y > edge_y else -1.0
+            steps = max(2, int(span/0.01))
+            run = 0.0
+            for i in range(steps+1):
+                yy = edge_y + sgn*span*i/steps
+                px, py = rg.rot(midx, yy, cx, cy, -theta)
+                ri, ci = int(py), int(px)
+                if not (0 <= ri < H and 0 <= ci < W):
+                    break
+                if slope[ri, ci] <= rg.SLOPE_LABEL_MAX_PCT:
+                    break
+                run = span*i/steps
+            return run*my/0.9144
+
+        want[(slug, hole)] = {"front": bank_from(fy, by), "back": bank_from(by, fy)}
+        # ...and the three REJECTED alternatives, so the paragraph that rejects them is measured too:
+        # two of its four figures were wrong. The putt re-base is the extent of `putt` along this same
+        # play line; the two trims are just this green's own runs taken off the printed depth.
+        steps = max(2, int((fy-by)/0.01))
+        pys = []
+        for i in range(steps+1):
+            yy = by + (fy-by)*i/steps
+            px, py = rg.rot(midx, yy, cx, cy, -theta)
+            ri, ci = int(py), int(px)
+            if 0 <= ri < H and 0 <= ci < W and S["putt"][ri, ci]:
+                pys.append(yy)
+        alt[(slug, hole)] = dict(
+            depth=(fy-by)*my/0.9144,
+            putt=((max(pys)-min(pys))*my/0.9144) if pys else None,
+            front=want[(slug, hole)]["front"], back=want[(slug, hole)]["back"])
+        seen[slug] += 1
+    assert_no_course_skipped(seen, "test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth")
+    assert len(want) >= 180, f"only {len(want)} greens walked of the corpus's 198"
+
+    # THE FLOOR IS THE ENGINE'S OWN, not a second copy of it. This constant and generate.py's
+    # BANK_NOTE_MIN_YD are one figure in two records, which is the defect this suite keeps finding
+    # elsewhere -- so the engine's is read out of its source and required to match. On the AST rather
+    # than by regex, because that is what makes "at MODULE scope" part of the claim: a floor buried in
+    # the phrase builder is exactly the shape that drifts.
+    import ast
+    engine_floor = [n.value.value
+                    for n in ast.parse(open(os.path.join(ROOT, "generate.py"),
+                                            encoding="utf-8").read()).body
+                    if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+                    for t in n.targets
+                    if isinstance(t, ast.Name) and t.id == "BANK_NOTE_MIN_YD"]
+    assert engine_floor, (
+        "generate.py no longer assigns BANK_NOTE_MIN_YD at module scope. It is the yard at which the "
+        "bank caveat prints, this test carries its own copy of it, and an unnamed literal buried in "
+        "the phrase builder is how those two would drift apart.")
+    assert engine_floor[0] == BANK_NOTE_MIN_YD, (
+        f"generate.py prints the bank caveat at {engine_floor[0]} yd and this test grades it at "
+        f"{BANK_NOTE_MIN_YD}. One figure, two records: make the engine's the one that moves.")
+
+    for end in ("front", "back"):
+        flagged = {k: v[end] for k, v in want.items() if v[end] >= BANK_NOTE_MIN_YD}
+        assert flagged, (
+            f"no green in the corpus has {BANK_NOTE_MIN_YD} yd of bank at its {end} edge on the play "
+            f"line, so that half of this disclosure never prints. Nine did at the front (micke-grove 2 "
+            f"worst, 5.33 yd) and fourteen at the back (copper-valley 3 worst, 6.51). If the outlines "
+            f"or the surfaces changed that is good news, but verify it -- an unreachable caveat is one "
+            f"that will not fire when it is next needed.")
+
+    # THE THREE REJECTED ALTERNATIVES, graded in both places that publish them. The argument for
+    # leaving the datum alone IS these numbers, and two of the four were wrong in both records at once:
+    # the median re-basing shift (2.75 published, 2.7399 measured) and the both-ends trim (23 published,
+    # 28 measured). The second understated the case against the trim, which is the argument's own side.
+    shifts = [abs(a["depth"] - a["putt"]) for a in alt.values() if a["putt"] is not None]
+    rebased = sum(1 for a in alt.values()
+                  if a["putt"] is not None and round(a["depth"]) != round(a["putt"]))
+    n_front = sum(1 for a in alt.values() if round(a["depth"] - a["front"]) != round(a["depth"]))
+    n_both = sum(1 for a in alt.values()
+                 if round(a["depth"] - a["front"] - a["back"]) != round(a["depth"]))
+    assert rebased == len(shifts), (
+        f"re-basing on S['putt'] would move {rebased} of {len(shifts)} rounded printed depths, not all "
+        f"of them -- the docstring above says ALL, so re-read it before editing")
+    facts = {"all N printed depths": (len(shifts), _DATUM_ALL),
+             "median shift yd": (round(statistics.median(shifts), 2), _DATUM_MEDIAN),
+             "front-trim movers": (n_front, _DATUM_FRONT),
+             "both-ends-trim movers": (n_both, _DATUM_BOTH)}
+    stale, hits = [], collections.Counter()
+    for path, fn in ((os.path.join(ROOT, "tests", "test_phase1_regressions.py"),
+                      "test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth"),
+                     (os.path.join(ROOT, "render_green.py"), "bank_run_yd")):
+        prose = _func_prose(path, fn)
+        rel = os.path.relpath(path, ROOT)
+        for label, (real, pat) in facts.items():
+            for m in pat.finditer(prose):
+                hits[label] += 1
+                said = float(m.group(1)) if "." in m.group(1) else int(m.group(1))
+                if said != real:
+                    stale.append(f"{rel}/{fn} says {m.group(0)!r}; measured over {len(shifts)} greens "
+                                 f"the {label} is {real}")
+    missing = [k for k in facts if not hits[k]]
+    assert not missing, (
+        f"the rejected-datum figures {missing} are no longer stated in either place. They ARE the "
+        f"argument for not moving the datum -- 'look how many printed depths each alternative would "
+        f"move' -- so deleting one must not be how this passes. Measured: "
+        f"{ {k: v[0] for k, v in facts.items()} }")
+    assert not stale, ("a published figure for a rejected depth datum is not what it measures:\n  "
+                       + "\n  ".join(stale))
+
+    problems, checked = [], 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        ref = os.path.basename(os.path.dirname(p))
+        if ref.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            html = fh.read()
+        for blk in re.split(r'<div class="panel ', html)[1:]:
+            if not re.match(r'hole[\s"]', blk):
+                continue
+            hm = re.search(r'<div class="hnum">(\d+)</div>', blk)
+            if not (hm and re.search(r"\d+yd deep", blk)):
+                continue          # the enlarged edition's map card carries no depth
+            hole = int(hm.group(1))
+            if (ref, hole) not in want:
+                continue
+            checked += 1
+            flat = re.sub(r"<[^>]+>", " ", blk).replace("&middot;", "-")
+            for end in ("front", "back"):
+                said = re.search(rf"\b{end}\s+(\d+)\s*yd\s+is\s+bank", flat)
+                yd = want[(ref, hole)][end]
+                where = "begins with" if end == "front" else "ends with"
+                if yd >= BANK_NOTE_MIN_YD:
+                    if not said:
+                        problems.append(
+                            f"{ref}/{os.path.basename(p)} hole {hole}: the play line {where} "
+                            f"{yd:.2f} yd steeper than {rg.SLOPE_LABEL_MAX_PCT:.0f}% -- bank, by this "
+                            f"card's own legend -- and the footer states its depth and rules a 5-yd "
+                            f"ladder through it without saying so")
+                    elif int(said.group(1)) != int(round(yd)):
+                        problems.append(
+                            f"{ref}/{os.path.basename(p)} hole {hole}: the card says the {end} "
+                            f"{said.group(1)} yd is bank; measured down the play line it is "
+                            f"{yd:.2f} -> {int(round(yd))}")
+                elif said:
+                    problems.append(
+                        f"{ref}/{os.path.basename(p)} hole {hole}: the card says the {end} "
+                        f"{said.group(1)} yd is bank, but the play line has only {yd:.2f} yd over "
+                        f"{rg.SLOPE_LABEL_MAX_PCT:.0f}% there -- a caveat with no ground under it")
+    assert checked >= expected_geometry_holes() - 18, (
+        f"only {checked} green cards checked of {expected_geometry_holes()} holes with geometry")
+    assert not problems, ("a printed depth is measured through ground the same card calls bank:\n  "
+                          + "\n  ".join(problems[:8]))
 
 
 @needs_corpus
@@ -6939,18 +9527,30 @@ def test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_round_guess()
 
     Measured over every tile this repo has dated, from the per-tile day pairs `--write` already records
     in each course.json's `lidar_flown.tiles` -- so the bound is checked against the artifact rather than
-    re-read from 12 GB of LAZ:
+    re-read from 12 GB of LAZ. All 39 recorded pairs, in the course's own timezone, which is what those
+    pairs and the printed label are both in:
 
-        philadelphia 18TVK475434 / 18TVK474434   100 days   (2024-12-17..2025-03-28, real, two epochs
+        philadelphia 18TVK475434 / 18TVK474434   100 days   (2024-12-17..2025-03-27, real, two epochs
                                                              of one PA_17County_D24 acquisition)
         Alameda 2021, 8 tiles                     11 days
-        everything else                            0 days
+        3 tiles                                    2 days
+        2 tiles                                    1 day
+        the remaining 24                           0 days
+
+    The 100-day pair used to be quoted here as ending 2025-03-28, which is its UTC end
+    (2025-03-28 02:49:50Z). The records, the label and the book are all LOCAL -- 2025-03-27
+    22:49:50-04:00 -- and reconciling the two is the whole reason course_tz exists; and the three
+    smaller families were collapsed into a single catch-all line of zeroes, which five tiles refute.
+    test_the_flight_span_figures_quoted_in_this_file_are_the_ones_on_disk re-derives all of it from the
+    records, so these numbers cannot drift again without failing.
 
     Independently re-measured off the point records at full resolution while writing this: the widest
     green-near span is 100.2301 d (philadelphia 18TVK475434) and the widest WHOLE-tile span 100.2614 d
     (18TVK474435, which feeds no green) -- and endpoints() is used for both sets, so the bound has to
-    clear the second. The next widest family is 11.07 d, so there is nothing between 11 and 100 to
-    calibrate against; the margin over the worst REAL case is the only honest way to set this.
+    clear the second. Then 36.7360 d (the-reserve t390135, whole tile, feeds no green) and then the
+    11.07 d Alameda family. This paragraph used to assert that no span had been measured between the
+    11-day family and the 100-day one, which t390135 refutes; the margin over the worst REAL case is
+    still the only honest way to set this, but not for want of anything in between.
 
     Asserted as a relationship, not a literal: the bound must clear the worst span the corpus actually
     holds by the stated margin, and must be far tighter than the retired 730. Tighten the corpus (or add
@@ -7052,8 +9652,9 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
     # is worse than the bug. So the discriminator is the one thing that separates a second EPOCH from a
     # second PASS: how far apart the two ends are, bounded by what a real acquisition in this corpus
     # actually spans. Measured over all 78 dated tiles, the widest is philadelphia 18TVK474435 at
-    # 100.2614 days (whole tile) and 18TVK475434 at 100.2301 (green-near); the next widest family is
-    # 11.07. MAX_TILE_SPAN_DAYS is now that measurement times 2.0, and endpoints() applies it across the
+    # 100.2614 days (whole tile) and 18TVK475434 at 100.2301 (green-near); then the-reserve t390135 at
+    # 36.7360 (whole tile), and then the 11.07-day Alameda family. MAX_TILE_SPAN_DAYS is now the widest
+    # of those times 2.0, and endpoints() applies it across the
     # two resolved ends -- the only place both are known before either is published.
     #
     # Live data confirmed unchanged after the change: every one of the 11 dated courses reports the same
@@ -7081,18 +9682,19 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
             f"a clock glitch: no acquisition in this corpus spans more than 100.26 days, so nothing "
             f"about a 700-day gap can be defended")
 
-    # WHAT IS STILL OPEN, stated with the measurement rather than left to be discovered. A saturating
-    # cluster WITHIN MAX_TILE_SPAN_DAYS of the bulk is still published with n_dropped = 0, so 9-31
-    # readings are refused where 32 are not. That residue is not closable with the information a
-    # 64-value extreme window holds: at 100 days out the cluster is arithmetically indistinguishable
-    # from philadelphia's real 100.23-day acquisition, and refusing it is what broke that course before.
-    # The error is now BOUNDED to one plausible acquisition span instead of a decade, which is the whole
-    # of what the corpus can support.
+    # WHAT WAS OPEN, AND IS NOW CLOSED, stated with the measurement rather than left to be discovered.
+    # A saturating cluster WITHIN MAX_TILE_SPAN_DAYS of the bulk used to be published with
+    # n_dropped = 0, so 9-31 readings were refused where 32 were not. This comment recorded that as not
+    # closable "with the information a 64-value extreme window holds" -- which was true, and the window
+    # is the module's OWN choice: tile_dates streams every point of every tile. Counting how many points
+    # share each endpoint's instant separates the two by mass where span cannot, and it now refuses this
+    # case. See test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness for the
+    # derivation, and for the live proof that philadelphia's real two-epoch range survives it.
     inside = int(bound) - 1
-    assert outcome(ld.ENDPOINT_WINDOW // 2, -inside)[0], (
-        f"a saturating cluster {inside} days out no longer publishes. If that is a real fix, confirm "
-        f"philadelphia still reports '2024-12-17 to 2025-03-27' first -- its own tiles span 100.23 days, "
-        f"and the obvious guard narrows that published range instead of protecting it")
+    assert not outcome(ld.ENDPOINT_WINDOW // 2, -inside)[0], (
+        f"a saturating cluster {inside} days out publishes a date again. Span cannot separate it from "
+        f"philadelphia's real 100.23-day acquisition -- MIN_ENDPOINT_CLUSTER_PTS is what does, and "
+        f"32 readings is not a pass")
     assert not outcome(ld.ENDPOINT_WINDOW // 2, -(int(bound) + 1))[0], (
         f"a saturating cluster past the {bound:.0f}-day bound publishes, so the bound is not being "
         f"applied to both resolved ends")
@@ -7111,6 +9713,591 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
             f"{k} junk readings 700 days from the bulk were TRIMMED to a published date. A value that "
             f"far out is a second epoch, not a glitch, and this function's own note says a tile holding "
             f"two epochs cannot be dated at all")
+
+
+def _lidar_dates_module():
+    """tools/lidar_dates.py loaded under its own name, so importing it cannot shadow anything."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ld_probe", os.path.join(ROOT, "tools", "lidar_dates.py"))
+    ld = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ld)
+    return ld
+
+
+def test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness():
+    """The last flight-date residue was called irreducible, and the discriminator was already streaming.
+
+    A junk cluster large enough to fill the 64-value extreme window BECOMES the longest gap-free run
+    inside it, so _resolve returns it at i = 0 with n_dropped = 0 -- no warning, no trim. Within
+    MAX_TILE_SPAN_DAYS of the bulk the span test cannot refuse it either, because by span it IS
+    philadelphia's real 100.23-day two-epoch acquisition. That was recorded as unclosable "with the
+    information a 64-value extreme window holds", and the window is the module's OWN choice: tile_dates
+    already reads every point of every tile.
+
+    A pass leaves a CROWD; a bad clock leaves a handful. Measured over all 78 tiles, both the green-near
+    and the whole-tile set of each -- 236 real endpoint clusters, bucketed at MAX_ENDPOINT_GAP_S:
+
+        sparsest real cluster       3,432 pts   castlewood-valley w6156n2055 green-near low end
+        next four                   4,136 / 5,612 / 8,716 / 15,295
+        philadelphia 18TVK475434    1,567,309 and 67,838 either side of its 100.2156-day gap
+
+    That 67,838 is the SECOND EPOCH this test must not refuse; it is 20x the sparsest real cluster, not
+    the sparsest one, as was once recorded. Against a failure mode that needs 32-128 readings, the
+    sparsest real endpoint clears the largest junk cluster by 27x and the smallest by 107x -- so about
+    two orders of magnitude, not the three once claimed, which had compared against the 67,838. Still far
+    more headroom than the 2.0x already accepted on the span bound.
+
+    The bound is that measurement DIVIDED by a margin, the same shape as MAX_TILE_SPAN_DAYS, so an
+    endpoint whose pass left a quarter of the returns of the thinnest one on disk is still accepted.
+
+    The live half of this test re-dates all 39 tiles the eleven records NAME and requires each to
+    reproduce its recorded per-tile dates, in the course's own timezone. It costs about 55 s and it is
+    the point: a naive saturation guard once silently narrowed philadelphia's genuine
+    "2024-12-17 to 2025-03-27" to a single date, which is worse than the bug it was fixing.
+    """
+    import numpy as _np
+    ld = _lidar_dates_module()
+    base = 1024358400.0                                   # a real GPS-adjusted flight second
+
+    # (1) THE CONSTANT IS DERIVED, not typed. Both factors have to be present, or the next person
+    # tunes the product and the measurement stops constraining it.
+    assert ld.MIN_ENDPOINT_CLUSTER_PTS == int(
+        ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS / ld.ENDPOINT_CLUSTER_MARGIN), (
+        "MIN_ENDPOINT_CLUSTER_PTS is no longer the measured sparsest real cluster divided by its "
+        "margin, so it is a guess again")
+    assert ld.MIN_ENDPOINT_CLUSTER_PTS < ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS, (
+        f"MIN_ENDPOINT_CLUSTER_PTS ({ld.MIN_ENDPOINT_CLUSTER_PTS}) is at or above the sparsest real "
+        f"endpoint cluster in the corpus ({ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS}), so it refuses "
+        f"real data")
+    assert ld.MIN_ENDPOINT_CLUSTER_PTS > 2 * ld.ENDPOINT_WINDOW, (
+        f"MIN_ENDPOINT_CLUSTER_PTS ({ld.MIN_ENDPOINT_CLUSTER_PTS}) is not above the cluster size that "
+        f"saturates a {ld.ENDPOINT_WINDOW}-value window, so the case it exists for still passes")
+
+    def outcome(junk_n, off_days, bulk_n=4000):
+        """(published?, span_days) through _Extremes + endpoints() -- the path production takes."""
+        e = ld._Extremes()
+        if junk_n:
+            e.add(_np.array([base + off_days * 86400.0 + i * 0.01 for i in range(junk_n)]))
+        e.add(_np.array([base + i * 0.01 for i in range(bulk_n)]))
+        got = e.endpoints()
+        return (False, None) if got is None else (True, (got[1] - got[0]) / 86400.0)
+
+    inside = int(ld.MAX_TILE_SPAN_DAYS) - 1               # 199 d: inside the span bound
+    # (2) THE RESIDUE, refused. Every cluster size that used to publish silently now cannot.
+    for k in (ld.ENDPOINT_WINDOW // 2, ld.ENDPOINT_WINDOW, 2 * ld.ENDPOINT_WINDOW,
+              ld.MIN_ENDPOINT_CLUSTER_PTS - 1):
+        assert not outcome(k, -inside)[0], (
+            f"{k} junk readings {inside} days from the bulk still publish a date. {k} readings is not "
+            f"a pass: the sparsest real endpoint in this corpus holds "
+            f"{ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS}")
+
+    # (3) A REAL SECOND EPOCH, at the same distance and the same shape, is still published. This is the
+    # half that matters most -- philadelphia's thinner epoch is 67,838 returns 100.2156 days from its
+    # bulk, and a guard that cannot tell it from junk destroys a true range.
+    ok, span = outcome(67838, -100, bulk_n=1567309)
+    assert ok, ("a second epoch of philadelphia's real mass (67,838 returns 100 days out) is refused, "
+                "so this guard would narrow '2024-12-17 to 2025-03-27' to a single date -- the exact "
+                "regression a saturation guard caused before")
+    assert 99.9 < span < 100.4, f"the published span collapsed to {span:.4f} d instead of ~100"
+    # ...and it must not be a fluke of that one size: anything at or above the bound publishes
+    assert outcome(ld.MIN_ENDPOINT_CLUSTER_PTS, -inside)[0], (
+        f"a cluster of exactly MIN_ENDPOINT_CLUSTER_PTS ({ld.MIN_ENDPOINT_CLUSTER_PTS}) is refused, so "
+        f"the bound is off by one against its own measurement")
+
+    # (4) MONOTONIC IN MASS. A denser cluster must never be harder to publish than a thinner one, which
+    # is the property the three previous fixes to this function each broke by moving a threshold.
+    # Measured as "did the far cluster SET the endpoint", not "was anything published": at or below
+    # MAX_ISOLATED_VALUES the cluster is legitimately TRIMMED and the bulk's own date published, which is
+    # the right answer and not the same event. Conflating the two made this assertion read k=8 as an
+    # acceptance and report a false inversion.
+    def sets_endpoint(k):
+        ok, span = outcome(k, -inside)
+        return bool(ok and span is not None and span > inside / 2.0)
+    seen = [(k, sets_endpoint(k)) for k in (8, 32, 64, 128, 500, 857, 858, 2000, 5000)]
+    accepted = [k for k, p in seen if p]
+    rejected = [k for k, p in seen if not p]
+    assert accepted and rejected, f"nothing to compare: {seen}"
+    assert max(rejected) < min(accepted), (
+        f"whether a far cluster may SET the published endpoint is not monotonic in its mass -- it does "
+        f"for {accepted} and does not for {rejected}. A BIGGER cluster must never be easier to reject "
+        f"than a smaller one, and vice versa")
+    assert min(accepted) >= ld.MIN_ENDPOINT_CLUSTER_PTS, (
+        f"a cluster of {min(accepted)} points set a published endpoint, below the measured floor of "
+        f"{ld.MIN_ENDPOINT_CLUSTER_PTS}")
+
+    # (5) THE LIVE CORPUS. Every tile the eleven records name must still date, and to the same days.
+    checked, problems, seen_courses = 0, [], collections.Counter()
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        cdir = os.path.dirname(cj)
+        slug = os.path.basename(cdir)
+        if slug.startswith("_"):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        rec = cfg.get("lidar_flown") or {}
+        if not rec.get("tiles"):
+            continue
+        loc = cfg.get("location") or {}
+        tz = ld.course_tz(loc.get("lat"), loc.get("lon"), cfg.get("tz"))
+        rings = ld.green_rings(cdir)
+        for name, want in sorted(rec["tiles"].items()):
+            p = os.path.join(cdir, "laz", name)
+            if not os.path.exists(p):
+                continue                  # laz/ is the one refetchable directory; absent is not wrong
+            got = ld.tile_dates(p, rings)
+            checked += 1
+            seen_courses[slug] += 1
+            if got is None:
+                problems.append(f"{slug}/{name}: no longer dates at all, but the record says "
+                                f"{want} -- the cluster-mass floor is refusing real data")
+                continue
+
+            def day(d):
+                return str((d.astimezone(tz) if tz else d).date())
+            first, last = day(got[0]), day(got[1])
+            if [first, last] != list(want):
+                problems.append(f"{slug}/{name}: re-dates to {first}..{last}, recorded {want}")
+    if not checked:
+        pytest.skip("no LAZ tiles on disk (laz/ is refetchable and gitignored)")
+    assert not problems, ("re-dating the recorded tiles no longer reproduces the recorded label:\n  "
+                          + "\n  ".join(problems[:8]))
+    assert checked >= 39, (
+        f"only {checked} of the 39 recorded tiles were re-dated, so the eleven ACQUIRED labels are not "
+        f"all being proven")
+    assert len(seen_courses) >= 11, (
+        f"only {len(seen_courses)} courses re-dated; eleven have a recorded label: {sorted(seen_courses)}")
+
+
+def test_one_junk_gps_time_cannot_size_the_cluster_mass_counters_allocation(tmp_path):
+    """The cluster-mass counter turned a CLEAN REFUSAL into a SILENT KILL, and the bound that was meant
+    to stop it was a sentence in a comment.
+
+    _Extremes.add buckets every gps_time at MAX_ENDPOINT_GAP_S and counts them with np.bincount. It
+    offset that array by the CHUNK'S OWN lowest bucket -- "so the array is span-sized, not value-sized"
+    -- but a span IS data, so ONE junk-but-positive gps_time sized the allocation on its own. Measured
+    against this corpus's own lowest bucket (85,649):
+
+        1e11 -> 27,692,129 buckets (0.22 GB)    1e12 -> 2.2 GB    1e15 -> 2.2 TB
+
+    REPRODUCED END TO END on a real LAZ holding 3,000 clean returns plus one junk value: at 1e15 the
+    tool was SIGKILLed, exit 137, with no traceback and no refusal; at 1e18 it died on an uncaught
+    numpy MemoryError. Both are precisely the failure gps_to_utc's own docstring says this module
+    fixed -- "a corrupt gps_time ... can land tens of thousands of years out, and timedelta/datetime
+    raises OverflowError there -- which crashed the tool with a traceback rather than reporting 'no
+    usable GPS time'". Ten thousand years is ~3.2e11 s, ~0.7 GB per chunk, so the documented case was
+    inside the regression. The comment's bound -- "even a junk value four decades out only makes it
+    ~350,000" -- was ASSERTED, and describes a value four decades out rather than one four millennia
+    out.
+
+    Graded three ways, none of them a source-text match, because a comment cannot enforce a ceiling:
+
+      (1) the ceiling is DERIVED from the module's own plausibility window by independent arithmetic
+          here, so MASS_BUCKETS cannot be typed in or drift from the check that publishes dates;
+      (2) NO REAL RETURN IS DROPPED -- every flight date the corpus has RECORDED must fall inside the
+          window under the reading that produced it, re-derived from each course.json rather than
+          from a copy of the answer;
+      (3) END TO END, in a subprocess, over five junk magnitudes spanning seven orders of magnitude:
+          every one must exit 0 with the module's own refusal, and PEAK RSS MUST NOT GROW WITH THE
+          JUNK MAGNITUDE. That last clause is the enforcement: a data-sized allocation shows up as
+          memory that scales with the junk value, whichever numpy primitive is used to make it.
+    """
+    pytest.importorskip("laspy")
+    import datetime as dt
+    import subprocess
+
+    ld = _lidar_dates_module()
+
+    # (1) THE CEILING IS DERIVED, not typed. Independent arithmetic from the module's own epoch, leap
+    # seconds, plausibility window and bucket width -- the four facts the window is a consequence of.
+    lo_s = (ld.PLAUSIBLE_FROM - ld.GPS_EPOCH).total_seconds() + ld.LEAP_SECONDS - 1_000_000_000
+    hi_s = (ld.PLAUSIBLE_TO - ld.GPS_EPOCH).total_seconds() + ld.LEAP_SECONDS
+    want_lo = int(math.floor(lo_s / ld.MAX_ENDPOINT_GAP_S))
+    want_hi = int(math.floor(hi_s / ld.MAX_ENDPOINT_GAP_S))
+    assert (ld.MASS_BUCKET_LO, ld.MASS_BUCKET_HI) == (want_lo, want_hi), (
+        f"the mass counter's bucket window is {(ld.MASS_BUCKET_LO, ld.MASS_BUCKET_HI)} but the "
+        f"module's own plausibility window over BOTH gps_time readings gives {(want_lo, want_hi)}. "
+        f"The window has to be a consequence of the check that decides whether a date may be "
+        f"published, or it is a second threshold nobody measured")
+    assert ld.MASS_BUCKETS == want_hi - want_lo + 1
+    # ...and it has to actually BE a ceiling: a constant number of int64, not a function of the data.
+    assert ld.MASS_BUCKETS * 8 < 64 * 1024 * 1024, (
+        f"the mass counter can be asked for {ld.MASS_BUCKETS:,} buckets = "
+        f"{ld.MASS_BUCKETS * 8 / 1e6:.1f} MB. That is the allocation one junk gps_time used to size, "
+        f"so it has to stay small enough that no value can make it matter")
+
+    # (2) NO REAL RETURN IS DROPPED. Every date the corpus has recorded must sit inside the window,
+    # re-derived from the artifact `--write` produces rather than from a copy of the measurement.
+    outside, checked = [], 0
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            rec = json.load(fh).get("lidar_flown") or {}
+        for key in ("first", "last"):
+            if not rec.get(key):
+                continue
+            checked += 1
+            when = dt.datetime.fromisoformat(rec[key]).replace(tzinfo=dt.timezone.utc)
+            # the ADJUSTED reading, which is what every tile in this corpus uses
+            v = (when - ld.GPS_EPOCH).total_seconds() + ld.LEAP_SECONDS - 1_000_000_000
+            b = int(math.floor(v / ld.MAX_ENDPOINT_GAP_S))
+            if not (ld.MASS_BUCKET_LO <= b <= ld.MASS_BUCKET_HI):
+                outside.append(f"{slug} {key}={rec[key]} -> bucket {b}")
+    assert not outside, (
+        "a flight date this repo has PUBLISHED falls outside the mass counter's bucket window, so its "
+        "own returns would weigh nothing and the tile would be refused:\n  " + "\n  ".join(outside))
+    # Anti-vacuous only WHEN there is a corpus to be vacuous about. On a fresh clone courses/ is empty
+    # -- it is gitignored -- and parts (1) and (3) are the enforcement there, neither of which needs any
+    # course data. Demanding the floor unconditionally made this test one of the failures
+    # test_a_fresh_clone_gets_a_clean_suite exists to catch.
+    if glob.glob(os.path.join(ROOT, "courses", "*", "course.json")):
+        assert checked >= 20, \
+            f"only {checked} recorded endpoints checked; too few to say the window fits the corpus"
+
+    # (3) END TO END. A real LAZ, a real junk gps_time, a real subprocess -- the reproduction that
+    # found this. `_Extremes.add` is on the whole-tile path, so no green geometry is needed.
+    import laspy
+    import numpy as np
+    base = 308339030.0                       # a real Alameda-2021 adjusted GPS second: decodes to 2021
+    child = (
+        "import os,sys,resource\n"
+        f"sys.path.insert(0, {os.path.join(ROOT, 'tools')!r})\n"
+        "import lidar_dates as ld\n"
+        "print('RESULT', ld.tile_dates(sys.argv[1]))\n"
+        "r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
+        "print('PEAK', r if sys.platform == 'darwin' else r * 1024)\n"
+    )
+    peaks = {}
+    for mag in (1e11, 1e12, 1e15, 1e18, 1e300):
+        h = laspy.LasHeader(version="1.4", point_format=6)
+        h.global_encoding.gps_time_type = 1
+        las = laspy.LasData(h)
+        n = 3000                             # a pass-like crowd: well over MIN_ENDPOINT_CLUSTER_PTS
+        las.x = np.zeros(n + 1); las.y = np.zeros(n + 1); las.z = np.zeros(n + 1)
+        las.gps_time = np.concatenate([base + np.arange(n) * 0.01, [mag]])
+        p = tmp_path / f"junk_{mag:.0e}.laz"
+        las.write(str(p))
+        r = subprocess.run([sys.executable, "-c", child, str(p)],
+                           capture_output=True, text=True, timeout=900)
+        out = r.stdout + r.stderr
+        assert r.returncode == 0, (
+            f"a single gps_time of {mag:.0e} in an otherwise clean tile did not produce a refusal -- "
+            f"the process exited {r.returncode}. Negative is a signal: -9/137 is the OOM kill this "
+            f"counter's span-sized allocation caused, and 1 with an "
+            f"_ArrayMemoryError is the same fault caught by numpy instead of the kernel. Either way "
+            f"the tool crashed where it documents that it reports 'no usable GPS time'.\n"
+            f"{out[-1200:]}")
+        assert "RESULT None" in out, (
+            f"a tile whose only defect is one gps_time of {mag:.0e} must be REFUSED, not dated. "
+            f"Got:\n{out[-1200:]}")
+        assert "cannot be defended" in out, (
+            f"the refusal for junk {mag:.0e} printed no explanation; silently narrowing or dropping a "
+            f"published range is the mirror of silently widening it.\n{out[-1200:]}")
+        peaks[mag] = int(re.search(r"PEAK (\d+)", out).group(1))
+
+    # THE ENFORCEMENT: memory must not scale with the junk value. A span-sized allocation shows up
+    # here as a peak that climbs with the magnitude, whatever primitive built it.
+    lo_peak, hi_peak = peaks[1e11], max(peaks.values())
+    assert hi_peak - lo_peak < 256 * 1024 * 1024, (
+        f"peak memory GROWS WITH THE JUNK VALUE, so the allocation is still sized by the data rather "
+        f"than by a fixed window: "
+        + ", ".join(f"{m:.0e} -> {v / 1e6:.0f} MB" for m, v in sorted(peaks.items()))
+        + f". The ceiling MASS_BUCKETS promises is {ld.MASS_BUCKETS * 8 / 1e6:.1f} MB")
+
+
+def test_the_two_ends_of_a_flight_range_are_span_checked_and_something_watches_it():
+    """endpoints()'s own span refusal was UNWATCHED: deleting
+
+        if hi[0] - lo[0] > MAX_TILE_SPAN_DAYS * 86400.0: return None
+
+    left all six related tests green. The cluster-mass floor added later shadows it in every scenario
+    those tests build, because they separate a THIN junk cluster from a dense bulk -- so mass refuses
+    first and the span line never decides anything.
+
+    The case that isolates it is two clusters that are both PASS-LIKE. Mass cannot tell them apart --
+    that is the point of mass -- so only the span may refuse, and a tile holding two epochs 200+ days
+    apart is exactly what this module says cannot be dated at all. Asserted in both directions, so the
+    line cannot be satisfied by refusing everything: the same two dense clusters INSIDE the bound must
+    still publish, which is philadelphia's real 100-day two-epoch acquisition."""
+    import numpy as _np
+    ld = _lidar_dates_module()
+    base = 308339030.0
+    dense = 4 * ld.MIN_ENDPOINT_CLUSTER_PTS        # both ends far above the mass floor
+
+    def two_epochs(gap_days):
+        e = ld._Extremes()
+        e.add(_np.array([base + i * 0.01 for i in range(dense)]))
+        e.add(_np.array([base + gap_days * 86400.0 + i * 0.01 for i in range(dense)]))
+        return e
+
+    # Both ends are pass-like, so the mass floor CANNOT be what refuses -- prove that before relying
+    # on it, or this test drifts back into grading the same guard the others already grade.
+    wide = two_epochs(ld.MAX_TILE_SPAN_DAYS + 200.0)
+    raw = wide.raw()
+    assert min(wide.cluster_mass(raw[0]), wide.cluster_mass(raw[1])) >= ld.MIN_ENDPOINT_CLUSTER_PTS, (
+        "this fixture's two clusters are not both above the mass floor, so the cluster-mass test "
+        "would refuse it and the span check would still be unwatched")
+    assert wide.endpoints() is None, (
+        f"two pass-like clusters {ld.MAX_TILE_SPAN_DAYS + 200.0:.0f} days apart were accepted as one "
+        f"acquisition. Only endpoints()' span check can refuse this -- both ends clear the mass floor "
+        f"-- and this module's own note says a tile holding two epochs cannot be dated at all")
+
+    # ...and the same shape INSIDE the bound must still be published, or the span check is just a
+    # blanket refusal. philadelphia's PA_17County_D24 genuinely flew that ground twice, 100 d apart.
+    narrow = two_epochs(100.0)
+    got = narrow.endpoints()
+    assert got is not None, (
+        "two pass-like clusters 100 days apart are refused, so philadelphia's real "
+        "'2024-12-17 to 2025-03-27' range would collapse -- the span bound must clear the worst REAL "
+        "acquisition in the corpus")
+    assert 99.9 < (got[1] - got[0]) / 86400.0 < 100.1, (
+        f"the published span is {(got[1] - got[0]) / 86400.0:.4f} d, not the ~100 d the fixture holds")
+
+    # The boundary belongs to the bound itself, not to a rounding artefact either side of it.
+    assert two_epochs(ld.MAX_TILE_SPAN_DAYS - 1.0).endpoints() is not None, \
+        "a span one day INSIDE MAX_TILE_SPAN_DAYS is refused, so the bound is off by more than a day"
+    assert two_epochs(ld.MAX_TILE_SPAN_DAYS + 1.0).endpoints() is None, \
+        "a span one day OUTSIDE MAX_TILE_SPAN_DAYS is accepted, so the bound does not bind"
+
+
+def test_a_whole_tile_range_its_own_guards_refused_is_not_reported_anyway(tmp_path, capsys):
+    """tile_dates turned a whole-tile REFUSAL into an unguarded bare min/max, silently:
+
+        wlo, whi = wres[:2] if wres else whole_ext.raw()
+
+    So for the whole-tile set BOTH new guards -- the span bound and the cluster-mass floor -- were
+    no-ops on the reported value: the fallback is equal to or wider than anything they would have
+    allowed, and it printed no message of any kind.
+
+    DEMONSTRATED on a synthetic tile whose greens date cleanly but whose whole set holds two pass-like
+    epochs 401 days apart: it reported `whole 2012-06-21 .. 2013-07-27`, twice MAX_TILE_SPAN_DAYS,
+    with nothing said. That pair is not decoration -- main() prints it as "over whole tiles the range
+    would be X", the line whose whole job is to be the honest contrast against the narrowed range, and
+    `basis` promotes the whole-tile range to the PUBLISHED label when no tile holds a point over a
+    green. A number two guards have just rejected is not a contrast, and the project's rule is that a
+    number the data does not support is not printed.
+
+    The green-near half must keep working unchanged, because refusing a tile whose GREENS are clean
+    over a bad clock 2 km away is the mistake the module already refuses to make."""
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    import datetime as dt
+
+    ld = _lidar_dates_module()
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+    ring = [(lon - d, lat - d), (lon + d, lat - d), (lon + d, lat + d), (lon - d, lat + d)]
+    near = dt.datetime(2012, 6, 21, 20, 0, tzinfo=dt.timezone.utc)
+    far = dt.datetime(2013, 7, 27, 20, 0, tzinfo=dt.timezone.utc)
+    assert (far - near).days > ld.MAX_TILE_SPAN_DAYS, (
+        f"this fixture's two epochs are {(far - near).days} d apart, inside MAX_TILE_SPAN_DAYS "
+        f"({ld.MAX_TILE_SPAN_DAYS:.1f}), so the whole-tile set would be accepted and nothing is "
+        f"being tested")
+    f = _synthetic_laz(tmp_path / "two_epochs.laz", 26910, ring, near, far)
+
+    got = ld.tile_dates(f, [ring])
+    assert got is not None, (
+        "the tile stopped dating at all. Its GREEN returns are a single clean pass; a bad clock 2 km "
+        "away must not cost us a tile whose green returns are good -- that is why the range is "
+        "narrowed to the greens in the first place")
+    first, last, nnear, crs_ok, wfirst, wlast = got
+    assert first.date() == near.date() == last.date(), (
+        f"the green-near range moved to {first.date()}..{last.date()}; the far epoch is 2 km from the "
+        f"green and must not widen it")
+    assert nnear == PASS_LIKE_RETURNS and crs_ok is True, (nnear, crs_ok)
+
+    assert (wfirst, wlast) == (None, None), (
+        f"the whole-tile range came back as {wfirst}..{wlast} -- "
+        f"{(wlast - wfirst).days if wfirst and wlast else '?'} days, against a bound of "
+        f"{ld.MAX_TILE_SPAN_DAYS:.1f}. endpoints() REFUSED this set; reporting whole_ext.raw() "
+        f"instead publishes the very range the refusal rejected, and makes both of that set's guards "
+        f"no-ops on the number that gets printed")
+
+    # ...and the refusal has to be AUDIBLE. A silently absent contrast line is the same defect one
+    # step later: main() prints the whole-tile range as the honest counterweight to the narrowed one.
+    capsys.readouterr()                                  # discard the first call's output
+    ld.tile_dates(f, [ring])
+    out = capsys.readouterr().out
+    assert "WHOLE" in out and "cannot be defended" in out, (
+        f"declining to report the whole-tile range said nothing on stdout, so the audit line simply "
+        f"vanishes and nobody learns the tile holds two epochs. Got:\n{out}")
+
+    # The whole-tile set of a NORMAL tile must still be reported, or this fix has traded a wrong
+    # number for a missing one.
+    ok = _synthetic_laz(tmp_path / "one_epoch.laz", 26910, ring, near,
+                        near + dt.timedelta(days=3))
+    r2 = ld.tile_dates(ok, [ring])
+    assert r2 is not None and r2[4] is not None and r2[5] is not None, \
+        "a tile whose whole set spans 3 days must still report a whole-tile range"
+    assert (r2[5] - r2[4]).days == 3, f"whole-tile range collapsed to {r2[4]}..{r2[5]}"
+
+
+def test_the_sparsest_endpoint_cluster_is_re_measured_from_the_tile_it_names():
+    """SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS = 3432 was re-derived by NO test -- it was used only
+    RELATIONALLY (`MIN == int(SPARSEST / MARGIN)`, `MIN < SPARSEST`), which pins the ratio and leaves
+    the measurement free. That is the asymmetry with the sibling bound the comment says it copies:
+    MAX_TILE_SPAN_DAYS IS re-derived from every course.json by
+    test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_round_guess.
+
+    The number was confirmed exactly right when written -- castlewood-valley w6156n2055, green-near low
+    end, 3,432 points, 0.1944% of that set's 1,765,670 returns, the smallest of all 236 endpoint
+    clusters in the corpus by BOTH the absolute count and the fraction. The defect is that nothing kept
+    it right, so this re-measures the endpoint the constant NAMES and requires the published figures to
+    be what that endpoint actually holds. Costs about 6 s: one tile, streamed the way production
+    streams it.
+
+    Scope stated rather than implied. This pins the NUMERATOR to a live measurement. That it is still
+    the SPARSEST of the 236 is not re-swept here -- that costs 170 s of LAZ -- but the dangerous
+    direction is already covered: raise the constant and
+    test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness re-dates all 39
+    recorded tiles and this very endpoint stops dating."""
+    pytest.importorskip("laspy")
+    import laspy
+    import numpy as np
+
+    ld = _lidar_dates_module()
+    # The tile the constant NAMES. A name is an identifier, not a measurement -- every number below is
+    # read off the point records.
+    cdir = os.path.join(ROOT, "courses", "castlewood-valley-course")
+    tile = os.path.join(cdir, "laz",
+                        "USGS_LPC_CA_AlamedaCounty_2021_B21_w6156n2055.laz")
+    if not os.path.exists(tile):
+        pytest.skip("castlewood-valley w6156n2055 is not on disk (laz/ is refetchable and gitignored)")
+    rings = ld.green_rings(cdir)
+    assert rings, "castlewood-valley has no green geometry, so the green-near set cannot be rebuilt"
+
+    with laspy.open(tile) as f:
+        boxes = ld.green_boxes(f.header.parse_crs(), rings)
+        assert boxes, "the greens could not be placed in this tile's CRS"
+        ubox = (min(b[0] for b in boxes), max(b[1] for b in boxes),
+                min(b[2] for b in boxes), max(b[3] for b in boxes))
+        near = ld._Extremes()
+        for chunk in f.chunk_iterator(ld.CHUNK):
+            t = np.asarray(chunk.gps_time)
+            keep = t > 0
+            if not keep.any():
+                continue
+            x, y = np.asarray(chunk.x), np.asarray(chunk.y)
+            cand = keep & (x >= ubox[0]) & (x <= ubox[1]) & (y >= ubox[2]) & (y <= ubox[3])
+            idx = np.flatnonzero(cand)
+            if not idx.size:
+                continue
+            xs, ys = x[idx], y[idx]
+            sel = np.zeros(idx.size, dtype=bool)
+            for x0, x1, y0, y1 in boxes:
+                sel |= (xs >= x0) & (xs <= x1) & (ys >= y0) & (ys <= y1)
+            if sel.any():
+                near.add(t[idx[sel]])
+
+    res = near.endpoints()
+    assert res is not None, (
+        "castlewood-valley w6156n2055's green-near set no longer dates at all, so the endpoint the "
+        "sparsest-cluster measurement was taken from has gone -- the constant needs re-deriving")
+    mass = min(near.cluster_mass(res[0]), near.cluster_mass(res[1]))
+    assert ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS == mass, (
+        f"SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS says {ld.SPARSEST_MEASURED_ENDPOINT_CLUSTER_PTS} but "
+        f"the endpoint it names holds {mass} points. MIN_ENDPOINT_CLUSTER_PTS is derived from it, so "
+        f"a stale numerator is a floor nobody measured -- re-measure the corpus and update both this "
+        f"constant and the figures quoted beside it")
+    # ...and the two figures published beside it, from the same stream.
+    assert near.n == 1_765_670, (
+        f"the comment says this green-near set holds 1,765,670 returns; it holds {near.n:,}. The "
+        f"0.1944% fraction quoted with it is that ratio, so both need re-deriving")
+    frac = 100.0 * mass / near.n
+    src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
+    assert f"{frac:.4f}%" in src, (
+        f"lidar_dates.py does not state the measured fraction {frac:.4f}% for this endpoint, so the "
+        f"percentage beside the count is unpinned")
+
+
+def test_the_flight_span_figures_quoted_in_this_file_are_the_ones_on_disk():
+    """Three published figures about the flight-date bounds did not reproduce, all of them in THIS
+    file's own docstrings -- which is the failure mode the project keeps hitting: a fix corrects the
+    sentence in the module and leaves the identical sentence in the sibling test.
+
+      * two sentences claim there is no measured span between the 11-day family and the 100-day one,
+        and that the 11.07-day family is the next widest after philadelphia. Both are FALSE:
+        the-reserve t390135 spans 36.7360 d whole-tile, between the two. lidar_dates.py's own comment
+        was corrected for exactly this and the test docstrings were not.
+      * the widest recorded pair is quoted with a March 28th end, sourced explicitly to "the per-tile
+        day pairs `--write` already records". Those pairs end on the 27th. The 28th is the UTC end
+        (02:49:50Z); the record, the label and the book are all LOCAL (22:49:50-04:00), which is the
+        whole reason course_tz exists.
+      * "everything else" is quoted as a single span of zero. Over the 39 recorded pairs the spans are
+        {0 d: 24, 1 d: 2, 2 d: 3, 11 d: 8, 100 d: 2} -- five tiles record one or two days.
+
+    Graded against the RECORDS, never against a copy of the corrected value: the day pairs in each
+    course.json are the same artifact test_the_tile_span_bound_is_measured_from_the_corpus_and_not_a_
+    round_guess calibrates the bound from, so if a course is re-dated this fails rather than drifting.
+
+    Every pattern below is assembled from fragments, for the reason _STALE_RESERVE8_SHORTFALL is: this
+    grader reads its own file, so a pattern written as one literal matches itself and the test can
+    never go green.
+    """
+    import datetime as dt
+
+    pairs, spans = {}, collections.Counter()
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        slug = os.path.basename(os.path.dirname(cj))
+        if slug.startswith("_"):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            rec = (json.load(fh).get("lidar_flown") or {}).get("tiles") or {}
+        for name, pair in rec.items():
+            pairs[(slug, name)] = pair
+            spans[(dt.date.fromisoformat(pair[1]) - dt.date.fromisoformat(pair[0])).days] += 1
+    if not pairs:
+        pytest.skip("no course records a per-tile flight range yet")
+
+    with open(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    problems = []
+
+    # (1) THE WIDEST PAIR, as the records hold it -- not as UTC would render it.
+    widest = max(pairs.items(),
+                 key=lambda kv: (dt.date.fromisoformat(kv[1][1])
+                                 - dt.date.fromisoformat(kv[1][0])).days)
+    (_, wname), wpair = widest
+    for stale in re.finditer(r"\(\s*(\d{4}-\d\d-\d\d)\.\." + r"(\d{4}-\d\d-\d\d)", src):
+        if stale.group(1) == wpair[0] and stale.group(2) != wpair[1]:
+            problems.append(
+                f"tests:{src[:stale.start()].count(chr(10)) + 1} quotes an end of {stale.group(2)} "
+                f"for the widest recorded pair, but {wname} records {wpair[0]}..{wpair[1]}. The later "
+                f"date is the UTC end of a flight the record, the label and the book all state in "
+                f"local time")
+
+    # (2) THE SPAN DISTRIBUTION. A claim that everything outside the two named families is zero has to
+    # be true of the records.
+    others = {d: n for d, n in spans.items() if d not in (0, max(spans))}
+    catchall = re.compile(r"everything else" + r"\s+" + r"0 days")
+    for m in catchall.finditer(src):
+        if others:
+            problems.append(
+                f"tests:{src[:m.start()].count(chr(10)) + 1} says every other recorded pair spans 0 "
+                f"days, but {sum(others.values())} of them span {sorted(others)}. Full distribution: "
+                f"{dict(sorted(spans.items()))}")
+
+    # (3) THE CALIBRATION GAP. A claim that nothing lies between two spans is a claim about the corpus,
+    # so read the corpus: the module states every measured span family in one comment block, and any
+    # figure between the two named bounds refutes the gap. Whitespace-tolerant on purpose -- one of the
+    # two stale copies is broken across a comment continuation, and a single-line pattern missed it.
+    mod = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
+    between = sorted({float(m.group(1))
+                      for m in re.finditer(r"^#\s+\*?[^\n]*?\b(\d\d\.\d{4})\s*d", mod, re.M)
+                      if 11.0 < float(m.group(1)) < 100.0})
+    gap_claim = re.compile(r"nothing between" + r"[\s#]+11 and[\s#]+100"
+                           r"|next widest family is" + r"[\s#]+11\.07")
+    for m in gap_claim.finditer(src):
+        if between:
+            problems.append(
+                f"tests:{src[:m.start()].count(chr(10)) + 1} still claims nothing was measured "
+                f"between the 11-day and 100-day families, but lidar_dates.py itself records "
+                f"{between} d in that range (the-reserve t390135, whole tile). The module's comment "
+                f"was corrected for this and the sibling docstring was not")
+    assert not problems, "a flight-span figure in this file is not what the records hold:\n  " + \
+        "\n  ".join(problems)
 
 
 def test_every_distributed_book_disclaims_affiliation_with_the_club_it_names():
@@ -7181,13 +10368,43 @@ def test_the_steepness_colour_still_reads_in_black_and_white():
     Asserts the property, not the constants: luminance must fall monotonically across the whole
     interpolated range, and two slopes 1.5 points apart must be separated by enough grey to tell
     apart. Written against the ramp's OUTPUT so any future restyle is free to change the hues.
+
+    MEASURED ON THE INK, NOT ON THE RAMP. `heat_color`'s RGB never reaches paper: render() emits the
+    heat cells as `<g opacity="{HEAT_OPACITY}">`, bottom-most under the contours, arrows and outline,
+    with nothing but white paper below, so every cell prints 255 - HEAT_OPACITY*(255 - c) per channel.
+    The ramp runs grey 189.3 -> 62.8; the page runs 214.3 -> 135.8, and the worst separation per 1.5
+    points of slope is 7.25 grey levels on paper against 11.69 in the ramp.
+
+    Nothing shipped ever inverted, because a positive linear scale preserves order and monotonicity
+    exactly -- so this was a gate-precision defect and not a broken book. But it was 4.6x the whole
+    margin the gate believed it had: 5.69 grey levels of headroom over the 6.0 bar, where the truth
+    is 1.25. A restyle tuned to hold the RAMP's separation at the bar would have put the PRINTED
+    separation at 3.7, below the figure this assertion exists to guarantee, and the gate would have
+    passed it.
+
+    Monotonicity is still checked on the ramp: the +0.4 tolerance is there for the `int()` truncation
+    in heat_color's own interpolation, and that rounding lives in the ramp's integers -- squeezing it
+    by 0.62 first would make the tolerance 1.6x looser than the noise it was chosen for.
     """
     cfg, _rh = _engine(a_course())
     import render_green
 
+    # The opacity has to come FROM the renderer, not be copied into the test beside it: a copy is how
+    # the gate ends up grading a composite the card no longer draws.
+    rg_src = open(os.path.join(ROOT, "render_green.py"), encoding="utf-8").read()
+    heat_lines = [ln.strip() for ln in rg_src.splitlines() if "<g opacity=" in ln]
+    assert heat_lines and all("HEAT_OPACITY" in ln for ln in heat_lines), (
+        "the heat layer's opacity is a literal inside the SVG string instead of "
+        "render_green.HEAT_OPACITY, so this gate cannot know what strength actually reaches paper: "
+        f"{heat_lines}")
+
     def lum(pct):
         r, g, b = map(int, re.findall(r"\d+", render_green.heat_color(pct)))
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def ink(pct):
+        """The grey a cell of this slope PRINTS: the ramp composited over white paper."""
+        return 255.0 - render_green.HEAT_OPACITY * (255.0 - lum(pct))
 
     ls = [lum(i / 100.0) for i in range(0, 501)]
     reversals = [(i / 100.0, ls[i], ls[i + 1]) for i in range(len(ls) - 1) if ls[i + 1] > ls[i] + 0.4]
@@ -7196,11 +10413,29 @@ def test_the_steepness_colour_still_reads_in_black_and_white():
         f"{reversals[0][0]:.2f}% ({reversals[0][1]:.0f} -> {reversals[0][2]:.0f} grey). On a mono "
         f"printer that makes steep ground impersonate flat ground.")
 
-    # a reader must be able to tell 1.5 percentage points apart in grey alone
-    sep = min(ls[i] - ls[i + 150] for i in range(len(ls) - 150))
+    # a reader must be able to tell 1.5 percentage points apart in grey alone, ON PAPER
+    ks = [ink(i / 100.0) for i in range(0, 501)]
+    sep = min(ks[i] - ks[i + 150] for i in range(len(ks) - 150))
     assert sep >= 6.0, (
-        f"two slopes 1.5 points apart differ by only {sep:.1f} grey levels at the worst point -- "
-        f"indistinguishable in a home mono print")
+        f"two slopes 1.5 points apart print only {sep:.1f} grey levels apart at the worst point "
+        f"(the ramp itself separates {min(ls[i] - ls[i + 150] for i in range(len(ls) - 150)):.1f}, "
+        f"but the heat layer prints at opacity {render_green.HEAT_OPACITY}) -- indistinguishable in "
+        f"a home mono print")
+
+    # and the figure heat_color PUBLISHES must be the one that reaches paper. It said 11 -- the ramp's
+    # separation -- in the docstring a restyler reads before retuning the stops.
+    doc = render_green.heat_color.__doc__ or ""
+    m = re.search(r"at least ([\d.]+) grey levels per 1\.5 points of slope", doc)
+    assert m, ("heat_color no longer publishes a grey-separation figure; the number a restyler is "
+               "handed is the whole reason this gate has a bar")
+    published = float(m.group(1))
+    assert published <= sep, (
+        f"heat_color's docstring publishes 'at least {published:g} grey levels per 1.5 points of "
+        f"slope' but only {sep:.2f} survive the {render_green.HEAT_OPACITY} composite onto paper -- "
+        f"that is the ramp's figure, not the page's")
+    assert published >= sep - 1.0, (
+        f"heat_color publishes {published:g} grey levels where {sep:.2f} actually print; understating "
+        f"it by more than a grey level is a stale figure too")
 
     # and the legend swatches must be the ramp's own output, not a hardcoded copy that can drift
     src = _code_only(open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read())
@@ -7373,7 +10608,8 @@ def test_the_lidar_listing_pages_rather_than_trusting_one_capped_reply(monkeypat
 
     A course needing more than 200 LPC products would have got a TRUNCATED tile list, silently: the
     missing tiles are not an error anywhere downstream, they are simply absent, so lidar_coverage sees a
-    smaller footprint, choose_project ranks surveys on it, and greens fall back to the 1 m DEM or to
+    smaller footprint, choose_project ranks surveys on it, and greens fall back to the seamless DEM or
+    to
     nothing for a reason that is not real. There was a `print("WARNING: hit the 200-item TNM cap")`,
     which is a line in a long log rather than a refusal, and this project's rule is the other way round.
 
@@ -7468,7 +10704,8 @@ def test_the_lidar_listing_tells_an_unstable_order_apart_from_a_truncated_survey
     has ever seen these semantics live; the refusals were reasoned about rather than observed.
 
     Refusing is still right for a genuinely SHORT listing -- a missing tile is invisible downstream, so
-    coverage measures smaller and greens fall back to the 1 m DEM for a reason that is not real. The two
+    coverage measures smaller and greens fall back to the seamless DEM for a reason that is not real. The
+    two
     cases have to be told apart, and there is a fact that does it: how many ROWS the service handed over,
     against the number it said it holds.
 
@@ -7483,10 +10720,14 @@ def test_the_lidar_listing_tells_an_unstable_order_apart_from_a_truncated_survey
     accepting that as the whole survey is the defect the paging was built for, and it must still refuse
     however many rows it was handed. Case (c) checks that a stalled walk never reaches the degrade path.
 
-    Also pinned here: the accumulated `total` must survive an over-the-end page. The reply for an offset
-    past the end has been seen to carry `total: 0`, and the loop took the LAST total it was told, so that
-    zero erased the real figure and turned the shortfall check into a no-op -- a truncated listing would
-    then have been accepted in silence. Case (d).
+    Also pinned here: the accumulated `total` must survive an over-the-end page, so the loop takes the
+    FIRST total it is told rather than the last. This was written against an over-the-end reply carrying
+    `total: 0`, which would have erased the real figure and turned the shortfall check into a no-op.
+    Measured live on all twelve course bboxes, that is not the shape this service sends: an over-the-end
+    reply answers the REAL total (bay-view 14, micke-grove 6) plus "The offset is greater than the total
+    number of results for this query. No items returned." The latch is correct either way and is kept,
+    but it defends against a reply TNM does not produce. Case (d) stubs the `total: 0` shape anyway,
+    because it is the one that would do damage.
 
     Stubbed, never the live producer: urlopen is monkeypatched throughout.
     """
@@ -7654,8 +10895,11 @@ def test_a_page_under_the_request_cap_does_not_end_a_listing_a_total_says_is_lon
         f"the refusal must account for the rows actually delivered once the listing was walked to its "
         f"end -- 300 of a stated 500: {str(e.value)!r}")
 
-    # (3) A SUB-CAP PAGE WITH NO TOTAL still ends the walk. This is the ordinary case on this corpus --
-    # 4 to 14 tiles, one request, no `total` field -- and it must not turn into a second request.
+    # (3) A SUB-CAP PAGE WITH NO TOTAL still ends the walk. Measured over all twelve course bboxes at
+    # every offset regime, this shape NEVER ARRIVES -- `total` is a top-level int on page one,
+    # mid-listing and past the end alike, 0 of 12 absent -- so the path is live-unreachable here and
+    # kept because this endpoint's reply shape has changed before. It must not turn into a second
+    # request.
     serve({0: {"items": every[:12]}})
     asked.clear()
     got = fetch_lidar.tnm_items()
@@ -7771,6 +11015,169 @@ def test_the_stalled_paging_refusal_names_an_offset_the_walk_actually_requested(
         assert len(asked) == 1 + fetch_lidar.TNM_STALL_PAGES, (
             f"{page_rows}-row pages: the walk made {len(asked)} requests ({asked}); a stall is one "
             f"productive page plus TNM_STALL_PAGES that add nothing.")
+
+
+def test_a_product_usgs_filtered_out_is_not_read_as_a_missing_tile(monkeypatch):
+    """`total` is USGS's count BEFORE its own download-URL filter, and nothing here knew that -- so a
+    perfectly healthy reply read as a damaged one on FIVE of the twelve courses, every fetch.
+
+    Measured live, page one, every course bbox:
+
+        bay-view          total=14 items=13     castlewood-valley total=7  items=6
+        callippe          total=41 items=40     monarch-bay       total=25 items=24
+        castlewood-hill   total=11 items=10     the other seven   total == items
+
+    and each of those five carries
+        filteredOut: "1 items have been removed because they don't have a download url"
+    which says exactly what happened. Unmodified, on the live bay-view bbox: 13 HTTP requests over
+    419 s, eight of them retrying the walk's own terminating page as "service busy", then
+
+        WARNING: TNM says it holds 14 LPC products ... but only 13 were distinct.
+        Reading that as an unstable listing order rather than a truncated survey ...
+        If a tile you expect is missing, re-run -- a different ordering will page differently.
+
+    Both halves false: the cause was stated in the reply, and the 14th product has no downloadURL on
+    any run, so re-running cannot help. Four faults with one root cause, and this covers all four:
+
+      (a) the diagnosis was invented rather than read;
+      (b) `_tnm_page` read `reply.get('message')`; THE LIVE KEY IS `messages`, PLURAL, and a LIST --
+          `message` is absent from every live reply, so USGS's own explanation was never seen;
+      (c) A HARD REFUSAL OF A HEALTHY SERVICE WAS ONE SORT ORDER AWAY. bay-view survived only because
+          its offset=13 page happened to re-serve one row, which pushed `served` to 14 and reached the
+          warn path. With the URL-less product sorting LAST -- same products, same total, different
+          order -- offset=13 comes back empty, `served` stays 13, and the run DIES on "ran out after
+          serving 13 rows ... That is a TRUNCATED listing". Same regression class as the 200+150+150
+          incident this module already suffered;
+      (d) a retry storm: an over-the-end reply carries the REAL total with `items: []`, so `total == 0`
+          never matched and the page was retried `tries` times at 10 s each.
+
+    The stall refusal must be untouched by all of this: a service that ignores `offset` and re-serves
+    page one still has to refuse, however many rows it hands over. Case (e).
+
+    Stubbed against the SHAPES MEASURED LIVE, never the live producer.
+
+    Imports fetch_lidar WITHOUT dropping it from sys.modules, unlike its four siblings here: every stub
+    below is keyed on `offset` alone, so which course bbox the module happens to be bound to cannot
+    change an answer. That keeps README's "drops modules from `sys.modules` at N sites" figure -- which
+    test_the_suite_reports_its_own_module_drop_count_correctly pins -- true without editing README.
+    """
+    os.environ.setdefault("COURSE", a_course())
+    fetch_lidar = _import_first_party("fetch_lidar")
+    monkeypatch.setattr(fetch_lidar.time, "sleep", lambda *_a, **_k: None)
+
+    asked = []
+
+    def serve(pages):
+        def _open(req, timeout=None):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            asked.append(int(re.search(r"[&?]offset=(\d+)", url).group(1)))
+            body = json.dumps(pages.get(asked[-1], {"total": 0, "items": []})).encode()
+
+            class _R:
+                def read(self_inner):
+                    return body
+            return _R()
+        monkeypatch.setattr(fetch_lidar.urllib.request, "urlopen", _open)
+
+    def item(i):
+        return {"sourceId": f"id{i}", "title": f"t{i}.laz",
+                "downloadURL": f"https://x/Projects/CA_Test_2021_B21/LAZ/{i}.laz"}
+
+    # The live wording, verbatim, because the count has to be read out of prose rather than an int.
+    FILTERED = "1 items have been removed because they don't have a download url"
+    SHOWN = [item(i) for i in range(13)]
+    PAST_END = ["The offset is greater than the total number of results for this query. "
+                "No items returned."]
+
+    # (b) FIRST, because everything else depends on it: the plural key has to be read at all.
+    serve({0: {"total": 14, "items": SHOWN, "filteredOut": FILTERED,
+               "messages": [f"Retrieved 14 item(s) Retrieved (1 through 200) {FILTERED}"],
+               "errors": []}})
+    asked.clear()
+    page = fetch_lidar._tnm_page(0, 8)
+    note = page[2]
+    assert note and FILTERED in str(note), (
+        f"_tnm_page did not read USGS's own explanation of the short page. The live key is `messages` "
+        f"(plural, a list); `message` is absent from every live reply. Got note={note!r}")
+    assert fetch_lidar._filtered_count(FILTERED) == 1, (
+        f"the filtered count is not being read out of {FILTERED!r} -- live it is that sentence, not an "
+        f"int, so a plain int() or a truthiness test loses the number")
+
+    # (a)+(d) THE LIVED bay-view SHAPE: one page, no invented diagnosis, no retry storm.
+    serve({0: {"total": 14, "items": SHOWN, "filteredOut": FILTERED,
+               "messages": [f"Retrieved 14 item(s) Retrieved (1 through 200) {FILTERED}"]},
+           13: {"total": 14, "items": [item(0)],           # the row TNM re-served live
+                "messages": ["Retrieved 14 item(s) Retrieved (14 through 213)"]},
+           14: {"total": 14, "items": [], "messages": PAST_END}})
+    asked.clear()
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        got = fetch_lidar.tnm_items()
+    out = buf.getvalue()
+    assert len(got) == 13, f"the 13 products USGS was willing to serve came back as {len(got)}"
+    assert asked == [0], (
+        f"the walk made {len(asked)} requests ({asked}) for a listing the FIRST reply fully accounted "
+        f"for: 13 shown + 1 filtered = the stated 14. Every extra request is a page past the end of a "
+        f"healthy listing, and live each one was retried 8 times at 10 s")
+    assert "unstable listing order" not in out and "re-run" not in out, (
+        f"a healthy reply still draws a diagnosis of the listing ORDER plus advice to re-run. USGS said "
+        f"why in `filteredOut`, and the URL-less product has no downloadURL on any run:\n{out}")
+    assert "WARNING" not in out, f"a fully accounted-for listing still warns:\n{out}"
+
+    # (c) THE SAME HEALTHY REPLY, URL-LESS PRODUCT LAST. This killed the course.
+    serve({0: {"total": 14, "items": SHOWN, "filteredOut": FILTERED,
+               "messages": [f"Retrieved 14 item(s) Retrieved (1 through 200) {FILTERED}"]},
+           13: {"total": 14, "items": [], "messages": PAST_END}})
+    asked.clear()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        got = fetch_lidar.tnm_items()
+    assert len(got) == 13, (
+        f"the same 13 healthy products came back as {len(got)} when the URL-less one sorts last. This "
+        f"raised SystemExit -- 'ran out after serving 13 rows ... That is a TRUNCATED listing' -- and "
+        f"killed the course, for a reply that differs from the accepted one only in ORDER")
+    assert asked == [0], f"requests {asked}"
+
+    # (d) IN ISOLATION: a genuinely short listing must refuse, but must not retry the empty page first.
+    serve({0: {"total": 20, "items": SHOWN},          # 13 shown, nothing filtered, 7 unexplained
+           13: {"total": 20, "items": [], "messages": PAST_END}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "TRUNCATED" in str(e.value), (
+        f"a listing 7 products short with nothing filtered is truncated and must refuse: {e.value!r}")
+    assert asked == [0, 13], (
+        f"the empty terminating page was requested {asked.count(13)} times ({asked}); an empty reply "
+        f"that STATES a total has answered the question, and retrying it 8 times at 10 s each is the "
+        f"~80 s per fetch this cost on five courses")
+
+    # (e) THE STALL REFUSAL IS INTACT. Pure repeat padding: every page re-serves page one, so `offset`
+    # is not being honoured and no accounting may excuse it.
+    serve({0: {"total": 400, "items": SHOWN}, 13: {"total": 400, "items": SHOWN},
+           26: {"total": 400, "items": SHOWN}, 39: {"total": 400, "items": SHOWN},
+           52: {"total": 400, "items": SHOWN}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "offset" in str(e.value), (
+        f"a service re-serving page one must still refuse -- accepting page one as the whole survey is "
+        f"the defect this paging was written for: {e.value!r}")
+    assert len(asked) == 1 + fetch_lidar.TNM_STALL_PAGES, (
+        f"the stall detector's request budget changed: {asked}")
+
+    # ...and a filtered product may never excuse a stall either. Same padding, with a filteredOut big
+    # enough to "account for" the whole shortfall on paper.
+    serve({0: {"total": 400, "items": SHOWN, "filteredOut": "387 items have been removed"},
+           13: {"total": 400, "items": SHOWN, "filteredOut": "387 items have been removed"},
+           26: {"total": 400, "items": SHOWN, "filteredOut": "387 items have been removed"},
+           39: {"total": 400, "items": SHOWN, "filteredOut": "387 items have been removed"}})
+    asked.clear()
+    with pytest.raises(SystemExit) as e:
+        fetch_lidar.tnm_items()
+    assert "offset" in str(e.value), (
+        f"a filtered-product count let a service that ignores `offset` pass as healthy: {e.value!r}")
 
 
 def test_lidar_project_grouping_has_no_title_fallback():
@@ -9295,7 +12702,7 @@ def test_honesty_gate_blanks_a_green_it_refused_to_read(gate_course):
 
 
 def test_render_refuses_an_ungated_surface_that_is_mostly_nodata(gate_course):
-    """fetch_dem.py -- the 1 m seamless path a BRAND-NEW course uses -- wrote no gate keys at all,
+    """fetch_dem.py -- the seamless path a BRAND-NEW course uses -- wrote no gate keys at all,
     so meta.get("insufficient") was None (falsy) and an unusable surface printed slope numbers.
     render_green must therefore gate on the surface itself, not only on the producer's verdict."""
     import numpy as np
@@ -9691,6 +13098,86 @@ def _fake_surface_tree(root, pairs):
     return bases
 
 
+def test_the_sidecar_backfills_array_guard_survives_dash_o_and_its_enumerator_matches_the_corpus(
+        tmp_path):
+    """Two holes in the one tool that writes into the only copy of the derived surfaces.
+
+    (1) `assert npy_before == npy_after` is a BARE ASSERT, and `python -O` deletes it. It is the whole
+        protection against the migration finding a rewritten array between its read and its write --
+        the case _fingerprint hashes rather than sizes in order to catch -- guarding the one write in
+        this project that touches data with no copy anywhere. Under -O the loop happily stamps a
+        digest describing an array that has since moved, which is precisely a digest certifying a tear.
+        Checked by compiling the module with optimisation, not by reading the source: an `assert` is
+        gone from the bytecode under -O, and only the bytecode can say whether the guard still exists.
+
+    (2) `_sidecars` enumerates `distribution.course_slugs(root)`, which globs `courses/*/course.json`.
+        Every corpus test that grades these surfaces globs `courses/*/dem_hd/hole*.json` and filters
+        only `_`-prefixed slugs. The two sets differ on a slug that holds SURFACES BUT NO course.json:
+        the tests grade it and require a digest, and the tool cannot see it to stamp one -- an
+        unstampable failure, in a directory nothing can regenerate. Scratch slugs are excluded by both
+        and must stay excluded; it is the course.json requirement that is the mismatch.
+    """
+    import py_compile
+
+    import surface_io
+
+    # (1) the guard must survive -O. compile() with optimize=2 is what `python -O` does to this module.
+    with open(os.path.join(ROOT, "surface_io.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    plain = compile(src, "surface_io.py", "exec", optimize=0)
+    stripped = compile(src, "surface_io.py", "exec", optimize=2)
+
+    def consts(code, needle):
+        """Every string constant reachable from `code`, so a message can be looked for in nested defs."""
+        out = []
+        stack = [code]
+        while stack:
+            c = stack.pop()
+            for k in c.co_consts:
+                if isinstance(k, str):
+                    out.append(k)
+                elif hasattr(k, "co_consts"):
+                    stack.append(k)
+        return [s for s in out if needle in s]
+    MSG = "changed during a sidecar-only migration"
+    assert consts(plain, MSG), (
+        "surface_io no longer carries the message for the array-moved guard; re-read main() before "
+        "editing this test")
+    assert consts(stripped, MSG), (
+        "the array-moved guard in surface_io.main is a bare `assert`, so `python -O` compiles it away "
+        "and the message vanishes from the bytecode. That assertion is the only thing standing between "
+        "a rewritten .npy and a digest that certifies it, on the one write in this project that touches "
+        "data with no copy anywhere -- courses/ is gitignored and only laz/ is refetchable. Raise "
+        "instead of asserting.")
+    py_compile.compile(os.path.join(ROOT, "surface_io.py"), cfile=str(tmp_path / "so.pyc"),
+                       doraise=True, optimize=2)
+
+    # (2) the enumerator must agree with what the corpus tests grade.
+    for slug, sub in (("gamma-golf-club", True), ("_scratch-course", False)):
+        d = tmp_path / "courses" / slug / "dem_hd"
+        d.mkdir(parents=True)
+        (d / "hole1.json").write_text(json.dumps({"W": 2, "H": 2}))
+        if sub:
+            (tmp_path / "courses" / slug / "course.json").write_text(json.dumps({"slug": slug}))
+    # ...and the case the two enumerators disagree about: surfaces, no course.json, not scratch
+    orphan = tmp_path / "courses" / "delta-golf-club" / "dem_hd"
+    orphan.mkdir(parents=True)
+    (orphan / "hole1.json").write_text(json.dumps({"W": 2, "H": 2}))
+
+    found = set(surface_io._sidecars(str(tmp_path)))
+    graded = {p[:-len(".json")]
+              for p in glob.glob(os.path.join(str(tmp_path), "courses", "*", "dem_hd", "hole*.json"))
+              if not os.path.basename(os.path.dirname(os.path.dirname(p))).startswith("_")}
+    assert all("_scratch-course" not in p for p in found), (
+        f"_sidecars reached a scratch slug: {sorted(found)}. The migration rewrites these files in "
+        f"place, so a fixture's meta must never be in the list.")
+    assert found == graded, (
+        f"_sidecars and the corpus tests disagree about which surfaces exist. Graded but not "
+        f"stampable: {sorted(graded - found)}; stampable but not graded: {sorted(found - graded)}. "
+        f"A surface every test requires a digest on, that --stamp cannot see, is an unstampable "
+        f"failure in a directory nothing can regenerate.")
+
+
 def test_the_sidecar_backfill_writes_nothing_unless_every_pair_reads_and_the_arrays_never_move(
         tmp_path, monkeypatch):
     """The code that rewrote 198 irreplaceable sidecars had no test at all.
@@ -9817,7 +13304,10 @@ def test_the_sidecar_backfill_writes_nothing_unless_every_pair_reads_and_the_arr
             np.save(fh, np.arange(12, dtype="float32").reshape(3, 4) * 7.0)
         return out
     monkeypatch.setattr(surface_io, "stamp_digest", stamp_then_move)
-    with pytest.raises(AssertionError) as e:
+    # SystemExit, not AssertionError: the guard was a bare `assert`, which `python -O` deletes -- see
+    # test_the_sidecar_backfills_array_guard_survives_dash_o_and_its_enumerator_matches_the_corpus, which
+    # reads the -O bytecode. This assertion is about the run STOPPING, and it still is.
+    with pytest.raises(SystemExit) as e:
         surface_io.main(["--stamp"])
     assert ".npy" in str(e.value), (
         f"the array was rewritten to the same length during a sidecar-only migration and the run did "
@@ -9881,8 +13371,7 @@ def test_the_two_render_modes_are_actually_different(gate_course):
         "the enlarged render must NOT pin an inch size, or the coach card cannot grow past the cap"
 
 
-@needs_corpus
-def test_the_printed_pdf_is_not_older_than_the_html_it_came_from():
+def test_the_printed_pdf_was_exported_from_the_html_beside_it():
     """The book that reaches a golf course is the PDF, and nothing in the repo produced it --
     PIPELINE.md said "headless Chrome --print-to-pdf, or Cmd+P", so every PDF was made by hand at an
     unknown time from an unknown HTML. They drifted: on 2026-07-29 all 12 PDFs dated 12:02 while the
@@ -9891,20 +13380,856 @@ def test_the_printed_pdf_is_not_older_than_the_html_it_came_from():
     printed 5-10-12-40-7 under a legend reading "Numbers = slope % there".
 
     Every honesty fix in this branch was invisible on paper. That is the worst failure mode this
-    project has: the HTML is not the artifact."""
+    project has: the HTML is not the artifact.
+
+    IT WAS NAMED FOR A COMPARISON IT NEVER MADE. It was called
+    `..._is_not_older_than_the_html_it_came_from` and export_pdf's own module docstring promised "a
+    test that fails when a PDF is older than its HTML", while stale() deliberately compares content
+    hashes and says why 44 lines below: an mtime gate false-positives on any copied or checked-out
+    tree, and a gate that cries wolf gets switched off. Measured: a PDF thirty days OLDER than its
+    HTML passed under that name. The name now states the comparison that actually runs.
+
+    IT WAS GATED ON THE WRONG SET. `@needs_corpus` keys on GEOMETRY (osm_geom.json + osm_course.json)
+    while this measures BOOKS, and the two are different sets. Both directions measured:
+      * geometry present, no book built -- the test RAN, export_pdf.pairs() returned [], and
+        `assert not outdated` passed having examined NOTHING.
+      * a book present with no geometry -- poppy-ridge's yardage-mode shape, which _books() exists to
+        cover -- it SKIPPED with "per-course data is gitignored; nothing to measure" on the very tree
+        where the CLI exited 1 and named the book as exported from a DIFFERENT html.
+    End to end on that tree: with one book's recorded source hash genuinely disagreeing the suite failed
+    on this test and on three others, and after making the book fresh again the SAME four failed, to the
+    test -- which is the half of that observation the argument rests on, because it shows the four are
+    independent of the staleness and this one is not. THE PASS/FAIL/SKIP COUNTS THAT USED TO BE QUOTED
+    HERE ("5 failed / 97 passed / 236 skipped") DO NOT REPRODUCE and are gone: a later reading of the
+    same tree and tree-shape gave 4 failed / 99 passed / 235 skipped, 338 collected both ways. They
+    cannot be re-derived from this checkout either, because reproducing them means corrupting a stamp
+    inside courses/, which is gitignored, shared, and the only copy of the built corpus. A count nothing
+    can re-derive is not evidence, so the claim is stated as the four names it was really about.
+    So the domain is DERIVED FROM WHAT IS PRESENT, and cross-checked against a second
+    enumeration that does not share pairs()' glob -- BOOKS is keyed on course.json.
+
+    AND IT CLASSIFIED ON PROSE: `why.startswith("exported from")` against free text. Proven by a
+    two-step mutation, which is test_the_pdf_freshness_verdict_is_a_tag_and_not_the_wording_of_a_
+    sentence below. So the verdict is a TAG the tool returns, and every tag it can return has to be
+    classified here or this test fails rather than filing an unknown one under "cannot know"."""
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import export_pdf
+
+    # DERIVED FROM WHAT IS PRESENT. BOOKS is keyed on course.json; pairs() globs the html. Two
+    # enumerations of one set, so a glob that quietly stops matching -- or a course that quietly stops
+    # being a course -- fails here instead of silently shrinking the set this gate is measured over.
+    present = {os.path.join(ROOT, "courses", s, f)
+               for s in BOOKS for f in ("greenbook.html", "greenbook_coach.html")
+               if os.path.isfile(os.path.join(ROOT, "courses", s, f))}
+    if not present:
+        pytest.skip("no book is built here, so there is no printed artifact to compare (build one: "
+                    "COURSE=<slug> python3 generate.py, then python3 tools/export_pdf.py)")
+    covered = {h for h, _p in export_pdf.pairs()}
+    assert covered == present, (
+        "export_pdf.pairs() and this suite disagree about which books exist, so the freshness gate is "
+        "measured over the wrong set.\n  the gate does not cover: "
+        + f"{sorted(os.path.relpath(p, ROOT) for p in present - covered)}"
+        + "\n  the gate covers a book this suite does not know about: "
+        + f"{sorted(os.path.relpath(p, ROOT) for p in covered - present)}")
+
+    # CLASSIFY ON THE TAG, never on the sentence -- and partition it HERE rather than read the
+    # partition off export_pdf, because a partition the tool hands the test is one the tool can move
+    # on its own.
+    proven = {export_pdf.WRONG_SOURCE, export_pdf.WRONG_BYTES, export_pdf.TRUNCATED}
+    unknowable = {export_pdf.NOT_EXPORTED, export_pdf.UNSTAMPED}
+    assert proven | unknowable == set(export_pdf.REASONS), (
+        "export_pdf can return a verdict this test does not classify: "
+        f"{sorted(set(export_pdf.REASONS) - proven - unknowable)}. Decide HERE whether each one is a "
+        f"PROVEN defect or something the tree cannot tell us -- an unclassified tag falls into the "
+        f"'cannot know' half and skips, which is how a rewording once turned a proven-stale book green.")
     bad = export_pdf.stale()
-    # Only a PROVEN mismatch is a defect. "not exported" and "unverifiable" mean we cannot know,
-    # and a test must not assert what it cannot know.
-    outdated = [(p, why) for _h, p, why in bad if why.startswith("exported from")]
-    unknown = [p for _h, p, why in bad if not why.startswith("exported from")]
+    outdated = [(p, why) for _h, p, tag, why in bad if tag in proven]
+    unknown = [p for _h, p, tag, _why in bad if tag in unknowable]
+    # A test must not assert what it cannot know: a book nobody has exported, and one carrying no
+    # recorded source at all, are both unjudgeable. A PROVEN defect alongside them is still a failure.
+    # The reason NAMES EACH VERDICT rather than describing one of them for both: this skip read "N of M
+    # book(s) carry no recorded source hash", which is false of a book that has no PDF at all -- there
+    # is nothing to stamp -- and it is the same classify-on-the-sentence shape the tag exists to stop.
     if unknown and not outdated:
-        pytest.skip(f"{len(unknown)} book(s) have no recorded source hash (export with "
-                    f"tools/export_pdf.py to make staleness checkable)")
+        pytest.skip(_unjudgeable_pdf_books(bad, unknowable, len(present)))
     assert not outdated, ("the PRINTED book does not match the engine:\n   " +
                           "\n   ".join(f"{os.path.relpath(p, ROOT)} ({w})" for p, w in outdated) +
                           "\n  Re-export with: python3 tools/export_pdf.py")
+
+
+_MINIMAL_PDF = (b"%PDF-1.4\n"
+                b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+                b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+                b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 252 360]>>endobj\n"
+                b"trailer<</Root 1 0 R>>\n%%EOF\n")
+
+
+def _a_shipped_book_pdf():
+    """The bytes of a real shipped book, so a torn-write probe tears a real one. None on a fresh clone."""
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.pdf"))):
+        if not os.path.basename(os.path.dirname(p)).startswith("_"):
+            with open(p, "rb") as fh:
+                return fh.read()
+    return None
+
+
+def _sha256(data):
+    """A digest computed HERE, so a stamp this suite writes is not the tool's own arithmetic echoed back."""
+    import hashlib
+    return hashlib.sha256(data).hexdigest()
+
+
+def _probe_tree(tmp_path, books):
+    """A fake repo root holding `books` == {slug: (pdf bytes or None, stamp text or None)}.
+
+    Never the corpus, and not negotiable: every probe below writes a torn PDF or a lying stamp beside
+    a book, courses/ is gitignored with no copy in history and none on a remote, and conftest's
+    deletion guard refuses to let a fixture clean up after itself in there for exactly that reason.
+
+    Returns (root, {slug: (html, pdf)}). The html content is per-slug so two books never share a
+    source digest by accident.
+    """
+    root = tmp_path / "probe-root"
+    out = {}
+    for slug, (pdf_bytes, stamp) in books.items():
+        d = root / "courses" / slug
+        d.mkdir(parents=True)
+        html = d / "greenbook.html"
+        html.write_text(f"<html><body>{slug}</body></html>", encoding="utf-8")
+        pdf = d / "greenbook.pdf"
+        if pdf_bytes is not None:
+            pdf.write_bytes(pdf_bytes)
+        if stamp is not None:
+            (d / "greenbook.pdf.src").write_text(stamp, encoding="utf-8")
+        out[slug] = (str(html), str(pdf))
+    return root, out
+
+
+def _export_pdf_bound_to(root, tmp_path, edit=None, name="export_pdf_probe"):
+    """A COPY of tools/export_pdf.py, loaded under its own name and pointed at a fake `root`.
+
+    A copy, because these probes REWORD its messages, and a mutation landing in
+    sys.modules["export_pdf"] would hand the next test a rewritten gate. Loaded by spec rather than
+    importlib.import_module so nothing about the real module's identity is disturbed either.
+    """
+    import importlib.util
+    with open(os.path.join(ROOT, "tools", "export_pdf.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    if edit:
+        src = edit(src)
+    path = tmp_path / f"{name}.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.ROOT = str(root)
+    return mod
+
+
+def _one_book_per_verdict(tmp_path):
+    """A fake tree with one book per verdict export_pdf.stale() can reach. -> (root, {slug: (html, pdf)})
+
+    Named for the verdict each one is built to provoke, so the coverage assertion below reads as the
+    claim it is: every tag in REASONS is REACHABLE, not merely declared.
+    """
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    def stamp(slug, pdf_digest=None):
+        h = _sha256(f"<html><body>{slug}</body></html>".encode())
+        return f"html {h}\n" + (f"pdf {pdf_digest}\n" if pdf_digest else "")
+    return _probe_tree(tmp_path, {
+        "not-exported-gc": (None, None),                      # no PDF at all
+        "unstamped-gc": (whole, None),                        # a PDF, no record of its source
+        "wrong-source-gc": (whole, f"html {'0' * 64}\n"),     # the record names another html
+        "truncated-gc": (whole[:len(whole) // 10], stamp("truncated-gc")),   # a torn write
+        "wrong-bytes-gc": (whole, stamp("wrong-bytes-gc", "1" * 64)),        # not the exported bytes
+    })
+
+
+def test_the_pdf_freshness_verdict_is_a_tag_and_not_the_wording_of_a_sentence(tmp_path):
+    """MUTATION TEST. Rewording an error message must not reclassify a proven-stale printed book.
+
+    The gate above classified on `why.startswith("exported from")` against export_pdf.stale()'s free
+    text. A two-step mutation showed what that costs, on a tree with one book:
+      step A -- corrupt the .src stamp so the recorded hash genuinely disagrees with the html beside
+                it: the gate FAILED, with the right message.
+      step B -- the same corrupted stamp, and export_pdf's sentence reworded, nothing else: the gate
+                SKIPPED, under a skip message that was itself FALSE ("have no recorded source hash" --
+                the stamp was there, it simply did not match).
+    A sentence is for a human to read. The verdict has to be a value.
+
+    So this drives the real module over a tree built to provoke EVERY verdict it can reach, discovers
+    the sentences it actually produces, rewrites all of them in a copy of the source, and requires the
+    tags to come back unchanged. Discovered rather than listed, so a reason added later is rewritten
+    too instead of quietly escaping the mutation.
+    """
+    root, books = _one_book_per_verdict(tmp_path)
+    mod = _export_pdf_bound_to(root, tmp_path)
+
+    before = {}
+    for _h, p, tag, why in mod.stale():
+        before[os.path.basename(os.path.dirname(p))] = (tag, why)
+    assert set(before) == set(books), (
+        f"the probe tree provoked verdicts for {sorted(before)} but was built to provoke one per "
+        f"verdict from {sorted(books)}; a book that comes back CLEAN here is a hole in the gate")
+    assert {t for t, _w in before.values()} == set(mod.REASONS), (
+        f"only {sorted({t for t, _w in before.values()})} of export_pdf.REASONS "
+        f"{sorted(mod.REASONS)} are reachable, so a declared verdict is dead code -- either the probe "
+        f"tree no longer provokes it or nothing can")
+
+    # Every sentence the module produced, rewritten in a copy -- at the AST, and only the sentence.
+    # A textual replace cannot do it: one of these reasons is written as two adjacent string literals,
+    # so it exists in the module without existing in the source as a literal, and a probe that skipped
+    # it quietly would be the same class of hole this test exists to close.
+    sentences = sorted({w for _t, w in before.values()})
+
+    def reword(src):
+        import ast
+        tree = ast.parse(src)
+        n = 0
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "append" and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "bad"):
+                continue
+            arg = node.args[0]
+            assert isinstance(arg, ast.Tuple) and len(arg.elts) == 4, (
+                f"a verdict is no longer (html, pdf, tag, why): {ast.unparse(node)}")
+            arg.elts[3] = ast.Constant(value=f"reworded reason {n}")
+            n += 1
+        assert n == len(sentences), (
+            f"rewrote {n} verdict sentences, but the module reported {len(sentences)} distinct ones -- "
+            f"the probe is not reaching every place a reason is written")
+        return ast.unparse(ast.fix_missing_locations(tree))
+
+    mut = _export_pdf_bound_to(root, tmp_path, edit=reword, name="export_pdf_reworded")
+    after = {}
+    for _h, p, tag, why in mut.stale():
+        after[os.path.basename(os.path.dirname(p))] = (tag, why)
+    assert all(w.startswith("reworded reason") for _t, w in after.values()), (
+        f"the rewording did not take, so this test proves nothing: {sorted(after.values())}")
+    assert {s: t for s, (t, _w) in after.items()} == {s: t for s, (t, _w) in before.items()}, (
+        "rewording export_pdf's messages changed which VERDICT each book gets. The tag is supposed to "
+        "be the fact and the sentence a courtesy; if the two move together then the gate above is "
+        f"still reading prose.\n  before: {before}\n  after:  {after}")
+
+    # ...and the gate's own partition still fires on the rewritten copy. This is step B, run forward:
+    # the book whose stamp names another html must remain a PROVEN defect after the rewording, not
+    # drop into the half this suite is allowed to skip over.
+    proven = {mut.WRONG_SOURCE, mut.WRONG_BYTES, mut.TRUNCATED}
+    assert after["wrong-source-gc"][0] in proven, (
+        "a book whose recorded source hash disagrees with the html beside it is no longer a proven "
+        "defect once the message is reworded -- which is precisely the two-step mutation above")
+
+
+def test_an_interrupted_export_cannot_leave_a_book_the_gate_calls_fresh(tmp_path):
+    """export() wrote the PDF in place, and the stamp recorded only the HTML -- so a torn write passed.
+
+    Playwright's writer opens the destination "wb" (truncating; playwright/_impl/_helper.py's
+    async_writefile), and a re-export rewrites ALL 15 books including the 14 whose stamps already
+    match. Interrupt one -- Ctrl-C, a full disk -- and the printable book is destroyed while its stamp,
+    which was never rewritten because it already agreed, still names the current HTML. Measured on a
+    real shipped book: the file came back with ZERO pages and PyMuPDF's is_repaired set, and
+    `--check` said "all 1 PDF(s) match the HTML they were exported from" and exited 0.
+
+    That falsified README's claim that --check "proves the PDF you would actually print came from the
+    HTML on disk": it proved a NOTE beside the PDF named the current HTML. Two fixes, both graded here
+    by doing the damage rather than by reading the source:
+      * the export STAGES and renames, the convention this repo states four times for this exact class
+        (fetch_lidar.py, fetch_hole_elev.py, surface_io.py, fetch_trees.py), so an interrupted run
+        cannot leave a wreck where the book was;
+      * the stamp records the PDF's OWN digest as well, so a book replaced or damaged after the fact
+        is a verdict rather than a guess -- and a file with no trailer is refused whatever its stamp
+        says, which is the only thing standing between a torn write and the stamps already on disk.
+    """
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    html, pdf = books["probe-golf-club"]
+    mod = _export_pdf_bound_to(root, tmp_path)
+
+    # The stamp is written by the tool, so what a real export records is what is graded.
+    mod.write_stamp(pdf, html)
+    assert sorted(mod.read_stamp(pdf)) == ["html", "pdf"], (
+        f"a stamp this tool writes records {sorted(mod.read_stamp(pdf))}; without the PDF's own digest "
+        f"the gate can only prove that a NOTE beside the book names the current HTML")
+    assert mod.read_stamp(pdf)["html"] == _sha256(open(html, "rb").read())
+    assert mod.read_stamp(pdf)["pdf"] == _sha256(whole)
+    assert mod.stale() == [], f"a book just exported is not fresh: {mod.stale()}"
+
+    # THE STAGE IS DOT-PREFIXED. A leftover `greenbook.pdf.part` would land inside
+    # _courses_snapshot's watch (courses/*/*) and inside the coverage walk in
+    # test_the_read_only_guard_watches_every_file_a_real_course_holds; a dot-prefixed one is exempt in
+    # both, which is the same argument surface_io.staged_names makes for `.holeNN.json.part`.
+    staged = mod.staged_pdf(pdf)
+    assert os.path.dirname(staged) == os.path.dirname(pdf), "the stage must land beside the book"
+    assert os.path.basename(staged).startswith(".") and staged.endswith(".part"), (
+        f"the staged name {os.path.basename(staged)!r} is neither dot-prefixed nor a .part, so a "
+        f"leftover reads as course data the read-only guard has never seen")
+
+    # A TORN WRITE. This is what the interrupted "wb" leaves on disk.
+    with open(pdf, "wb") as fh:
+        fh.write(whole[:len(whole) // 10])
+    torn = mod.stale()
+    assert [t for _h, _p, t, _w in torn] == [mod.TRUNCATED], (
+        f"a book truncated to a tenth of itself, beside a stamp that still names the current HTML, "
+        f"comes back {torn} -- the gate calls the wreck fresh")
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+    if fitz is not None and whole is not _MINIMAL_PDF:
+        with fitz.open(pdf) as d:
+            assert d.page_count == 0 and d.is_repaired, (
+                "the torn probe still parses, so it is not the failure this test is about")
+
+    # A COMPLETE PDF THAT IS NOT THE EXPORT. The stage-and-rename cannot see this one; the recorded
+    # digest is the only thing that can. A byte flipped in the MIDDLE, so the header and the trailer
+    # are both still there and is_whole_pdf has nothing to object to.
+    mid = len(whole) // 2
+    changed = whole[:mid] + bytes((whole[mid] ^ 0xFF,)) + whole[mid + 1:]
+    assert changed != whole and len(changed) == len(whole), "the swap probe changed nothing"
+    with open(pdf, "wb") as fh:
+        fh.write(changed)
+    swapped = mod.stale()
+    assert [t for _h, _p, t, _w in swapped] == [mod.WRONG_BYTES], (
+        f"a complete PDF that is not the one that was exported comes back {swapped}; README's claim "
+        f"that --check proves the PDF you would print came from the HTML on disk rests on this")
+
+    # ...and restoring the exported bytes clears it, so the verdict is about the artifact and not about
+    # having been touched.
+    with open(pdf, "wb") as fh:
+        fh.write(whole)
+    assert mod.stale() == [], f"the exported bytes back on disk still read as stale: {mod.stale()}"
+
+
+def test_the_export_gate_refuses_an_option_it_does_not_understand_instead_of_writing(tmp_path,
+                                                                                    monkeypatch):
+    """`check = "--check" in sys.argv` was exact membership, and every other dash-argument was
+    silently discarded -- so a typo fell through to the branch that REWRITES all 15 books.
+
+    Measured on a genuinely stale book: `python3 tools/export_pdf.py -check` exported it and exited 0,
+    and the `--check` run that followed then returned 0 as well. The gate did not check; it made itself
+    true and said nothing. `--chek`, `--verify` and `-n` are the same fall-through.
+
+    A gate must refuse an argument it does not understand. Graded by counting export() calls, so
+    "refuses" means the writing branch was never entered rather than that a message was printed."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, f"html {'0' * 64}\n")})
+    mod = _export_pdf_bound_to(root, tmp_path)
+    assert [t for _h, _p, t, _w in mod.stale()] == [mod.WRONG_SOURCE], \
+        "the probe book is supposed to start out genuinely stale"
+
+    calls = []
+    monkeypatch.setattr(mod, "export", lambda items: calls.append(list(items)) or list(items))
+
+    def run(*argv):
+        del calls[:]
+        monkeypatch.setattr(sys, "argv", ["export_pdf.py", *argv])
+        return mod.main(), list(calls)
+
+    for bad_opt in ("-check", "--chek", "--verify", "-n", "--check=1"):
+        rc, wrote = run(bad_opt)
+        assert not wrote, (
+            f"{bad_opt!r} reached the branch that rewrites books. On a stale tree that EXPORTS, which "
+            f"makes the next --check pass -- the gate made itself true instead of checking.")
+        assert rc != 0, f"{bad_opt!r} was accepted and reported success (rc={rc})"
+
+    # ...and the two spellings that ARE the tool still work, or the refusal above broke it.
+    rc, wrote = run("--check")
+    assert rc == 1 and not wrote, f"--check on a stale book returned {rc} and wrote {wrote}"
+    rc, wrote = run()
+    assert rc == 0 and len(wrote) == 1, f"a bare run returned {rc} and exported {wrote}"
+
+
+def test_an_unverifiable_pdf_is_not_accused_of_being_printed_by_hand(tmp_path):
+    """"unverifiable (exported by hand; no source hash)" asserted a cause the tool cannot know, and it
+    was FALSE in the one case the tool itself produces.
+
+    export() writes the PDF and then writes its stamp. Interrupt a 15-book run between the two -- one
+    Ctrl-C -- and --check told the user the book was "exported by hand" and to "export with
+    tools/export_pdf.py", which is exactly what they were doing. Reproduced by removing a stamp beside
+    its book, which is byte-for-byte the state that interrupt leaves.
+
+    The tag carries the fact. The sentence has to name both ways a book gets here, or it misdirects
+    the reader in the case the tool caused itself."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    mod = _export_pdf_bound_to(root, tmp_path)
+    bad = mod.stale()
+    assert [t for _h, _p, t, _w in bad] == [mod.UNSTAMPED], (
+        f"a book with no stamp beside it comes back {bad}; provenance is unknown, not proven")
+    why = bad[0][3]
+    assert "hand" in why and "interrupt" in why, (
+        f"the reason reads {why!r}. A PDF with no recorded source is either hand-printed or the "
+        f"remains of a run interrupted between writing the book and writing its stamp -- the tool "
+        f"cannot tell which, and naming only the first tells a user who just pressed Ctrl-C to do the "
+        f"thing they were doing.")
+
+
+def test_a_slug_that_matches_no_book_is_not_reported_as_an_empty_corpus(tmp_path, monkeypatch,
+                                                                       capsys):
+    """"no built books found (build one first: COURSE=<slug> python3 generate.py)" was printed when
+    books ARE built and only the slug argument matched nothing -- `--check merion` rather than
+    `--check merion-golf-club`. Reproduced.
+
+    It sends the reader to rebuild a corpus that is already there, and rebuilding one costs up to
+    4.1 GB of LiDAR a course -- see
+    test_the_export_tools_account_of_what_a_rebuild_costs_is_the_corpus_on_disk, which derives that from
+    the laz/ dirs on disk. The empty-tree message is right where it is right, so both directions are
+    checked."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, _books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    mod = _export_pdf_bound_to(root, tmp_path)
+    monkeypatch.setattr(mod, "export", lambda items: list(items))
+
+    monkeypatch.setattr(sys, "argv", ["export_pdf.py", "--check", "probe"])
+    rc = mod.main()
+    said = capsys.readouterr().out
+    assert rc != 0, "a slug that matches no book reported success"
+    assert "build one first" not in said, (
+        f"a book IS built and the slug simply matched nothing, and the tool says:\n  {said.strip()}")
+    assert "probe-golf-club" in said, (
+        f"the tool does not say which books it does have, so the reader cannot see that 'probe' is "
+        f"short for one of them:\n  {said.strip()}")
+
+    # ...and on a tree with no books at all that message is the correct one.
+    empty, _ = _probe_tree(tmp_path / "empty", {})
+    (empty / "courses").mkdir(parents=True, exist_ok=True)
+    mod.ROOT = str(empty)
+    monkeypatch.setattr(sys, "argv", ["export_pdf.py", "--check"])
+    rc = mod.main()
+    said = capsys.readouterr().out
+    assert rc != 0 and "build one first" in said, (
+        f"an empty tree no longer tells the reader to build a book: rc={rc}, said {said.strip()!r}")
+
+
+def test_the_export_tools_account_of_its_own_history_is_the_one_git_records():
+    """tools/export_pdf.py published "for 96 commits" and NOTHING IN THIS TREE MEASURED 96.
+
+    The figure is the span over which the module's own promise -- "a test that fails when a PDF is older
+    than its HTML" -- stood while no age comparison existed anywhere. It is a fact about this
+    repository's history, so it is derived from that history: git names the commit that introduced the
+    phrase and the commit that removed it, and the count is the distance between them. The same wrong
+    figure reached a commit message, where it cannot be corrected; here it can.
+
+    IMMUTABLE ONCE RIGHT, which is why the span is published as an interval and not as a distance from
+    HEAD. `git rev-list --count A..B` between two fixed commits is the same number forever, whereas
+    "N commits ago" is wrong again on the next commit -- and that is the shape of defect this file has
+    corrected in a published figure more than ninety times."""
+    import subprocess
+
+    def git(*args):
+        r = subprocess.run(("git",) + args, cwd=ROOT, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            pytest.skip(f"git {' '.join(args)} failed: {r.stderr.strip()[:120]}")
+        return r.stdout
+
+    rel = os.path.join("tools", "export_pdf.py")
+    with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+        src = fh.read()
+    flowed = " ".join(src.split())
+    m = re.search(r'The promise here read "([^"]+)" for the (\d+) commits between `([0-9a-f]{7,40})`, '
+                  r'which introduced this tool, and `([0-9a-f]{7,40})`, which corrected it', flowed)
+    assert m, (
+        "tools/export_pdf.py no longer records how long its own promise stood, in a form git can check "
+        "-- 'The promise here read \"<phrase>\" for the <N> commits between `<sha>`, which introduced "
+        "this tool, and `<sha>`, which corrected it'. It published a bare '96 commits' that nothing "
+        "measured, so the shape is fixed and derived rather than left as prose.")
+    phrase, said, born, fixed = m.group(1), int(m.group(2)), m.group(3), m.group(4)
+
+    if not git("rev-parse", "--is-inside-work-tree").strip().startswith("true"):
+        pytest.skip("not a git checkout")
+    full = {}
+    for label, rev in (("born", born), ("fixed", fixed)):
+        got = git("rev-parse", rev).strip()
+        assert len(got) == 40, f"the {label} commit {rev} does not resolve in this checkout"
+        full[label] = got
+    # BOTH ENDS OF THE INTERVAL, read out of the blobs rather than off `git log -S` -- the phrase is
+    # quoted in the corrected text too, so an occurrence count cannot separate the two ends.
+    added_in = git("log", "--diff-filter=A", "--format=%H", full["born"], "--", rel).split()
+    assert added_in and added_in[-1] == full["born"], (
+        f"{rel} was not introduced at {born} but at {[c[:7] for c in added_in[-1:]] or 'nowhere'}, so "
+        f"the interval this figure counts does not start where the module says it does.")
+    then = " ".join(git("show", f"{full['born']}:{rel}").split())
+    now = " ".join(git("show", f"{full['fixed']}:{rel}").split())
+    assert phrase in then and "The promise here read" not in then, (
+        f"at {born} this module's promise does not read {phrase!r} as its own claim, so the span below "
+        f"is counting from the wrong end.")
+    assert "The promise here read" in now, (
+        f"at {fixed} this module does not yet record the promise as a past one, so that commit is not "
+        f"where the claim was corrected.")
+    measured = int(git("rev-list", "--count", f"{full['born']}..{full['fixed']}").strip())
+    assert said == measured, (
+        f"tools/export_pdf.py says its promise stood for {said} commits; `git rev-list --count "
+        f"{born}..{fixed}` is {measured}. A published count of this repository's own history is "
+        f"checkable against the history, and the figure it replaced -- 96 -- matched nothing in it: "
+        f"{born}..HEAD is {int(git('rev-list', '--count', full['born'] + '..HEAD').strip())} commits and "
+        f"the whole repo is {int(git('rev-list', '--count', 'HEAD').strip())}.")
+
+
+def test_the_export_tools_account_of_what_a_rebuild_costs_is_the_corpus_on_disk():
+    """"~300 MB of LiDAR a course" is the SMALLEST non-zero course in this corpus, offered as the typical
+    one -- the median-quoted-as-worst-case shape 8869583 fixed at the tee-pad end.
+
+    That figure is the reason the message it sits in exists: `--check merion` used to send the reader off
+    to rebuild a corpus already on disk, and how bad that advice is IS the size of the download. Measured
+    over the `laz/` dirs: 12 courses, 12.4 GB in total, worst 4.1 GB, median 0.6 GB, smallest non-zero
+    0.3 GB. 300 MB was the floor.
+
+    So the module publishes the WORST and the course it is on, the form this project settled on for a
+    bound -- every term of the set is known, so the largest is quoted as the largest -- and both are
+    re-derived here. Decimal MB/GB, the same unit `export()` prints its own book sizes in
+    (`getsize(p)/1e6`), because two units in one tool is how 987 MiB and 1035 MB become an argument.
+
+    Corpus-gated: `laz/` is gitignored, so on a clone there is nothing to measure and the figure is
+    the one thing in that message a clone cannot check."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+    with open(os.path.join(ROOT, "tools", "export_pdf.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    # `#` markers stripped before flowing: the claim lives in a comment, and a wrapped comment puts a
+    # hash in the middle of the sentence.
+    flowed = " ".join(re.sub(r"(?m)^\s*#\s?", "", src).split())
+    m = re.search(r"at up to ([\d.]+) GB of LiDAR a course -- the worst of the (\w+) here is "
+                  r"([a-z0-9-]+)\.", flowed)
+    assert m, (
+        "tools/export_pdf.py no longer says what rebuilding a course costs, in a form this can check -- "
+        "'at up to <N> GB of LiDAR a course -- the worst of the <count> here is <slug>.'. It published "
+        "'~300 MB', the smallest non-zero course in the corpus quoted as the typical one.")
+    said_gb, said_count, said_worst = float(m.group(1)), m.group(2), m.group(3)
+
+    sizes = {}
+    for d in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "laz"))):
+        slug = os.path.basename(os.path.dirname(d))
+        if slug.startswith("_"):
+            continue
+        total = 0
+        for base, _dirs, files in os.walk(d):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(base, f))
+                except OSError:
+                    pass
+        sizes[slug] = total
+    if not sizes:
+        pytest.skip("no laz/ dir here; the LiDAR corpus is gitignored, so there is nothing to measure")
+    worst, worst_bytes = max(sizes.items(), key=lambda kv: kv[1])
+    assert said_worst == worst, (
+        f"tools/export_pdf.py names {said_worst} as the largest LiDAR corpus of the "
+        f"{len(sizes)} courses built here; it is {worst} at {worst_bytes / 1e9:.1f} GB. "
+        f"All of them: " + ", ".join(f"{s} {b / 1e9:.2f}" for s, b in
+                                     sorted(sizes.items(), key=lambda kv: -kv[1])))
+    assert abs(said_gb - worst_bytes / 1e9) <= 0.05, (
+        f"tools/export_pdf.py bounds a course's LiDAR at {said_gb} GB; {worst} holds "
+        f"{worst_bytes / 1e9:.4f} GB. A bound quoted below the worst is the defect this replaced, and "
+        f"one quoted above it is a figure the corpus does not support.")
+    counted = {"twelve": 12, "eleven": 11, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+               "ten": 10, "nine": 9}.get(said_count)
+    assert counted == len(sizes), (
+        f"tools/export_pdf.py says the worst is the worst of the {said_count} courses here and "
+        f"{len(sizes)} have a laz/ dir. A bound is only a bound over a stated set.")
+    assert export_pdf.pairs(), "no book is built here, so that message's own preconditions do not hold"
+
+
+def test_a_pdf_stamp_naming_two_different_html_digests_is_refused_rather_than_resolved(tmp_path):
+    """`read_stamp`'s `setdefault` resolved a self-contradictory note to whichever line came FIRST.
+
+    The stamps already on disk carry a legacy one-line form, so a bare line is read as the html digest.
+    Append a second bare line naming a different html and the note now says two incompatible things --
+    and it was silently resolved to the first, so the book passed for the reader whose html matched that
+    line and would have passed for the other reader had the lines been the other way round. A note that
+    names two htmls names neither.
+
+    Refused by dropping the field, which is the "does not agree with the html" answer the docstring
+    already distinguishes from "no note at all": a PROVEN defect (WRONG_SOURCE), not unknown
+    provenance. Both orderings are driven, because an order-dependent resolution is the defect."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    real = _sha256(b"<html><body>probe-golf-club</body></html>")
+    other = _sha256(b"<html><body>a DIFFERENT book</body></html>")
+    assert real != other
+    for label, stamp in (("real digest first", f"{real}\n{other}\n"),
+                         ("other digest first", f"{other}\n{real}\n"),
+                         ("keyed and bare disagreeing", f"html {real}\n{other}\n")):
+        root, books = _probe_tree(tmp_path / label.replace(" ", "-"),
+                                  {"probe-golf-club": (whole, stamp)})
+        mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_two_digests_"
+                                                        + label.replace(" ", "_"))
+        rec = mod.read_stamp(books["probe-golf-club"][1])
+        assert rec is not None and "html" not in rec, (
+            f"with the stamp reading {stamp!r} ({label}), read_stamp returns {rec} -- a note naming two "
+            f"different html digests is not evidence for either of them.")
+        tags = [t for _h, _p, t, _w in mod.stale()]
+        assert tags == [mod.WRONG_SOURCE], (
+            f"a book whose stamp contradicts itself comes back {tags} ({label}); it is a PROVEN defect, "
+            f"because whatever produced the note recorded two answers and the tool cannot pick one.")
+
+    # ...and the legacy one-line stamp, and a repeated identical line, still read as the html digest --
+    # every shipped stamp was one bare line once, and refusing those would fail 15 real books.
+    root, books = _probe_tree(tmp_path / "legacy", {"probe-golf-club": (whole, f"{real}\n{real}\n")})
+    mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_repeated_digest")
+    assert mod.read_stamp(books["probe-golf-club"][1]).get("html") == real, (
+        "a note that states the SAME digest twice states one digest, and it has to keep reading as the "
+        "legacy html stamp -- every PDF in this corpus carried one bare line before write_stamp gained "
+        "the second field.")
+
+
+def test_a_staged_book_left_by_a_kill_is_swept_before_the_next_export(tmp_path, monkeypatch, capsys):
+    """Nothing swept `.greenbook.pdf.part`, and courses/ is the one directory nothing else sweeps.
+
+    export() stages and renames, and its `finally` removes the stage on every failure short of a KILL --
+    SIGKILL, a closed lid, power. laz/ has a sweep (fetch_lidar.sweep_partials), dem_hd has one
+    (surface_io.sweep_staged), lidar_dates.py sweeps its own course.json.part; this path had the stage
+    without the sweep, so a killed run left a partial book sitting beside the real one indefinitely.
+
+    Harmless as data -- a `.part` is only renamed into place after the writer returns, so it is never a
+    whole book -- but it is litter in the one directory that holds the only copy of everything, and it
+    reads to the next person like a book something has seen.
+
+    Driven on a probe tree with a stubbed exporter, so no browser is launched and nothing in courses/ is
+    touched. The sweep is asserted to run BEFORE the export and to leave the real books alone."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_sweep")
+    html, pdf = books["probe-golf-club"]
+    litter = mod.staged_pdf(pdf)
+    with open(litter, "wb") as fh:
+        fh.write(whole[:len(whole) // 3])         # what a kill mid-write leaves
+    assert os.path.exists(litter)
+
+    seen = {}
+
+    def fake_export(items):
+        seen["staged_when_export_ran"] = os.path.exists(litter)
+        return list(items)
+
+    monkeypatch.setattr(mod, "export", lambda items: (mod.sweep_staged(items), fake_export(items))[1])
+    monkeypatch.setattr(sys, "argv", ["export_pdf.py"])
+    rc = mod.main()
+    said = capsys.readouterr().out
+    assert rc == 0, f"the stubbed export failed: rc={rc}, said {said!r}"
+    assert not os.path.exists(litter), (
+        f"a staged book left by a killed run survives the next export: {litter} is still there. "
+        f"courses/<slug>/ is the one directory in this tree nothing sweeps.")
+    assert seen.get("staged_when_export_ran") is False, (
+        "the sweep did not run before the export, so a run killed twice in the same place still "
+        "accumulates stages")
+    assert os.path.exists(pdf) and open(pdf, "rb").read() == whole, (
+        "the sweep removed or damaged the real book beside the stage")
+
+    # ...and the real export() calls it, rather than this test's own arrangement being the only caller.
+    src = open(os.path.join(ROOT, "tools", "export_pdf.py"), encoding="utf-8").read()
+    body = src.split("def export(", 1)[1].split("\ndef ", 1)[0]
+    assert "sweep_staged(" in body, (
+        "export() no longer sweeps the stages before it writes, so the sweep exists and nothing on the "
+        "path a user takes calls it")
+
+
+def test_legal_06s_account_of_the_pdf_export_gate_is_the_one_the_gate_earns(tmp_path):
+    """legal/06 published the overclaim README had already withdrawn, INSIDE the paragraph that says why.
+
+    Its own preamble reads "Two precise statements about what that gate does and does not do, because an
+    earlier revision of this file overstated it" -- and the second of the two then said
+    `tools/export_pdf.py --check` "proves each PDF was produced from the HTML currently on disk (by
+    recorded content hash)". Nothing graded that sentence. The gate does not produce anything and cannot
+    prove what produced a file: it compares digests, and a stamp is a record.
+
+    What it does prove is measured here rather than asserted, on a probe tree:
+      (1) every field write_stamp records is RE-DERIVED at check time -- corrupt the file that field
+          names and the gate names the book. So "re-derives both from the files on disk" is earned.
+      (2) it does NOT prove production. The probe's PDF is a real shipped book and its html is four
+          words of markup; the PDF was never rendered from it. Stamp them together and the gate passes.
+          That is the exact claim the record used to make, refuted by the tool itself.
+    Then legal/06 has to name one digest per field the tool actually records, and must not claim
+    production. The field list is the LIVE one, so a third stamp field fails here until the record and
+    this test both account for it.
+
+    README's wording was checked against the same standard and holds: it says the tool "records a digest
+    of the HTML and a digest of the exported PDF, then re-derives both from the files on disk", which is
+    (1), and names no production."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_legal06")
+    html, pdf = books["probe-golf-club"]
+    mod.write_stamp(pdf, html)
+    with open(mod.stamp_path(pdf), encoding="utf-8") as fh:
+        fields = {ln.split()[0] for ln in fh.read().splitlines() if len(ln.split()) == 2}
+    assert fields, f"write_stamp no longer records a `<field> <digest>` note: {mod.stamp_path(pdf)}"
+
+    # (2) FIRST, because it is the state everything below is measured from: a pair the tool never
+    #     produced, stamped, passes. The record may not claim more than this.
+    assert mod.stale() == [], (
+        f"the probe's stamped pair is already reported stale ({mod.stale()}), so nothing below measures "
+        f"anything")
+    assert b"probe-golf-club" not in whole, (
+        "the probe's PDF happens to contain its html's text, so it cannot stand for a book that was "
+        "never rendered from that html")
+
+    # (1) each recorded field is re-derived from the file on disk
+    assert fields == {"html", "pdf"}, (
+        f"write_stamp records {sorted(fields)} and this test knows how to disturb "
+        f"{sorted({'html', 'pdf'})}. A field nothing here disturbs is a field the gate may have stopped "
+        f"re-deriving while the record still tells a reader it does.")
+    for field in sorted(fields):
+        root2, books2 = _probe_tree(tmp_path / f"redrive-{field}", {"probe-golf-club": (whole, None)})
+        m2 = _export_pdf_bound_to(root2, tmp_path, name=f"export_pdf_legal06_{field}")
+        h2, p2 = books2["probe-golf-club"]
+        m2.write_stamp(p2, h2)
+        assert m2.stale() == []
+        if field == "html":
+            with open(h2, "w", encoding="utf-8") as fh:
+                fh.write("<html>moved on</html>")
+        else:
+            with open(p2, "wb") as fh:
+                fh.write(whole[:-20] + b"%%EOF\n")
+        tags = [t for _h, _p, t, _w in m2.stale()]
+        assert tags and tags != [m2.NOT_EXPORTED], (
+            f"the recorded `{field}` digest is not re-derived from the file on disk: changing that file "
+            f"leaves the gate reporting {tags}. legal/06 tells a reader both digests are re-derived.")
+
+    with open(os.path.join(ROOT, "legal", "06_RULE_4.3_CONFORMANCE.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    flowed = " ".join(doc.replace("*", "").replace("`", "").replace("‑", "-").split())
+    para = re.search(r"The exported PDF is checked separately:(.+?)(?=- |\Z)", flowed)
+    assert para, (
+        "legal/06 no longer carries its 'The exported PDF is checked separately:' statement, which is "
+        "where it tells a reader what tools/export_pdf.py --check is worth.")
+    said = para.group(1)
+    NAMED = {"html": r"digest of the HTML", "pdf": r"digest of the exported PDF"}
+    assert set(NAMED) == fields, (
+        f"write_stamp records {sorted(fields)}; legal/06's account is graded here for {sorted(NAMED)}. "
+        f"A stamp field the record does not name is one a reader is not told is checked -- add it to "
+        f"the record and to this map together.")
+    missing = [f for f, pat in NAMED.items() if not re.search(pat, said, re.I)]
+    assert not missing, (
+        f"legal/06's account of the export gate does not name the {missing} digest(s) the tool records "
+        f"and re-derives. It reads:\n  {said.strip()}")
+    # A PRODUCTION CLAIM, and the negation matters -- the corrected record has to be able to SAY that
+    # the gate cannot prove production, so the test is per clause: a clause that reaches a production
+    # phrase through a "prove" with no negation in front of it is the overclaim. This check caught its
+    # own author's first replacement wording, which is why it is written this way and not as a
+    # phrase ban.
+    overclaims = []
+    for m in re.finditer(r"produced from|came from|rendered from", said, re.I):
+        clause = said[said.rfind(".", 0, m.start()) + 1: m.end()]
+        verb = re.search(r"\bprov\w*", clause, re.I)
+        if verb and not re.search(r"\b(?:cannot|can ?not|does not|doesn't|never|not|no)\b",
+                                  clause[:verb.start()], re.I):
+            overclaims.append(clause.strip())
+    assert not overclaims, (
+        f"legal/06 claims the export gate proves what PRODUCED a PDF:\n  " + "\n  ".join(overclaims)
+        + "\n  Measured above on a probe tree: a real book stamped against html it was never rendered "
+          "from passes. The gate compares recorded digests to the files on disk; a stamp is a record, "
+          "not a re-derivation of the rendering.")
+
+
+def _unjudgeable_pdf_books(bad, unjudgeable, total):
+    """The skip reason for books whose PDF cannot be judged, counted BY VERDICT. None when there are none.
+
+    `NOT_EXPORTED` and `UNSTAMPED` were both reported as "N of M book(s) carry no recorded source hash",
+    and a book with no PDF AT ALL carries no stamp because there is nothing to stamp: the reader was told
+    to export to make staleness checkable when the thing that was missing was the book. Counted off the
+    TAGS, so a verdict added to the unjudgeable half is reported under its own name rather than under
+    another verdict's sentence -- which is the defect the tag exists to prevent, one level up.
+    """
+    kinds = collections.Counter(tag for _h, _p, tag, _w in bad if tag in unjudgeable)
+    if not kinds:
+        return None
+    return (f"{sum(kinds.values())} of {total} book(s) cannot be judged: "
+            + ", ".join(f"{n} [{tag}]" for tag, n in sorted(kinds.items()))
+            + " -- export with tools/export_pdf.py to make staleness checkable")
+
+
+def test_the_unjudgeable_pdf_verdicts_are_counted_under_their_own_names(tmp_path):
+    """The gate said "carry no recorded source hash" for a book with NO PDF AT ALL.
+
+    `unknowable = {NOT_EXPORTED, UNSTAMPED}` is the right partition -- neither is a proven defect -- but
+    the sentence beside it described only the second, so a book nobody has exported was reported as a
+    book whose provenance was unrecorded. Unreachable on today's corpus (all 15 PDFs exist), which is
+    exactly why it needs a probe rather than a run.
+
+    Driven over the real tags, from the tree that provokes one book per verdict, so the reason is graded
+    against what the tool actually returns and every verdict in the unjudgeable half must appear under
+    its own name."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+    root, books = _one_book_per_verdict(tmp_path)
+    mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_unjudgeable")
+    bad = mod.stale()
+    unjudgeable = {mod.NOT_EXPORTED, mod.UNSTAMPED}
+    assert unjudgeable <= set(t for _h, _p, t, _w in bad), (
+        f"the probe tree no longer provokes both unjudgeable verdicts: {sorted(t for _h,_p,t,_w in bad)}")
+
+    said = _unjudgeable_pdf_books(bad, unjudgeable, len(books))
+    assert said, "the probe tree provokes unjudgeable books and the reason came back empty"
+    for tag in sorted(unjudgeable):
+        assert tag in said, (
+            f"a book whose verdict is [{tag}] is reported without its verdict being named:\n  {said}\n"
+            f"  Those two are different facts -- one book has no PDF, the other has no record of where "
+            f"its PDF came from -- and one sentence for both misdirects whichever reader it is not "
+            f"about.")
+    only_absent = [b for b in bad if b[2] == mod.NOT_EXPORTED]
+    alone = _unjudgeable_pdf_books(only_absent, unjudgeable, len(books))
+    assert mod.NOT_EXPORTED in alone and mod.UNSTAMPED not in alone, (
+        f"a tree whose only unjudgeable book has no PDF at all is reported as {alone!r}, which names a "
+        f"verdict no book in it has.")
+    assert _unjudgeable_pdf_books([b for b in bad if b[2] not in unjudgeable], unjudgeable,
+                                  len(books)) is None, (
+        "a tree with no unjudgeable book still produces a reason, so the gate would skip on a corpus "
+        "where every verdict is a PROVEN defect")
+
+
+def test_the_headless_shell_is_the_revision_the_installed_playwright_declares(tmp_path, monkeypatch):
+    """_headless_shell()'s docstring said "the bundled chrome-headless-shell that matches the installed
+    Playwright build". Nothing consulted the installed build: it returned the LEXICOGRAPHICALLY
+    greatest cached directory, and that ordering is wrong at every digit-count boundary. Measured with
+    revisions 999, 1000 and 1208 cached, it picked 999.
+
+    The renderer milestone is load-bearing evidence in this suite -- /Creator and the Skia/PDF
+    milestone are how test_the_hand_made_aerial_master_is_recorded_as_unreproducible and PIPELINE.md
+    tell a tool-exported book from a hand-printed one -- so which binary prints the book is not an
+    implementation detail.
+
+    Graded against the revision the INSTALLED driver declares, read out of playwright's own
+    browsers.json here rather than from the tool's reader, so both sides are not one function."""
+    try:
+        import playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
+    declared = None
+    manifest = os.path.join(os.path.dirname(playwright.__file__), "driver", "package",
+                            "browsers.json")
+    assert os.path.isfile(manifest), f"playwright no longer ships {manifest}"
+    with open(manifest, encoding="utf-8") as fh:
+        for b in json.load(fh)["browsers"]:
+            if b.get("name") == "chromium-headless-shell":
+                declared = str(b["revision"])
+    assert declared, "playwright's browsers.json no longer declares a chromium-headless-shell revision"
+
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+
+    def cache(*revisions):
+        home = tmp_path / ("home-" + "-".join(str(r) for r in revisions) or "home-empty")
+        for r in revisions:
+            d = (home / "Library" / "Caches" / "ms-playwright"
+                 / f"chromium_headless_shell-{r}" / "chrome-headless-shell-mac-arm64")
+            d.mkdir(parents=True)
+            (d / "chrome-headless-shell").write_bytes(b"")
+        monkeypatch.setenv("HOME", str(home))
+        return export_pdf._headless_shell()
+
+    got = cache(999, declared, 1000)
+    assert got and f"chromium_headless_shell-{declared}/" in got, (
+        f"with the declared revision {declared} cached alongside decoys, the exporter picks {got!r}. "
+        f"The book must be printed by the build the installed Playwright drives.")
+
+    # ...and where the declared revision is NOT cached the newest one is the honest answer -- newest by
+    # REVISION NUMBER, which is the whole of the lexicographic defect.
+    got = cache(999, 1000, 1208)
+    assert got and "chromium_headless_shell-1208/" in got, (
+        f"with 999, 1000 and 1208 cached and nothing matching the installed build, the exporter picks "
+        f"{got!r}. Sorted as text, '999' is the greatest of those three.")
+
+    assert cache() is None, "an empty cache must report no shell rather than a path that is not there"
 
 
 def _pdf_numbers(pdf):
@@ -10007,7 +14332,7 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
 
     Sibling coverage, so this test does not have to carry it: PDF-vs-HTML faithfulness is
     test_every_number_printed_in_a_pdf_exists_in_its_html, and staleness is
-    test_the_printed_pdf_is_not_older_than_the_html_it_came_from, which hashes content rather than
+    test_the_printed_pdf_was_exported_from_the_html_beside_it, which hashes content rather than
     comparing mtimes."""
     try:
         import fitz
@@ -10080,7 +14405,14 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
 HONESTY_CASES = {
     "plain":       (dict(),                                        "GREEN",                        True),
     "outdated":    (dict(_outdated=True),                          "pre-rebuild data",             True),
-    "coarse_1m":   (dict(source="USGS 3DEP seamless 1 m @0.5m"),   "1 m data",                     True),
+    # The coarse mark carries the MEASURED source cell, not a resolution tier: 3DEP's seamless service
+    # is a multi-resolution mosaic and this label said "1 m data" for six greens whose own arrays
+    # measure 2.72 x 3.43 m. Both branches are exercised -- with a measurement, and without one, where
+    # the caveat must still print but must NOT invent a figure.
+    "coarse_cell": (dict(source="USGS 3DEP seamless mosaic @0.5m",
+                         source_cell_m=[2.719, 3.426]),            "2.7&times;3.4 m data",         True),
+    "coarse_unmeasured": (dict(source="USGS 3DEP seamless mosaic @0.5m",
+                              source_cell_m=None),                 "GREEN &middot; coarse data",   True),
     "insufficient": (dict(insufficient=True),                      "GREEN",                        False),
 }
 
@@ -10483,7 +14815,8 @@ def test_the_information_carrying_greys_are_readable_on_paper():
     # DISCOVERED, not listed. This named three selectors -- .foot, .playline, .yalt -- and passed while
     # .minilab inked at #9a9a9a (2.81:1), .dcopy the same, and .gsmall and .dqrcap at #777 (4.48:1). The
     # worst of those is the worst possible place for it: .minilab carries "GREEN . pre-rebuild data" and
-    # "GREEN . 1 m data", the two marks whose whole job is to tell a junior to trust that green LESS. An
+    # the coarse-source mark, the two marks whose whole job is to tell a junior to trust that green
+    # LESS. An
     # allow-list can only ever cover what someone thought of, so this now sweeps every rule in both
     # stylesheets and exempts by name, with a reason, rather than including by name.
     EXEMPT = {
@@ -11322,7 +15655,7 @@ def test_a_mixed_crs_tile_directory_is_refused_not_projected_through_one_guess(t
     metres on 6. Nothing ever removes a previously-fetched project's tiles from laz/, so a directory
     holding both is reachable by ordinary use, and the failure is SILENT: reproduced here, the ftUS
     transform applied to a metre tile throws its points about 1.9e6 m away, where main()'s bbox
-    prefilter drops them and prints "fed 0 greens". The green then falls to the 1 m DEM, or to nothing,
+    prefilter drops them and prints "fed 0 greens". The green then falls to the seamless DEM, or to nothing,
     for a reason that is not real -- and had the offset been small instead, the surface would have been
     built from points scaled by 3.28.
 
@@ -11501,6 +15834,18 @@ def test_the_elevation_stage_reads_one_crs_for_the_whole_tile_directory(tmp_path
             sys.modules.pop(m, None)
 
 
+# HOW MANY RETURNS A SYNTHETIC LAZ FIXTURE NEEDS TO LOOK LIKE A PASS.
+#
+# lidar_dates.MIN_ENDPOINT_CLUSTER_PTS requires each resolved endpoint to sit in a temporal cluster of
+# at least 858 returns, because that is what separates a flight pass from a bad clock reading -- the
+# sparsest real endpoint cluster in this corpus holds 3,432 and the junk that saturates the extreme
+# window is 32 to 128. The fixtures below used 64, 100 and 128 points, which is a hundredth of the
+# thinnest real green-near set (16,034) and well inside junk territory, so under that floor they no
+# longer date. Raised rather than exempted: a fixture that a real guard would refuse is not testing the
+# real path, and every assertion those three tests make is unchanged.
+PASS_LIKE_RETURNS = 1200
+
+
 def test_gps_week_time_is_refused_not_turned_into_september_2011():
     """global_encoding bit 0 == 0 means GPS WEEK TIME: seconds since the start of the current GPS
     week, with the week number recorded NOWHERE in the file, so the absolute date is not recoverable.
@@ -11533,12 +15878,12 @@ def test_gps_week_time_is_refused_not_turned_into_september_2011():
     inst = dt.datetime(2019, 8, 14, 15, 4, 1, tzinfo=dt.timezone.utc)
     standard = (inst - dt.datetime(1980, 1, 6, tzinfo=dt.timezone.utc)).total_seconds() + 18
     with tempfile.TemporaryDirectory() as td:
-        ok = write_tile(os.path.join(td, "adjusted.laz"), 1, [standard - 1e9] * 64)
+        ok = write_tile(os.path.join(td, "adjusted.laz"), 1, [standard - 1e9] * PASS_LIKE_RETURNS)
         got = ld.tile_dates(ok)
         assert got and got[0].date() == inst.date(), f"adjusted time must decode exactly, got {got}"
 
         # week time: 0..604800 seconds, no week number anywhere
-        wk = write_tile(os.path.join(td, "weektime.laz"), 0, [345_600.0] * 64)
+        wk = write_tile(os.path.join(td, "weektime.laz"), 0, [345_600.0] * PASS_LIKE_RETURNS)
         assert ld.tile_dates(wk) is None, \
             "GPS Week Time carries no week number -- the date is not recoverable and must be refused"
 
@@ -11842,7 +16187,7 @@ def test_every_built_green_records_its_coverage():
             continue
         m = _json.load(open(mf))
         if "seamless" in str(m.get("source", "")).lower():
-            continue                       # the 1 m fallback path records its own keys
+            continue                       # the seamless fallback path records its own keys
         assert "uncovered" in m, f"{mf} has no coverage figure -- the gate's input is unrecorded"
         assert m.get("density") is not None and m.get("nan_frac") is not None
         worst_unc = max(worst_unc, float(m["uncovered"]))
@@ -11876,7 +16221,7 @@ def test_one_junk_gps_time_cannot_drag_a_whole_survey_back_eight_years():
     hdr = laspy.LasHeader(version="1.4", point_format=6)
     hdr.global_encoding.gps_time_type = 1
     las = laspy.LasData(hdr)
-    n = 128
+    n = PASS_LIKE_RETURNS
     las.x = np.linspace(0, 10, n); las.y = np.linspace(0, 10, n); las.z = np.zeros(n)
     times = np.full(n, good)
     times[0] = 1.0                     # junk, positive, decodes to 2011-09-14
@@ -12601,18 +16946,22 @@ def test_waiving_churn_on_a_volatile_kind_does_not_waive_the_green_check(tmp_pat
         sys.modules.pop(m, None)
     import fetch_osm
 
-    # the-reserve-at-spanos-park, measured: 21 greens, 18 holes, 20 fairways, 2462 trees,
-    # 1530 buildings, 60 water
+    # the-reserve-at-spanos-park, measured as the guard sees it (fetchable): 21 greens, 18 holes,
+    # 20 fairways, 2462 trees, 1530 buildings, 53 waterway ways. The waterways were once written here
+    # as "60 water" natural=water areas -- 60 is the RAW count of a bucket that merged areas with
+    # lines, and the course has 53 lines and 6 fetchable areas. It is the LINE class that is
+    # re-segmented at a road crossing, so it is the line class that earns the proportional tolerance
+    # this test exercises.
     def el(i, tags):
         return {"type": "way", "id": i, "tags": dict(tags),
                 "geometry": [{"lat": 38.0, "lon": -121.0}]}
 
-    def corpus(greens=21, holes=18, fairways=20, trees=2462, buildings=1530, water=60):
+    def corpus(greens=21, holes=18, fairways=20, trees=2462, buildings=1530, waterways=53):
         els = []
         n = iter(range(1, 100000))
         for tags, count in (({"golf": "green"}, greens), ({"golf": "hole"}, holes),
                             ({"golf": "fairway"}, fairways), ({"natural": "tree"}, trees),
-                            ({"building": "yes"}, buildings), ({"natural": "water"}, water)):
+                            ({"building": "yes"}, buildings), ({"waterway": "stream"}, waterways)):
             els += [el(next(n), tags) for _ in range(count)]
         return {"version": 0.6, "elements": els}
 
@@ -12627,7 +16976,7 @@ def test_waiving_churn_on_a_volatile_kind_does_not_waive_the_green_check(tmp_pat
         check(full)                                  # unchanged -> accepted
         # 1. ordinary churn must not stop a build
         check(corpus(trees=2461))                    # the reproduced abort
-        check(corpus(buildings=1500, water=59, trees=2420))
+        check(corpus(buildings=1500, waterways=52, trees=2420))
         # ...but a collapse is still a collapse, on a volatile kind too
         with pytest.raises(SystemExit) as ei:
             check(corpus(trees=1900))
@@ -12667,14 +17016,16 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
     """The shrink guard exempted a kind for being RARE, and rare is when one loss matters most.
 
     Two holes, both on the courses that were actually re-fetched. `oc[k] < 4: continue` exempted every
-    kind with fewer than four features ENTIRELY, and `water` is VOLATILE with tolerance max(1, 2%), so
-    the floor of 1 gave a three-pond course a free pond. Measured on the adopted caches:
+    kind with fewer than four features ENTIRELY, and the blue class was VOLATILE with tolerance
+    max(1, 2%), so the floor of 1 gave a three-watercourse course a free watercourse. Measured on the
+    adopted caches (the counts below are per DRAWN class -- `water` is the natural=water areas and
+    `waterway` the lines, which the census merged into one bucket until they were split apart):
 
-        castlewood-hill      water_hazard 1, water 3, bunker 36   -- draws water on 3 of 18 cards
-        castlewood-valley    water_hazard 2, lateral_water_hazard 1, water 7, bunker 59  -- 12 of 18
-        monarch-bay          water_hazard 1, water 1, bunker 81    -- 3 of 18
-        callippe             water_hazard 1;  merion lateral_water_hazard 1
-        philadelphia         lateral_water_hazard 3;  valley-hi water 4 (tolerance 1)
+        castlewood-hill      water_hazard 1, waterway 3, bunker 36  -- draws water on 3 of 18 cards
+        castlewood-valley    water_hazard 2, lateral_water_hazard 1, waterway 7, bunker 59  -- 12 of 18
+        monarch-bay          water_hazard 1, waterway 1, bunker 81   -- 3 of 18
+        callippe             water_hazard 1;  merion lateral_water_hazard 1 + water 4
+        philadelphia         lateral_water_hazard 3 + water 2;  valley-hi lateral 5 + water 1
 
     Every count above is below the four-feature floor, or one churn tolerance away from it. So a single
     water hazard could have disappeared out of any of those caches and nothing -- not the guard, not a
@@ -12692,8 +17043,9 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
 
     Fixed by naming the kinds whose loss removes drawn HAZARD ink from a card -- sand and water, tan and
     blue, the two things the footer counts as "NB" and "NW" -- and giving them no rarity exemption and no
-    tolerance floor. The proportional part of the tolerance stays, because a 60-way creek network really
-    is re-segmented at road crossings; what goes is the floor that made 3 -> 2 and 1 -> 0 free.
+    tolerance floor. The proportional part of the tolerance stays, because the-reserve's 53-way creek
+    network really is re-segmented at road crossings; what goes is the floor that made 3 -> 2 and 1 -> 0
+    free.
 
     A THIRD waiver, for the reason this module already carries a second: a waiver granted for one
     judgement must not silently spend another. ALLOW_SHRINK is granted for a deleted tree stump and
@@ -12717,6 +17069,7 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
         els, n = [], iter(range(1, 100000))
         for kind, count in counts.items():
             tags = ({"natural": "water"} if kind == "water" else
+                    {"waterway": "stream"} if kind == "waterway" else
                     {"natural": "tree"} if kind == "tree" else
                     {"natural": "wood"} if kind == "wood" else
                     {"golf": kind})
@@ -12724,10 +17077,10 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
         return {"version": 0.6, "elements": els}
 
     # the three adopted caches this was measured on, as the guard sees them
-    HILL = dict(green=18, hole=18, fairway=18, bunker=36, water_hazard=1, water=3, wood=2)
+    HILL = dict(green=18, hole=18, fairway=18, bunker=36, water_hazard=1, waterway=3, wood=2)
     VALLEY = dict(green=19, hole=20, fairway=18, bunker=59, water_hazard=2,
-                  lateral_water_hazard=1, water=7)
-    MONARCH = dict(green=18, hole=18, fairway=18, bunker=81, water_hazard=1, water=1)
+                  lateral_water_hazard=1, waterway=7)
+    MONARCH = dict(green=18, hole=18, fairway=18, bunker=81, water_hazard=1, waterway=1)
 
     def cache_for(base, name):
         p = tmp_path / name
@@ -12747,7 +17100,7 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
 
             check()                                     # unchanged -> accepted
             # every hazard-class kind this cache holds, one feature lighter, must ABORT
-            for kind in ("bunker", "water_hazard", "lateral_water_hazard", "water"):
+            for kind in ("bunker", "water_hazard", "lateral_water_hazard", "water", "waterway"):
                 if kind not in base:
                     continue
                 with pytest.raises(SystemExit) as ei:
@@ -12767,14 +17120,21 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
             if "wood" in base:
                 check(wood=base["wood"] - 1)
 
-        # the proportional tolerance survives where it is earned: the-reserve's 60 water ways really are
-        # re-segmented at road crossings, so 2% of 60 is still one. This is the residual and it is
-        # deliberate -- a course with 60 of a kind is not a course where one loss is invisible.
-        big = dict(green=21, hole=18, fairway=20, bunker=76, water=60, lateral_water_hazard=9)
+        # the proportional tolerance survives where it is earned: the-reserve's 53 WATERWAY ways really
+        # are re-segmented at road crossings, so 2% of 53 is still one. This is the residual and it is
+        # deliberate -- a course with 53 of a kind is not a course where one loss is invisible. (Written
+        # here as "60 water" until the classes were counted apart: 60 is the raw merged figure, and the
+        # course has 53 lines plus 6 fetchable natural=water areas. The AREAS earn nothing, below.)
+        big = dict(green=21, hole=18, fairway=20, bunker=76, waterway=53, water=6,
+                   lateral_water_hazard=9)
         bigp = cache_for(big, "the-reserve.json")
-        fetch_osm._check_response(reply(**{**big, "water": 59}), bigp, "the-reserve/osm_course.json")
+        fetch_osm._check_response(reply(**{**big, "waterway": 52}), bigp, "the-reserve/osm_course.json")
         with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
-            fetch_osm._check_response(reply(**{**big, "water": 57}), bigp, "the-reserve/osm_course.json")
+            fetch_osm._check_response(reply(**{**big, "waterway": 51}), bigp,
+                                      "the-reserve/osm_course.json")
+        # 6 pond AREAS are not the class that re-segments, so they earn no tolerance at all
+        with pytest.raises(SystemExit, match="water 6 -> 5"):
+            fetch_osm._check_response(reply(**{**big, "water": 5}), bigp, "the-reserve/osm_course.json")
         # 9 lateral hazards are NOT volatile, so there is no tolerance to earn
         with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
             fetch_osm._check_response(reply(**{**big, "lateral_water_hazard": 8}), bigp,
@@ -12796,7 +17156,7 @@ def test_a_rare_hazard_kind_cannot_lose_a_feature_unremarked(tmp_path):
                 os.environ.pop(var, None)
         os.environ["ALLOW_HAZARD_SHRINK"] = "1"
         try:
-            hill(water_hazard=0, water=0, bunker=0)       # a real removal, waived by name
+            hill(water_hazard=0, waterway=0, bunker=0)    # a real removal, waived by name
             with pytest.raises(SystemExit, match="ALLOW_STRUCTURAL_SHRINK"):
                 hill(green=17)                            # ...and it does not spend the green check
         finally:
@@ -12839,7 +17199,7 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
     h.global_encoding.gps_time_type = 1            # adjusted standard GPS time
     h.add_crs(crs)
     las = laspy.LasData(h)
-    n = 100
+    n = PASS_LIKE_RETURNS
     off_near, off_far = near_offset_m / per_unit, far_offset_m / per_unit
     las.x = np.concatenate([np.full(n, cx + off_near), np.full(n, cx + off_far)])
     las.y = np.concatenate([np.full(n, cy), np.full(n, cy + off_far)])
@@ -12850,13 +17210,14 @@ def _synthetic_laz(path, epsg, ring_lonlat, near_utc, far_utc, far_offset_m=2000
 
 
 def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
-    """fetch_dem.py (1 m seamless) writes into the SAME dem_hd/ as fetch_dem_hd.py (0.4 m LiDAR) and
-    used to rewrite every hole it was given. So running it without ONLY= silently replaced every
-    0.4 m green with the coarse 1 m one, saying nothing about the better data it had just discarded.
+    """fetch_dem.py (the seamless mosaic) writes into the SAME dem_hd/ as fetch_dem_hd.py (0.4 m LiDAR)
+    and used to rewrite every hole it was given. So running it without ONLY= silently replaced every
+    0.4 m green with the coarse mosaic one, saying nothing about the better data it had just discarded.
 
-    The books stayed HONEST throughout -- each affected card prints "1 m data" -- but a whole course
-    quietly lost its precision, which is why no gate caught it. Found cold-building Monarch Bay:
-    3,889,124 bytes against the committed 4,973,620, with "1 m data" on greens that have real LiDAR.
+    The books stayed HONEST throughout -- each affected card carries the coarse-data caveat -- but a
+    whole course quietly lost its precision, which is why no gate caught it. Found cold-building
+    Monarch Bay: 3,889,124 bytes against the committed 4,973,620, with that caveat printing on greens
+    that have real LiDAR.
     Verified after the fix on a copy of that course: 12 LiDAR surfaces kept, only the 6 seamless
     holes rewritten.
 
@@ -12879,7 +17240,7 @@ def test_the_1m_fallback_does_not_overwrite_a_good_lidar_green(tmp_path):
         meta("b.json", source=lidar["source"], insufficient=True)) is False
     # an existing seamless surface may be refreshed
     assert fd.keeps_existing_surface(
-        meta("c.json", source="USGS 3DEP seamless 1 m @0.5m sampling", insufficient=False)) is False
+        meta("c.json", source="USGS 3DEP seamless mosaic @0.5m sampling", insufficient=False)) is False
     # absent or unreadable: rebuilding is the repair
     assert fd.keeps_existing_surface(str(tmp_path / "nope.json")) is False
     bad = tmp_path / "bad.json"
@@ -12899,21 +17260,33 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
     OVERWRITE=false and OVERWRITE=no all armed it, in both stages that write dem_hd/.
 
     An explicit "off" turning a guard OFF is the worst direction for this pair of flags to fail in.
-    With OVERWRITE=false, fetch_dem_hd.py replaces a working 1 m fallback with a blank green, and
-    fetch_dem.py replaces a good 0.4 m LiDAR surface with the coarse 1 m one -- the two faults the
+    With OVERWRITE=false, fetch_dem_hd.py replaces a working seamless fallback with a blank green, and
+    fetch_dem.py replaces a good 0.4 m LiDAR surface with the coarse seamless one -- the two faults the
     keeps_existing_surface guards exist to prevent, re-armed by the word "false".
 
     fetch_trees.py already parses its two escape hatches correctly (`.lower() not in ("", "0",
     "false", "no")`); these two modules were the ones left on bool(). The existing truth-table tests
     pass `overwrite` as a Python bool and never exercise the env read at all -- and one of them
     records that its previous grep-based version was satisfied merely by this module-scope line
-    existing. So pin the PARSE, not the string."""
+    existing. So pin the PARSE, not the string.
+
+    The SAME off-vocabulary is hand-copied all over this repo -- fetch_hole_elev._env_on,
+    fetch_trees._env_on (two flags), lidar_coverage._env_on (two flags) and two reads spelled inline
+    inside fetch_trees function bodies -- and none of them was pinned when this test was written. Their
+    flags are driven in this suite only with "0" and "1", so narrowing either tuple to ("", "0"), which
+    makes ALLOW_ELEV_LOSS=false / ALLOW_NO_TREES=no WAIVE the guard, left the whole suite at its
+    baseline (303 passed, 1 skipped, unchanged). Copies of a vocabulary are only safe while something
+    says they are the same vocabulary, so every module that defines `_env_on` is DISCOVERED at the end
+    and required to be in the table here -- lidar_coverage's copy arrived unpinned under a list, which
+    is why the list is no longer the pin. The two inline reads (ALLOW_NO_BUILDINGS, ALLOW_NO_RELATIONS)
+    are still unreachable: nothing can import a function's local, so pinning them needs the read routed
+    through fetch_trees._env_on first."""
     os.environ["COURSE"] = a_course()
+    TABLE = (("", False), ("0", False), ("false", False), ("FALSE", False),
+             ("no", False), ("No", False), ("1", True), ("true", True), ("yes", True))
     saved = os.environ.get("OVERWRITE")
     try:
-        for raw, want in (("", False), ("0", False), ("false", False), ("FALSE", False),
-                          ("no", False), ("No", False), ("1", True), ("true", True),
-                          ("yes", True)):
+        for raw, want in TABLE:
             os.environ["OVERWRITE"] = raw
             for name in ("fetch_dem", "fetch_dem_hd"):
                 for m in ("config", name):
@@ -12922,6 +17295,40 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
                 assert mod.OVERWRITE is want, (
                     f"{name}: OVERWRITE={raw!r} parsed to {mod.OVERWRITE}, expected {want} -- an "
                     f"explicit 'off' must not arm a stage that overwrites a working green surface")
+        # ...and the _env_on copies, whose flags waive guards rather than arm a rewrite: an empty tree
+        # layer (every card drawn as open ground), a hole that has lost the canopy the survey recorded,
+        # a hole that has lost the elevation it used to print, and the two that let a fetch proceed
+        # past a coverage verdict it cannot vouch for.
+        driven = []
+        for name, flags in (("fetch_hole_elev", ("ALLOW_ELEV_LOSS",)),
+                            ("fetch_trees", ("ALLOW_NO_TREES", "ALLOW_TREE_LOSS")),
+                            ("lidar_coverage", ("ALLOW_COVERAGE_GAPS", "ALLOW_UNCHECKED_COVERAGE"))):
+            mod = _import_first_party(name)
+            assert hasattr(mod, "_env_on"), f"{name} no longer has the _env_on this pins"
+            # The key names are LITERAL here so a rename cannot silently drop a hatch out of the
+            # table; where the module publishes them as constants, they must agree with these.
+            published = {v for k, v in vars(mod).items()
+                         if k.isupper() and isinstance(v, str) and v.startswith("ALLOW_")}
+            assert not (published - set(flags)), (
+                f"{name} publishes hatch key(s) {sorted(published - set(flags))} that this table does "
+                f"not drive, so their parse is graded by nothing")
+            for flag in flags:
+                held = os.environ.get(flag)
+                try:
+                    for raw, want in TABLE:
+                        os.environ[flag] = raw
+                        assert mod._env_on(flag) is want, (
+                            f"{name}._env_on: {flag}={raw!r} parsed to {mod._env_on(flag)}, expected "
+                            f"{want} -- an explicit 'off' must not WAIVE the guard it names")
+                    os.environ.pop(flag, None)
+                    assert mod._env_on(flag) is False, \
+                        f"{name}._env_on: an UNSET {flag} must be off"
+                finally:
+                    if held is None:
+                        os.environ.pop(flag, None)
+                    else:
+                        os.environ[flag] = held
+                driven.append(f"{name}.{flag}")
     finally:
         if saved is None:
             os.environ.pop("OVERWRITE", None)
@@ -12929,6 +17336,23 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
             os.environ["OVERWRITE"] = saved
         for m in ("config", "fetch_dem", "fetch_dem_hd"):
             sys.modules.pop(m, None)
+
+    # EVERY MODULE THAT DEFINES `_env_on` MUST BE IN THE TABLE ABOVE -- discovered, not listed, so a
+    # fourth copy of the helper cannot arrive unpinned the way lidar_coverage's did. Measured rather
+    # than stated because a bare figure in the note above is exactly what rots when a hatch is added.
+    defines = sorted(os.path.basename(p)[:-3] for p in _py_sources()
+                     if not os.path.relpath(p, ROOT).startswith("tests" + os.sep)
+                     and _in_code("def _env_on(", open(p, encoding="utf-8").read()))
+    graded = {d.split(".")[0] for d in driven}
+    assert not (set(defines) - graded), (
+        f"these modules define their own _env_on and no flag of theirs is driven over the table above, "
+        f"so the off-vocabulary they copied is graded by nothing: {sorted(set(defines) - graded)}. Add "
+        f"them to the table -- narrowing one copy's tuple to (\"\", \"0\") turns an explicit 'off' into "
+        f"a waiver and left this whole suite green when it was tried.")
+    assert len(driven) > len(defines), (
+        f"{len(driven)} flag(s) driven across {len(defines)} _env_on copy(ies) ({defines}) -- at least "
+        f"one of these modules has more than one hatch, so a table with one flag each has stopped "
+        f"covering them: {driven}")
 
 
 def test_a_malformed_only_is_refused_rather_than_silently_meaning_every_hole():
@@ -12938,7 +17362,7 @@ def test_a_malformed_only_is_refused_rather_than_silently_meaning_every_hole():
 
     Combined with OVERWRITE=1 -- the flag it is documented next to -- that is the difference between
     rebuilding 9 greens and rebuilding all 18, on the stage that replaces 0.4 m LiDAR surfaces with the
-    coarse 1 m DEM. A typo silently DOUBLING the scope of a destructive run is the one direction a
+    coarse seamless one. A typo silently DOUBLING the scope of a destructive run is the one direction a
     scope filter must not fail in.
 
     Ranges stay unsupported deliberately: the documented syntax is a comma-separated list (`ONLY=14,16`
@@ -12985,7 +17409,7 @@ def test_a_missing_green_surface_explains_itself(tmp_path):
     """render_green.render() died with a bare FileNotFoundError from json.load, several frames deep,
     naming a path and nothing else. The situation it describes is ordinary, not exotic:
     fetch_dem_hd.py builds only the greens with usable 0.4 m LiDAR ground returns, and the ones it
-    refuses need the 1 m seamless fallback from fetch_dem.py. Monarch Bay has six such holes, so
+    refuses need the seamless fallback from fetch_dem.py. Monarch Bay has six such holes, so
     running generate.py without fetch_dem.py hits this every time -- which is how it was found,
     cold-building that course.
 
@@ -13370,7 +17794,7 @@ def test_one_shared_rule_decides_what_may_be_distributed():
 def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     """Nothing checked that a downloaded tile's DATA reaches the greens. A tile can be present,
     correctly named, and hold no points where a green is -- and the green then silently falls back to
-    the 1 m seamless DEM even though 0.4 m LiDAR for it exists.
+    the seamless DEM even though 0.4 m LiDAR for it exists.
 
     Castlewood Hill shipped holes 14 and 16 that way. Measured: both greens fall in grid cell
     w6153n2055; the copy on disk (CA_AlamedaCo_1_2021, 30,648,617 bytes) has a data footprint of only
@@ -13381,8 +17805,8 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
 
     The check reads each tile's HEADER bbox, which records the extent of the points actually in the
     file rather than the nominal grid cell -- that distinction is the whole bug. It reports rather
-    than refuses: a bayside green over water genuinely has no returns, and the 1 m fallback with a
-    "1 m data" label is the honest outcome. What it stops is the silent version."""
+    than refuses: a bayside green over water genuinely has no returns, and the seamless fallback with
+    its coarse-data caveat is the honest outcome. What it stops is the silent version."""
     pytest.importorskip("laspy")
     pytest.importorskip("pyproj")
     import lidar_coverage as lc
@@ -13411,24 +17835,7 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     # with no tiles at all the check must stay quiet rather than claim everything is missing
     assert lc.uncovered_greens(str(tmp_path)) == []
 
-    def write_tile(path, ring_pts, pad_m):
-        """A LAZ whose points span ring_pts' bbox grown by pad_m -- so its HEADER footprint does."""
-        import laspy
-        import numpy as np
-        from pyproj import CRS, Transformer
-        crs = CRS.from_epsg(26910)
-        T = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        xy = [T.transform(q["lon"], q["lat"]) for q in ring_pts]
-        x0 = min(c[0] for c in xy) - pad_m; x1 = max(c[0] for c in xy) + pad_m
-        y0 = min(c[1] for c in xy) - pad_m; y1 = max(c[1] for c in xy) + pad_m
-        h = laspy.LasHeader(version="1.4", point_format=6)
-        h.global_encoding.gps_time_type = 1
-        h.add_crs(crs)
-        las = laspy.LasData(h)
-        las.x = np.array([x0, x1, x0, x1]); las.y = np.array([y0, y0, y1, y1])
-        las.z = np.zeros(4)
-        las.gps_time = np.full(4, 1.32e9)
-        las.write(str(path))
+    write_tile = _laz_footprint          # shared with the coverage tests below, written once
 
     write_tile(tmp_path / "laz" / "a.laz", ring(), 5.0)
 
@@ -13468,35 +17875,43 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     assert hb[0][1] == 1 and hb[0][2] == 2, f"hole 7 has 1 of 2 nodes outside, got {hb[0]}"
 
     # and it must REPORT, not raise: a green over water legitimately has no returns
-    status, out, holes_out = lc.report(str(tmp_path))
+    status, out, holes_out, fb_out = lc.report(str(tmp_path))
     assert status == "checked" and out == bad and holes_out == hb
+    assert fb_out == lc.fell_back(str(tmp_path)), (
+        f"report() must hand back the dem_hd fallback set it read: {fb_out} vs "
+        f"{lc.fell_back(str(tmp_path))}")
 
     # "nothing flagged" must never be reported as "verified covered" when NOTHING WAS CHECKED. With
     # zero tiles on disk this printed "all 1 green(s) sit inside the downloaded tiles' data" and
     # exited 0 -- asserting a coverage it had not looked at. Poppy Ridge reaches that path today (no
-    # LAZ at all), as would any course built purely on the 1 m seamless DEM.
+    # LAZ at all), as would any course built purely on the seamless DEM.
     empty = tmp_path / "empty"
     (empty / "laz").mkdir(parents=True)
     (empty / "osm_geom.json").write_text(json.dumps({"elements": [
         {"type": "way", "id": 1, "tags": {"golf": "green"}, "geometry": ring()}]}))
-    st, bad0, _ = lc.report(str(empty))
+    st, bad0, _, fb0 = lc.report(str(empty))
     assert bad0 == [], bad0
     assert st != "checked", \
         f"status {st!r}: with no tiles on disk the check must say so, not imply coverage"
     assert "tile" in st.lower(), st
+    assert fb0 == {}, f"nothing was checked, so dem_hd was not read: {fb0}"
 
     # ...and the same when the greens cannot be placed
     nogeom = tmp_path / "nogeom"
     (nogeom / "laz").mkdir(parents=True)
     write_tile(nogeom / "laz" / "a.laz", ring(), 5.0)
-    st2, _, _ = lc.report(str(nogeom))
+    st2, _, _, _ = lc.report(str(nogeom))
     assert st2 != "checked" and "green" in st2.lower(), st2
 
     # both fetchers must run the check, or a missing tile copy goes unnoticed again
     for mod in ("fetch_lidar.py", "fetch_lidar_alameda.py"):
         src = open(os.path.join(ROOT, mod), encoding="utf-8").read()
+        # This grades that the CALL EXISTS and nothing more -- it would still pass with report()
+        # changed to `return None` on every path, which is why the message no longer claims the
+        # verdict is honoured. That is graded behaviourally, by
+        # test_the_fetchers_stop_on_the_coverage_verdict_they_asked_for.
         assert _in_code("lidar_coverage.report", src), \
-            f"{mod} never verifies its tiles against the greens"
+            f"{mod} does not call the coverage check at all"
         # ...and both must sweep stale .part files. A transfer killed outright leaves one that no
         # exception handler runs to remove; observed for real when a Merion fetch was killed mid-tile
         # and left a 26 MB .part sitting in laz/. It is never valid data -- a .part is only renamed
@@ -13514,6 +17929,661 @@ def test_a_present_tile_is_not_assumed_to_cover_the_greens(tmp_path):
     _fl.sweep_partials(str(d))
     left = sorted(p.name for p in d.iterdir())
     assert left == ["keep.laz"], f"sweep_partials left {left}"
+
+
+# --- lidar_coverage: the verdict, the population it counts, and the docs about it ---------------
+#
+# The module stands at the acquisition boundary: if the tiles do not reach a green, that green falls
+# back to the coarser seamless DEM. Its only test graded uncovered_greens/uncovered_holes and the
+# SOURCE TEXT of the two call sites; measured with coverage.py, 41 of its 151 statements were never
+# executed, including the whole of main() -- the only place a verdict becomes an exit code -- and the
+# whole of fell_back(), the cross-check that exists BECAUSE the rectangle test misses three of Monarch
+# Bay's six fallback greens. The four tests below grade behaviour on those paths.
+
+def _laz_footprint(path, ring_pts, pad_m, epsg=26910):
+    """Write a LAZ whose HEADER bbox is ring_pts' bbox grown by pad_m.
+
+    Four corner points, so the footprint lidar_coverage reads out of the header is exactly that
+    rectangle. `epsg=None` writes a tile that declares NO CRS: lidar_coverage cannot place anything in
+    such a tile and skips it (lidar_coverage.py:104), a branch nothing reached.
+
+    Module-level because four tests need it. It was nested inside one of them, and this repo's own
+    notes on sweep_partials record what a second copy of a helper costs.
+    """
+    import laspy
+    import numpy as np
+    from pyproj import CRS, Transformer
+    crs = None if epsg is None else CRS.from_epsg(epsg)
+    T = Transformer.from_crs("EPSG:4326", crs or CRS.from_epsg(26910), always_xy=True)
+    xy = [T.transform(q["lon"], q["lat"]) for q in ring_pts]
+    x0 = min(c[0] for c in xy) - pad_m; x1 = max(c[0] for c in xy) + pad_m
+    y0 = min(c[1] for c in xy) - pad_m; y1 = max(c[1] for c in xy) + pad_m
+    h = laspy.LasHeader(version="1.4", point_format=6)
+    h.global_encoding.gps_time_type = 1
+    if crs is not None:
+        h.add_crs(crs)
+    las = laspy.LasData(h)
+    las.x = np.array([x0, x1, x0, x1]); las.y = np.array([y0, y0, y1, y1])
+    las.z = np.zeros(4)
+    las.gps_time = np.full(4, 1.32e9)
+    las.write(str(path))
+
+
+def _coverage_course(root, rings, tiles=(), metas=()):
+    """A course directory shaped the way lidar_coverage.report() reads one.
+
+    rings: [(green_id, [{"lon","lat"}, ...])]   -> osm_geom.json golf=green ways
+    tiles: [(name, ring_pts, pad_m, epsg)]      -> laz/<name>, header footprints (epsg=None: no CRS)
+    metas: [dict]                               -> dem_hd/holeNN.json, the fields fell_back() reads
+    """
+    root = pathlib.Path(root)
+    (root / "laz").mkdir(parents=True, exist_ok=True)
+    (root / "osm_geom.json").write_text(json.dumps({"elements": [
+        {"type": "way", "id": gid, "tags": {"golf": "green"}, "geometry": ring}
+        for gid, ring in rings]}))
+    for name, ring_pts, pad_m, epsg in tiles:
+        _laz_footprint(root / "laz" / name, ring_pts, pad_m, epsg)
+    if metas:
+        (root / "dem_hd").mkdir(exist_ok=True)
+        for m in metas:
+            (root / "dem_hd" / f"hole{int(m['hole']):02d}.json").write_text(json.dumps(m))
+    return str(root)
+
+
+def _dem_hd_surfaces(course_dir):
+    """{green_id: meta} for every green surface dem_hd/ actually holds.
+
+    Read here rather than through lidar_coverage, because the defect these tests grade is a published
+    count taken from the WRONG POPULATION -- so the population has to be measured from the files
+    independently of the module that miscounted it.
+    """
+    out = {}
+    for p in sorted(glob.glob(os.path.join(course_dir, "dem_hd", "hole*.json"))):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                m = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if m.get("green_id") is not None:
+            out[m["green_id"]] = m
+    return out
+
+
+def test_the_fetchers_stop_on_the_coverage_verdict_they_asked_for(tmp_path, monkeypatch):
+    """Both fetchers called `lidar_coverage.report(config.COURSE_DIR)` as a BARE EXPRESSION STATEMENT
+    and threw all three return values away, so the check ran, printed, and changed nothing.
+
+    Reproduced end to end before this test existed: a fetch that finished
+
+        done -> .../laz
+          !! 1 green(s) are NOT fully covered by the point data on disk:
+               green 2: 5 of 5 sampled node(s) have no returns over them
+
+    exited 0, and so did one that ended "coverage NOT CHECKED: no readable LAZ tiles on disk" with
+    laspy unimportable. The module's own main() has mapped those two verdicts to exit 1 and exit 2
+    since it was written -- measured standalone on the same data, monarch-bay exits 1, poppy-ridge
+    exits 2, bay-view exits 0 -- and nothing carried that to the caller. PIPELINE.md titles the
+    sequence "Add a NEW course (what an agent does each time)", so an agent gating on the fetch step's
+    exit code was told the tiles had been verified when the verdict said the opposite.
+
+    The stop is KEYED, not unconditional, and that is load-bearing: Monarch Bay's holes 1, 17 and 18
+    are permanently over San Francisco Bay, so its verdict will never be clean and an unconditional
+    non-zero would wedge that course's re-fetch forever. Two keys, because they answer two different
+    questions -- see lidar_coverage.report_or_exit, and fetch_osm._check_response for what one flag
+    gating two questions cost.
+
+    Behavioural on purpose. The only previous test of these call sites was
+    `assert _in_code("lidar_coverage.report", src)`, which grades that the call EXISTS; it would still
+    pass with report() changed to `return None` on every path.
+    """
+    pytest.importorskip("pyproj")
+    slug = a_course()
+    os.environ["COURSE"] = slug
+    for m in ("config", "lidar_coverage", "fetch_lidar", "fetch_lidar_alameda"):
+        sys.modules.pop(m, None)
+    import config
+    import lidar_coverage
+    import fetch_lidar
+    import fetch_lidar_alameda
+
+    (tmp_path / "laz").mkdir()
+    seen = []
+
+    def run(mod, verdict, **env):
+        """Drive mod.main() to the coverage call at its tail. Returns the SystemExit, or None.
+
+        Everything before the tail is stubbed at the seam each fetcher already owns -- the TNM
+        listing, the HEAD probes, the download plan -- and DIR is redirected at a tmp directory so
+        nothing touches the live corpus. `seen` records the coverage call, so a SystemExit raised
+        somewhere EARLIER can never be mistaken for the verdict being honoured.
+        """
+        seen.clear()
+
+        def _verdict(course_dir):
+            seen.append(course_dir)
+            return verdict
+
+        with monkeypatch.context() as mp:
+            for k, v in env.items():
+                mp.setenv(k, v)
+            for k in (getattr(lidar_coverage, "COVERAGE_GAPS_ACK", "ALLOW_COVERAGE_GAPS"),
+                      getattr(lidar_coverage, "UNCHECKED_ACK", "ALLOW_UNCHECKED_COVERAGE")):
+                if k not in env:
+                    mp.delenv(k, raising=False)
+            mp.setattr(lidar_coverage, "report", _verdict)
+            mp.setattr(mod, "DIR", str(tmp_path))
+            mp.setitem(fetch_lidar.config.COURSE, "lidar_project", None)
+            mp.setattr(fetch_lidar, "plan_downloads", lambda *_a, **_k: ([], 1))
+            mp.setattr(fetch_lidar, "tnm_items", lambda *_a, **_k: [
+                {"downloadURL": "https://x/Projects/CA_Test_2021_B21/LAZ/t.laz",
+                 "sizeInBytes": 1, "title": "t.laz", "sourceId": "s"}])
+            mp.setattr(fetch_lidar_alameda, "tile_copies",
+                       lambda t, unknown: [("CA_AlamedaCo_1_2021", f"https://x/LAZ/{t}.laz", 1)])
+            try:
+                mod.main()
+            except SystemExit as e:
+                return e
+            return None
+
+    FETCHERS = (fetch_lidar, fetch_lidar_alameda)
+    NOT_CHECKED = ("no readable LAZ tiles on disk", [], [], {})
+    CLEAN = ("checked", [], [], {})
+    GREEN_GAP = ("checked", [(2, 5, 5)], [], {})
+    HOLE_GAP = ("checked", [], [("7", 1, 2)], {})
+    # the shape the rectangle CANNOT see: inside a tile's header bbox, yet the built surface says the
+    # points never served it. Monarch Bay's holes 9, 10 and 16 are exactly this, all three today.
+    FELL_BACK = ("checked", [], [], {689151373: (9, "built from the seamless DEM")})
+
+    for mod in FETCHERS:
+        name = mod.__name__ + ".py"
+
+        e = run(mod, NOT_CHECKED)
+        assert seen, f"{name}: main() never reached the coverage check -- this test proves nothing"
+        assert e is not None, (
+            f"{name} exited 0 after the coverage check said NOTHING WAS VERIFIED. A green the tiles "
+            f"do not reach falls back to the 3DEP seamless mosaic, and this check is the only thing "
+            f"that would have said so.")
+
+        e = run(mod, GREEN_GAP)
+        assert seen and e is not None, (
+            f"{name} exited 0 with a green the point data does not reach. main() maps that verdict "
+            f"to exit 1; the fetcher discarded it.")
+
+        e = run(mod, FELL_BACK)
+        assert seen and e is not None, (
+            f"{name} exited 0 for a green the header bbox vouched for whose BUILT surface came from "
+            f"the seamless mosaic -- the half of the verdict the rectangle cannot see, and the one "
+            f"this module's dem_hd cross-check exists for.")
+
+        assert run(mod, CLEAN) is None, f"{name} refuses a CLEAN coverage verdict"
+        assert seen, f"{name}: the clean run never reached the check"
+
+    assert run(fetch_lidar, HOLE_GAP) is not None, (
+        "fetch_lidar.py exited 0 with a hole centreline outside the point data -- that is where "
+        "fetch_trees.py looks for canopy returns, so the hole silently loses its trees")
+
+    # The keys are read off the module, never restated here, so renaming one cannot leave this green.
+    GAPS = lidar_coverage.COVERAGE_GAPS_ACK
+    UNCHECKED = lidar_coverage.UNCHECKED_ACK
+    assert GAPS != UNCHECKED, "one flag cannot waive two different questions"
+
+    # NOT WEDGED: the key named in the message clears the stop.
+    for mod in FETCHERS:
+        e = run(mod, GREEN_GAP)
+        assert GAPS in str(e.args[0]), (
+            f"{mod.__name__}: the stop must name the key that clears it, or the course is wedged: "
+            f"{e.args[0]!r}")
+        assert run(mod, GREEN_GAP, **{GAPS: "1"}) is None, (
+            f"{mod.__name__}: {GAPS}=1 must let a course with real, known gaps re-fetch -- Monarch "
+            f"Bay's holes 1, 17 and 18 are permanently over the bay")
+        e = run(mod, NOT_CHECKED)
+        assert UNCHECKED in str(e.args[0]), (
+            f"{mod.__name__}: the NOT CHECKED stop must name its own key: {e.args[0]!r}")
+        assert run(mod, NOT_CHECKED, **{UNCHECKED: "1"}) is None, \
+            f"{mod.__name__}: {UNCHECKED}=1 must allow a deliberate build with no coverage check"
+
+    # ...and waiving one question must not silence the other.
+    assert run(fetch_lidar, NOT_CHECKED, **{GAPS: "1"}) is not None, (
+        f"{GAPS}=1 silenced 'nothing was verified'. Monarch Bay needs that key set forever, so it "
+        f"would then never hear about a missing laspy either -- the one-flag-two-questions fault "
+        f"fetch_osm._check_response records.")
+    assert run(fetch_lidar, GREEN_GAP, **{UNCHECKED: "1"}) is not None, \
+        f"{UNCHECKED}=1 silenced a real coverage gap"
+
+    # An explicit OFF must not arm the waiver: bool(os.environ.get(..)) makes "0" and "false" mean
+    # YES, which is the parse fetch_dem/fetch_dem_hd had to be fixed for.
+    for raw in ("0", "false", "FALSE", "no", "No", ""):
+        assert run(fetch_lidar, GREEN_GAP, **{GAPS: raw}) is not None, \
+            f"{GAPS}={raw!r} waived the coverage stop -- an explicit 'off' must not arm it"
+        assert run(fetch_lidar, NOT_CHECKED, **{UNCHECKED: raw}) is not None, \
+            f"{UNCHECKED}={raw!r} waived the NOT-CHECKED stop"
+    for raw in ("1", "true", "yes"):
+        assert run(fetch_lidar, GREEN_GAP, **{GAPS: raw}) is None, f"{GAPS}={raw!r} did not waive"
+
+    # ACCEPTANCE, against the live corpus: the stop is exactly as strict as main()'s exit code, and
+    # NO course is permanently blocked -- every one of them re-fetches with its key set.
+    dirs = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
+    if not dirs:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    blocked = []
+    for cj in dirs:
+        cdir = os.path.dirname(cj)
+        if os.path.basename(cdir).startswith("_"):
+            continue
+        status, bad, holes, fb = lidar_coverage.report(cdir)
+        unexplained = [g for g in fb if g not in {gid for gid, _o, _t in bad}]
+        want_stop = status != "checked" or bool(bad or holes or unexplained)
+        key = UNCHECKED if status != "checked" else GAPS
+        with monkeypatch.context() as mp:
+            mp.delenv(GAPS, raising=False)
+            mp.delenv(UNCHECKED, raising=False)
+            try:
+                lidar_coverage.report_or_exit(cdir)
+                stopped = False
+            except SystemExit:
+                stopped = True
+        assert stopped == want_stop, (
+            f"{os.path.basename(cdir)}: verdict {status!r} bad={len(bad)} holes={len(holes)} "
+            f"fallback-only={len(unexplained)} -> stopped={stopped}, expected {want_stop}")
+        with monkeypatch.context() as mp:
+            mp.setenv(key, "1")
+            try:
+                lidar_coverage.report_or_exit(cdir)
+            except SystemExit as e:
+                blocked.append((os.path.basename(cdir), key, str(e.args[0])[:80]))
+    assert not blocked, (
+        f"these courses cannot be re-fetched even with the acknowledgement key set -- that is a "
+        f"permanently wedged course, which is what the keys exist to prevent: {blocked}")
+
+
+def test_the_coverage_verdict_is_one_call_and_carries_the_fallback_set(tmp_path, monkeypatch):
+    """lidar_coverage.py:298 says "One call, one answer. main() used to re-run uncovered_holes() for
+    its exit code, which reopened every tile header and left a window where the verdict printed and
+    the code returned could disagree." Eleven lines below it, main() re-ran `fell_back()` -- reading
+    every dem_hd/holeNN.json that report() had already read -- because report() returned three values
+    and the fallback set was not one of them. Two calls, two answers, under a comment claiming one.
+
+    So this counts the calls rather than reading the comment, and pins the exit codes main() produces:
+    2 when nothing could be checked, 1 for any finding, 0 only for a clean verdict. Those codes are
+    the contract PIPELINE.md's "what an agent does each time" leans on and were graded by nothing --
+    all sixteen statements of main() were unexecuted.
+    """
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "lidar_coverage"):
+        sys.modules.pop(m, None)
+    import config
+    import lidar_coverage as lc
+
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+
+    def ring(dlon=0.0, dlat=0.0):
+        return [{"lon": lon + dlon - d, "lat": lat + dlat - d},
+                {"lon": lon + dlon + d, "lat": lat + dlat - d},
+                {"lon": lon + dlon + d, "lat": lat + dlat + d},
+                {"lon": lon + dlon - d, "lat": lat + dlat + d}]
+
+    # the source strings the two stages actually write today (fetch_dem_hd.py:451 and
+    # fetch_dem.sampling_note), so the fixture cannot outlive the vocabulary it stands in for.
+    LIDAR = "USGS 3DEP LiDAR ground returns @0.4m"
+    SEAMLESS = "USGS 3DEP seamless mosaic @0.5m sampling"
+
+    # (1) clean: one green, one tile over it, one surface built from the points
+    clean = _coverage_course(tmp_path / "clean", [(1, ring())],
+                             [("a.laz", ring(), 5.0, 26910)],
+                             [{"hole": 1, "green_id": 1, "source": LIDAR}])
+    # (2) a green the rectangle vouches for whose BUILT surface came from the seamless DEM
+    fallback = _coverage_course(tmp_path / "fallback", [(1, ring())],
+                                [("a.laz", ring(), 5.0, 26910)],
+                                [{"hole": 1, "green_id": 1, "source": SEAMLESS}])
+    # (3) a green outside every tile's footprint
+    outside = _coverage_course(tmp_path / "outside", [(1, ring()), (2, ring(dlon=0.035))],
+                               [("a.laz", ring(), 5.0, 26910)],
+                               [{"hole": 1, "green_id": 1, "source": LIDAR}])
+    # (4) no tiles at all -- nothing was checked
+    nothing = _coverage_course(tmp_path / "nothing", [(1, ring())])
+
+    # report() must hand the fallback set back, or main() has to go and read dem_hd/ again
+    out = lc.report(fallback)
+    assert len(out) == 4, (
+        f"report() returned {len(out)} value(s). main() needs the dem_hd fallback set to compute its "
+        f"exit code; without it in the return there are two reads of the same files and two answers "
+        f"the module's own comment says there is one of.")
+    status, bad, holes, fb = out
+    assert status == "checked" and bad == [] and holes == []
+    assert fb == lc.fell_back(fallback), \
+        f"report()'s fallback set {fb} is not what fell_back() says: {lc.fell_back(fallback)}"
+
+    # ONE read of dem_hd/, counted rather than asserted from the comment
+    real = lc.fell_back
+    n = []
+
+    def counted(*a, **k):
+        n.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(lc, "fell_back", counted)
+    monkeypatch.setattr(config, "COURSE_DIR", fallback)
+    del n[:]
+    code = lc.main()
+    assert len(n) == 1, (
+        f"main() read every dem_hd/hole*.json {len(n)} times for one verdict. lidar_coverage.py's own "
+        f"comment above this call reads 'One call, one answer', and the second call is eleven lines "
+        f"below it.")
+    assert code == 1, (
+        f"main() returned {code} for a green whose surface came from the seamless mosaic although the "
+        f"rectangle vouched for it. Returning 0 there is the under-report this module exists to stop.")
+    monkeypatch.setattr(lc, "fell_back", real)
+
+    for cdir, want, why in (
+            (clean, 0, "a clean verdict"),
+            (fallback, 1, "a green the rectangle vouched for whose surface fell back"),
+            (outside, 1, "a green outside every tile footprint"),
+            (nothing, 2, "no readable tile on disk, so nothing was checked")):
+        monkeypatch.setattr(config, "COURSE_DIR", cdir)
+        assert lc.main() == want, f"main() must return {want} for {why}"
+
+    # A tile that declares no CRS cannot place anything, and a course whose ONLY tile is such a tile
+    # has had nothing checked -- it must not read as covered (lidar_coverage.py:104 and :111).
+    nocrs = _coverage_course(tmp_path / "nocrs", [(1, ring())], [("a.laz", ring(), 5.0, None)])
+    st, bad_nc, _h, _f = lc.report(nocrs)
+    assert st != "checked" and bad_nc == [], (
+        f"a tile with no CRS vouched for a green: status {st!r}, flagged {bad_nc}")
+    assert "CRS" in st, st
+    monkeypatch.setattr(config, "COURSE_DIR", nocrs)
+    assert lc.main() == 2, "a course whose only tile declares no CRS has had nothing checked"
+
+    # An unreadable file in laz/ is reported, not silently counted as a tile.
+    broken = pathlib.Path(_coverage_course(tmp_path / "broken", [(1, ring())],
+                                           [("a.laz", ring(), 5.0, 26910)]))
+    (broken / "laz" / "junk.laz").write_bytes(b"not a laz file at all")
+    foot = lc.tile_footprints(str(broken / "laz"))
+    assert [f[0] for f in foot] == ["a.laz"], \
+        f"an unreadable tile must not enter the footprint list: {[f[0] for f in foot]}"
+
+    # No greens in osm_geom.json is not "every green is covered" either -- called directly, since
+    # report() answers that case with its own status before it gets this far.
+    nogreens = _coverage_course(tmp_path / "nogreens", [], [("a.laz", ring(), 5.0, 26910)])
+    assert lc.uncovered_greens(nogreens) == [], "no green geometry must flag nothing, not everything"
+
+    # ...and with no reader at all, nothing is checked rather than everything vouched for.
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "laspy", None)          # makes `import laspy` raise ImportError
+        st2, bad2, holes2, fb2 = lc.report(clean)
+        assert st2 != "checked" and (bad2, holes2, fb2) == ([], [], {}), \
+            f"with no laspy the check must say so, not vouch for the greens: {st2!r} {bad2}"
+        monkeypatch.setattr(config, "COURSE_DIR", clean)
+        assert lc.main() == 2, "no tile reader means nothing was checked, which is exit 2"
+
+    # The __main__ wiring, which is what an agent's `python3 lidar_coverage.py` actually sees. Graded
+    # against main() measured in-process on the same course, never against a hardcoded code.
+    import subprocess
+    want_codes = {}
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        cdir = os.path.dirname(cj)
+        if os.path.basename(cdir).startswith("_"):
+            continue
+        monkeypatch.setattr(config, "COURSE_DIR", cdir)
+        want_codes.setdefault(lc.main(), os.path.basename(cdir))
+    if not want_codes:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    for want, slug in sorted(want_codes.items()):
+        r = subprocess.run([sys.executable, "lidar_coverage.py"], cwd=ROOT, text=True,
+                           capture_output=True, env={**os.environ, "COURSE": slug})
+        assert r.returncode == want, (
+            f"`COURSE={slug} python3 lidar_coverage.py` exited {r.returncode} where main() returns "
+            f"{want} in-process -- the module's exit code is what an agent gates the fetch step on\n"
+            f"{r.stdout}{r.stderr}")
+
+
+def test_the_dem_hd_cross_check_counts_the_population_it_drew_from(tmp_path):
+    """The cross-check's ratio mixed two populations: the numerator counted dem_hd metas, the
+    denominator was len(rings) -- every golf=green in osm_geom.json, which routinely holds greens the
+    course does not have. Measured at monarch-bay, which printed
+
+        dem_hd cross-check: 6 of 20 green(s) did NOT get a surface from the point cloud
+
+    against 20 OSM greens but only 18 dem_hd surfaces: rings 689151352 and 1441733934 have no meta at
+    all, so EIGHT of 20 greens have no surface from the point cloud, not 6, and a reader subtracting
+    gets 14 point-cloud greens where the true number is 12. fell_back()'s own docstring names this
+    population mismatch as the reason it keys by green_id, and then the ratio used the OSM count
+    anyway. Wider than one course: copper-valley and philadelphia each carry 30 rings against 18
+    surfaces.
+
+    So the denominator must be the population the numerator is drawn from -- the surfaces dem_hd/
+    actually holds -- and `denominator - numerator` must be the number of greens whose surface DID
+    come from the point cloud. Both sides measured from the files, never restated.
+    """
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    os.environ["COURSE"] = a_course()
+    for m in ("config", "lidar_coverage"):
+        sys.modules.pop(m, None)
+    import lidar_coverage as lc
+
+    lon, lat = -121.35, 38.05
+    d = 0.0002
+
+    def ring(dlon=0.0):
+        return [{"lon": lon + dlon - d, "lat": lat - d}, {"lon": lon + dlon + d, "lat": lat - d},
+                {"lon": lon + dlon + d, "lat": lat + d}, {"lon": lon + dlon - d, "lat": lat + d}]
+
+    # the source strings the two stages actually write today (fetch_dem_hd.py:451 and
+    # fetch_dem.sampling_note), so the fixture cannot outlive the vocabulary it stands in for.
+    LIDAR = "USGS 3DEP LiDAR ground returns @0.4m"
+    SEAMLESS = "USGS 3DEP seamless mosaic @0.5m sampling"
+    # five OSM greens; only three of them ever got a surface; one of those three fell back. The OSM
+    # count and the surface count differ exactly the way every real course's do.
+    rings = [(i, ring(dlon=0.0005 * i)) for i in range(1, 6)]
+    metas = [{"hole": 1, "green_id": 1, "source": LIDAR},
+             {"hole": 2, "green_id": 2, "source": SEAMLESS},
+             {"hole": 3, "green_id": 3, "source": LIDAR}]
+    cdir = _coverage_course(tmp_path / "c", rings,
+                            [("a.laz", [q for _g, r in rings for q in r], 5.0, 26910)], metas)
+
+    def ratio(printed):
+        m = re.search(r"dem_hd cross-check: (\d+) of (\d+)", printed)
+        assert m, f"no dem_hd cross-check ratio in:\n{printed}"
+        return int(m.group(1)), int(m.group(2))
+
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        lc.report(cdir)
+    num, den = ratio(buf.getvalue())
+    built = _dem_hd_surfaces(cdir)
+    fb = lc.fell_back(cdir)
+    assert (num, den) == (len(fb), len(built)), (
+        f"the cross-check printed {num} of {den} against {len(fb)} fallback surface(s) out of "
+        f"{len(built)} built. The denominator must be the population the numerator came from")
+    assert den != len(rings), (
+        f"the denominator is still the OSM green count ({len(rings)}); this course has {len(built)} "
+        f"built surfaces, and mixing the two is the defect")
+    assert den - num == sum(1 for gid in built if gid not in fb), \
+        "denominator minus numerator must be the greens whose surface DID come from the point cloud"
+
+    # A refused 0.4 m attempt counts as a fallback too -- fetch_dem_hd records that as `insufficient`
+    # rather than by naming the seamless DEM, and it means the same thing: the points produced nothing
+    # usable there. An UNREADABLE meta is evidence neither way and must not enter either count.
+    odd = pathlib.Path(_coverage_course(
+        tmp_path / "odd", rings, [("a.laz", [q for _g, r in rings for q in r], 5.0, 26910)],
+        [{"hole": 1, "green_id": 1, "source": LIDAR},
+         {"hole": 2, "green_id": 2, "source": "0.4 m attempt", "insufficient": True}]))
+    (odd / "dem_hd" / "hole09.json").write_text("{ this is not json")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        lc.report(str(odd))
+    num, den = ratio(buf.getvalue())
+    assert (num, den) == (1, 2), (
+        f"printed {num} of {den}; one of the two readable surfaces was refused as insufficient and "
+        f"the third file is unreadable, which is evidence neither way")
+    assert "refused as insufficient" in buf.getvalue(), \
+        "the cross-check must say WHY a green has no point-cloud surface"
+
+    # A dem_hd/ with nothing in it must not report over a population of none. That branch printed
+    # "every built green surface came from the point cloud" for an empty directory.
+    bare = pathlib.Path(_coverage_course(
+        tmp_path / "bare", rings, [("a.laz", [q for _g, r in rings for q in r], 5.0, 26910)]))
+    (bare / "dem_hd").mkdir()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        lc.report(str(bare))
+    printed = buf.getvalue()
+    assert "cross-check" in printed, f"an empty dem_hd/ said nothing at all:\n{printed}"
+    assert "came from the point cloud" not in printed, (
+        f"an empty dem_hd/ claims its surfaces came from the point cloud; it holds none:\n{printed}")
+
+    # ...and on every real course, against the files themselves.
+    dirs = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json")))
+    if not dirs:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    checked = 0
+    for cj in dirs:
+        cd = os.path.dirname(cj)
+        if os.path.basename(cd).startswith("_"):
+            continue
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            lc.report(cd)
+        printed = buf.getvalue()
+        if "dem_hd cross-check" not in printed:
+            continue
+        built, fb = _dem_hd_surfaces(cd), lc.fell_back(cd)
+        rings_here = lc._green_rings(cd)
+        if fb:
+            num, den = ratio(printed)
+            assert (num, den) == (len(fb), len(built)), (
+                f"{os.path.basename(cd)}: printed {num} of {den}; measured {len(fb)} fallback "
+                f"surface(s) of {len(built)} built ({len(rings_here)} OSM greens)")
+            checked += 1
+        else:
+            # the clean branch must not claim a population it does not have either
+            m = re.search(r"dem_hd cross-check: all (\d+) built", printed)
+            assert m, f"{os.path.basename(cd)}: clean cross-check line missing:\n{printed}"
+            assert int(m.group(1)) == len(built), (
+                f"{os.path.basename(cd)}: clean cross-check claims {m.group(1)} surfaces, "
+                f"{len(built)} are built")
+            checked += 1
+    assert checked, "no course exercised the dem_hd cross-check"
+
+
+def test_the_docs_describe_the_coverage_check_the_code_performs():
+    """README.md said lidar_coverage.py "checks the downloaded tiles' DATA actually reaches the greens
+    & holes". That is the exact claim the module records as REMOVED for being false: the test behind it
+    is point-in-header-BBOX, and lidar_coverage.py's own docstring says the guarantee is impossible in
+    principle -- "this test can only ever prove a green is outside the data; it cannot prove one is
+    inside it." PIPELINE.md carried the same claim with a weaker hedge ("the tiles' data footprint
+    really reaches").
+
+    It is false on this corpus today, not in theory, and this test measures by how much: a green whose
+    nodes all fall inside some tile's header rectangle can still have no returns under it, and
+    dem_hd/ records which ones did. So the docs must name the mechanism the code has -- the header
+    bounding boxes, plus the dem_hd cross-check that exists because the rectangle misses these -- and
+    must not say the point DATA was shown to reach the greens.
+    """
+    lc_src = open(os.path.join(ROOT, "lidar_coverage.py"), encoding="utf-8").read()
+    # The mechanism words are taken from the module, so a rename cannot leave this test green against
+    # docs describing the old one.
+    assert "header" in lc_src and 'os.path.join(course_dir, "dem_hd"' in lc_src.replace(
+        "os . path", "os.path"), "lidar_coverage.py no longer reads tile headers or dem_hd/"
+
+    mentions = []
+    for doc in ("README.md", "PIPELINE.md"):
+        text = open(os.path.join(ROOT, doc), encoding="utf-8").read()
+        for para in re.split(r"\n(?=\S)|\n\n", text):
+            if "lidar_coverage.py" in para:
+                mentions.append((doc, " ".join(para.split())))
+    assert len(mentions) >= 2, f"the docs stopped describing lidar_coverage.py at all: {mentions}"
+
+    # The false shape: a word for the POINTS governing a verb of arrival at the greens. Both published
+    # sentences matched it ("the downloaded tiles' DATA actually reaches", "the tiles' data footprint
+    # really reaches"); a sentence about header boxes reaching a green does not, because the subject is
+    # the rectangle.
+    claim = re.compile(r"\b(data|point cloud|points|returns)\b[^.;]{0,40}?\b(reach\w*|cover\w*)\b"
+                       r"|\b(reach\w*|cover\w*)\b[^.;]{0,40}?\b(data|point cloud|points|returns)\b",
+                       re.I)
+    for doc, para in mentions:
+        for sentence in re.split(r"(?<=[.;]) ", para):
+            if "lidar_coverage" not in sentence and "coverage" not in sentence.lower():
+                continue
+            m = claim.search(sentence)
+            assert not m, (
+                f"{doc} says the point data was shown to reach the greens: {m.group(0)!r}. The test "
+                f"behind that sentence is point-in-header-BBOX; lidar_coverage.py's docstring says it "
+                f"can only prove a green is OUTSIDE the data. Say what it checks -- the tiles' header "
+                f"bounding boxes, plus the dem_hd cross-check.\n  {sentence}")
+        assert "header" in para.lower(), (
+            f"{doc} describes lidar_coverage.py without naming the header bounding boxes it actually "
+            f"tests, so a reader cannot tell the claim from the one the module withdrew:\n  {para}")
+        assert "dem_hd" in para, (
+            f"{doc} describes lidar_coverage.py without its second half. The rectangle alone missed "
+            f"real fallback greens on this corpus; the dem_hd cross-check is why they are reported "
+            f"at all:\n  {para}")
+
+    # ...and the wording the module records as removed must not have come back, quoted from the module
+    # rather than restated here.
+    m = re.search(r"used to read [\"']([^\"']+)[\"']", lc_src)
+    assert m, "lidar_coverage.py no longer records the wording it removed for being false"
+    gone = re.sub(r"[^a-z]", "", m.group(1).lower())
+    for doc, para in mentions:
+        assert gone not in re.sub(r"[^a-z]", "", para.lower()), \
+            f"{doc} republished the claim lidar_coverage.py removed: {m.group(1)!r}"
+
+    # LIVE MEASUREMENT: how many greens pass the rectangle and still have no point-cloud surface.
+    if not CORPUS:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    pytest.importorskip("laspy")
+    pytest.importorskip("pyproj")
+    os.environ["COURSE"] = a_course()
+    for m2 in ("config", "lidar_coverage"):
+        sys.modules.pop(m2, None)
+    import lidar_coverage as lc
+
+    misses, greens = [], 0
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        cd = os.path.dirname(cj)
+        if os.path.basename(cd).startswith("_"):
+            continue
+        status, bad, _holes, fb = lc.report(cd)
+        greens += len(_dem_hd_surfaces(cd))
+        if status != "checked":
+            continue
+        flagged = {gid for gid, _o, _t in bad}
+        misses += [(os.path.basename(cd), gid) for gid in fb if gid not in flagged]
+    assert greens, "no built green surfaces found; nothing was measured"
+    assert misses, (
+        f"no green on this corpus passes the header-bbox test while its built surface says the points "
+        f"never served it -- {greens} surfaces checked. If that is now true of every course, this test "
+        f"still holds (a rectangle cannot prove coverage in principle), but re-derive the figures the "
+        f"docs and lidar_coverage.py's docstring quote before changing them.")
+
+    # The module's prose publishes two corpus counts as the evidence for its own wording. Both had a
+    # DENOMINATOR that quietly meant "courses with tiles" while reading as "courses in this corpus" --
+    # 11 against the 12 that are built. Re-derived here, never restated.
+    cdirs = [os.path.dirname(p) for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*",
+                                                                      "course.json")))
+             if not os.path.basename(os.path.dirname(p)).startswith("_")]
+    boxed = [cd for cd in cdirs if lc._footprint_boxes(cd)[0]]
+    all_inside = [cd for cd in boxed if not lc.uncovered_holes(cd)]
+    clean_bbox = [cd for cd in boxed if not lc.uncovered_greens(cd)]
+    pairs = re.findall(r"(\d+) courses that have tiles on disk \((\d+) are built", lc_src)
+    assert len(pairs) >= 2, \
+        "lidar_coverage.py stopped saying how many courses its two corpus figures are drawn from"
+    for tiles_said, built_said in pairs:
+        assert (int(tiles_said), int(built_said)) == (len(boxed), len(cdirs)), (
+            f"lidar_coverage.py says {tiles_said} of {built_said} courses have tiles on disk; measured "
+            f"{len(boxed)} of {len(cdirs)}")
+    m = re.search(r"(\d+) have every centreline node inside the data", lc_src)
+    assert m and int(m.group(1)) == len(all_inside), (
+        f"lidar_coverage.py says {m and m.group(1)} courses have every centreline node inside the "
+        f"data; measured {len(all_inside)} of the {len(boxed)} with tiles")
+    m = re.search(r"printed for (\d+) of the \d+ courses that have tiles", lc_src)
+    assert m and int(m.group(1)) == len(clean_bbox), (
+        f"lidar_coverage.py says the clean-bbox line is printed for {m and m.group(1)} courses; "
+        f"measured {len(clean_bbox)} of the {len(boxed)} with tiles")
 
 
 def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
@@ -13556,7 +18626,7 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
     over = ld.tile_dates(f, [ring])
     assert over is not None
     first, last, npts, crs_ok, wfirst, wlast = over
-    assert npts == 100 and crs_ok is True, (npts, crs_ok)
+    assert npts == PASS_LIKE_RETURNS and crs_ok is True, (npts, crs_ok)
     # the WHOLE-tile range must still span both days even though first/last are narrowed to the
     # green. main() builds its "over whole tiles the range would be" comparison from these, and it
     # used to build it from the narrowed first/last -- understating the very range it contrasts with.
@@ -13582,7 +18652,7 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
                   (lon + tiny, lat + tiny), (lon - tiny, lat + tiny)]
     ft = _synthetic_laz(tmp_path / "ftus.laz", 2227, small_ring, near, far, near_offset_m=20.0)
     r = ld.tile_dates(ft, [small_ring])
-    assert r[2] == 100, \
+    assert r[2] == PASS_LIKE_RETURNS, \
         (f"found {r[2]} points 20 m from the green in a ftUS tile; the {ld.GREEN_PAD_M:g} m pad was "
          f"probably not converted from metres")
     assert r[0].date() == near.date() and r[1].date() == near.date()
@@ -13606,8 +18676,8 @@ def test_project_choice_is_judged_on_the_greens_not_the_bounding_box(tmp_path):
 
     Coverage is now measured over the GREENS -- the thing the LiDAR exists to build -- and the gate
     is a substantial majority rather than near-completeness, because the two failure modes are not
-    symmetric: a green the survey misses falls back to the 1 m seamless DEM and its card says
-    "1 m data", whereas a decade-old survey silently prints stale slope as current.
+    symmetric: a green the survey misses falls back to the 3DEP seamless mosaic and its card carries
+    the coarse-data caveat, whereas a decade-old survey silently prints stale slope as current.
 
     Built from synthetic geometry so it does not need the network."""
     os.environ["COURSE"] = a_course()
@@ -14071,6 +19141,14 @@ def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
         dict(type="way", id=2, tags={"golf": "green"},         geometry=box(0.004, 0.0)),
         dict(type="way", id=3, tags={"building": "no"},        geometry=box(0.008, 0.0)),
         dict(type="way", id=4, tags={"leisure": "pitch"},      geometry=box(0.012, 0.0)),
+        # ...and the three golf kinds the filter also names. Only `green` was ever driven here, so the
+        # other three were covered by nothing that runs before a re-fetch: the corpus scan reads a
+        # STORED layer built by the old vocabulary, and deleting 'bunker' from fetch_trees.py left the
+        # whole suite at its baseline while 784 of the corpus's 799 bunker polygons stopped being
+        # protected.
+        dict(type="way", id=5, tags={"golf": "fairway"},       geometry=box(0.016, 0.0)),
+        dict(type="way", id=6, tags={"golf": "tee"},           geometry=box(0.020, 0.0)),
+        dict(type="way", id=7, tags={"golf": "bunker"},        geometry=box(0.024, 0.0)),
     ]
     # prev is read BEFORE the try. Assigned inside it -- as it was -- any raise from the three
     # json.dump calls below made the finally clause die with UnboundLocalError, replacing the real
@@ -14092,12 +19170,18 @@ def test_on_playing_surface_classifies_buildings_and_greens(tmp_path):
         import fetch_trees
 
         surfaces = fetch_trees.load_playing_surfaces()
-        kinds = sorted(k for *_rest, k in surfaces)
-        assert kinds == ["building", "golf"], f"expected one building + one green, got {kinds}"
+        kinds = collections.Counter(k for *_rest, k in surfaces)
+        assert kinds == collections.Counter({"golf": 4, "building": 1}), (
+            f"expected one building plus one polygon of each of the four golf kinds the filter names, "
+            f"got {dict(kinds)}")
 
         at = lambda dx: fetch_trees.on_playing_surface(lon0 + dx, lat0, surfaces)
         assert at(0.000) == "building", "a roof must report 'building', not 'golf'"
-        assert at(0.004) == "golf", "a green must report 'golf'"
+        for dx, kind in ((0.004, "green"), (0.016, "fairway"), (0.020, "tee"), (0.024, "bunker")):
+            assert at(dx) == "golf", (
+                f"a golf={kind} polygon must report 'golf'. A marker standing there is an edge-tree "
+                f"clipped in or a cart, mower, person or flagstick, and the README promises none of "
+                f"them is drawn as a tree")
         assert at(0.008) is False, "building=no means NOT a building -- not a surface at all"
         assert at(0.012) is False, "a non-golf, non-building polygon is not a playing surface"
         assert at(0.050) is False, "outside every polygon"
@@ -14763,36 +19847,45 @@ def test_hole_elev_refuses_to_drop_a_hole_it_measured_before():
             json.dump({"holes": {str(h): {"change_ft": 4.0 + h} for h in holes}}, f)
         return p
 
+    # The rows a run PRODUCES, carrying the same figures the stored file holds. They used to be `{}`,
+    # contents being irrelevant to a guard that compared key sets -- and the contents are no longer
+    # irrelevant, because check_rows also refuses a row that SURVIVES and stops printing (a hole going
+    # 3.05 -> 2.95 ft keeps its key and loses its card's line). A figureless row is that same loss, so
+    # `{}` would now be refused here for a reason this test is not about; every key set and every
+    # assertion below is unchanged. The figure-crossing branch is driven by
+    # test_the_elevation_loss_guard_sees_a_height_that_stops_printing.
+    same = lambda *hs: {str(h): {"change_ft": 4.0 + h, "change_ft_exact": 4.0 + h} for h in hs}
+
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         p = stored(td, [1, 2, 3])
-        three = {"1": {}, "2": {}, "3": {}}
+        three = same(1, 2, 3)
 
         # the same set, and a bigger one, pass
         fhe.check_rows(three, p)
-        fhe.check_rows(dict(three, **{"4": {}}), p)
+        fhe.check_rows(same(1, 2, 3, 4), p)
 
         # a hole that HAD a figure and now has none is refused, and the hole is NAMED
         prev = os.environ.pop("ALLOW_ELEV_LOSS", None)
         try:
             with pytest.raises(SystemExit) as e:
-                fhe.check_rows({"1": {}, "3": {}}, p)
+                fhe.check_rows(same(1, 3), p)
             assert "2" in str(e.value), f"the refusal must name the hole that was lost: {e.value}"
             # a swap that keeps the COUNT is still a loss, which is why the guard is per hole
             with pytest.raises(SystemExit) as e2:
-                fhe.check_rows({"1": {}, "2": {}, "9": {}}, p)
+                fhe.check_rows(same(1, 2, 9), p)
             assert "3" in str(e2.value), f"a same-count swap must still be refused: {e2.value}"
 
             # the waiver lets a real loss through, loudly, and =0 does not read as yes
             os.environ["ALLOW_ELEV_LOSS"] = "0"
             with pytest.raises(SystemExit):
-                fhe.check_rows({"1": {}, "3": {}}, p)
+                fhe.check_rows(same(1, 3), p)
             os.environ["ALLOW_ELEV_LOSS"] = "1"
             import contextlib
             import io
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                fhe.check_rows({"1": {}, "3": {}}, p)
+                fhe.check_rows(same(1, 3), p)
             assert "WARNING" in buf.getvalue() and "2" in buf.getvalue(), \
                 f"a waived loss must still be reported: {buf.getvalue()!r}"
         finally:
@@ -14803,11 +19896,11 @@ def test_hole_elev_refuses_to_drop_a_hole_it_measured_before():
         # a FIRST run has nothing to compare against, and an unreadable baseline is not a hard stop --
         # the same call fetch_trees._stored_layer makes, for the same reason: this file is derived
         with tempfile.TemporaryDirectory() as td2:
-            fhe.check_rows({"1": {}}, os.path.join(td2, "hole_elev.json"))
+            fhe.check_rows(same(1), os.path.join(td2, "hole_elev.json"))
             bad = os.path.join(td2, "hole_elev.json")
             with open(bad, "w", encoding="utf-8") as f:
                 f.write("{not json")
-            fhe.check_rows({"1": {}}, bad)
+            fhe.check_rows(same(1), bad)
 
     # and it has to be the LAST GATE BEFORE THE BYTES LAND, or it is a guard nobody runs
     src = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
@@ -15068,6 +20161,34 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
         "pad-relief refusal is the one legal/03 was misled by")
 
 
+# The corpus's real tee samples, as {(course, hole): (ground returns, sample relief in ft, on a pad)}.
+#
+# ONE record of these numbers. They used to be literals typed into the assertions below, and by the time
+# this table was written four of them no longer reproduced -- merion 1 read 3839 against a live 3851,
+# merion 11 3917 against 3923, bay-view 3 4569/3.568 against 4581/3.572, philadelphia 18 967/6.224
+# against 970/6.219 -- because c7a4f65 corrected geo.mlat/mlon and the window those returns are counted
+# in changed size with it. NOT because the anchors moved: _crs_units_per_m derives the window's
+# half-width in CRS units through mlat, so it came out 0.2570% wider at merion, and merion h1's own
+# anchor is bit-identical across the correction. Both halves are measured by
+# test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors. Nothing
+# failed: the test calls a PURE PREDICATE, so a stale input is still a valid input, and that is exactly
+# the shape this project's standing lesson describes. So the values live here once, the pure test reads
+# them (staying LiDAR-free, which is what makes a gate on the elevation pipeline affordable to watch),
+# and test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives re-measures every row of
+# this table against the point cloud.
+TEE_SAMPLES_MEASURED = {
+    ("bay-view", 3): (4581, 3.572, True),
+    ("bay-view", 16): (1129, 7.836, False),
+    ("callippe-preserve", 11): (5068, 2.000, True),
+    ("castlewood-hill", 9): (838, 2.755, True),
+    ("castlewood-hill", 18): (150, 4.302, True),
+    ("merion", 1): (3851, 2.953, True),
+    ("merion", 11): (3923, 3.117, True),
+    ("philadelphia", 3): (1298, 2.133, True),
+    ("philadelphia", 18): (970, 6.219, True),
+}
+
+
 @needs_corpus
 def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
     """MAX_TEE_RELIEF_FT decides whether a hole PRINTS a height, and nothing exercised it.
@@ -15086,36 +20207,38 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
     with the next test anyone adds. tee_median_is_trustworthy was called zero times in this suite, because
     every corpus test reads a hole_elev.json already on disk and the one test that re-runs the stage is
     behind both @pytest.mark.network and a cold-build flag. What the deletion buys: merion h11 starts
-    printing "green 35.3 ft below the tee (-10.7 m, 3917 tee returns)" off a pad spanning 3.1 ft, and
-    philadelphia h18 "green 33.2 ft above the tee" off a pad spanning 6.2 ft -- a datum ambiguous by
-    twice the smallest height the book will print.
+    printing "green 35.3 ft below the tee" off a pad spanning 3.1 ft, and philadelphia h18
+    "green 33.2 ft above the tee" off a pad spanning 6.2 ft -- a datum ambiguous by twice the smallest
+    height the book will print.
 
-    So this calls the predicate directly, with the REAL ring samples from the corpus on both sides of
-    the threshold. The corpus leaves an empty band there, and that band is the evidence the constant is
-    a boundary between two populations rather than a cut through one:
+    So this calls the predicate directly, with the REAL samples from the corpus on both sides of the
+    threshold, read from TEE_SAMPLES_MEASURED above rather than typed in here. The corpus leaves an empty
+    band there, and that band is the evidence the constant is a boundary between two populations rather
+    than a cut through one:
 
-        steepest pad ACCEPTED    philadelphia  3   2.13 ft   (1298 returns)
+        steepest pad ACCEPTED    philadelphia 3
         --------------------------------- 2.5 ---------------------------------
-        flattest pad REFUSED     castlewood-hill 9 2.75 ft   (838 returns)
-                                 merion 1          2.95 ft   (3839 returns)
-                                 merion 11         3.12 ft   (3917 returns)
-                                 bay-view 3        3.57 ft   (4569 returns)
-                                 castlewood-hill 18 4.30 ft  (150 returns)
-                                 philadelphia 18   6.22 ft   (967 returns)
+        flattest pad REFUSED     castlewood-hill 9, then merion 1, merion 11, bay-view 3,
+                                 castlewood-hill 18, philadelphia 18
 
-    Measured over all 177 holes that get a tee sample (169 on a mapped pad, 8 in the box fallback) by
-    running the shipped sampler; so the two rows either side of the line pin the constant into
-    (2.13, 2.75] and this test fails if the gate is deleted, stubbed out, or the number is moved out of
-    that band. It calls a PURE PREDICATE with recorded numbers -- it reads no LiDAR and re-runs no
-    stage, which is what makes a gate on the elevation pipeline affordable to watch at all. (It carries
-    @needs_corpus only because fetch_hole_elev imports config, which resolves a course directory at
-    import and exits without one; nothing below reads a course file.)
+    Measured over all 177 anchors that land on a mapped pad (172 of them carry ground returns; 5 more
+    anchors land in no ring and take the box) by running the shipped sampler; so the two rows either side
+    of the line pin the constant into (2.13, 2.75] and this test fails if the gate is deleted, stubbed
+    out, or the number is moved out of that band. It calls a PURE PREDICATE with recorded numbers -- it
+    reads no LiDAR and re-runs no stage, which is what makes a gate on the elevation pipeline affordable
+    to watch at all. (It carries @needs_corpus only because fetch_hole_elev imports config, which
+    resolves a course directory at import and exits without one; nothing below reads a course file.)
 
-    The BOX branch is asserted too, and asserted to be DIFFERENT: it gates on the count only, because
-    there is no containment guarantee and the box legitimately reaches off the pad onto the ground a
-    raised tee sits above -- bay-view 16's box spans 31.2 ft and is right to be accepted on 10,429
-    returns. Applying the relief gate there would cost 8 more holes their height for a spread that is
-    an artifact of the sampling region, not a property of the tee.
+    The FALLBACK branch is asserted too, and asserted to be DIFFERENT: it gates on the count only,
+    because there is no containment guarantee and the sampled disc legitimately reaches off a raised tee
+    onto the ground it sits above -- bay-view 16's disc spans 7.8 ft and is accepted on 1,129 returns.
+    Applying the relief gate there would cost five more holes their height for a spread that is an
+    artifact of the sampling region, not a property of the tee. What made that defensible rather than
+    merely asserted is that the region was fixed instead: as a 15 m box that same sample spanned 31.9 ft
+    over 10,532 returns and read the tee 1.90 ft low, and the card printed 46 for a hole its own
+    near-anchor ground puts at 48. Both spreads, the offset and both printed integers are graded off the
+    LiDAR by test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives and
+    test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it.
     """
     sys.modules.pop("fetch_hole_elev", None)
     _config, _rh = _engine(a_course())
@@ -15126,73 +20249,2107 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
         """`ft` of measured pad relief expressed back in the CRS vertical units the gate is handed."""
         return ft / (3.28084 * vscale)
 
-    # (1) merion h1 -- 3839 class-2 returns on a mapped pad over a usable green surface, refused for
-    # relief and nothing else. This is the hole legal/03 published a wrong reason for.
-    ok, why = fhe.tee_median_is_trustworthy(3839, raw(2.953), True, 1.0)
+    def sample(course, hole):
+        """(n, relief_ft) for one real corpus sample. Fails loudly rather than silently substituting a
+        default, because a missing row would turn an assertion about the corpus into one about zero."""
+        assert (course, hole) in TEE_SAMPLES_MEASURED, (
+            f"{course} {hole} is no longer in TEE_SAMPLES_MEASURED, so this assertion has nothing real "
+            f"to run against")
+        n, ft, _on_pad = TEE_SAMPLES_MEASURED[(course, hole)]
+        return n, ft
+
+    # (1) merion h1 -- thousands of class-2 returns on a mapped pad over a usable green surface, refused
+    # for relief and nothing else. This is the hole legal/03 published a wrong reason for.
+    n1, ft1 = sample("merion", 1)
+    ok, why = fhe.tee_median_is_trustworthy(n1, raw(ft1), True, 1.0)
     assert not ok, (
-        "merion h1's real tee pad spans 2.95 ft of height and the gate accepts it, so the hole would "
-        "print a height off ground whose own spread is nearly the smallest figure the card prints. "
-        f"MAX_TEE_RELIEF_FT is {getattr(fhe, 'MAX_TEE_RELIEF_FT', 'GONE')}")
+        f"merion h1's real tee sample spans {ft1} ft of height and the gate accepts it, so the hole "
+        f"would print a height off ground whose own spread is nearly the smallest figure the card "
+        f"prints. MAX_TEE_RELIEF_FT is {getattr(fhe, 'MAX_TEE_RELIEF_FT', 'GONE')}")
     assert "not a level teeing ground" in why, (
         f"the refusal no longer says what is wrong with the pad, so the run log stops being the only "
         f"record of why this hole prints nothing: {why!r}")
-    assert "spans 3.0 ft" in why, (
+    assert f"spans {ft1:.1f} ft" in why, (
         f"the refusal must quote the spread it MEASURED, not just the limit it failed -- that number "
         f"is the only record of how far off a level tee this pad is: {why!r}")
 
     # (2) the two rows either side of the empty band, which is what pins the constant.
-    assert not fhe.tee_median_is_trustworthy(838, raw(2.755), True, 1.0)[0], (
-        "castlewood-hill 9 is the FLATTEST pad the corpus refuses, at 2.75 ft; accepting it means the "
-        "threshold has risen past the whole refused population")
-    assert fhe.tee_median_is_trustworthy(1298, raw(2.133), True, 1.0)[0], (
-        "philadelphia 3 is the STEEPEST pad the corpus accepts, at 2.13 ft, and it prints a height "
-        "today; refusing it means the threshold has fallen into the accepted population")
-    assert 2.133 < fhe.MAX_TEE_RELIEF_FT < 2.755, (
+    nc, ftc = sample("castlewood-hill", 9)
+    np_, ftp = sample("philadelphia", 3)
+    assert not fhe.tee_median_is_trustworthy(nc, raw(ftc), True, 1.0)[0], (
+        f"castlewood-hill 9 is the FLATTEST pad the corpus refuses, at {ftc} ft; accepting it means the "
+        f"threshold has risen past the whole refused population")
+    assert fhe.tee_median_is_trustworthy(np_, raw(ftp), True, 1.0)[0], (
+        f"philadelphia 3 is the STEEPEST pad the corpus accepts, at {ftp} ft, and it prints a height "
+        f"today; refusing it means the threshold has fallen into the accepted population")
+    assert ftp < fhe.MAX_TEE_RELIEF_FT < ftc, (
         f"MAX_TEE_RELIEF_FT = {fhe.MAX_TEE_RELIEF_FT} is no longer inside the band the corpus leaves "
-        f"empty (2.13, 2.75). Re-measure both ends before moving it; the two assertions above say "
+        f"empty ({ftp}, {ftc}). Re-measure both ends before moving it; the two assertions above say "
         f"which holes decide it")
     assert fhe.MAX_TEE_RELIEF_FT < 3.0, (
         "the limit must stay below the 3 ft floor generate.elev_phrase suppresses under, which is what "
         "ties it to something: a pad ambiguous by more than the smallest height the book prints cannot "
         "anchor that height")
 
-    # (3) the other five refusals, so no single edit can quietly re-admit them
-    for slug, hn, n, ft in (("merion", 11, 3917, 3.117), ("bay-view", 3, 4569, 3.568),
-                            ("castlewood-hill", 18, 150, 4.302),
-                            ("philadelphia", 18, 967, 6.224)):
+    # (3) the other four refusals, so no single edit can quietly re-admit them
+    for course, hn in (("merion", 11), ("bay-view", 3), ("castlewood-hill", 18), ("philadelphia", 18)):
+        n, ft = sample(course, hn)
         assert not fhe.tee_median_is_trustworthy(n, raw(ft), True, 1.0)[0], (
-            f"{slug} {hn}'s pad spans {ft} ft and is being accepted; it would print a height off "
+            f"{course} {hn}'s pad spans {ft} ft and is being accepted; it would print a height off "
             f"ground that is not level")
 
     # (4) the CRS axis scale is applied, so the five US-survey-foot courses are gated on feet and not
     # on raw ftUS read as metres. callippe 11 spans 2.00 ft and prints a height; drop the scale and it
     # reads 6.6 ft and the hole goes silent.
-    assert fhe.tee_median_is_trustworthy(5058, raw(2.000, FT_US), True, FT_US)[0], (
-        "callippe 11's pad spans 2.00 ft and is being refused -- the gate is reading raw ftUS as if it "
-        "were metres, which makes it 3.28x stricter on 5 of the 11 courses")
-    assert not fhe.tee_median_is_trustworthy(5058, raw(3.568, FT_US), True, FT_US)[0], \
-        "a 3.57 ft spread on a ftUS course is accepted; the scale is being applied the wrong way"
+    nk, ftk = sample("callippe-preserve", 11)
+    assert fhe.tee_median_is_trustworthy(nk, raw(ftk, FT_US), True, FT_US)[0], (
+        f"callippe 11's pad spans {ftk} ft and is being refused -- the gate is reading raw ftUS as if it "
+        f"were metres, which makes it 3.28x stricter on 5 of the 11 courses")
+    _nb, ftb = sample("bay-view", 3)
+    assert not fhe.tee_median_is_trustworthy(nk, raw(ftb, FT_US), True, FT_US)[0], \
+        f"a {ftb} ft spread on a ftUS course is accepted; the scale is being applied the wrong way"
 
     # (5) enough points for the spread to mean anything, and the BOX branch, which is a different
     # question with a different answer -- see this test's docstring.
     assert not fhe.tee_median_is_trustworthy(29, raw(0.2), True, 1.0)[0], \
         "a 29-point pad is accepted; a spread over that many returns is not a measurement of the pad"
-    assert fhe.tee_median_is_trustworthy(10429, raw(31.245), False, 1.0)[0], (
-        "bay-view 16's 15 m BOX spans 31.2 ft and is being refused: the box is not the pad, so its "
-        "spread is the ground around a raised tee and the count is the only signal there")
-    assert not fhe.tee_median_is_trustworthy(150, raw(0.2), False, 1.0)[0], (
-        "a 150-point box is accepted; with no containment guarantee a small sample may not be the tee "
-        "at all, which is what MIN_TEE_PTS is for")
+    nbx, ftbx = sample("bay-view", 16)
+    assert fhe.tee_median_is_trustworthy(nbx, raw(ftbx), False, 1.0)[0], (
+        f"bay-view 16's fallback DISC spans {ftbx} ft and is being refused: the disc is not a mapped "
+        f"pad, so its spread is partly the ground around a raised tee and the count is the only signal "
+        f"there. It spanned 31.9 ft as a 15 m box, which is why the region was the fix and the gate "
+        f"was not")
+    assert not fhe.tee_median_is_trustworthy(fhe.MIN_TEE_PTS - 1, raw(0.2), False, 1.0)[0], (
+        f"a {fhe.MIN_TEE_PTS - 1}-point fallback sample is accepted; with no containment guarantee a "
+        f"small sample may not be the tee at all, which is what MIN_TEE_PTS is for")
+    assert fhe.tee_median_is_trustworthy(fhe.MIN_TEE_PTS, raw(0.2), False, 1.0)[0], (
+        f"a sample exactly AT MIN_TEE_PTS ({fhe.MIN_TEE_PTS}) is refused, so the floor is off by one "
+        f"from the count it publishes in the artifact's gate set")
+    # ...and the floor must be the area-equivalent of the one it replaced, not the 200 that was
+    # calibrated against a 900 m^2 box. Left at 200 over a 113 m^2 disc it would refuse a disc under
+    # 2.5 m radius -- 8x stricter than it says -- which is the fault _crs_units_per_m records about
+    # this same constant. The derivation is graded off the corpus in
+    # test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it; here the point
+    # is only that it did not stay at the box's number.
+    assert fhe.MIN_TEE_PTS < 200, (
+        f"MIN_TEE_PTS is {fhe.MIN_TEE_PTS}, the floor calibrated against the retired 900 m^2 box. The "
+        f"fallback now samples a {fhe.TEE_FALLBACK_R_M:g} m disc, "
+        f"{(2 * fhe.TEE_R_M) ** 2 / (math.pi * fhe.TEE_FALLBACK_R_M ** 2):.1f}x smaller in area.")
 
     # (6) and the module comment must quote the spread the gate actually computes. It quoted the
     # PEAK-TO-PEAK figures (5.1 and 9.1 ft) beside a gate defined on p95-p5, on the two pads it names
     # as the reason for the threshold -- so the derivation could not be checked against the code.
     cmt = open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8").read()
     cmt = cmt.split("MAX_TEE_RELIEF_FT = ")[0]
-    assert "4.3 ft of relief" in cmt and "6.2 ft of relief" in cmt, (
-        "the comment deriving MAX_TEE_RELIEF_FT no longer quotes castlewood-hill 18's 4.3 ft and "
-        "philadelphia 18's 6.2 ft -- the p95-p5 spreads this gate measures, re-measured through the "
-        "shipped ring sampler and pinned in (3) above")
+    for course, hn in (("castlewood-hill", 18), ("philadelphia", 18)):
+        _n, ft = sample(course, hn)
+        assert f"{ft:.1f} ft of relief" in cmt, (
+            f"the comment deriving MAX_TEE_RELIEF_FT no longer quotes {course} {hn}'s {ft:.1f} ft -- the "
+            f"p95-p5 spread this gate measures, re-measured through the shipped ring sampler and pinned "
+            f"in TEE_SAMPLES_MEASURED")
+
+
+# ---------------------------------------------------------------------------
+# The tee sample: WHERE it is taken, and every figure published about it.
+#
+# fetch_hole_elev.py derives a print/no-print gate from a dozen corpus measurements and writes three
+# more into hole_elev.json. Every one of them was a literal typed into a comment, and by the time this
+# block was written eleven of them no longer reproduced -- the anchors moved when geo.mlat/mlon was
+# corrected, and the tee box became a true 15 m box in every CRS, and neither change touched the prose
+# that quoted the old answers. So the figures are GRADED against a live measurement here rather than
+# copied: nothing below hardcodes a value the module also states.
+# ---------------------------------------------------------------------------
+_TEE_GEOM = None
+_TEE_LIDAR = None
+
+
+def _elev_bind(fhe, slug):
+    """Point an already-imported fetch_hole_elev at `slug`, and return that course's config.
+
+    fetch_hole_elev binds `DIR = config.COURSE_DIR` at import and holds module references to config and
+    render_hole, so a cached copy keeps reading the FIRST course's files -- the fault
+    test_recorded_green_height_matches_the_built_surface dropped the module per course to avoid.
+    Rebinding those three attributes is equivalent, because they are the whole of this module's
+    course-bound state, and it keeps the eleven-course loops below from adding `sys.modules.pop` sites
+    to the figure README publishes about this suite (see
+    test_the_suite_reports_its_own_module_drop_count_correctly, which pins README against the count)."""
+    cfg, rh = _engine(slug)
+    fhe.config = cfg
+    fhe.render_hole = rh
+    fhe.DIR = os.path.join(ROOT, "courses", slug)
+    return cfg
+
+
+def _tee_geometry():
+    """WHERE fetch_hole_elev samples each tee, from OSM geometry alone -- no point cloud, so this is
+    cheap enough for a plain corpus test.
+
+    Per course: every anchor tee_anchor resolves, which of those land inside a mapped `golf=tee` ring,
+    how far that ring's farthest vertex is from the anchor, and what fraction of the TEE_R_M box the
+    ring covers. The share is rasterised rather than clipped analytically; it is stable to 0.01
+    percentage point from 0.30 m cells down to 0.05 m, so the 0.10 m grid used here is not a tuning
+    knob.
+
+    Two reach figures, because they answer different questions and the difference is 2 pads. `reach_m`
+    is RADIAL -- the farthest vertex -- and it is what tee_elevations' own derivation publishes.
+    `axis_m` is the larger of the two axis-aligned half-extents, which is the criterion that actually
+    CLIPS, because the window is applied as `abs(x - tx) < R and abs(y - ty) < R`. A ring can reach
+    18 m diagonally and still sit entirely inside the window.
+
+    Cached, because two graders read it and every anchor costs a pyproj transform."""
+    global _TEE_GEOM
+    if _TEE_GEOM is not None:
+        return _TEE_GEOM
+    import numpy as np
+    import geo
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    out = {}
+    for slug in CORPUS:
+        cfg = _elev_bind(fhe, slug)
+        if cfg.BUILD_MODE == "yardage" or not glob.glob(os.path.join(fhe.DIR, "laz", "*.laz")):
+            continue
+        with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        loc = cfg.COURSE.get("location") or {}
+        holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        anchors = {}
+        for hn in sorted(holes):
+            la, lo, _basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+            if la is not None:
+                anchors[hn] = (la, lo)
+        targets, crs = fhe._tee_points(anchors)
+        pads = fhe._tee_pads(targets, crs)
+        la0, lo0 = next(iter(anchors.values()))
+        upm = fhe._crs_units_per_m(crs, la0, lo0)
+        R = fhe.TEE_R_M * upm
+        g = (np.arange(300) + 0.5) / 300.0 * 2 * R - R
+        GX, GY = np.meshgrid(g, g)
+        share, reach = {}, {}
+        axis = {}
+        for hn, (vx, vy) in pads.items():
+            tx, ty = targets[hn]
+            share[hn] = float(fhe._mask_in_ring((GX + tx).ravel(), (GY + ty).ravel(), vx, vy).mean())
+            reach[hn] = float(np.max(np.hypot(vx - tx, vy - ty)) / upm)
+            axis[hn] = float(max(np.max(np.abs(vx - tx)), np.max(np.abs(vy - ty))) / upm)
+        out[slug] = {"anchors": sorted(targets), "pads": sorted(pads), "share": share,
+                     "reach_m": reach, "axis_m": axis, "upm": upm,
+                     "nrings": len(fhe.tee_rings_latlon())}
+    _elev_bind(fhe, a_course())
+    _TEE_GEOM = out
+    return out
+
+
+def _fallback_disc(fhe, dx, dy):
+    """The region the shipped sampler takes when no mapped tee ring holds the anchor.
+
+    Read off the module rather than respelled, so this suite cannot go on measuring the region the
+    producer USED to sample -- which is exactly what happened for as long as the fallback was a 15 m
+    box: `_tee_samples` computed the box statistic and called it the sample, and the box-branch grader
+    then compared a figure to itself. `dx`/`dy` are already metres.
+    """
+    import numpy as np
+    r = getattr(fhe, "TEE_FALLBACK_R_M", None)
+    assert r is not None, (
+        "fetch_hole_elev has no TEE_FALLBACK_R_M, so this suite cannot tell which region the box "
+        "fallback samples. If the fallback went back to a TEE_R_M box, this helper and the grader "
+        "test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it are what "
+        "have to change with it -- not silently.")
+    return np.hypot(dx, dy) < r
+
+
+def _tee_samples():
+    """Every tee's ground returns measured five ways, in ONE pass over each course's LAZ.
+
+    Per (slug, hole): the SAMPLE the shipped code takes (the mapped pad inside the TEE_R_M window, or a
+    TEE_FALLBACK_R_M DISC at the anchor where no ring holds it -- this said "the whole window in the box
+    fallback", the region the producer stopped sampling at fd39647, inside the helper whose whole purpose
+    is to stop this suite measuring a region nothing samples), the WHOLE mapped ring, the whole BOX, the
+    pad median at
+    smaller radii, and how far the pad median moves when the anchor is displaced 10 m in each of four
+    directions. Feet throughout -- the CRS vertical scale is applied here, as tee_median_is_trustworthy
+    applies it, so no figure below is a raw ftUS number read as metres.
+
+    The fallback region comes FROM the module (`_fallback_disc` reads TEE_FALLBACK_R_M), never from a
+    constant typed here. That is necessary and it is not sufficient: a producer can sample the box while
+    that constant stays 6.0, so the disc is additionally checked against what the producer WROTE -- see
+    step 2 of test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it, whose
+    predecessor compared this helper's disc against this helper's own distances and proved nothing.
+
+    One pass, ~45 s over the corpus's 11.6 GiB, because every LiDAR-derived figure fetch_hole_elev
+    publishes is graded off it and re-reading the tiles per figure would not be affordable."""
+    global _TEE_LIDAR
+    if _TEE_LIDAR is not None:
+        return _TEE_LIDAR
+    import laspy
+    import numpy as np
+    import geo
+    FT = 3.28084
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    out = {}
+    for slug in CORPUS:
+        cfg = _elev_bind(fhe, slug)
+        tiles = sorted(glob.glob(os.path.join(fhe.DIR, "laz", "*.laz")))
+        if cfg.BUILD_MODE == "yardage" or not tiles:
+            continue
+        with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        loc = cfg.COURSE.get("location") or {}
+        holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        anchors = {}
+        for hn in sorted(holes):
+            la, lo, _basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+            if la is not None:
+                anchors[hn] = (la, lo)
+        targets, crs = fhe._tee_points(anchors)
+        pads = fhe._tee_pads(targets, crs)
+        la0, lo0 = next(iter(anchors.values()))
+        upm = fhe._crs_units_per_m(crs, la0, lo0)
+        vscale = geo.vertical_scale(cfg.COURSE.get("lidar_crs") or
+                                    geo.sole_laz_crs(os.path.join(fhe.DIR, "laz")))
+        # prefilter half-width per hole: the window OR the whole ring, whichever reaches further, so
+        # this measurement can see the returns the shipped window drops
+        half = {}
+        for hn, (tx, ty) in targets.items():
+            h = fhe.TEE_R_M * upm
+            ring = pads.get(hn)
+            if ring is not None:
+                h = max(h, float(np.max(np.abs(ring[0] - tx))),
+                        float(np.max(np.abs(ring[1] - ty)))) + 1e-6
+            half[hn] = h
+        keep = {hn: [] for hn in targets}
+        for path in tiles:
+            with laspy.open(path) as f:
+                hb = f.header
+                if all(x + half[hn] < hb.x_min or x - half[hn] > hb.x_max or
+                       y + half[hn] < hb.y_min or y - half[hn] > hb.y_max
+                       for hn, (x, y) in targets.items()):
+                    continue
+                for chunk in f.chunk_iterator(3_000_000):
+                    g = np.asarray(chunk.classification) == fhe.GROUND
+                    if not g.any():
+                        continue
+                    x = np.asarray(chunk.x)[g]
+                    y = np.asarray(chunk.y)[g]
+                    z = np.asarray(chunk.z)[g]
+                    for hn, (tx, ty) in targets.items():
+                        h = half[hn]
+                        m = (np.abs(x - tx) < h) & (np.abs(y - ty) < h)
+                        if not m.any():
+                            continue
+                        xm, ym, zm = x[m], y[m], z[m]
+                        ring = pads.get(hn)
+                        inr = (fhe._mask_in_ring(xm, ym, ring[0], ring[1]) if ring is not None
+                               else np.zeros(len(xm), bool))
+                        keep[hn].append(np.stack([(xm - tx) / upm, (ym - ty) / upm, zm,
+                                                  inr.astype(float)], 1))
+        for hn, parts in keep.items():
+            if not parts:
+                continue
+            a = np.concatenate(parts)
+            dx, dy, z, inr = a[:, 0], a[:, 1], a[:, 2], a[:, 3] > 0.5
+            win = (np.abs(dx) < fhe.TEE_R_M) & (np.abs(dy) < fhe.TEE_R_M)
+            on_pad = hn in pads
+
+            def stat(m):
+                if not m.any():
+                    return None
+                zz = z[m]
+                rel = (float(np.percentile(zz, 95) - np.percentile(zz, 5)) if zz.size >= 20
+                       else float(zz.max() - zz.min()))
+                return {"n": int(zz.size), "med_ft": float(np.median(zz)) * vscale * FT,
+                        "rel_ft": rel * vscale * FT}
+
+            row = {"on_pad": on_pad,
+                   "sample": stat((inr & win) if on_pad else _fallback_disc(fhe, dx, dy)),
+                   "ring": stat(inr) if on_pad else None,
+                   "box": stat(win)}
+            if not on_pad:
+                # The raw fallback sample, kept so a grader can SWEEP the radius continuously instead
+                # of sampling a handful of points. A discrete probe of {2.5, 5, 7.5, 10} would report
+                # merion 9's printed integer as settled when it flips 0.34 m below the shipped radius.
+                # Small: no fallback hole holds more than about 18k returns inside the 15 m box.
+                row["scan"] = {"d_m": np.hypot(dx, dy), "z_ft": z * vscale * FT,
+                               "green_ft": None if fhe.green_elevation(hn) is None
+                               else fhe.green_elevation(hn) * FT}
+            near = inr if on_pad else np.ones(len(dx), bool)
+            for rad in (2.5, 5.0, 7.5, 10.0):
+                m = (np.abs(dx) < rad) & (np.abs(dy) < rad) & near
+                row[f"med_{rad}"] = float(np.median(z[m])) * vscale * FT if m.any() else None
+            shifted = []
+            for ox, oy in ((10.0, 0.0), (-10.0, 0.0), (0.0, 10.0), (0.0, -10.0)):
+                m = (np.abs(dx - ox) < fhe.TEE_R_M) & (np.abs(dy - oy) < fhe.TEE_R_M) & inr
+                if m.sum() >= fhe.MIN_RING_PTS:
+                    shifted.append(float(np.median(z[m])) * vscale * FT)
+            row["shift_spread_ft"] = (max(shifted) - min(shifted)) if len(shifted) >= 2 else None
+            out[(slug, hn)] = row
+    _elev_bind(fhe, a_course())
+    _TEE_LIDAR = out
+    return out
+
+
+def _fhe_src():
+    with open(os.path.join(ROOT, "fetch_hole_elev.py"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _fhe_prose():
+    """fetch_hole_elev.py as ONE line of prose: line-leading `#` removed, all whitespace collapsed.
+
+    The figures graded below live in wrapped comments and docstrings, so a pattern written against the
+    sentence would fail on where the author happened to break the line -- which makes the grader a
+    formatting test instead of a figure test. Flattening first means the sentence is what is matched."""
+    return re.sub(r"\s+", " ", re.sub(r"(?m)^[ \t]*#[ \t]?", "", _fhe_src()))
+
+
+def _published(src, pattern, what, live):
+    """The numbers fetch_hole_elev.py publishes for `what`, or a failure that states the live ones.
+
+    A figure nothing can parse is the same defect as a figure that is wrong -- it is the state every
+    drifted number in this module was in -- so an unmatched pattern fails here and reports the
+    measurement, rather than being skipped over."""
+    m = re.search(pattern, src)
+    assert m, (f"fetch_hole_elev.py no longer publishes {what} in a form this test can read.\n"
+               f"  pattern : {pattern}\n"
+               f"  measured: {live}")
+    return m
+
+
+def _short(slug):
+    """The short course name fetch_hole_elev.py's comments use ('merion', 'bay-view', ...)."""
+    for suffix in ("-golf-club", "-golf-course", "-golf-links", "-country-club", "-course",
+                   "-at-spanos-park"):
+        slug = slug.replace(suffix, "")
+    return slug
+
+
+@needs_corpus
+def test_the_independent_checker_says_which_region_each_side_of_it_samples():
+    """The tool whose whole value is being INDEPENDENT published a false premise, in four records.
+
+    tools/verify_elevation.py exists because every check inside the elevation pipeline shares that
+    pipeline's assumptions -- which is how a US-survey-foot tee height subtracted from a metric green
+    height put 74 of 175 holes out by a median 298 ft with nothing objecting. Its argument rests on
+    both sides measuring the same ground, and 9cc3bce moved the PRODUCER's tee sample onto the mapped
+    pad INTERSECTED with a 15 m window at the anchor while this tool went on sampling the WHOLE mapped
+    ring. Measured here: 55 of 177 mapped pads have a ring reaching past that window on an axis -- the
+    criterion that actually clips -- the farthest 63.0 m, and the producer's own derivation puts the
+    resulting median shift at up to 1.87 ft. TOL_FT is 10 ft, so this tool can never flag it.
+
+    FOUR records said the regions matched and none of them was graded:
+      * the fallback region's note            "Both sides now sample the same REGIONS"
+      * dem_median_m's docstring              "both sides ... measure the same region"
+      * the comment at the sampling call      "the SAME regions the pipeline does"
+      * generate.elev_phrase's docstring      "now sampled over the SAME regions this pipeline samples"
+
+    The fourth is the one that matters most: elev_phrase's docstring is the recorded justification of
+    the 3 ft PRINT FLOOR, the gate deciding whether any elevation number reaches a card at all. The
+    floor itself is not weakened by this -- a wider reference region INFLATES the measured
+    disagreement, so the spread those figures quote is an upper bound and the floor is conservative --
+    but the reason given for trusting the spread was not the reason that held.
+
+    THE MAPPED-PAD sampling is deliberately NOT changed: which region an independent reference should
+    read is a real design question with a measured cost, the ring is what OSM actually maps, and a
+    checker quietly re-pointed at the producer's own choice is a weaker check, not a stronger one.
+
+    THE FALLBACK branch went the other way, and the two are not the same question. There is no OSM ring
+    to be independent ABOUT where no ring holds the anchor: the region is chosen on both sides, and the
+    checker's `SAMPLE_HALF_M = 15.0` was a copy of `fetch_hole_elev.TEE_R_M`, the producer's OWN fallback
+    box. fd39647 measured that box wrong -- bay-view 16's spanned 31.9 ft of hillside -- and moved the
+    producer to a TEE_FALLBACK_R_M disc. Holding 15.0 afterwards would not have been independence; it
+    would have been a stale copy of an abandoned region, 900 m^2 against 113 m^2, which TOL_FT at 10 ft
+    cannot flag. Measured cost of aligning it, in the DEM, over all five fallback anchors: bay-view 16
+    +0.63 ft, castlewood-hill 4 +0.16, merion 3 -1.05, merion 9 +0.43, merion 15 -0.45 -- worst MERION 3
+    at 1.05 ft, under 1.1 ft on 5 of 171 holes, no verdict flipped, and NOT one-signed, so the "a wider
+    region only inflates it" reading that holds on the pad branch never held here. It also took region
+    difference OUT of the hole the tool's own worst-observed figure named: bay-view 16 reported 1.21 ft
+    against the box and 0.58 ft against the disc -- one basis, the rounded `change_ft` the tool reports
+    against, because a pair taking one figure from `change_ft` and the other from `change_ft_exact`
+    derives a region cost 0.03 ft from the shift above and stood here for a commit doing exactly that.
+    Not to be confused with the box-vs-disc difference in the
+    POINT CLOUD (+1.886 ft on bay-view 16, -1.116 on merion 9), which is the producer's figure.
+
+    So the four records now say what each side reads, and this grades that against the CODE (the
+    reference still takes the unclipped ring, and takes its fallback radius FROM the producer rather
+    than re-declaring it), against the ARTIFACT (the producer's rows record a window), and against the
+    GEOMETRY (how many pads differ).
+    """
+    geom = _tee_geometry()
+    assert geom, "no green-mode course with LiDAR on disk; nothing to measure"
+    ve = open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8").read()
+    gen = open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read()
+
+    # 1. THE CODE, on BOTH branches, because the right answer differs between them.
+    #    (a) the MAPPED-PAD branch: the reference's tee sample is the ring `ring_containing` returns,
+    #        unclipped -- if that ever changes, the prose below is what has to change with it.
+    assert re.search(r"_ring\s*=\s*fhe\.ring_containing\(", ve) and \
+        re.search(r"dem_median_over_ring\(_ring\)", ve), (
+        "tools/verify_elevation.py no longer feeds the whole mapped ring straight into its tee "
+        "reference. If it now clips to the producer's window, every record below saying it reads the "
+        "WHOLE ring is stale -- and if it clips, it is no longer independent of the producer's choice "
+        "of region, which is the reason it was left alone.")
+    #    (b) the FALLBACK branch, where there is no OSM ring to be independent ABOUT: the region is
+    #        chosen on both sides, so the checker READS THE PRODUCER'S and never re-declares it. It held
+    #        `SAMPLE_HALF_M = 15.0` -- a copy of the producer's own superseded fallback box -- for a
+    #        commit after fd39647 moved the producer to a TEE_FALLBACK_R_M disc, which is not
+    #        independence but a stale copy: 900 m^2 of hillside against 113 m^2 of teeing ground, with
+    #        TOL_FT at 10 ft and unable to say so.
+    assert re.search(r"fhe\.TEE_FALLBACK_R_M", ve), (
+        "tools/verify_elevation.py no longer takes its fallback tee radius FROM fetch_hole_elev. A "
+        "checker holding its own copy of the producer's region cannot tell 'the region moved' from "
+        "'the ground disagrees' -- which is exactly what SAMPLE_HALF_M = 15.0 did after fd39647.")
+    assert not re.search(r"(?m)^\s*SAMPLE_HALF_M\s*=", ve), (
+        "tools/verify_elevation.py has re-declared a fallback tee region of its own. That figure "
+        "belongs to the producer (fetch_hole_elev.TEE_FALLBACK_R_M); a second copy here is the defect "
+        "this file's own note at the geo import describes.")
+    import fetch_hole_elev as _fhe_for_radius
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_elevation as _ve_mod
+    assert _ve_mod.tee_fallback_radius_m() == float(_fhe_for_radius.TEE_FALLBACK_R_M), (
+        f"the checker's fallback radius ({_ve_mod.tee_fallback_radius_m()}) is not the producer's "
+        f"({_fhe_for_radius.TEE_FALLBACK_R_M}); the two sides are sampling different tee regions on the "
+        f"branch where they are supposed to be sampling the same one")
+
+    # 2. THE ARTIFACT. The producer records the region it actually sampled, per row.
+    regions = set()
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "hole_elev.json"))):
+        with open(p, encoding="utf-8") as fh:
+            for row in (json.load(fh).get("holes") or {}).values():
+                if "pad" in str(row.get("tee_region", "")):
+                    regions.add(row["tee_region"])
+    assert regions and all("window" in r for r in regions), (
+        f"the producer's pad rows no longer record a WINDOW as the region they sampled: {regions}. "
+        f"Either the producer changed or the label did; either way this test's premise moved.")
+
+    # 3. THE GEOMETRY, by the criterion that actually clips.
+    axis = [(g["axis_m"][h], _short(s), h) for s, g in geom.items() for h in g["pads"]]
+    past = [a for a in axis if a[0] > 15.0]
+    worst = max(axis)
+    assert past, ("no mapped ring reaches past the window on an axis, so the two sides DO sample the "
+                  "same tee region and every record below is now understating the tool -- re-derive "
+                  "this before deleting it")
+
+    problems = []
+    for where, text, pat in (
+            ("tools/verify_elevation.py's THE TEE REGION note", ve,
+             r"(\d+) of (\d+) mapped pads whose ring reaches past that window on an axis -- up to "
+             r"([\d.]+) m, (\S+) (\d+)"),
+            ("generate.elev_phrase's docstring", gen,
+             r"a region difference too, on (\d+) of (\d+) pads")):
+        m = re.search(pat, _flow(text))
+        assert m, (f"{where} no longer states how many pads the two regions differ on ({pat!r}). That "
+                   f"sentence is the only place the cost of this tool's premise is written down.")
+        g = m.groups()
+        if (int(g[0]), int(g[1])) != (len(past), len(axis)):
+            problems.append(f"{where} says {g[0]} of {g[1]} pads differ; measured {len(past)} of "
+                            f"{len(axis)}")
+        if len(g) > 2 and (abs(float(g[2]) - worst[0]) > 0.1 or (g[3], int(g[4])) != worst[1:]):
+            problems.append(f"{where} names the farthest as {g[2]} m on {g[3]} {g[4]}; measured "
+                            f"{worst[0]:.1f} m on {worst[1]} {worst[2]}")
+
+    # 4. THE RETIRED CLAIM, in all four records. It is what made the mismatch invisible.
+    #    Matched as the SHAPE the claim had -- "both sides ... the same regions", or "the same regions"
+    #    followed by the green-and-tee pair -- not as any mention of "same region", because the GREEN
+    #    side genuinely IS the same region and each record now says so. A clause that denies the claim
+    #    is cleared, the same way every other prose gate in this file clears one.
+    RETIRED = re.compile(r"both sides[^.]*same\s+REGIONS?"
+                         r"|same\s+REGIONS?[^.]*(?:green polygon and the (?:mapped )?tee|tee pad)", re.I)
+    for where, text in (("tools/verify_elevation.py", ve), ("generate.py", gen)):
+        for m in re.finditer(r"[^.]*\.", _flow(text)):
+            s = m.group(0)
+            if RETIRED.search(s) and not re.search(r"\bdo(?:es)? not\b|\bnot\b|never", s, re.I):
+                problems.append(f"{where} still claims both sides sample the same region: "
+                                f"{s.strip()[:150]}")
+    for where, text, want in (
+            ("tools/verify_elevation.py's dem_median_m docstring", ve,
+             r"whole mapped ring where the pipeline reads the pad inside a 15 m window"),
+            ("tools/verify_elevation.py's region note", ve, r"see the region note above TOL_FT"),
+            ("the comment at the sampling call", ve, r"WHOLE mapped tee ring"),
+            ("generate.elev_phrase's docstring", gen, r"whole mapped tee ring")):
+        if not re.search(want, _flow(text), re.I):
+            problems.append(f"{where} no longer says which region the reference reads at the tee "
+                            f"({want!r} is gone)")
+
+    assert not problems, (
+        "the independent elevation checker misdescribes what it samples, or the records of it "
+        "disagree. Four copies of one premise with no cross-check is how this survived 9cc3bce:\n  "
+        + "\n  ".join(problems))
+
+
+def _fallback_tee_region_shifts():
+    """[(short slug, hole, shift ft, |diff| box, |diff| disc, |diff| box exact, |diff| disc exact)].
+
+    What moving the checker's fallback tee region cost, measured in the DEM at every anchor no mapped
+    ring holds. `shift` is the change in the tee-to-green figure this tool REPORTS when the region moves
+    from the superseded 15 m box to the producer's disc; the four |diff| columns are that hole's
+    disagreement with the recorded height, on each region and on each of the two recorded heights.
+
+    BOTH BASES are returned because publishing one figure from each is the defect this measurement
+    exists to grade. hole_elev.json records `change_ft` (rounded to 0.1) and `change_ft_exact`, the tool
+    reports against `change_ft`, and on bay-view 16 the two differ by 0.033 ft -- enough that a pair
+    taking one figure from each derives a region cost 0.03 ft away from the shift the same paragraph
+    publishes three lines earlier, which is how 0.66 ft came to stand where 0.63 belongs.
+
+    THE 15 m BOX IS REPRODUCED HERE, verbatim from ba34e52's `dem_median_m` -- a square bbox at 48 px
+    with no margin, median over every finite cell of whatever extent the service returns. It is a copy
+    of retired code, deliberately: the figure being graded is what the tool's answer MOVED BY, so the
+    superseded sampler is half the measurement and there is nowhere else left in the repo that runs it.
+    Reproducing it any other way would grade a different experiment.
+    """
+    import numpy as np
+    import geo
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_elevation as ve
+    FT = 3.28084
+
+    def box_median_m(lat, lon, half_m=15.0, px=48):
+        dlat, dlon = half_m / _mlat(lat), half_m / _mlon(lat)
+        got = ve._fetch_patch(lon - dlon, lat - dlat, lon + dlon, lat + dlat, px)
+        if got is None:
+            return None
+        a, _bbox = got
+        return float(np.median(a[np.isfinite(a)]))
+
+    # Bound per course through _elev_bind rather than by dropping modules, which is the whole reason
+    # that helper exists: a new sys.modules.pop site would move the count README publishes about this
+    # suite, and README is not this round's to edit.
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    out = []
+    for slug in CORPUS:
+        cfg = _elev_bind(fhe, slug)
+        p = os.path.join(fhe.DIR, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            rec = json.load(fh)["holes"]
+        with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        loc = cfg.COURSE.get("location") or {}
+        holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        rings = fhe.tee_rings_latlon()
+        for hn in sorted(int(k) for k in rec):
+            if hn not in holes or rec[str(hn)].get("change_ft") is None:
+                continue
+            la, lo, _basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+            if la is None or fhe.ring_containing(la, lo, rings) is not None:
+                continue                        # a mapped ring holds it: not the fallback branch
+            mp = os.path.join(fhe.DIR, "dem_hd", f"hole{hn:02d}.json")
+            if not os.path.isfile(mp):
+                continue
+            with open(mp, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            gp = np.asarray(meta["polygon"], float)
+            d_grn = ve.dem_median_over_ring((gp[:, 0], gp[:, 1]))
+            d_disc, d_box = ve.dem_median_m(la, lo), box_median_m(la, lo)
+            assert None not in (d_grn, d_disc, d_box), (
+                f"the elevation service did not answer for {slug} {hn}, so this cannot be measured. An "
+                f"unreachable service must read as 'could not check', never as agreement -- re-run it.")
+            ib, idisc = (d_grn - d_box) * FT, (d_grn - d_disc) * FT
+            row = rec[str(hn)]
+            cf, cfe = float(row["change_ft"]), row.get("change_ft_exact")
+            out.append((_short(slug), hn, idisc - ib, abs(ib - cf), abs(idisc - cf),
+                        None if cfe is None else abs(ib - float(cfe)),
+                        None if cfe is None else abs(idisc - float(cfe))))
+    _elev_bind(fhe, a_course())
+    return out
+
+
+@pytest.mark.network
+@pytest.mark.skipif(not os.environ.get("VERIFY_ELEV"),
+                    reason="set VERIFY_ELEV=1 to run: needs the 3DEP elevation service, three patch "
+                           "fetches per fallback anchor")
+@needs_corpus
+def test_the_cost_of_aligning_the_fallback_tee_region_is_the_cost_the_dem_gives():
+    """The paragraph that justifies aligning the checker's fallback region derived one figure from two
+    different baselines, and nothing in this repo could see it.
+
+    ba34e52 left the checker sampling a 15 m box at any tee anchor no mapped ring holds -- a stale copy
+    of the producer's own superseded fallback region -- and this round moved it onto the producer's disc.
+    What that alignment COST is the whole argument for making it, and it was published in two records
+    (the region note above TOL_FT, and the docstring of the region test above) with no producer at all:
+    five per-hole shifts, a worst, and a pair of |diff| figures for the hole the tool's own worst-observed
+    figure used to name.
+
+    ONE FIGURE IN THAT PAIR WAS OFF, and not by a transcription slip. bay-view 16 was published as
+    "1.24 ft against the 15 m box and 0.58 ft against the producer's disc, so 0.66 ft" of region
+    difference -- but 1.24 is measured against `change_ft_exact` and 0.58 against the ROUNDED
+    `change_ft`. Both are real numbers; they are answers to different questions, and their difference is
+    neither hole's region cost. The consistent pairs are 1.21/0.58 (the basis this tool actually
+    reports on, `check_course` reads `change_ft`) and 1.24/0.61, and both give 0.63 ft -- which is the
+    figure the SAME paragraph publishes three lines earlier as bay-view 16's shift. The paragraph
+    contained the right number and then derived a different one beside it.
+
+    So every figure in it is graded against a live measurement, on BOTH bases, and the pair must sit on
+    ONE of them. A mixed pair fails here by name even when both halves are individually right, which is
+    the only shape of grader that could have caught this.
+
+    Needs the wire, and there is no honest way around it: stubbing 3DEP would be this project inventing
+    the independent reference it checks itself against. Skipped otherwise, and a skip is visibly not a
+    pass -- the arithmetic that made the defect visible (box minus disc equals the shift) is graded
+    here too, so the run that measures also checks the paragraph's own internal consistency.
+    """
+    rows = _fallback_tee_region_shifts()
+    assert rows, ("no tee anchor in this corpus falls back off the mapped rings, so the region this "
+                  "paragraph is about is never sampled -- re-derive the paragraph before deleting it")
+    by = {(r[0], r[1]): r[2:] for r in rows}
+    live = "; ".join(f"{s} {h} shift {sh:+.4f} ft, |diff| box {b:.4f}/disc {d:.4f} vs change_ft, "
+                     f"{be:.4f}/{de:.4f} vs change_ft_exact"
+                     for s, h, sh, b, d, be, de in sorted(rows))
+    worst = max(rows, key=lambda r: abs(r[2]))
+    bad = []
+
+    # 1. THE FIVE PER-HOLE SHIFTS, in both records that publish them, against the DEM.
+    five = re.compile(r"bay-view 16 ([-+][\d.]+) ft,? +castlewood-hill 4 ([-+][\d.]+),? +"
+                      r"merion 3 ([-+][\d.]+),? +merion 9 ([-+][\d.]+),? +merion 15 ([-+][\d.]+)")
+    ve_src = _flow(open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8").read())
+    here = _flow(open(__file__, encoding="utf-8").read())
+    for where, text in (("tools/verify_elevation.py's THE TEE REGION note", ve_src),
+                        ("the region test's docstring in this file", here)):
+        m = five.search(text)
+        assert m, (f"{where} no longer publishes the five per-hole costs of the alignment in a form this "
+                   f"test can read, so nothing grades them: measured {live}")
+        for said, (s, h) in zip(m.groups(), (("bay-view", 16), ("castlewood-hill", 4),
+                                             ("merion", 3), ("merion", 9), ("merion", 15))):
+            if (s, h) not in by:
+                bad.append(f"{where} names {s} {h} as a fallback anchor; the anchors that fall back "
+                           f"today are {sorted(by)}")
+            elif abs(float(said) - by[(s, h)][0]) > 0.005:
+                bad.append(f"{where} publishes {s} {h}'s region cost as {said} ft; measured "
+                           f"{by[(s, h)][0]:+.4f}")
+        n = len(re.findall(r"(?:Worst is|worst) MERION 3 at ([\d.]+) ft", text)) + \
+            len(re.findall(r"under 1\.1 ft on (\d+) of \d+ holes", text))
+        assert n, (f"{where} no longer names the worst shift or how many holes moved, so the two "
+                   f"summary figures of this measurement are ungraded: measured {live}")
+        for said in re.findall(r"(?:Worst is|worst) MERION 3 at ([\d.]+) ft", text):
+            if abs(float(said) - abs(worst[2])) > 0.005 or (worst[0], worst[1]) != ("merion", 3):
+                bad.append(f"{where} names merion 3 at {said} ft as the worst shift; measured "
+                           f"{worst[0]} {worst[1]} at {abs(worst[2]):.4f}")
+        for said in re.findall(r"under 1\.1 ft on (\d+) of \d+ holes", text):
+            if int(said) != len(rows):
+                bad.append(f"{where} says the alignment moved {said} holes; measured {len(rows)}")
+        if abs(worst[2]) >= 1.1:
+            bad.append(f"both records say every shift is under 1.1 ft; measured {abs(worst[2]):.4f} on "
+                       f"{worst[0]} {worst[1]}")
+
+    # 2. THE PAIR, in both records, and the figure derived from it. The two halves must be measured
+    #    against the SAME recorded height -- that is the defect -- and the difference must be the shift.
+    bv = by[("bay-view", 16)]
+    bases = {"change_ft (what check_course reports against)": (bv[1], bv[2]),
+             "change_ft_exact": (bv[3], bv[4])}
+    for where, text in (("tools/verify_elevation.py's THE TEE REGION note", ve_src),
+                        ("the region test's docstring in this file", here)):
+        pair = re.search(r"bay-view 16 reported ([\d.]+) ft against the (?:15 m )?box and ([\d.]+) ft "
+                         r"against the (?:producer's )?disc", text)
+        assert pair, (f"{where} no longer publishes what bay-view 16 disagreed by on each region, so the "
+                      f"sentence that justifies the alignment is ungraded: measured {live}")
+        said_b, said_d = float(pair.group(1)), float(pair.group(2))
+        fits = [name for name, (b, d) in bases.items()
+                if abs(said_b - b) <= 0.005 and abs(said_d - d) <= 0.005]
+        if not fits:
+            halves = [f"{name}: box {b:.4f}, disc {d:.4f}" for name, (b, d) in bases.items()]
+            bad.append(f"{where} publishes bay-view 16 as {said_b} ft against the box and {said_d} "
+                       f"against the disc, which is not what either recorded height gives. MIXING THE "
+                       f"TWO is what this grader exists for -- a figure from each is individually right "
+                       f"and their difference is nobody's region cost: " + "; ".join(halves))
+        if abs((said_b - said_d) - abs(bv[0])) > 0.005:
+            bad.append(f"{where}'s pair differs by {said_b - said_d:.2f} ft while the measured shift is "
+                       f"{abs(bv[0]):.4f} -- the two |diff| figures are not on one basis")
+    derived = re.search(r"against the producer's disc, so ([\d.]+) ft of what was published", ve_src)
+    assert derived, ("tools/verify_elevation.py no longer says how much of bay-view 16's published "
+                     f"disagreement was region difference: measured {live}")
+    if abs(float(derived.group(1)) - abs(bv[0])) > 0.005:
+        bad.append(f"that sentence derives {derived.group(1)} ft of region difference on bay-view 16; "
+                   f"the DEM puts the shift between the two regions at {abs(bv[0]):.4f} ft. The two are "
+                   f"the same quantity and this paragraph publishes both.")
+
+    assert not bad, (
+        "the recorded cost of aligning the checker's fallback tee region is not the cost the 3DEP "
+        "service gives. This paragraph is the entire argument for having moved that region, and one of "
+        "its figures was derived from two different baselines:\n  " + "\n  ".join(bad))
+
+
+@needs_corpus
+def test_the_tee_sample_is_named_and_counted_as_the_region_the_sampler_reaches():
+    """The tee height is measured over the mapped pad INSIDE a 15 m window, and three records said pad.
+
+    `tee_elevations` applies the TEE_R_M box BEFORE the ring test, so the accumulated sample is ring
+    INTERSECT window. The comment beside that line called the box a prefilter that gets "the same
+    answer" as a ring test; hole_elev.json recorded `"tee_region": "the mapped tee pad"`; and
+    tools/verify_elevation.py samples its reference over the WHOLE ring on the stated grounds that both
+    sides measure the same region. None of the three is true for a pad that reaches past the window,
+    and this corpus has 57 of them, one reaching 65.7 m from its anchor.
+
+    The window is the right sample -- see the derivation in tee_elevations, graded by
+    test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives -- so what was wrong is what
+    the three records SAY. A region label that overstates its region is how a reader (and a checker)
+    ends up comparing two different places and calling the difference data.
+
+    Everything here is graded against a live geometric measurement of the anchors and the rings. No
+    figure is copied from the module it checks."""
+    geom = _tee_geometry()
+    src = _fhe_prose()
+    assert geom, "no green-mode course with LiDAR on disk; nothing to measure"
+
+    anchors = sum(len(g["anchors"]) for g in geom.values())
+    pads = sum(len(g["pads"]) for g in geom.values())
+    box = anchors - pads
+    box_holes = sorted((_short(s), h) for s, g in geom.items()
+                       for h in g["anchors"] if h not in g["pads"])
+
+    # 1. the fallback count and WHICH holes take it. Published as "8 of 177 holes" at 4b19d2f, and the
+    #    change to 5 of 182 was febbbba's widened OSM fetch box, not c7a4f65 -- see
+    #    test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors, which
+    #    re-derives every anchor on both earth models and finds the ring membership identical.
+    m = _published(src, r"anchor lands in none of them \((\d+) of the (\d+) anchors",
+                   "how many anchors fall back to the box", f"{box} of {anchors}")
+    assert (int(m.group(1)), int(m.group(2))) == (box, anchors), (
+        f"_tee_pads says {m.group(1)} of {m.group(2)} anchors fall back to the box; measured {box} of "
+        f"{anchors}. The fallback holes are {box_holes}")
+    for slug, hn in box_holes:
+        assert re.search(rf"{re.escape(slug)}[^)]*\b{hn}\b", m.string[m.end():m.end() + 200]), (
+            f"the box-fallback list beside that count does not name {slug} {hn}; measured "
+            f"{box_holes}")
+
+    # 2. how much of the box is mapped tee at all. Published as "about 13% ... on the six metric
+    #    courses" -- a scope left over from when TEE_R_M was applied in raw CRS units and the box
+    #    really was 9.1 m on the five ftUS ones. _crs_units_per_m fixed that, so the share is a
+    #    corpus-wide figure now, and quoting a corpus number under a six-course label is how it was
+    #    read as 13% when those six median 9.8%.
+    shares = sorted(v for g in geom.values() for v in g["share"].values())
+    med = shares[len(shares) // 2] if len(shares) % 2 else (
+        (shares[len(shares) // 2 - 1] + shares[len(shares) // 2]) / 2)
+    mean = sum(shares) / len(shares)
+    metric = sorted(_short(s) for s, g in geom.items() if abs(g["upm"] - 1.0) < 0.01)
+    per_course = {}
+    for s, g in geom.items():
+        v = sorted(g["share"].values())
+        per_course[_short(s)] = (v[len(v) // 2] if len(v) % 2 else
+                                 (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2)
+    six = sorted(per_course[c] for c in metric)
+    six_med = (six[len(six) // 2] if len(six) % 2 else
+               (six[len(six) // 2 - 1] + six[len(six) // 2]) / 2)
+    live = (f"median {med*100:.1f}% mean {mean*100:.1f}% over {len(shares)} pads; the "
+            f"{len(metric)} metric courses median {six_med*100:.1f}%")
+    m = _published(src,
+                   r"a mapped tee covers a median ([\d.]+)% and a mean ([\d.]+)% of it across all "
+                   r"(\d+) mapped pads", "the mapped tee's share of the box", live)
+    assert abs(float(m.group(1)) - med * 100) < 0.1 and abs(float(m.group(2)) - mean * 100) < 0.1 \
+        and int(m.group(3)) == len(shares), (
+        f"_tee_pads publishes median {m.group(1)}% / mean {m.group(2)}% over {m.group(3)} pads; "
+        f"measured {live}")
+    m2 = _published(src, r"six-metric-course median is ([\d.]+)%",
+                    "the six-metric-course median it used to be quoted as", live)
+    assert abs(float(m2.group(1)) - six_med * 100) < 0.1, (
+        f"the six-metric-course median is published as {m2.group(1)}%; measured {six_med*100:.1f}% "
+        f"over {metric}")
+
+    # 2b. legal/09 CARRIES THE SAME SHARE, and its copy was graded by nothing and NAMED NO STATISTIC. Item
+    #     1 read "a median over an axis-aligned box at the tee that a mapped tee covers about 13% of" --
+    #     and on this corpus the median share is 12.61% and the mean is 13.61%, so "about 13%" is the
+    #     median rounded and the mean is 14%. A bare "about 13%" is therefore a figure a reader cannot
+    #     check and half of the pair it might be. That record's own history includes this exact figure
+    #     being read as 13% when the six courses it was scoped to median 9.8%, so the statistic and the
+    #     scope both have to be on the page. Graded against the SAME live measurement as the module's
+    #     copy, so the two records cannot drift apart or together.
+    with open(os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md"), encoding="utf-8") as fh:
+        rep = _flow(fh.read()).replace("*", "")
+    m3 = re.search(r"a mapped tee covers a (corpus-median|median|corpus-mean|mean) ([\d.]+)% of", rep)
+    assert m3, (
+        "legal/09 item 1 no longer says how much of the tee box a mapped tee covers, in a form that NAMES "
+        "the statistic -- 'a mapped tee covers a corpus-median <P>% of'. It said 'about 13%', which is the "
+        f"median ({med * 100:.2f}%) rounded and is not the mean ({mean * 100:.2f}%); an unnamed statistic "
+        f"in a place where the two round to different integers is a figure nobody can check. Measured "
+        f"{live}.")
+    want = mean if "mean" in m3.group(1) else med
+    assert abs(float(m3.group(2)) - want * 100) < 0.05, (
+        f"legal/09 item 1 publishes the mapped tee's share of the box as a {m3.group(1)} of "
+        f"{m3.group(2)}%; measured over this corpus the median is {med * 100:.2f}% and the mean is "
+        f"{mean * 100:.2f}% over {len(shares)} pads. This is the region-error figure the bullet uses to "
+        f"argue why the printed heights moved, and `_tee_pads` publishes the same pair.")
+
+    # 3. the window DOES clip -- and BY WHICH CRITERION. Three different counts describe this and they
+    #    are not interchangeable: the AXIS half-extent is what the window actually applies
+    #    (`abs(x-tx) < R and abs(y-ty) < R`), the RADIAL reach is the farthest vertex, and a ring can
+    #    reach 18 m diagonally while sitting wholly inside the window. The module quoted the radial
+    #    count (57) against a CLIPPING claim, where the criterion that clips gives 55. ba34e52 drew this
+    #    distinction in the checker and in generate.py and never reached the producer. So each figure is
+    #    graded against the predicate the sentence attaches it to, which is the only way this stops
+    #    being self-consistent-and-wrong.
+    radial = [(g["reach_m"][h], _short(s), h) for s, g in geom.items() for h in g["pads"]]
+    axis = [(g["axis_m"][h], _short(s), h) for s, g in geom.items() for h in g["pads"]]
+    r_past, a_past = [r for r in radial if r[0] > 15.0], [a for a in axis if a[0] > 15.0]
+    r_worst, a_worst = max(radial), max(axis)
+    assert a_past, ("no mapped ring reaches past the window ON AN AXIS, so nothing is clipped and this "
+                    "test can no longer tell a window from a pad -- re-derive it before deleting it")
+    assert len(a_past) <= len(r_past), (
+        f"more rings clip on an axis ({len(a_past)}) than reach past 15 m radially ({len(r_past)}), "
+        f"which is geometrically impossible -- one of the two measurements is wrong")
+    live = (f"axis: {len(a_past)} of {len(axis)}, worst {a_worst[0]:.1f} m on {a_worst[1]} "
+            f"{a_worst[2]}; radial: {len(r_past)} of {len(radial)}, worst {r_worst[0]:.1f} m on "
+            f"{r_worst[1]} {r_worst[2]}")
+    m = _published(src, r"ON AN AXIS -- (\d+) of the (\d+) mapped pads, the farthest reaching "
+                        r"([\d.]+) m from its anchor \((\S+) (\d+)\)",
+                   "how many mapped pads the window actually CLIPS", live)
+    assert (int(m.group(1)), int(m.group(2))) == (len(a_past), len(axis)), (
+        f"tee_elevations says the window clips {m.group(1)} of {m.group(2)} mapped pads; by the "
+        f"criterion that clips, measured {live}")
+    assert abs(float(m.group(3)) - a_worst[0]) < 0.1 and (m.group(4), int(m.group(5))) == a_worst[1:], (
+        f"the farthest CLIPPING ring is published as {m.group(3)} m on {m.group(4)} {m.group(5)}; "
+        f"measured {a_worst[0]:.1f} m on {a_worst[1]} {a_worst[2]}. {live}")
+    m = _published(src, r"(\d+) rings reach past 15 m radially, up to ([\d.]+) m \((\S+) (\d+)\)",
+                   "how many rings reach past the window RADIALLY", live)
+    assert int(m.group(1)) == len(r_past), (
+        f"tee_elevations says {m.group(1)} rings reach past 15 m radially; measured {live}")
+    assert abs(float(m.group(2)) - r_worst[0]) < 0.1 and (m.group(3), int(m.group(4))) == r_worst[1:], (
+        f"the farthest ring vertex is published as {m.group(2)} m on {m.group(3)} {m.group(4)}; "
+        f"measured {r_worst[0]:.1f} m on {r_worst[1]} {r_worst[2]}. {live}")
+    m = _published(src, r"overstates the clipping by (\d+) pads",
+                   "by how much the radial count overstates the clipping", live)
+    assert int(m.group(1)) == len(r_past) - len(a_past), (
+        f"the module says the radial count overstates the clipping by {m.group(1)} pads; measured "
+        f"{len(r_past) - len(a_past)}. {live}")
+
+    # 4. and the retired claim must be gone. It is the sentence that made the clipping invisible.
+    assert "the same answer" not in src, (
+        "fetch_hole_elev.py still calls the box a prefilter that gets \"the same answer\" as a ring "
+        "test. It clips the sample on 51 of the corpus's mapped pads")
+
+    # 5. the ARTIFACT. Every row whose ring reaches past the window recorded a region it did not
+    #    sample. Read off what was written, so regenerating the corpus is what clears this.
+    wrong = []
+    for slug, g in geom.items():
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            rows = json.load(fh)["holes"]
+        for hn, row in rows.items():
+            if int(hn) not in g["pads"] or g["reach_m"][int(hn)] <= 15.0:
+                continue
+            region = row.get("tee_region") or ""
+            if "window" not in region:
+                wrong.append(f"{_short(slug)} {hn}: recorded {region!r} for a ring that reaches "
+                             f"{g['reach_m'][int(hn)]:.1f} m from an anchor the sampler never reads "
+                             f"more than {15.0:.0f} m from")
+    assert not wrong, ("%d row(s) name a region wider than the one their height was measured over:\n  "
+                       % len(wrong)) + "\n  ".join(wrong[:8])
+
+
+# The retired figure of the Earth c7a4f65 replaced. NOT SPELLED HERE:
+# test_no_module_re_declares_the_horizontal_earth_model forbids that constant in code in every module
+# INCLUDING this file, and it is right to -- a second copy of a ground scale is how the first one stayed
+# wrong through two audits. (Measured: writing it as a literal here turned that test red, and the
+# fresh-clone gate red behind it.) geo.py documents the retired pair at length and prose is exempt from
+# that rule, so this parses the one copy that exists rather than making a second, and it fails loudly if
+# geo.py ever stops recording what it replaced.
+def _retired_earth_pair():
+    """(mlat, mlon) as the retired model computed them, read out of geo.py's own note about it."""
+    import inspect
+    import geo
+    note = re.sub(r"\s+", " ", re.sub(r"(?m)^[ \t]*#[ \t]?", "", inspect.getsource(geo)))
+    m = re.search(r"R_LAT\s*=\s*([\d.]+)`?\s*with a longitude scale of\s*([\d.]+)\s*\*\s*cos", note)
+    assert m, ("geo.py no longer records the retired earth model in a form this can read, so the "
+               "attribution grader below has nothing to compare the live scales against. Its note used "
+               "to name the constant pair and the cos(lat) longitude scale in one sentence.")
+    r_lat, r_lon = float(m.group(1)), float(m.group(2))
+    assert r_lat == r_lon and r_lat > 1e4, (
+        f"geo.py's note reads the retired pair as {r_lat} / {r_lon}; it was ONE constant used for both "
+        f"axes, which is the whole reason it was wrong on both.")
+    return (lambda la: r_lat, lambda la: r_lon * math.cos(math.radians(la)))
+
+
+def _anchors_on_both_earths():
+    """{slug: {"live": snap, "retired": snap}} -- every anchor, its ring, and the window scale, twice.
+
+    The only difference between the two passes is geo.mlat/geo.mlon: the live WGS84 scales against the
+    constant pair c7a4f65 retired. Everything else -- the OSM cache, the card yardages, the ring
+    geometry, pyproj -- is the tree on disk. That is what makes this a CAUSAL test rather than a
+    historical one: it isolates the change being blamed instead of re-running an old revision, and it
+    needs no LiDAR and no network.
+
+    fetch_hole_elev does `from geo import mlat, mlon`, so the module-level names in BOTH modules have to
+    be swapped; geo.hole_lines and geo.match_green read geo's own. Restored in a finally, because a
+    leaked monkeypatch here would silently re-measure the rest of this suite on a wrong Earth.
+    """
+    import geo
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    live_pair = (geo.mlat, geo.mlon)
+    retired_pair = _retired_earth_pair()
+    out = {}
+    try:
+        for slug in CORPUS:
+            cfg = _elev_bind(fhe, slug)
+            if cfg.BUILD_MODE == "yardage" or not glob.glob(os.path.join(fhe.DIR, "laz", "*.laz")):
+                continue
+            with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+                els = json.load(fh)["elements"]
+            greens = [e for e in els
+                      if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+            loc = cfg.COURSE.get("location") or {}
+            out[slug] = {}
+            for label, pair in (("live", live_pair), ("retired", retired_pair)):
+                geo.mlat, geo.mlon = pair
+                fhe.mlat, fhe.mlon = pair
+                holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+                anchors, bases = {}, {}
+                for hn in sorted(holes):
+                    la, lo, basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+                    if la is not None:
+                        anchors[hn] = (la, lo)
+                        # kept, not discarded: WHICH anchors move is the whole refutation, and the
+                        # published reason they move is a claim about the basis that computes them.
+                        bases[hn] = basis
+                targets, crs = fhe._tee_points(anchors)
+                pads = fhe._tee_pads(targets, crs) if targets else {}
+                la0, lo0 = next(iter(anchors.values()))
+                out[slug][label] = {"anchors": anchors, "pads": sorted(pads), "bases": bases,
+                                    "upm": fhe._crs_units_per_m(crs, la0, lo0)}
+    finally:
+        geo.mlat, geo.mlon = live_pair
+        fhe.mlat, fhe.mlon = live_pair
+        _elev_bind(fhe, a_course())
+    return out
+
+
+# A SENTENCE that blames an earth-model change for moving an anchor onto or off a mapped tee ring.
+# Both halves are required and the pairing is the point: c7a4f65 really did move five anchors (by under
+# a metre, which is the bound step 1 asserts; the five figures live in step 1b, measured, and are
+# deliberately not copied here) and really did change the sampled window's size, so prose may say either
+# of those. What it may not say is that the correction changed which RING holds an anchor, or the count
+# that follows from it. Cleared by a refutation in the same sentence, the way every other prose gate in
+# this file clears one -- and DELIBERATELY a tight marker set: a loose one (\bnot\b, \bwas\b) clears a
+# live false claim on any coincidence of wording, which is the trap measured in 7d8d131.
+#
+# SENTENCES, not the `_clauses` unit the label gates use, and that is not a style choice: the retired
+# sentence names its cause before a SEMICOLON and its effect after it, so a clause-level rule split the
+# claim in half and could not see it. The mutation check inside the test is what found that.
+_EARTH_MODEL_NAMED = re.compile(r"c7a4f65|geo\.mlat|mlat/mlon|figure of the Earth|earth[- ]model", re.I)
+_RING_MOVE_TARGET = r"(?:onto|off|out of|into)\s+(?:a |the |those |its )?(?:mapped\s+)?(?:tee\s+)?rings?"
+_EARTH_MOVED_A_RING = re.compile(
+    # both word orders, because the two retired sentences use one each: "three of those anchors MOVED
+    # onto a mapped ring" and "which MOVED their anchors onto mapped tee rings".
+    r"anchors?.{0,40}?(?:moved?|moves|moving|shifted).{0,40}?" + _RING_MOVE_TARGET
+    + r"|(?:moved?|moves|moving|shifted)\s+(?:\w+[\s,]+){0,4}?anchors?.{0,90}?" + _RING_MOVE_TARGET
+    + r"|every anchor moved", re.I)
+_EARTH_CLAIM_REFUTED = re.compile(
+    r"did not|does not|do not|cannot|never|no anchor|none of|none crosses|not c7a4f65|"
+    r"measured false|(?:is|was) false|refut", re.I)
+
+
+def _sentences(prose):
+    """`prose` split into sentences: a full stop followed by space, or a blank line.
+
+    Not `_clauses`, and not `[^.]*` inside a pattern -- this module's prose is full of `geo.mlat`,
+    `0.4 m` and `2.5 ft`, and every one of those dots would end a clause that no reader would."""
+    return [" ".join(s.split()) for s in re.split(r"(?<=\.)\s+|\n\s*\n", prose) if s.strip()]
+
+
+def _earth_ring_attributions(prose):
+    """[sentence] -- every sentence in `prose` blaming the earth-model correction for a ring change."""
+    return [s for s in _sentences(prose)
+            if _EARTH_MODEL_NAMED.search(s) and _EARTH_MOVED_A_RING.search(s)
+            and not _EARTH_CLAIM_REFUTED.search(s)]
+
+
+@needs_corpus
+def test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors():
+    """An attribution is a claim about CAUSE, and nothing in this repo checked one.
+
+    9cc3bce blamed c7a4f65 -- the earth-model correction -- for two things, in `_tee_pads`'s docstring
+    and in its own commit message:
+
+      * the box-fallback count going 8 of 177 to 5 of 182, "three of those anchors moved onto a mapped
+        ring and nothing re-derived the count";
+      * two stale card values, castlewood-valley 7 (card 8) and 14 (card 30), "stale from c7a4f65's
+        geo.mlat/mlon correction, which moved their anchors onto mapped tee rings".
+
+    BOTH ARE FALSE, and this measures it instead of arguing it. Every anchor is re-derived from the tree
+    on disk under the retired figure of the Earth (a constant 111320.0 m/deg of latitude and
+    111320.0*cos(lat) of longitude) and under the live WGS84 scales, with nothing else changed. The two
+    earths agree on the anchor count, on the fallback count, and on which ring holds every single
+    anchor. Five anchors move at all -- the five that come from a par-3 extrapolation or a walk-back,
+    which are the only paths that arithmetic touches, and step 1b grades that basis too -- and all five
+    move by under a metre; the five figures themselves are pinned in step 1b against this same
+    measurement rather than restated here, because a fourth copy of a bound is how the third one
+    drifted. A `tee end of the mapped hole line` anchor is a raw OSM vertex and is bit-identical
+    across it, which
+    is why castlewood-valley 7 and 14 (both of them that basis) cannot have moved.
+
+    THE REAL CAUSE IS febbbba, which widened four courses' OSM fetch box and re-derived only the tree
+    layer. Three former box anchors now sit inside `golf=tee` ways that fetch had never asked for, and
+    this test resolves the holding ring's OSM id straight out of osm_course.json: they are exactly the
+    three ways febbbba's own message names as newly reachable drawn features. febbbba asserted "No
+    printed FIGURE moved", which was true only because it never re-ran this stage.
+
+    WHAT c7a4f65 DID CAUSE, and what must therefore stay attributed to it: `_crs_units_per_m` derives
+    the sampled window's size in CRS units through mlat, so the window really did change size. That is
+    the whole of merion h1's 3839 -> 3851 and h11's 3917 -> 3923 ground-return drift -- off anchors that
+    do not move. So this grades the DISTINCTION, not just the refutation: the window scale must differ
+    between the two earths and the ring membership must not.
+
+    The prose rule is mutation-checked in place. The retired sentence is fed to the same helper the
+    assertion uses and must come back as a hit, because a forbidden-phrase gate that cannot fire is the
+    failure mode this suite has already shipped twice.
+    """
+    both = _anchors_on_both_earths()
+    assert both, "no green-mode course with LiDAR on disk; nothing to measure"
+
+    # 1. THE REFUTATION. Same corpus, two earths, nothing else different.
+    counts, ring_moves, displaced = {}, [], []
+    for label in ("live", "retired"):
+        counts[label] = (sum(len(s[label]["anchors"]) for s in both.values()),
+                         sum(len(s[label]["pads"]) for s in both.values()))
+    for slug, s in both.items():
+        if set(s["live"]["pads"]) != set(s["retired"]["pads"]):
+            ring_moves.append(f"{_short(slug)}: {sorted(set(s['live']['pads']) ^ set(s['retired']['pads']))}")
+        for hn in sorted(set(s["live"]["anchors"]) | set(s["retired"]["anchors"])):
+            a, b = s["live"]["anchors"].get(hn), s["retired"]["anchors"].get(hn)
+            if a is None or b is None:
+                ring_moves.append(f"{_short(slug)} {hn}: anchor resolves on one earth only")
+                continue
+            d = math.hypot((a[1] - b[1]) * _mlon(a[0]), (a[0] - b[0]) * _mlat(a[0]))
+            if d > 0:
+                displaced.append((d, _short(slug), hn, s["live"]["bases"].get(hn) or ""))
+    live_n = (f"{counts['live'][0]} anchors / {counts['live'][0] - counts['live'][1]} fallbacks on the "
+              f"live earth, {counts['retired'][0]} / {counts['retired'][0] - counts['retired'][1]} on "
+              f"the retired one; {len(displaced)} anchor(s) move, worst "
+              f"{max(displaced)[0]:.3f} m on {max(displaced)[1]} {max(displaced)[2]}")
+    assert counts["live"] == counts["retired"], (
+        f"the earth-model correction DOES change the anchor or fallback count with today's cache, so "
+        f"9cc3bce's attribution may be right after all and this whole test has to be re-derived: "
+        f"{live_n}")
+    assert not ring_moves, (
+        "the earth-model correction changes which mapped tee ring holds an anchor, so the attribution "
+        "9cc3bce made is live and the prose below must go back to naming it:\n  "
+        + "\n  ".join(ring_moves))
+    assert displaced, (
+        "no anchor moves at all between the two earths, which cannot be right -- a par-3 anchor is "
+        "extrapolated through mlat/mlon. The retired pair is not being applied; this test would then "
+        "pass on nothing.")
+    assert max(displaced)[0] < 1.0, (
+        f"an anchor moves {max(displaced)[0]:.2f} m between the two earths. That is far enough to "
+        f"cross a small tee ring, so 'it cannot have changed the ring' stops following from the "
+        f"measurement: {live_n}")
+
+    # 1b. THE BOUND ITSELF, which the step above MEASURED and did not grade. Its failure text has
+    #     always printed the worst move, but the only assertion on it was `< 1.0` -- so the figure
+    #     `_tee_pads` publishes for the same quantity was checked by nothing, and it was wrong by 4.4x
+    #     in the UNDERSTATING direction: the docstring said "by under 0.1 m" and 1030fc6's message said
+    #     "at most 0.07 m", which is the SMALLEST of the five moves quoted as the largest. That is the
+    #     median-quoted-as-worst-case shape this module already records fixing at the green end, and a
+    #     figure a test measures and never compares is exactly how it survived.
+    #     All five are pinned, worst first, with the hole the worst one is on: when every term of the
+    #     set is published, the smallest cannot be mistaken for the bound.
+    moves = sorted(displaced, reverse=True)
+    live_moves = ", ".join(f"{d:.4f} m on {s} {h}" for d, s, h, _b in moves)
+    m = _published(
+        _fhe_prose(),
+        r"Only (\d+) anchors differ at all.{0,220}?by at most ([\d.]+) m, on ([a-z-]+) (\d+), the "
+        r"other four ([\d.]+), ([\d.]+), ([\d.]+) and ([\d.]+) m",
+        "how far the anchors the earth-model correction moves actually move",
+        f"{len(moves)} move: {live_moves}")
+    assert int(m.group(1)) == len(moves), (
+        f"_tee_pads says {m.group(1)} anchors differ between the two earths; {len(moves)} do: "
+        f"{live_moves}")
+    assert (m.group(3), int(m.group(4))) == (moves[0][1], moves[0][2]), (
+        f"_tee_pads puts the worst move on {m.group(3)} {m.group(4)}; it is on {moves[0][1]} "
+        f"{moves[0][2]} ({moves[0][0]:.4f} m). Naming the hole is what makes the bound checkable "
+        f"against the corpus rather than against another copy of itself: {live_moves}")
+    said = [float(m.group(i)) for i in (2, 5, 6, 7, 8)]
+    off = [f"published {p:.4f} m against measured {d:.4f} m on {s} {h}"
+           for p, (d, s, h, _b) in zip(said, moves) if abs(p - d) > 1e-4]
+    assert not off, (
+        "the displacements _tee_pads publishes for the earth-model correction are not the ones the "
+        "corpus gives. This is the ONE figure the refutation does not rest on -- ring membership is "
+        "identical on every anchor either way -- and it is still published, so it is still graded:\n  "
+        + "\n  ".join(off))
+    # WHY only these move, which is the other half of the same sentence: a raw OSM vertex is
+    # bit-identical across the earth model, so anything that moves has to be a computed anchor.
+    raw = [f"{s} {h} moved {d:.4f} m on basis {b!r}" for d, s, h, b in moves
+           if not re.search(r"extrapolated|walked back", b)]
+    assert not raw, (
+        "an anchor moves between the two earths that neither a par-3 extrapolation nor a walk-back "
+        "computes, so 'the only paths that arithmetic touches' is no longer why the set is this "
+        "small -- and the bit-identical argument that clears castlewood-valley 7 and 14 is what "
+        "rests on it:\n  " + "\n  ".join(raw))
+
+    # 2. THE DISTINCTION. What c7a4f65 really did move is the WINDOW, through _crs_units_per_m, and
+    #    that mechanism has to be live or the retained attribution is as ungrounded as the two removed.
+    wider = {_short(s): v["live"]["upm"] / v["retired"]["upm"] - 1.0 for s, v in both.items()}
+    assert all(r > 0 for r in wider.values()), (
+        f"the live earth no longer makes the sampled window WIDER in CRS units than the retired pair "
+        f"did, so merion h1's 3839 -> 3851 drift cannot be attributed to c7a4f65 either: {wider}")
+    m = _published(_fhe_prose(), r"at merion it is ([\d.]+)% wider in CRS units",
+                   "how much wider c7a4f65 made the sampled window",
+                   f"{wider['merion']*100:.4f}%")
+    assert abs(float(m.group(1)) - wider["merion"] * 100) < 0.0005, (
+        f"_tee_pads says the window is {m.group(1)}% wider at merion; measured "
+        f"{wider['merion']*100:.4f}%. That figure is the mechanism behind the ONE attribution to "
+        f"c7a4f65 this module keeps.")
+    for hn in (1, 11):
+        a = both["merion-golf-club"]["live"]["anchors"][hn]
+        b = both["merion-golf-club"]["retired"]["anchors"][hn]
+        assert a == b, (
+            f"merion h{hn}'s anchor is NOT bit-identical across the earth model ({a} vs {b}), so its "
+            f"return-count drift can no longer be attributed to the window alone")
+
+    # 3. THE REAL CAUSE, read out of the OSM cache. Which `golf=tee` way holds each of the three
+    #    anchors that stopped falling back? The ids are resolved here, never typed.
+    import numpy as np
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    import geo
+    holders = {}
+    for slug, want in (("castlewood-hill-course", (1,)), ("castlewood-valley-course", (7, 14))):
+        cfg = _elev_bind(fhe, slug)
+        with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        loc = cfg.COURSE.get("location") or {}
+        holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        with open(os.path.join(fhe.DIR, "osm_course.json"), encoding="utf-8") as fh:
+            course = json.load(fh).get("elements") or []
+        for hn in want:
+            la, lo, basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+            assert la is not None and basis.startswith("tee end"), (
+                f"{_short(slug)} {hn} no longer anchors on a raw mapped vertex ({basis!r}), so it is "
+                f"no longer immune to an arithmetic change and this case proves nothing")
+            for e in course:
+                g = e.get("geometry") or []
+                if (e.get("tags") or {}).get("golf") != "tee" or len(g) < 4:
+                    continue
+                k, kla = geo.mlon(la), geo.mlat(la)
+                if fhe._point_in_ring(lo * k, la * kla,
+                                      np.asarray([p["lon"] for p in g], float) * k,
+                                      np.asarray([p["lat"] for p in g], float) * kla):
+                    holders[(_short(slug), hn)] = e.get("id")
+                    break
+    _elev_bind(fhe, a_course())
+    assert len(holders) == 3, (
+        f"only {len(holders)} of the three anchors febbbba's widened box put on a mapped tee ring is "
+        f"still on one: {holders}. The attribution below names those three ways.")
+    src = _fhe_prose()
+    for (course, hn), wid in sorted(holders.items()):
+        assert re.search(rf"way/{wid}\b[^.]{{0,60}}{re.escape(course)}[^.]{{0,10}}\b{hn}\b"
+                         rf"|{re.escape(course)}\s+h?{hn}\b[^.]{{0,60}}way/{wid}\b", src), (
+            f"{course} {hn}'s anchor sits inside way/{wid}, one of the `golf=tee` polygons febbbba's "
+            f"widened OSM box made reachable, and _tee_pads does not name that way beside that hole. "
+            f"Measured holders: {holders}")
+    assert "febbbba" in src, (
+        "_tee_pads does not name febbbba, so the box-fallback count's cause is once again unattributed "
+        "-- and the last time it was attributed by guess it named the wrong commit for a year")
+
+    # 4. THE PROSE RULE, and proof it can fire. The module may say the correction moved anchors (it
+    #    moved five) and may say it resized the window (it did). It may not say it changed a ring.
+    stale = _earth_ring_attributions(_fhe_src())
+    assert not stale, (
+        "fetch_hole_elev.py still blames the earth-model correction for moving an anchor onto or off a "
+        f"mapped tee ring. Measured on today's cache: {live_n}, and ring membership is IDENTICAL on "
+        f"every anchor. The cause is febbbba's widened OSM box:\n  " + "\n  ".join(stale))
+    # BOTH retired sentences, verbatim, in the two word orders they use -- one from _tee_pads and one
+    # from 9cc3bce's message. A forbidden-phrase gate that cannot fire is the failure mode this suite
+    # has already shipped twice, and the first draft of this rule missed the docstring one entirely
+    # (its cause sat before a semicolon) and then missed both (it required MOVED before ANCHORS).
+    for retired in (
+            "Published as 8 of 177 until c7a4f65 corrected geo.mlat/mlon; three of those anchors "
+            "moved onto a mapped ring and nothing re-derived the count.",
+            "castlewood-valley 7 (8.5 -> 7.5 ft, card 8 -> 7) and 14 (-29.5 -> -32.0 ft, card 30 -> 32) "
+            "were stale from c7a4f65's geo.mlat/mlon correction, which moved their anchors onto mapped "
+            "tee rings and which nothing re-derived."):
+        assert _earth_ring_attributions(retired), (
+            f"the prose rule does not fire on a sentence it was written against, so assertion 4 above "
+            f"passes on anything: {retired!r}")
+    for ok in ("c7a4f65 did not move any anchor onto a mapped ring; febbbba's widened box did.",
+               "What c7a4f65 DID move is the sampled window's size, through _crs_units_per_m.",
+               "febbbba widened the fetch box and three anchors that used to fall back now sit inside "
+               "`golf=tee` ways that fetch had never asked for."):
+        assert not _earth_ring_attributions(ok), (
+            f"the prose rule flags a sentence that is true, so the corrected wording cannot be written "
+            f"down and the rule would be switched off: {ok!r}")
+
+
+@needs_corpus
+def test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives():
+    """MAX_TEE_RELIEF_FT decides whether a card prints a height, and its whole derivation was literals.
+
+    test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height exercises the PREDICATE with
+    recorded numbers, which is what makes it affordable to run. Nothing measured whether those recorded
+    numbers were still the corpus's. They were not: merion h1 reads 3851 class-2 returns and not the
+    3839 published in three places, bay-view 3 4581 and not 4569, philadelphia 18 970 and not 967 --
+    all of them drifted when c7a4f65 corrected geo.mlat/mlon and the sampled window changed size with
+    it (0.2570% wider at merion, through _crs_units_per_m; the anchors themselves did not move, which
+    test_the_box_fallback_count_is_attributed_to_the_change_that_moved_those_anchors measures) -- and the
+    "median 0.20 ft" the ring sampler is justified by is now 1.00 ft, five times the published figure,
+    because the fallback box grew to a true 30 m on five courses.
+
+    So this re-measures the corpus's tee samples from the LAZ and grades the module's own prose against
+    them. It is the cross-check the standing lesson asks for: two records publishing one figure, and
+    only one of them derived, is how every number above went stale.
+
+    It also pins the two things the gate's derivation cannot state for itself:
+      * the 15 m window is where the pad median has CONVERGED -- widening 10 m -> 15 m moves it by a
+        corpus median of zero -- while the whole ring overshoots by up to 1.87 ft, because a `golf=tee`
+        polygon is not reliably one teeing ground;
+      * the seven pads that span more than the limit over their WHOLE ring while the sampled window is
+        level. Those are the holes an audit will find; their printed heights survive an anchor displaced
+        10 m, and that is the evidence, recorded here so the next reader does not have to take it on
+        trust."""
+    S = _tee_samples()
+    src = _fhe_prose()
+    assert S, "no green-mode course with LiDAR on disk; nothing to measure"
+    seen = collections.Counter()
+    for (slug, _hn) in S:
+        seen[slug] += 1
+    assert_no_course_skipped(seen,
+                             "test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives")
+
+    def median(v):
+        v = sorted(v)
+        return v[len(v) // 2] if len(v) % 2 else (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2
+
+    pads = {k: r for k, r in S.items() if r["on_pad"] and r["sample"]}
+    boxes = {k: r for k, r in S.items() if not r["on_pad"] and r["box"]}
+    import fetch_hole_elev as fhe
+    LIMIT = fhe.MAX_TEE_RELIEF_FT
+
+    # 1. why a ring at all: how far below the pad the BOX reads. Published as a median 0.20 ft and a
+    #    mean 0.72 ft over 169 holes, with "up to 1.90 ft on copper-valley" -- and 1.90 turned out to
+    #    be copper-valley's MEDIAN, the median-quoted-as-worst mistake this project has fixed before.
+    low = {k: r["sample"]["med_ft"] - r["box"]["med_ft"] for k, r in pads.items()}
+    worst = max(low, key=low.get)
+    cv = {k: v for k, v in low.items() if _short(k[0]) == "copper-valley"}
+    cv_worst = max(cv, key=cv.get)
+    live = (f"median {median(low.values()):+.2f} mean {sum(low.values())/len(low):+.2f} over "
+            f"{len(low)} pads, worst {low[worst]:+.2f} on {_short(worst[0])} {worst[1]}; "
+            f"copper-valley median {median(cv.values()):+.2f} worst {cv[cv_worst]:+.2f} "
+            f"(hole {cv_worst[1]})")
+    m = _published(src, r"a median ([\d.]+) ft and a mean ([\d.]+) ft low over the (\d+) mapped pads "
+                        r"that carry ground returns, worst ([\d.]+) ft \((\S+) (\d+)\)",
+                   "how far below the pad the box reads", live)
+    assert abs(float(m.group(1)) - median(low.values())) < 0.01, (
+        f"tee_elevations publishes a median {m.group(1)} ft; measured {median(low.values()):.3f}. {live}")
+    assert abs(float(m.group(2)) - sum(low.values()) / len(low)) < 0.01, (
+        f"it publishes a mean {m.group(2)} ft; measured {sum(low.values())/len(low):.3f}. {live}")
+    assert int(m.group(3)) == len(low), (
+        f"it publishes {m.group(3)} pads; measured {len(low)}. {live}")
+    assert abs(float(m.group(4)) - low[worst]) < 0.02 and \
+        (m.group(5), int(m.group(6))) == (_short(worst[0]), worst[1]), (
+        f"it publishes a worst {m.group(4)} ft on {m.group(5)} {m.group(6)}; measured "
+        f"{low[worst]:.2f} on {_short(worst[0])} {worst[1]}")
+    m = _published(src, r"median ([\d.]+) ft and a worst ([\d.]+) ft \(hole (\d+)\)",
+                   "copper-valley's own box-vs-pad figures", live)
+    assert abs(float(m.group(1)) - median(cv.values())) < 0.02, (
+        f"copper-valley's median is published as {m.group(1)} ft; measured {median(cv.values()):.2f}")
+    assert abs(float(m.group(2)) - cv[cv_worst]) < 0.02 and int(m.group(3)) == cv_worst[1], (
+        f"copper-valley's worst is published as {m.group(2)} ft on hole {m.group(3)}; measured "
+        f"{cv[cv_worst]:.2f} on hole {cv_worst[1]}")
+
+    # 2. WHICH pads the gate refuses, and the empty band that is offered as evidence for the limit.
+    refused = sorted((r["sample"]["rel_ft"], _short(k[0]), k[1]) for k, r in pads.items()
+                     if r["sample"]["rel_ft"] > LIMIT)
+    accepted = sorted((r["sample"]["rel_ft"], _short(k[0]), k[1]) for k, r in pads.items()
+                      if r["sample"]["rel_ft"] <= LIMIT)
+    live = (f"{len(refused)} of {len(pads)} refused: "
+            + ", ".join(f"{s} {h} {v:.3f}" for v, s, h in refused)
+            + f"; steepest accepted {accepted[-1][1]} {accepted[-1][2]} {accepted[-1][0]:.3f}; "
+              f"gap {refused[0][0] - accepted[-1][0]:.3f} ft")
+    m = _published(src, r"Costs (\d+) of the (\d+) sampled pads their printed height \(([^)]*)\)",
+                   "what the relief limit costs", live)
+    assert (int(m.group(1)), int(m.group(2))) == (len(refused), len(pads)), (
+        f"the derivation says the limit costs {m.group(1)} of {m.group(2)} sampled pads; measured "
+        f"{live}")
+    named = m.group(3)
+    for _v, s, h in refused:
+        assert re.search(rf"{re.escape(s)}[^,]*\bh?{h}\b", named), (
+            f"the refused list {named!r} does not name {s} {h}; measured {live}")
+    m = _published(src, r"the flattest pad it refuses is (\S+) (\d+) at ([\d.]+) ft and the steepest "
+                        r"it accepts is (\S+) (\d+) at ([\d.]+) ft, so [\d.]+ sits inside a ([\d.]+) ft "
+                        r"gap", "the band around the limit", live)
+    assert (m.group(1), int(m.group(2))) == refused[0][1:] and \
+        abs(float(m.group(3)) - refused[0][0]) < 0.01, (
+        f"the flattest refused pad is published as {m.group(1)} {m.group(2)} at {m.group(3)} ft; "
+        f"measured {refused[0][1]} {refused[0][2]} at {refused[0][0]:.3f}")
+    assert (m.group(4), int(m.group(5))) == accepted[-1][1:] and \
+        abs(float(m.group(6)) - accepted[-1][0]) < 0.01, (
+        f"the steepest accepted pad is published as {m.group(4)} {m.group(5)} at {m.group(6)} ft; "
+        f"measured {accepted[-1][1]} {accepted[-1][2]} at {accepted[-1][0]:.3f}")
+    assert abs(float(m.group(7)) - (refused[0][0] - accepted[-1][0])) < 0.01, (
+        f"the gap is published as {m.group(7)} ft; measured "
+        f"{refused[0][0] - accepted[-1][0]:.3f}")
+
+    # 3. merion h1, the hole the module docstring names as the pad-relief refusal with a big sample.
+    m1 = S.get(("merion-golf-club", 1))
+    if m1 and m1["sample"]:
+        m = _published(src, r"merion h1 holds (\d+) ground returns on a pad it fails by relief",
+                       "merion h1's sample size", f"{m1['sample']['n']}")
+        assert int(m.group(1)) == m1["sample"]["n"], (
+            f"the docstring says merion h1 holds {m.group(1)} ground returns; measured "
+            f"{m1['sample']['n']} in the sampled window ({m1['ring']['n']} over the whole pad)")
+
+    # 4. the window is where the median has converged, and the whole ring overshoots. This is the
+    #    derivation the 15 m had none of -- it was inherited from the fallback box's half-width.
+    conv = {k: abs(r[f"med_{10.0}"] - r["sample"]["med_ft"]) for k, r in pads.items()
+            if r[f"med_{10.0}"] is not None}
+    over = {k: abs(r["ring"]["med_ft"] - r["sample"]["med_ft"]) for k, r in pads.items() if r["ring"]}
+    cw, ow = max(conv, key=conv.get), max(over, key=over.get)
+    live = (f"10->15 m: median {median(conv.values()):.3f} mean {sum(conv.values())/len(conv):.3f} "
+            f"worst {conv[cw]:.2f} on {_short(cw[0])} {cw[1]}, over 0.5 ft on "
+            f"{sum(1 for v in conv.values() if v > 0.5)} of {len(conv)}; whole ring: worst "
+            f"{over[ow]:.2f} on {_short(ow[0])} {ow[1]}, over 0.5 ft on "
+            f"{sum(1 for v in over.values() if v > 0.5)}")
+    m = _published(src, r"a corpus median ([\d.]+) ft \(mean ([\d.]+), worst ([\d.]+) ft on (\S+) "
+                        r"(\d+), over 0\.5 ft on (\d+) of the (\d+)\)",
+                   "how little the median moves between a 10 m and a 15 m window", live)
+    assert abs(float(m.group(1)) - median(conv.values())) < 0.005 and \
+        abs(float(m.group(2)) - sum(conv.values()) / len(conv)) < 0.005, (
+        f"the window derivation publishes median {m.group(1)} / mean {m.group(2)}; measured {live}")
+    assert abs(float(m.group(3)) - conv[cw]) < 0.02 and \
+        (m.group(4), int(m.group(5))) == (_short(cw[0]), cw[1]), (
+        f"it publishes a worst {m.group(3)} ft on {m.group(4)} {m.group(5)}; measured {live}")
+    assert (int(m.group(6)), int(m.group(7))) == \
+        (sum(1 for v in conv.values() if v > 0.5), len(conv)), (
+        f"it publishes {m.group(6)} of {m.group(7)} pads over 0.5 ft; measured {live}")
+    m = _published(src, r"moves it by up to ([\d.]+) ft \((\S+) (\d+)\), over 0\.5 ft on "
+                        r"(\d+) of them", "how far the whole ring moves the median", live)
+    assert abs(float(m.group(1)) - over[ow]) < 0.02 and \
+        (m.group(2), int(m.group(3))) == (_short(ow[0]), ow[1]) and \
+        int(m.group(4)) == sum(1 for v in over.values() if v > 0.5), (
+        f"the overshoot is published as {m.group(1)} ft on {m.group(2)} {m.group(3)}, over 0.5 ft on "
+        f"{m.group(4)}; measured {live}")
+
+    # 5. the seven pads that are NOT level over their whole ring while the window is. These are the
+    #    holes the window costs, and the module has to name them and to state the evidence that their
+    #    printed heights stand: how far the median moves when the anchor is displaced 10 m.
+    uneven = sorted((_short(k[0]), k[1], r["ring"]["rel_ft"], r["shift_spread_ft"])
+                    for k, r in pads.items()
+                    if r["ring"] and r["ring"]["rel_ft"] > LIMIT and r["sample"]["rel_ft"] <= LIMIT)
+    shifts = [u[3] for u in uneven if u[3] is not None]
+    live = ("; ".join(f"{s} {h} ring {v:.3f} shift {d:.2f}" for s, h, v, d in uneven)
+            + f"  (median shift {median(shifts):.2f}, worst {max(shifts):.2f})")
+    m = _published(src, r"(\d+) pads span more than MAX_TEE_RELIEF_FT over the whole ring while the "
+                        r"sampled window is level", "the pads whose whole ring is not level", live)
+    assert int(m.group(1)) == len(uneven), (
+        f"the note says {m.group(1)} pads span more than the limit over the whole ring; measured "
+        f"{len(uneven)}: {live}")
+    for s, h, _v, _d in uneven:
+        assert re.search(rf"{re.escape(s)}\s+h?{h}\b", src), (
+            f"{s} {h} spans more than the limit over its whole mapped ring and fetch_hole_elev.py does "
+            f"not name it; measured {live}")
+    m = _published(src, r"displaced 10 m moves those seven medians by a median ([\d.]+) ft and at most "
+                        r"([\d.]+) ft \((\S+) (\d+)\)",
+                   "the anchor-displacement evidence for those seven", live)
+    worst_shift = max((u for u in uneven if u[3] is not None), key=lambda u: u[3])
+    assert abs(float(m.group(1)) - median(shifts)) < 0.02 and \
+        abs(float(m.group(2)) - worst_shift[3]) < 0.02 and \
+        (m.group(3), int(m.group(4))) == (worst_shift[0], worst_shift[1]), (
+        f"the displacement evidence is published as median {m.group(1)} / worst {m.group(2)} ft on "
+        f"{m.group(3)} {m.group(4)}; measured median {median(shifts):.2f} / worst "
+        f"{worst_shift[3]:.2f} on {worst_shift[0]} {worst_shift[1]}")
+
+    # ...and WHICH of the seven actually put a height on a card, which is a different question from
+    # which are refused and was answered wrong once. 9cc3bce's message said gating on the whole ring
+    # "would refuse seven holes that print today"; six print. micke-grove 8 measures +1.79 ft and is
+    # suppressed by the 3 ft floor, so refusing it costs no printed figure at all. The module comment
+    # gets this right ("all but micke-grove 8") and NOTHING graded it, which is how the message and the
+    # comment could disagree about the same seven holes. Measured off the artifact, against the floor.
+    floor = float(fhe.PRINT_FLOOR_FT)
+    silent = []
+    for s, h, _v, _d in uneven:
+        row = next((r for slug in CORPUS
+                    for r in [(json.load(open(os.path.join(ROOT, "courses", slug, "hole_elev.json"),
+                                              encoding="utf-8"))["holes"].get(str(h))
+                               if os.path.isfile(os.path.join(ROOT, "courses", slug,
+                                                              "hole_elev.json")) else None)]
+                    if _short(slug) == s), None)
+        ft = None if not row else (row.get("change_ft_exact") if row.get("change_ft_exact") is not None
+                                   else row.get("change_ft"))
+        if ft is None or abs(ft) < floor:
+            silent.append((s, h, ft))
+    live = (f"{len(uneven) - len(silent)} of the {len(uneven)} print; silent: "
+            + (", ".join(f"{s} {h} at {0.0 if f is None else f:+.2f} ft" for s, h, f in silent)
+               or "none"))
+    m = _published(src, r"all but ([a-z-]+) (\d+) print a height today",
+                   "which of those pads print no height today", live)
+    assert [(m.group(1), int(m.group(2)))] == [(s, h) for s, h, _f in silent], (
+        f"the note says all but {m.group(1)} {m.group(2)} print a height today; measured {live}. "
+        f"9cc3bce's message called all seven holes that print, and the count that matters is how many "
+        f"printed figures gating on the whole ring would actually cost.")
+
+    # ...and the RETURNS the window really takes away, which is the third of the three counts that
+    # describe the clipping and the only one that needs the point cloud. Published TWICE in
+    # fetch_hole_elev.py -- once in the docstring, once in the loop comment -- and graded by nothing,
+    # which is the two-records-one-figure shape that produced this whole campaign.
+    lost = sorted((_short(k[0]), k[1], r["ring"]["n"] - r["sample"]["n"]) for k, r in pads.items()
+                  if r["ring"] and r["ring"]["n"] > r["sample"]["n"])
+    live = f"{len(lost)} of {len(pads)} sampled pads lose returns, worst {max(lost, key=lambda t: t[2])}"
+    assert lost, ("no sampled pad loses a ground return to the window, so the window clips nothing and "
+                  "both figures below are describing something that has stopped happening")
+    for pattern, what in ((r"(\d+) of those actually lose ground returns to it",
+                           "how many clipped pads lose ground returns (docstring)"),
+                          (r"it CLIPS the ring on (\d+) of the corpus's mapped pads",
+                           "how many clipped pads lose ground returns (loop comment)")):
+        m = _published(src, pattern, what, live)
+        assert int(m.group(1)) == len(lost), (
+            f"fetch_hole_elev.py publishes {m.group(1)} for {what}; measured {live}")
+
+    # 6. the FALLBACK branch, which never reaches the relief check. That is still deliberate and still
+    #    pinned by test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height; what makes it
+    #    defensible now is that the REGION is a teeing ground rather than 900 m^2 of hillside, and the
+    #    module has to state both spreads and the offset the box median had -- each of them TWICE in the
+    #    source, so each is graded here.
+    bv = S.get(("bay-view-golf-club", 16))
+    assert bv and not bv["on_pad"], (
+        "bay-view 16 no longer takes the fallback; the fallback-branch note names it")
+    off = bv["med_2.5"] - bv["box"]["med_ft"]
+    live = (f"disc relief {bv['sample']['rel_ft']:.2f} ft over {bv['sample']['n']} returns; the 15 m box "
+            f"spanned {bv['box']['rel_ft']:.2f} ft over {bv['box']['n']}, and its median sat {off:.2f} ft "
+            f"below the ground at r = 2.5 m")
+    # the MAX_TEE_RELIEF_FT note's copy of the pair...
+    m = _published(src, r"whose sample spans ([\d.]+) ft over\s*the [\d.]+ m disc \(([\d.]+) ft over "
+                        r"the 15 m box that disc replaced\)",
+                   "bay-view 16's two spreads, as the relief-limit note states them", live)
+    assert abs(float(m.group(1)) - bv["sample"]["rel_ft"]) < 0.05, (
+        f"the relief-limit note says the disc spans {m.group(1)} ft; measured {live}")
+    assert abs(float(m.group(2)) - bv["box"]["rel_ft"]) < 0.05, (
+        f"the relief-limit note says the box it replaced spanned {m.group(2)} ft; measured {live}")
+    # ...and the predicate's, which is the copy a reader of the gate meets. Two records, one figure.
+    m = _published(src, r"bay-view 16's sample spans ([\d.]+) ft over the [\d.]+ m disc where the old "
+                        r"15 m box spanned ([\d.]+) ft over ([\d,]+) returns",
+                   "bay-view 16's two spreads, as the gate predicate states them", live)
+    assert abs(float(m.group(1)) - bv["sample"]["rel_ft"]) < 0.05, (
+        f"the predicate says the disc spans {m.group(1)} ft; measured {live}")
+    assert abs(float(m.group(2)) - bv["box"]["rel_ft"]) < 0.05, (
+        f"the predicate says the box spanned {m.group(2)} ft; measured {live}")
+    assert int(m.group(3).replace(",", "")) == bv["box"]["n"], (
+        f"the predicate says the old box held {m.group(3)} returns; measured {bv['box']['n']}. {live}")
+    m = _published(src, r"rather than ([\d.]+) ft below it",
+                   "how far below its own near-anchor ground the box median sat", live)
+    assert abs(float(m.group(1)) - off) < 0.03, (
+        f"the offset is published as {m.group(1)} ft; measured {off:.2f}. {live}")
+    m = _published(src, r"That card printed (\d+) and prints (\d+)",
+                   "bay-view 16's printed integer before and after the fallback change",
+                   f"box {bv['box']['med_ft']:.2f} ft, disc {bv['sample']['med_ft']:.2f} ft")
+    gf = bv["scan"]["green_ft"]
+    for grp, med, which in ((1, bv["box"]["med_ft"], "the 15 m box"),
+                            (2, bv["sample"]["med_ft"], "the fallback disc")):
+        want = math.floor(abs(gf - med) + 0.5)
+        assert int(m.group(grp)) == want, (
+            f"the predicate says bay-view 16's card reads {m.group(grp)} off {which}; measured "
+            f"{want} ({gf - med:+.3f} ft)")
+
+    # 7. and TEE_SAMPLES_MEASURED, the table the pure-predicate gate test runs on. That test cannot
+    #    check its own inputs -- a stale number is still a valid input to a pure function, which is why
+    #    four of them drifted unnoticed -- so the point cloud checks them here.
+    drifted = []
+    for (course, hn), (n, ft, on_pad) in sorted(TEE_SAMPLES_MEASURED.items()):
+        live_row = next((r for k, r in S.items() if _short(k[0]) == course and k[1] == hn), None)
+        if live_row is None:
+            drifted.append(f"{course} {hn}: no tee sample at all now")
+            continue
+        got = live_row["sample"]
+        if live_row["on_pad"] != on_pad:
+            drifted.append(f"{course} {hn}: table says on_pad={on_pad}, measured "
+                           f"{live_row['on_pad']}")
+        if got["n"] != n:
+            drifted.append(f"{course} {hn}: table says {n} ground returns, measured {got['n']}")
+        if abs(got["rel_ft"] - ft) > 0.005:
+            drifted.append(f"{course} {hn}: table says {ft} ft of relief, measured "
+                           f"{got['rel_ft']:.3f}")
+    assert not drifted, ("TEE_SAMPLES_MEASURED no longer matches the LiDAR, so "
+                         "test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height is "
+                         "exercising the gate with numbers the corpus does not produce:\n  "
+                         + "\n  ".join(drifted))
+
+
+@needs_corpus
+def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it():
+    """The box fallback gated on COUNT alone, and one card printed 46 where its own ground gives 48.
+
+    Five of the corpus's 182 anchors land in no mapped `golf=tee` ring and take the fallback. It used
+    to be a TEE_R_M box -- 900 m^2 of whatever surrounds the anchor -- and the relief check sat inside
+    `if on_pad:`, so nothing bounded how much height that sample could span. bay-view 16's box spanned
+    31.9 ft over 10,532 returns ON A HILLSIDE, and its median sat 1.90 ft BELOW the ground at its own
+    anchor, where the ground is remarkably well determined. That card printed "green 46 ft below the
+    tee" for a hole its own near-anchor returns put at 48, and bay-view 16 is also the corpus's worst
+    disagreement against the 3DEP seamless DEM.
+
+    Applying the relief gate to that branch instead would have silenced all five cards for a spread
+    that is an artifact of the sampling REGION rather than a property of the tee -- the module said so
+    itself, and it is the wrong fix. The right one is to sample the fallback the way the pad branch is
+    sampled: over a region the size of a teeing ground, centred on the anchor.
+
+    THE RADIUS IS MEASURED FROM THE CORPUS, not chosen. The pad branch samples the mapped ring
+    intersected with the window, and over all 177 mapped pads the median area of that region is about
+    113 m^2 (12.6% of the 900 m^2 box, which _tee_pads already publishes). A disc of the same area has
+    a radius of 6.0 m. That is the whole derivation, and this test re-runs it.
+
+    AND THE THRESHOLD IS SWEPT CONTINUOUSLY, because a discrete probe would have got this wrong. At
+    {2.5, 5, 7.5, 10} m every one of the five looks settled; swept at 0.01 m, merion 9's printed
+    integer flips from 33 to 32 at 5.66 m -- 0.34 m below the shipped radius. That margin is published
+    and graded rather than left to be discovered, which is the same failure a headroom figure in this
+    campaign already had (16x published against 10.5x measured, because the grader tested powers of two).
+
+    MEASURED COST: 2 of the 5 printed integers move. Both the value that leaves and the value that
+    arrives are re-derived here from the point cloud -- neither is copied from the module or from the
+    card -- and the three that do not move are asserted not to.
+    """
+    S = _tee_samples()
+    geom = _tee_geometry()
+    assert S and geom, "no green-mode course with LiDAR on disk; nothing to measure"
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    import numpy as np
+    R = fhe.TEE_FALLBACK_R_M
+    src = _fhe_prose()
+
+    def median(v):
+        v = sorted(v)
+        return v[len(v) // 2] if len(v) % 2 else (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2
+
+    def printed(ft):
+        """The integer the card prints, or 0 for a height the print floor suppresses."""
+        return math.floor(abs(ft) + 0.5) if abs(ft) >= float(fhe.PRINT_FLOOR_FT) else 0
+
+    # 1. THE RADIUS, re-derived from the pad branch's own sampled area. `share` is the fraction of the
+    #    TEE_R_M box each mapped ring covers inside the window -- the same rasterisation _tee_pads
+    #    publishes 12.6% from -- so the area is share * the box's area, and no new measurement is needed.
+    box_area = (2 * fhe.TEE_R_M) ** 2
+    areas = sorted(v * box_area for g in geom.values() for v in g["share"].values())
+    want_r = math.sqrt(median(areas) / math.pi)
+    assert abs(R - want_r) < 0.05, (
+        f"TEE_FALLBACK_R_M is {R} m; the disc with the same area as the MEDIAN region the pad branch "
+        f"samples ({median(areas):.1f} m^2 over {len(areas)} mapped pads) has radius {want_r:.3f} m. "
+        f"The fallback radius is derived from that area and from nothing else -- if the corpus has "
+        f"moved, move the constant with it and re-derive the headroom below.")
+    m = _published(src, r"median area of that region is ([\d.]+) m\^2 over the (\d+) mapped pads",
+                   "the median sampled pad area the radius comes from",
+                   f"{median(areas):.1f} m^2 over {len(areas)}")
+    assert abs(float(m.group(1)) - median(areas)) < 0.5 and int(m.group(2)) == len(areas), (
+        f"the derivation publishes {m.group(1)} m^2 over {m.group(2)} pads; measured "
+        f"{median(areas):.1f} m^2 over {len(areas)}")
+
+    # 2. THE PRODUCER really samples that disc, and this reads the PRODUCER -- not this file's own
+    #    helper. It used to be:
+    #        n_disc = int((r["scan"]["d_m"] < R).sum())
+    #        assert r["sample"]["n"] == n_disc and r["sample"]["n"] < r["box"]["n"]
+    #    and both sides of that came from `_tee_samples`: `sample` IS `stat(_fallback_disc(...))`, which
+    #    is `hypot(dx, dy) < R`, and `scan["d_m"]` IS `hypot(dx, dy)`. So clause A was a tautology and
+    #    clause B is geometrically necessary for any R below the window. It claimed to prove the shipped
+    #    sampler takes the disc and could not see the sampler at all. PROVEN vacuous by mutating the
+    #    producer's fallback mask to a 6 m axis box, and then to a TRUE 15 m box -- the exact defect
+    #    fd39647 exists to fix -- with the constant still 6.0 and the region string still naming a disc:
+    #    both mutations PASSED.
+    #
+    #    So the comparison is now the ARTIFACT the producer WROTE against the LAZ measured here. Every
+    #    fallback row records `tee_points` and `tee_z_m`, and those are the producer's own outputs: a
+    #    producer sampling the box would record the box's count and the box's median, and both are
+    #    measured below and required to be the disc's. The count is the decisive discriminator -- the
+    #    disc holds 984-2211 returns against the box's 8384-17567, a 7.52-9.33x separation on all five --
+    #    while the medians agree to within 0.01 m on 1 of the five (castlewood-hill 4, 0.0091 m) and to
+    #    within 0.05 m on 3, so a z-only check would not have separated them on every hole. What this
+    #    states is exactly what it checks: the region the producer SAMPLED, as recorded, is the disc. It
+    #    does not reach inside the sampler, and it no longer says it does.
+    #    Both summaries above were wrong before this round and both are graded now, after the loop: the
+    #    separation was published as "7-9x", which EXCLUDES its own top end, and the median agreement as
+    #    "three of the five", which is 1 -- three is the count at 0.05 m. A bound that excludes its own
+    #    measurement is the class the range grader further down this file refuses by name; these two sat
+    #    in a comment beside the loop that measures them.
+    box_rows = sorted(k for k, r in S.items() if not r["on_pad"])
+    assert len(box_rows) == 5, (
+        f"{len(box_rows)} anchors take the fallback, not the five this derivation was measured on "
+        f"({[(_short(s), h) for s, h in box_rows]}); re-measure before trusting the figures below")
+    sep = []
+    counts, dzs = [], []
+    for k in box_rows:
+        r = S[k]
+        with open(os.path.join(ROOT, "courses", k[0], "hole_elev.json"), encoding="utf-8") as fh:
+            row = json.load(fh)["holes"][str(k[1])]
+        n_disc = int((r["scan"]["d_m"] < R).sum())
+        n_box = r["box"]["n"]
+        assert row.get("tee_points") == n_disc, (
+            f"{_short(k[0])} {k[1]}: the artifact records a tee sample of {row.get('tee_points')} "
+            f"returns; the {R} m disc measured off the LAZ holds {n_disc} and the "
+            f"{fhe.TEE_R_M:g} m box holds {n_box}. The PRODUCER is not sampling the disc -- and the "
+            f"constant and the region string can both still be right while it does, which is why this "
+            f"reads the recorded sample rather than the constant.")
+        assert row["tee_points"] != n_box, (
+            f"{_short(k[0])} {k[1]}: the disc and the box hold the same {n_box} returns, so the count "
+            f"cannot tell the two regions apart here and this assertion has stopped discriminating")
+        z_disc = r["sample"]["med_ft"] / 3.28084
+        z_box = r["box"]["med_ft"] / 3.28084
+        assert abs(row["tee_z_m"] - z_disc) <= 0.01, (
+            f"{_short(k[0])} {k[1]}: the artifact records a tee height of {row['tee_z_m']:.3f} m; the "
+            f"disc gives {z_disc:.3f} m and the box {z_box:.3f} m")
+        sep.append((abs(z_disc - z_box), _short(k[0]), k[1], z_disc, z_box))
+        counts.append((n_disc, n_box))
+        dzs.append((abs(z_disc - z_box), _short(k[0]), k[1]))
+    worst_sep = max(sep)
+    assert worst_sep[0] > 0.1, (
+        f"the disc and the box now give tee heights within {worst_sep[0]:.3f} m of each other on every "
+        f"one of the five fallback holes, so the recorded height cannot distinguish the two regions at "
+        f"all and only the count above is doing any work. Re-derive before relying on this.")
+
+    # 2b. THE TWO SUMMARIES the comment above publishes about that discrimination, against the five rows
+    #     just measured. A published RANGE has to CONTAIN its own measurements: an upper bound rounded
+    #     down excludes the case it exists to cover, which is what "7-9x" did to bay-view 16.
+    ratios = sorted(b / d for d, b in counts)
+    tight = sorted(v for v, _s, _h in dzs)
+    here = _flow(open(__file__, encoding="utf-8").read())
+    live_sep = (f"disc {min(d for d, _b in counts)}-{max(d for d, _b in counts)}, box "
+                f"{min(b for _d, b in counts)}-{max(b for _d, b in counts)}, ratio "
+                f"{ratios[0]:.2f}-{ratios[-1]:.2f}x; {sum(1 for v in tight if v <= 0.01)} of "
+                f"{len(tight)} medians within 0.01 m, {sum(1 for v in tight if v <= 0.05)} within 0.05")
+    m = re.search(r"disc holds (\d+)-(\d+) returns against the box's (\d+)-(\d+), a ([\d.]+)-([\d.]+)x "
+                  r"separation on all five -- while the medians agree to within 0\.01 m on (\d+) of the "
+                  r"five \(([a-z-]+) (\d+), ([\d.]+) m\) and to within 0\.05 m on (\d+)", here)
+    assert m, ("step 2's own comment no longer states the count separation and the median agreement in a "
+               f"form this test can read, so neither is graded: measured {live_sep}")
+    bad = []
+    for grp, want, label in ((1, min(d for d, _b in counts), "the disc's smallest count"),
+                             (2, max(d for d, _b in counts), "the disc's largest count"),
+                             (3, min(b for _d, b in counts), "the box's smallest count"),
+                             (4, max(b for _d, b in counts), "the box's largest count"),
+                             (7, sum(1 for v in tight if v <= 0.01),
+                              "how many medians agree to 0.01 m"),
+                             (11, sum(1 for v in tight if v <= 0.05), "how many agree to 0.05 m")):
+        if int(m.group(grp)) != want:
+            bad.append(f"step 2 publishes {label} as {m.group(grp)}; measured {want}")
+    for grp, want, side, label in ((5, ratios[0], "lo", "the lowest count ratio"),
+                                   (6, ratios[-1], "hi", "the highest count ratio")):
+        got = float(m.group(grp))
+        contains = got <= want + 1e-12 if side == "lo" else got >= want - 1e-12
+        if not contains:
+            bad.append(f"step 2 publishes {label} as {got:g}, which EXCLUDES the measured {want:.4g} -- "
+                       f"a separation range that does not contain its own five holes")
+        elif abs(got - want) > 0.1:
+            bad.append(f"step 2 publishes {label} as {got:g}; measured {want:.4g}")
+    closest = min(dzs)
+    if (m.group(8), int(m.group(9))) != (closest[1], closest[2]) or \
+            abs(float(m.group(10)) - closest[0]) > 0.0005:
+        bad.append(f"step 2 names {m.group(8)} {m.group(9)} at {m.group(10)} m as the hole where the two "
+                   f"medians agree closest; measured {closest[1]} {closest[2]} at {closest[0]:.4f} m")
+    assert not bad, (
+        "step 2's justification for reading the recorded COUNT rather than the recorded HEIGHT does not "
+        "match the five holes it is measured over. It is the reason this assertion is shaped the way it "
+        "is, so a wrong figure here is the argument, not a comment:\n  " + "\n  ".join(bad))
+
+    # 3. THE FIVE PRINTED INTEGERS, both regions, from the point cloud. Nothing here is copied: the
+    #    "before" is the median over the 15 m box and the "after" the median over the disc, each
+    #    against the same green surface, put through generate.elev_phrase's own rounding.
+    moved, held = [], []
+    for k in box_rows:
+        r = S[k]
+        g = r["scan"]["green_ft"]
+        assert g is not None, f"{_short(k[0])} {k[1]}: no green surface, so no change to compute"
+        before = g - r["box"]["med_ft"]
+        after = g - r["sample"]["med_ft"]
+        (moved if printed(before) != printed(after) else held).append(
+            (_short(k[0]), k[1], printed(before), before, printed(after), after))
+    live = "; ".join(f"{s} {h} {pb} ({fb:+.3f}) -> {pa} ({fa:+.3f})"
+                     for s, h, pb, fb, pa, fa in sorted(moved + held))
+    assert len(moved) == 2, (
+        f"{len(moved)} of the 5 fallback cards change their printed integer, not the 2 this change was "
+        f"measured to cost: {live}")
+    m = _published(src, r"2 of the 5 printed integers move: (\S+) (\d+) (\d+) -> (\d+) and (\S+) "
+                        r"(\d+) (\d+) -> (\d+)", "which two printed integers the fallback change moves",
+                   live)
+    assert [(m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4))),
+            (m.group(5), int(m.group(6)), int(m.group(7)), int(m.group(8)))] == \
+        [(s, h, pb, pa) for s, h, pb, _fb, pa, _fa in sorted(moved)], (
+        f"the module names a different pair of moved figures than the LiDAR gives: {live}")
+    for s, h, pb, _fb, pa, _fa in held:
+        assert pb == pa, "internal: a held hole moved"
+
+    # ...and the ARTIFACT on disk must carry the disc figure, or the cards are still printing the box.
+    stale = []
+    for k in box_rows:
+        p = os.path.join(ROOT, "courses", k[0], "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            row = json.load(fh)["holes"].get(str(k[1]))
+        if row is None:
+            stale.append(f"{_short(k[0])} {k[1]}: no row at all now")
+            continue
+        want = S[k]["scan"]["green_ft"] - S[k]["sample"]["med_ft"]
+        got = row.get("change_ft_exact")
+        if got is None or abs(got - want) > 0.02:
+            stale.append(f"{_short(k[0])} {k[1]}: records {got} ft; the {R} m disc gives {want:+.3f} "
+                         f"(the {fhe.TEE_R_M:g} m box gave "
+                         f"{S[k]['scan']['green_ft'] - S[k]['box']['med_ft']:+.3f})")
+        if R != fhe.TEE_R_M and str(int(fhe.TEE_R_M)) in str(row.get("tee_region") or ""):
+            stale.append(f"{_short(k[0])} {k[1]}: tee_region still names a "
+                         f"{fhe.TEE_R_M:g} m region: {row.get('tee_region')!r}")
+    assert not stale, ("hole_elev.json has not been regenerated for the fallback change, so those "
+                       "cards still print the box figure:\n  " + "\n  ".join(stale))
+
+    # 4. THE HEADROOM, SWEPT. Where each printed integer ACTUALLY flips, at 0.01 m, not where the
+    #    nearest convenient probe flips. The module has to publish the tightest margin and name the
+    #    hole that owns it, because that margin is the whole answer to "is this radius a knob?".
+    grid = np.arange(0.20, fhe.TEE_R_M + 1e-9, 0.01)
+    margins = []
+    for k in box_rows:
+        r = S[k]
+        d, z, g = r["scan"]["d_m"], r["scan"]["z_ft"], r["scan"]["green_ft"]
+        here = printed(g - r["sample"]["med_ft"])
+        below = above = None
+        for rad in grid[grid < R][::-1]:
+            mm = d < rad
+            if mm.any() and printed(g - float(np.median(z[mm]))) != here:
+                below = float(rad)
+                break
+        for rad in grid[grid > R]:
+            mm = d < rad
+            if mm.any() and printed(g - float(np.median(z[mm]))) != here:
+                above = float(rad)
+                break
+        margins.append((_short(k[0]), k[1], here,
+                        None if below is None else R - below,
+                        None if above is None else above - R))
+    tight = min((t for t in margins if t[3] is not None), key=lambda t: t[3], default=None)
+    live = "; ".join(f"{s} {h} prints {p}, flips "
+                     f"{'nowhere below' if b is None else f'{b:.2f} m below'} / "
+                     f"{'nowhere above' if a is None else f'{a:.2f} m above'}"
+                     for s, h, p, b, a in margins)
+    assert tight is not None, (
+        "no fallback hole's printed integer flips anywhere between 0.2 m and the window, so the sweep "
+        "below is measuring nothing -- re-derive it rather than trusting the published margin")
+    m = _published(src, r"flips from (\d+) to (\d+) at ([\d.]+) m -- ([\d.]+) m below",
+                   "the tightest printed-integer margin around the fallback radius", live)
+    assert abs(float(m.group(4)) - tight[3]) < 0.02 and abs(float(m.group(3)) - (R - tight[3])) < 0.02, (
+        f"the module publishes a tightest margin of {m.group(4)} m (flipping at {m.group(3)} m); "
+        f"swept at 0.01 m the tightest is {tight[3]:.2f} m on {tight[0]} {tight[1]} "
+        f"(flipping at {R - tight[3]:.2f} m). {live}")
+    assert re.search(rf"{re.escape(tight[0])}\s+h?{tight[1]}\b[^.]{{0,120}}flips", src) or \
+        re.search(rf"flips[^.]{{0,120}}{re.escape(tight[0])}\s+h?{tight[1]}\b", src), (
+        f"the tightest margin belongs to {tight[0]} {tight[1]} and the module does not name that hole "
+        f"beside it; measured {live}")
+
+    # 5. MIN_TEE_PTS, re-derived for the smaller area. It meant "the box barely reached the tee at all"
+    #    over 900 m^2; left at 200 over a 113 m^2 disc it would mean something 8x stricter -- the exact
+    #    fault _crs_units_per_m records about the same constant. The derivation is areal DENSITY, so
+    #    that is what is graded, plus the live margin and the radius at which the floor really bites.
+    m = _published(src, r"([\d.]+) returns/m\^2", "the areal density MIN_TEE_PTS encodes",
+                   f"{fhe.MIN_TEE_PTS / (math.pi * R ** 2):.4f} returns/m^2")
+    dens = float(m.group(1))
+    assert fhe.MIN_TEE_PTS == round(dens * math.pi * R ** 2), (
+        f"MIN_TEE_PTS is {fhe.MIN_TEE_PTS}; the density the module publishes as its derivation "
+        f"({dens} returns/m^2) over the {R} m disc gives {round(dens * math.pi * R ** 2)}")
+    assert fhe.MIN_TEE_PTS >= 20, (
+        f"MIN_TEE_PTS is {fhe.MIN_TEE_PTS}, below the 20 returns `_spread` needs before it uses "
+        f"percentiles -- every fallback row's recorded relief would silently become a peak-to-peak")
+    thin = min(S[k]["sample"]["n"] for k in box_rows)
+    bites = max(next(float(rad) for rad in grid if (S[k]["scan"]["d_m"] < rad).sum() >= fhe.MIN_TEE_PTS)
+                for k in box_rows)
+    live = (f"thinnest fallback sample {thin} returns, {thin / fhe.MIN_TEE_PTS:.1f}x the floor; the "
+            f"floor first bites at r = {bites:.2f} m")
+    assert thin > fhe.MIN_TEE_PTS, (
+        f"the re-derived floor would refuse a card the corpus prints today: {live}")
+    m = _published(src, r"([\d.]+)x margin, and it refuses nothing above r = ([\d.]+) m",
+                   "the live margin on the re-derived count floor", live)
+    assert abs(float(m.group(1)) - thin / fhe.MIN_TEE_PTS) < 0.5 and \
+        abs(float(m.group(2)) - bites) < 0.05, (
+        f"the module publishes a {m.group(1)}x margin biting at r = {m.group(2)} m; measured {live}")
+
+
+@needs_corpus
+def test_both_relief_figures_recorded_per_row_are_the_ones_the_lidar_gives():
+    """9cc3bce added two figures to every row of hole_elev.json and graded neither.
+
+    `tee_relief_ft` and `tee_pad_relief_ft` are published on all 171 rows. The commit that added them
+    said of its own eleven re-derived numbers "Every one of those is now GRADED, not copied" -- and a
+    grep for either field name across the whole tree hits fetch_hole_elev.py and nothing else. No test,
+    no tool and no document reads either one. So they are exactly the shape this project's standing
+    lesson describes, inside the commit that cited it: a figure written into a record with nothing able
+    to check it against the ground.
+
+    They are not decoration. `tee_relief_ft` is the quantity MAX_TEE_RELIEF_FT is compared against, so
+    a row's copy of it is the only per-card evidence that the gate deciding whether a height prints saw
+    what it should have. `tee_pad_relief_ft` is the whole reason the seven pads whose ring is not level
+    are auditable from the artifact rather than only from a comment -- fetch_hole_elev.py's own docstring
+    says so ("recorded per row as `tee_pad_relief_ft` so this is auditable from the artifact and not
+    only from here"), which is a promise about a field nothing verified.
+
+    Graded off the point cloud, per row, against the SAME p95-p5 the sampler computes and over the same
+    two regions: the sample the median came from, and the whole mapped ring beside it. Nothing here is
+    copied from the module -- `_tee_samples()` re-measures both from the LAZ, and the third assertion
+    re-derives the seven audited holes from the ARTIFACT instead of from the prose that names them.
+    """
+    S = _tee_samples()
+    assert S, "no green-mode course with LiDAR on disk; nothing to measure"
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    LIMIT = fhe.MAX_TEE_RELIEF_FT
+    ND = 3                          # the module writes both fields as round(.., 3)
+    tol = 0.5 * 10 ** -ND + 1e-9
+    bad, seen, uneven = [], collections.Counter(), []
+    pad_rows = box_rows = 0
+    for slug in CORPUS:
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            rows = json.load(fh)["holes"]
+        for hn, row in rows.items():
+            live = S.get((slug, int(hn)))
+            if live is None:
+                bad.append(f"{_short(slug)} {hn}: a row with no tee sample in the point cloud at all")
+                continue
+            seen[slug] += 1
+            if live["on_pad"]:
+                pad_rows += 1
+            else:
+                box_rows += 1
+
+            # (a) the SAMPLE's spread -- the number the print/no-print gate is compared against.
+            got, want = row.get("tee_relief_ft"), live["sample"]["rel_ft"]
+            if got is None:
+                bad.append(f"{_short(slug)} {hn}: no tee_relief_ft recorded; measured {want:.4f} ft")
+            elif abs(got - want) > tol:
+                bad.append(f"{_short(slug)} {hn}: records tee_relief_ft {got}; the LiDAR gives "
+                           f"{want:.4f} ft over the region the median came from")
+            elif got > LIMIT and live["on_pad"]:
+                bad.append(f"{_short(slug)} {hn}: a PAD row records {got} ft of sample relief, above "
+                           f"the {LIMIT} ft limit -- this row should not exist, the gate refuses it")
+
+            # (b) the WHOLE MAPPED RING's spread, and `null` on exactly the rows that have no ring.
+            gotp = row.get("tee_pad_relief_ft")
+            wantp = live["ring"]["rel_ft"] if live["ring"] else None
+            if wantp is None and gotp is not None:
+                bad.append(f"{_short(slug)} {hn}: records tee_pad_relief_ft {gotp} for an anchor that "
+                           f"is in no mapped ring, so there is no pad to have measured")
+            elif wantp is not None and gotp is None:
+                bad.append(f"{_short(slug)} {hn}: records no tee_pad_relief_ft though its ring spans "
+                           f"{wantp:.4f} ft -- the seven audited pads are unauditable without it")
+            elif wantp is not None and abs(gotp - wantp) > tol:
+                bad.append(f"{_short(slug)} {hn}: records tee_pad_relief_ft {gotp}; the LiDAR gives "
+                           f"{wantp:.4f} ft over the whole mapped ring")
+            if gotp is not None and got is not None and gotp > LIMIT >= got:
+                uneven.append((_short(slug), int(hn)))
+
+    assert not bad, ("%d row(s) publish a relief figure the point cloud does not give:\n  " % len(bad)
+                     + "\n  ".join(bad[:12]))
+    assert pad_rows > 100 and box_rows, (
+        f"only {pad_rows} pad row(s) and {box_rows} box row(s) were graded; this corpus writes both "
+        f"kinds and a run that saw one kind would not have checked the `null` half at all")
+    assert_no_course_skipped(seen, "test_both_relief_figures_recorded_per_row_are_the_ones_the_lidar_gives")
+
+    # (c) and the FIELD must reproduce the audit it exists for, from the artifact alone: the pads whose
+    #     whole ring is not level while the sampled window is. Derived from the two recorded numbers
+    #     here, and from the LiDAR in
+    #     test_every_figure_behind_the_tee_relief_gate_is_the_one_the_lidar_gives -- two derivations of
+    #     one set, which is the cross-check the fields were missing.
+    from_lidar = sorted((_short(k[0]), k[1]) for k, r in S.items()
+                        if r["on_pad"] and r["ring"] and r["sample"]
+                        and r["ring"]["rel_ft"] > LIMIT >= r["sample"]["rel_ft"])
+    assert sorted(uneven) == from_lidar, (
+        f"the recorded pair of relief figures no longer picks out the pads whose whole ring is not "
+        f"level: the artifact says {sorted(uneven)}, the LiDAR says {from_lidar}. That set is the only "
+        f"thing tee_pad_relief_ft is published for.")
+    assert from_lidar, ("no pad's whole ring exceeds the relief limit while its window is level, so "
+                        "tee_pad_relief_ft now records nothing a reader could not infer -- re-derive "
+                        "the note in fetch_hole_elev.py before trusting this")
+
+
+@needs_corpus
+def test_the_elevation_loss_guard_sees_a_height_that_stops_printing(tmp_path):
+    """A card can lose its elevation line with every guard in the pipeline green.
+
+    `_env_on`'s docstring says ALLOW_ELEV_LOSS "waives the guard that stands between a survey that came
+    back thinner and a book that quietly stops printing a height it used to". No guard stood there for a
+    row that SURVIVES: check_rows compared KEY SETS only (`lost = sorted(int(h) for h in prev if h not
+    in rows)`), and generate.elev_phrase suppresses any measured change under 3 ft as level -- so a hole
+    going 3.05 -> 2.95 ft keeps its key, passes the guard, and drops the line off the card with nothing
+    printed and nothing raised. That is the same silent partial loss the guard was written for, arriving
+    through the one door it did not watch.
+
+    Not hypothetical: five of the corpus's rows sit within 0.15 ft of the floor. Both directions are
+    driven here -- a crossing must refuse, a move that stays above the floor must not -- and the floor
+    itself is cross-checked against the two other places this project spells it, because a third
+    spelling of a threshold is a third thing to drift."""
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+
+    floor = getattr(fhe, "PRINT_FLOOR_FT", None)
+    assert floor is not None, (
+        "fetch_hole_elev has no PRINT_FLOOR_FT, so check_rows cannot know which of its rows put a "
+        "height on a card")
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        gen = fh.read()
+    m = re.search(r"if ft is None or abs\(ft\) < (\d+(?:\.\d+)?)", gen)
+    assert m, "generate.py's elevation floor no longer looks like `abs(ft) < N`"
+    assert float(floor) == float(m.group(1)), (
+        f"fetch_hole_elev.PRINT_FLOOR_FT is {floor} but generate.py suppresses under {m.group(1)} ft; "
+        f"the loss guard would wave through a row whose card goes blank")
+    assert float(_gen_provenance().PRINT_FLOOR_FT) == float(floor), (
+        "fetch_hole_elev.PRINT_FLOOR_FT and gen_provenance.PRINT_FLOOR_FT disagree")
+
+    p = str(tmp_path / "hole_elev.json")
+    row = lambda ft: {"change_ft": round(ft, 1), "change_ft_exact": ft,
+                      "tee_basis": "tee end of the mapped hole line"}
+    fhe.write_hole_elev(p, {"holes": {"1": row(3.05), "2": row(20.0), "3": row(-3.02)}})
+
+    # (a) a row that crosses the floor downward must be refused, by name and with both figures.
+    with pytest.raises(SystemExit) as e:
+        fhe.check_rows({"1": row(2.95), "2": row(20.0), "3": row(-3.02)}, p)
+    msg = str(e.value)
+    assert "1" in msg and "3.05" in msg and "2.95" in msg, (
+        f"the refusal does not say which hole stopped printing or what it moved from and to:\n{msg}")
+    assert str(floor).rstrip("0").rstrip(".") in msg or "floor" in msg, (
+        f"the refusal does not mention the print floor that swallowed the height:\n{msg}")
+
+    # (b) the same crossing on the OTHER side of zero -- a card losing "green 3 ft below".
+    with pytest.raises(SystemExit):
+        fhe.check_rows({"1": row(3.05), "2": row(20.0), "3": row(-2.9)}, p)
+
+    # ...and a row that keeps its key while losing its figure entirely, which is the same loss wearing
+    # the shape the key-set comparison was written against.
+    with pytest.raises(SystemExit):
+        fhe.check_rows({"1": row(3.05), "2": {}, "3": row(-3.02)}, p)
+
+    # (c) a row that moves and still prints must NOT be refused, or every re-survey needs the waiver.
+    fhe.check_rows({"1": row(3.4), "2": row(24.0), "3": row(-9.0)}, p)
+    # ...nor a row that was already below the floor and stays there.
+    fhe.write_hole_elev(p, {"holes": {"1": row(1.0)}})
+    fhe.check_rows({"1": row(0.5)}, p)
+
+    # (d) ALLOW_ELEV_LOSS waives it -- that is what its docstring promises -- and says so.
+    fhe.write_hole_elev(p, {"holes": {"1": row(3.05)}})
+    keep = os.environ.get("ALLOW_ELEV_LOSS")
+    os.environ["ALLOW_ELEV_LOSS"] = "1"
+    try:
+        fhe.check_rows({"1": row(2.95)}, p)
+    finally:
+        if keep is None:
+            os.environ.pop("ALLOW_ELEV_LOSS", None)
+        else:
+            os.environ["ALLOW_ELEV_LOSS"] = keep
+
+    # (e) and the corpus really does sit on the floor, so this is a live exposure. The rows are named
+    #     in the module; the list is measured here.
+    near = sorted((abs(abs(ft) - float(floor)), _short(slug), int(hn), ft)
+                  for slug in CORPUS
+                  for hn, r in (json.load(open(os.path.join(ROOT, "courses", slug,
+                                                            "hole_elev.json"), encoding="utf-8"))
+                                ["holes"].items()
+                                if os.path.isfile(os.path.join(ROOT, "courses", slug,
+                                                               "hole_elev.json")) else [])
+                  for ft in [r.get("change_ft_exact") if r.get("change_ft_exact") is not None
+                             else r.get("change_ft")]
+                  if ft is not None and abs(abs(ft) - float(floor)) <= 0.15)
+    assert len(near) >= 3, (
+        f"only {len(near)} corpus row(s) sit within 0.15 ft of the {floor} ft floor; re-derive the "
+        f"exposure this guard is justified by before trusting the number in the source")
+    src = _fhe_prose()
+    live = ", ".join(f"{s} {h} at {ft:+.2f}" for _d, s, h, ft in near)
+    m = _published(src, r"(\d+) rows sit within 0\.15 ft of it", "the rows sitting on the print floor",
+                   f"{len(near)}: {live}")
+    assert int(m.group(1)) == len(near), (
+        f"check_rows says {m.group(1)} rows sit within 0.15 ft of the floor; measured {len(near)}: "
+        f"{live}")
+    for _d, s, h, _ft in near:
+        assert re.search(rf"{re.escape(s)}[^.]{{0,80}}\b{h}\b", src), (
+            f"{s} {h} sits within 0.15 ft of the print floor and is not named; measured {live}")
+
+
+@needs_corpus
+def test_the_recorded_elevation_source_names_the_surface_each_row_was_measured_on():
+    """hole_elev.json published "the green's own 0.4 m surface" for every row. False for two of them.
+
+    Six of the corpus's 198 dem_hd patches are built from the 3DEP seamless mosaic rather than from
+    LiDAR, because no tile covers those greens (monarch-bay 1, 9, 10, 16, 17 and 18). Two of them carry
+    an elevation row, and monarch-bay 16's card prints its height. For those two,
+    tools/verify_elevation.py compares the 3DEP seamless service against a patch BUILT FROM that same
+    service and returns +0.0 -- indistinguishable from agreement, on the two rows where the green side
+    has no independent check at all.
+
+    The payload's other two keys were claims of the same kind. `"min_tee_points": 200` names the floor
+    that gated 5 of the 171 rows; the other 166 came off a mapped pad, where the gates are
+    MIN_RING_PTS and MAX_TEE_RELIEF_FT and 200 is never consulted. Nothing in the repo reads either
+    key, so they are published claims and nothing else -- which is exactly why they could be wrong for
+    a year.
+
+    Graded against the metas on disk, per row, so the summary line cannot say 0.4 m about a surface
+    that is not."""
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    checked, seen, bad = 0, collections.Counter(), []
+    for slug in CORPUS:
+        p = os.path.join(ROOT, "courses", slug, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        _elev_bind(fhe, slug)
+        with open(p, encoding="utf-8") as fh:
+            rec = json.load(fh)
+        rows = rec["holes"]
+
+        # 1. the SUMMARY may not name a surface no row was measured on.
+        srcline = rec.get("source") or ""
+        kinds = collections.Counter()
+        for hn in rows:
+            mp = os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{int(hn):02d}.json")
+            if not os.path.isfile(mp):
+                bad.append(f"{slug} h{hn}: a row with no dem_hd meta")
+                continue
+            with open(mp, encoding="utf-8") as fh:
+                kinds[json.load(fh).get("source") or "unrecorded"] += 1
+        for kind, n in kinds.items():
+            cell = re.search(r"@([\d.]+)m", kind)
+            if cell and f"{cell.group(1)} m" not in srcline and cell.group(1) not in srcline:
+                bad.append(f"{slug}: {n} row(s) measured over {kind!r} and the payload's source line "
+                           f"({srcline!r}) does not say so")
+        if len(kinds) > 1 and "seamless" not in srcline:
+            bad.append(f"{slug}: rows come off {len(kinds)} different green surfaces "
+                       f"({dict(kinds)}) and the payload publishes one: {srcline!r}")
+
+        # 2. and each ROW must record the surface it was measured over, so a reader auditing one card
+        #    does not have to infer it from a corpus-wide summary.
+        for hn, row in rows.items():
+            mp = os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{int(hn):02d}.json")
+            if not os.path.isfile(mp):
+                continue
+            with open(mp, encoding="utf-8") as fh:
+                want = json.load(fh).get("source")
+            if row.get("green_source") != want:
+                bad.append(f"{slug} h{hn}: row records green_source "
+                           f"{row.get('green_source')!r}; its surface says {want!r}")
+            checked += 1
+            seen[slug] += 1
+
+        # 3. the retired keys. A published gate that gated almost nothing is worse than none.
+        assert "min_tee_points" not in rec, (
+            f"{slug}: hole_elev.json still publishes min_tee_points as though it gated these rows; "
+            f"it applies only to the box fallback")
+    assert checked >= 100, f"only {checked} rows checked; expected the corpus"
+    assert not bad, ("%d recorded elevation source(s) do not match the surface measured:\n  " % len(bad)
+                     + "\n  ".join(bad[:10]))
+
+    # 4. and the module's own count of how many surfaces are NOT LiDAR, graded off the metas. This is
+    #    the figure the false summary line was built on, so a stale copy of it is the same defect again.
+    kinds = collections.Counter()
+    for mp in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        if os.path.basename(os.path.dirname(os.path.dirname(mp))).startswith("_"):
+            continue
+        with open(mp, encoding="utf-8") as fh:
+            kinds["lidar" if "@0.4m" in (json.load(fh).get("source") or "") else "seamless"] += 1
+    total = sum(kinds.values())
+    src = _fhe_prose()
+    m = _published(src, r"(\d+) of the corpus's (\d+) surfaces are 0\.4 m LiDAR ground returns; (\d+) "
+                        r"come from the 3DEP seamless mosaic",
+                   "how many green surfaces are not LiDAR",
+                   f"{kinds['lidar']} LiDAR of {total}, {kinds['seamless']} seamless")
+    assert (int(m.group(1)), int(m.group(2)), int(m.group(3))) == \
+        (kinds["lidar"], total, kinds["seamless"]), (
+        f"green_source publishes {m.group(1)} of {m.group(2)} LiDAR and {m.group(3)} seamless; measured "
+        f"{kinds['lidar']} of {total} and {kinds['seamless']}")
+    assert_no_course_skipped(
+        seen, "test_the_recorded_elevation_source_names_the_surface_each_row_was_measured_on")
 
 
 @needs_corpus
@@ -15925,7 +23082,7 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
       * An OSM re-fetch changed which polygons a tree may sit on and the tree layers were not
         rebuilt. Micke Grove: 5,642 markers committed and 5,642 fresh.
       * fetch_dem.py rewrote every hole it was given instead of filling gaps, replacing good 0.4 m
-        LiDAR greens with the 1 m DEM. Monarch Bay: 3,889,124 bytes against 4,973,620.
+        LiDAR greens with the seamless one. Monarch Bay: 3,889,124 bytes against 4,973,620.
 
     It ran on ONE course until both of those were found by hand on others, so it now runs on all of
     them. Byte-for-byte reproducibility was last confirmed by a fresh COLD_BUILD=1 run on 2026-07-30.
@@ -15941,10 +23098,13 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-04): micke-grove 4,325,572; castlewood-hill 4,476,546;
-    merion 5,870,160; monarch-bay 4,933,911; copper-valley 6,084,024; callippe 6,797,869;
-    castlewood-valley 5,835,757; philadelphia 4,604,342; the-reserve 5,109,777;
-    bay-view 4,242,903; valley-hi 4,698,141; poppy-ridge 340,883.
+    CURRENT SIZES (2026-08-06): micke-grove 4,326,013; castlewood-hill 4,477,027;
+    merion 5,870,647; monarch-bay 4,934,430; copper-valley 6,084,531; callippe 6,798,262;
+    castlewood-valley 5,836,326; philadelphia 4,604,765; the-reserve 5,110,199;
+    bay-view 4,243,411; valley-hi 4,698,534; poppy-ridge 341,146.
+    (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
+    rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
+    net, those 121 less the 63 its conditional back-cover sentences added.)
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -16306,8 +23466,12 @@ def test_the_printed_read_is_fitted_to_putting_surface_only():
             # so when the card stopped printing "(firm)" on every green the parse silently returned
             # None for 195 of 198 holes and the comparison below had nothing left to compare -- a test
             # that would have gone quiet rather than red if the format had drifted the other way.
+            # The label is OPTIONAL to the pattern for the same reason the qualifier is: the footer
+            # figure is a whole-surface plane fit, not the legend's per-cell "slope % there", so it
+            # prints as "overall N%" -- and a parser that required the bare form returned None for all
+            # 198 holes and compared nothing, which is how the "(firm)" drift went quiet here before.
             rd = re.search(r'(?:feeds <b>[^<]*</b>|<b>no clear fall</b>)(?: \(faint\))?'
-                           r' &middot; ([\d.]+)%', blk)
+                           r' &middot; (?:[a-z]+ )?([\d.]+)%', blk)
             if hn and rd:
                 printed[int(hn.group(1))] = float(rd.group(1))
             elif hn and 'class="gwrap"' in blk and 'GREEN' in blk:
@@ -16393,7 +23557,7 @@ def test_a_green_whose_plane_and_arrows_conflict_names_no_direction():
                     f"{ref} hole {hn.group(1)} prints 'feeds {render_green.NO_CLEAR_FALL}', which "
                     f"reads as a compass direction -- the whole point is to name none")
                 # the measured tilt is still true and must still be shown
-                assert re.search(r'&middot; [\d.]+%', blk), (
+                assert re.search(r'&middot; (?:[a-z]+ )?[\d.]+%', blk), (
                     f"{ref} hole {hn.group(1)} refuses the direction AND drops the measured tilt; "
                     f"the percentage is still a fact and the card should keep it")
     assert_no_course_skipped(seen, "test_a_green_whose_plane_and_arrows_conflict_names_no_direction")
@@ -16950,7 +24114,7 @@ def test_the_scorecard_facts_obey_their_own_arithmetic():
         # A tee named in the ratings table with no hole column is not an error -- the-reserve's
         # Blu/Wht and Wht/Grn are combination tees, philadelphia's Green is published but not
         # transcribed per hole -- and those rows are daggered and footnoted on the card
-        # (test_the_rating_table_marks_tees_it_cannot_break_down covers that). Skipped here, not
+        # (test_a_tee_with_no_hole_by_hole_yardages_is_marked covers that). Skipped here, not
         # silently: counted, and required to stay a small minority.
         for y, r, s, nm in rows:
             if nm in cols and y:
@@ -17073,7 +24237,7 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
     lidar_coverage.py reports as having centreline outside the point data ("Trees along those stretches
     ... will be missing"). They are the ONLY zero-tree holes anywhere in the corpus, which is what makes
     the blank the survey's edge rather than open ground. The card already named those holes for a
-    different reason -- their greens fall back to the 1 m DEM -- so a reader was told the green was
+    different reason -- their greens fall back to the seamless DEM -- so a reader was told the green was
     coarser and not that the corridor was unmapped.
 
     On the hole card, not the guide card, and that placement is load-bearing rather than cosmetic. The
@@ -17135,9 +24299,9 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
                                   + re.escape(", ".join(str(h) for h in bare)), prov):
             problems.append(
                 f"{ref}: the book marks treeless holes {bare} but legal/03 does not record it. That "
-                f"table documents every other per-hole data limitation -- 1 m green fallbacks, how many "
-                f"holes carry a measured height -- so omitting this makes it read complete when it is "
-                f"not. Re-run tools/gen_provenance.py.")
+                f"table documents every other per-hole data limitation -- seamless-mosaic green "
+                f"fallbacks, how many holes carry a measured height -- so omitting this makes it read "
+                f"complete when it is not. Re-run tools/gen_provenance.py.")
     assert checked >= 10, f"only {checked} books with a tree layer were checked"
     assert_no_course_skipped(seen, "test_a_hole_the_survey_missed_does_not_print_as_open_ground")
     assert bare_total >= 3, (
@@ -17680,18 +24844,20 @@ def test_render_refuses_a_green_that_falls_metres_inside_its_own_outline(gate_co
 
 @needs_corpus
 def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path):
-    """fetch_dem_hd shares dem_hd/ with fetch_dem, and must not trade a working 1 m fill for a blank.
+    """fetch_dem_hd shares dem_hd/ with fetch_dem, and must not trade a working seamless fill for a blank.
 
     The two stages write the same directory. fetch_dem_hd builds 0.4 m surfaces from LiDAR ground
-    returns; fetch_dem fills the greens it gives up on from the seamless 1 m DEM, and those cards print a
-    real read labelled "1 m data". Re-running fetch_dem_hd ALONE -- an ordinary thing to do after
-    changing the point filter -- overwrote that fill with an insufficient=True record, and the green then
-    prints BLANK. A card silently loses information and the only symptom is the blank itself.
+    returns; fetch_dem fills the greens it gives up on from the 3DEP seamless mosaic, and those cards
+    print a real read under the coarse-data caveat. Re-running fetch_dem_hd ALONE -- an ordinary thing
+    to do after changing the point filter -- overwrote that fill with an insufficient=True record, and
+    the green then prints BLANK. A card silently loses information and the only symptom is the blank
+    itself.
 
-    Found by doing it: re-running the stage on monarch-bay turned hole 10 from "1 m data" into a refused
+    Found by doing it: re-running the stage on monarch-bay turned hole 10 from a real coarse-source read
+    into a refused
     green (its 0.4 m attempt reports nan 1.000, density 0.0 -- a bayside green with essentially no ground
     returns). It is the exact mirror of the fault fetch_dem.keeps_existing_surface was written for, on the
-    same course: that one replaced good 0.4 m greens with coarse 1 m ones and cost 1.1 MB of precision
+    same course: that one replaced good 0.4 m greens with coarse mosaic ones and cost 1.1 MB of precision
     without printing a dishonest word. Only one direction had been guarded.
 
     Checked on the ARTIFACTS rather than in the source, because the clobber has a signature there: it
@@ -17715,10 +24881,10 @@ def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path
     assert not insufficient, (
         "green surface(s) on disk are marked insufficient, so their cards print blank:\n  "
         + "\n  ".join(insufficient)
-        + "\n  If this followed a re-run of fetch_dem_hd.py, it overwrote a working 1 m fallback. "
+        + "\n  If this followed a re-run of fetch_dem_hd.py, it overwrote a working seamless fill. "
           "Re-run fetch_dem.py to restore the fill, or use OVERWRITE=1 if blanking was the intent.")
     assert len(seamless) >= 6, (
-        f"only {len(seamless)} green(s) are on the 1 m seamless fallback; monarch-bay alone has 6. A "
+        f"only {len(seamless)} green(s) are on the seamless fallback; monarch-bay alone has 6. A "
         f"drop means fetch_dem_hd replaced a fill -- with a GOOD 0.4 m surface that is an upgrade and "
         f"this floor should be lowered deliberately, but with a refused one it is a blanked green.")
 
@@ -17737,12 +24903,12 @@ def test_re_running_the_surface_builder_cannot_blank_a_working_fallback(tmp_path
         return fetch_dem_hd.keeps_existing_surface(str(mp), overwrite)
 
     LIDAR = {"source": "USGS 3DEP LiDAR ground returns @0.4m", "insufficient": False}
-    SEAMLESS = {"source": "USGS 3DEP 1 m seamless DEM", "insufficient": False}
+    SEAMLESS = {"source": "USGS 3DEP seamless mosaic @0.5m sampling", "insufficient": False}
     cases = [
         (LIDAR, False, True, "a good 0.4 m LiDAR surface -- the 192-green majority. The old guard "
                              "tested is_seamless, so it protected ONLY the 6 seamless records and would "
                              "have let a refused re-run blank any of the other 192."),
-        (SEAMLESS, False, True, "a working 1 m seamless fill -- the case the guard was written for"),
+        (SEAMLESS, False, True, "a working seamless fill -- the case the guard was written for"),
         ({**LIDAR, "insufficient": True}, False, False,
          "a record that was ALREADY a refusal is not worth keeping; rebuilding it is the repair"),
         ({"insufficient": False}, False, False,
@@ -18209,7 +25375,7 @@ def test_no_par_3_prints_a_carry():
     them the near edge was actively misleading:
 
       * the-reserve 8 printed "carry 90" for a waste complex running 90 to 216 yd on a 237 yd hole --
-        sand ending four yards short of the green front. Flying 90 clears nothing; the distance that
+        sand ending 2.24 yd short of the green front. Flying 90 clears nothing; the distance that
         matters is ~215. A 126 yd gap, eight or nine clubs.
       * merion 13 printed "carry 82" on a 128 yd hole for sand running 82 to 113 with the green front
         at 107 -- again no landing area beyond it.
@@ -18656,10 +25822,11 @@ def test_the_dem_patch_is_read_on_the_extent_the_service_returned():
 
     What it cost is the one figure whose job is to bound our OWN processing: merion's absolute
     green-elevation offset against the DEM reads a median 0.1019 m as coded and 0.0522 m with the
-    returned georeference -- so roughly half of the "worst per-course median of 0.10 m" published in
-    legal/09 is this tool's own region error, in the same document that says the sample is taken over
-    "the same green polygon the pipeline measures, so the comparison is not dominated by a region
-    mismatch".
+    returned georeference -- so roughly half of the "worst per-course median of 0.10 m" legal/09
+    published at the time was this tool's own region error, in the same document that said the sample is
+    taken over "the same green polygon the pipeline measures, so the comparison is not dominated by a
+    region mismatch". (That prediction was borne out corpus-wide when the service came back: the run of
+    2026-08-05 measures 0.045 m, and legal/09 now publishes the measurement instead of the bound.)
 
     Synthetic, with the network stubbed at `urlopen` so the georeference travels through the real
     GeoTIFF the real code reads. A crowned green (a dome falling 8 m across the patch) makes the region
@@ -18839,6 +26006,471 @@ ABS_OFFSET_LINE = re.compile(r"absolute green elevation vs the DEM: median ([-+]
 
 
 @needs_corpus
+def test_the_print_floors_justification_quotes_only_figures_this_project_can_produce():
+    """The 3 ft print floor's recorded justification quoted a figure NOTHING in this project computes.
+
+    `generate.elev_phrase`'s docstring is the derivation of the gate that decides whether ANY elevation
+    number reaches a card. It published, of the corpus-wide disagreement against the 3DEP seamless DEM,
+    "a median 0.09 ft, a mean 0.27 ft and a worst 3.14 ft; the worst any single course medians is
+    0.57 ft. Five holes exceed 2 ft and one exceeds 3."
+
+    Three separate faults in one paragraph:
+
+      * NO PRODUCER. tools/verify_elevation.py printed PER-COURSE lines and nothing else -- there was no
+        corpus median, corpus mean, worst-hole or count anywhere in its output. A grep for "mean 0.27"
+        found that sentence and nothing else in the repo. A published figure with no producer cannot go
+        stale visibly, cannot be re-derived, and cannot be graded; it is the state every drifted number
+        in this project has been in.
+      * MISLABELLED. Its "median 0.09 ft" was described as a median across 171 holes and is the median
+        of ELEVEN PER-COURSE MEDIANS -- a different statistic, which on this corpus differs from the
+        corpus median by about a third. Both are printed and both are named now.
+      * STALE. fd39647 then moved five tee heights (bay-view 16 46 -> 48, merion 9 34 -> 33 among them),
+        so even the figures that did have a derivation described a corpus that no longer existed.
+
+    So `_print_corpus` exists, and this grades the paragraph three ways WITHOUT the network:
+
+      (a) THE PRODUCER. `_print_corpus` is driven over a synthetic corpus whose answers are computed
+          here independently, and every quantity the paragraph quotes must come back out of it with the
+          right value. That is what makes "a figure nothing computes" impossible rather than merely
+          discouraged.
+      (b) THE OFFLINE FIGURES. The hole count and the 2-4 ft band are properties of the corpus on disk,
+          so they are re-derived from hole_elev.json and compared.
+      (c) THE LABELLING. The paragraph must name the corpus median and the per-course median as
+          different figures. A single "median" cannot be checked against either.
+    """
+    import contextlib
+    import io as _io
+
+    import numpy as np
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_elevation as ve
+
+    # elev_phrase's docstring is static text, so it is read off the SOURCE rather than by importing
+    # a course-bound module -- which also avoids adding a sys.modules drop site (README counts them).
+    doc = _flow(_func_prose(os.path.join(ROOT, "generate.py"), "elev_phrase"))
+
+    # (a) THE PRODUCER. A synthetic corpus with answers computed here, not by the thing under test.
+    fake = {
+        "aaa": ("ok", 3, 0.0, None, {"abs_diff_ft": [(0.10, 1), (0.30, 2), (2.50, 3)],
+                                     "median_ft": 0.30, "signed_ft": [0.10, -0.30, 2.50],
+                                     "absolute_m": [0.01, -0.20, 0.05], "unreachable": 0}),
+        "bbb": ("ok", 2, 0.0, None, {"abs_diff_ft": [(1.00, 4), (4.00, 5)],
+                                     "median_ft": 2.50, "signed_ft": [1.00, -4.00],
+                                     "absolute_m": [0.40, -0.10], "unreachable": 1}),
+    }
+    allv = sorted(v for _s, d in fake.items() for v, _h in d[4]["abs_diff_ft"])
+    want = {"median": float(np.median(allv)), "mean": float(np.mean(allv)), "worst": max(allv),
+            "pc_worst": 2.50, "pc_median": float(np.median([0.30, 2.50])),
+            "over2": sum(1 for v in allv if v > 2), "over3": sum(1 for v in allv if v > 3),
+            "n": len(allv)}
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ve._print_corpus(fake)
+    out = " ".join(buf.getvalue().split())
+    assert out, ("verify_elevation._print_corpus printed nothing for a corpus with five holes in it. It "
+                 "is the only producer of every corpus figure elev_phrase quotes; with it silent, those "
+                 "figures are back to having no derivation at all.")
+    produced = []
+    for pat, key, label in (
+            (r"CORPUS over (\d+) hole", "n", "the hole count"),
+            (r"median ([\d.]+) ft, mean", "median", "the corpus median |diff|"),
+            (r"mean ([\d.]+), worst", "mean", "the corpus mean |diff|"),
+            (r"worst ([\d.]+) \(", "worst", "the worst hole"),
+            (r"per-COURSE medians\s*: worst ([\d.]+) ft", "pc_worst", "the worst per-course median"),
+            (r"median of the \d+ course medians ([\d.]+)", "pc_median",
+             "the median of the per-course medians"),
+            (r"holes over 2 ft\s*: (\d+)", "over2", "the count over 2 ft"),
+            (r"holes over 3 ft\s*: (\d+)", "over3", "the count over 3 ft")):
+        m = re.search(pat, out)
+        if not m:
+            produced.append(f"_print_corpus does not print {label} ({pat!r}); elev_phrase quotes it")
+        elif abs(float(m.group(1)) - want[key]) > 0.005:
+            produced.append(f"_print_corpus prints {label} as {m.group(1)}; computed {want[key]:.4f} "
+                            f"over the same synthetic corpus")
+    assert not produced, (
+        "the tool does not produce a corpus figure the print floor's justification publishes. That is "
+        "the fault, not a symptom of it: 'mean 0.27 ft' stood in that paragraph for the life of the "
+        "project because nothing in this repo could have contradicted it:\n  " + "\n  ".join(produced))
+
+    # (b) THE OFFLINE FIGURES, re-derived from the corpus rather than quoted.
+    rows = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "hole_elev.json"))):
+        with open(p, encoding="utf-8") as fh:
+            for v in (json.load(fh).get("holes") or {}).values():
+                if v.get("change_ft") is None:
+                    continue
+                ex = v.get("change_ft_exact")
+                rows.append(abs(float(ex if ex is not None else v["change_ft"])))
+    assert rows, "no hole_elev.json row carries a height change; nothing here would be measured"
+    band = sum(1 for v in rows if 2.0 <= v <= 4.0)
+    problems = []
+    for pat, got, label in ((r"[Aa]cross (\d+) holes the two disagree", len(rows), "the hole count"),
+                            (r"(\d+) of the \d+ fall in the 2-4 ft band", band,
+                             "the count in the 2-4 ft band"),
+                            (r"\d+ of the (\d+) fall in the 2-4 ft band", len(rows),
+                             "the hole count beside that band")):
+        m = re.search(pat, doc)
+        assert m, (f"elev_phrase's docstring no longer states {label} ({pat!r}). That paragraph is the "
+                   f"only recorded derivation of the 3 ft print floor.")
+        if int(m.group(1)) != got:
+            problems.append(f"elev_phrase publishes {label} as {m.group(1)}; measured {got}")
+
+    # (c) THE LABELLING. Both statistics must be named, as different things.
+    for pat, label in ((r"corpus median ([\d.]+) ft", "the corpus median"),
+                       (r"corpus mean ([\d.]+) ft", "the corpus mean"),
+                       (r"median of the \d+ per-course medians is ([\d.]+) ft",
+                        "the median of the per-course medians"),
+                       (r"worst any single course medians is ([\d.]+) ft",
+                        "the worst per-course median")):
+        if not re.search(pat, doc):
+            problems.append(f"elev_phrase's docstring does not name {label} in a form this can read "
+                            f"({pat!r}). Its 'median 0.09 ft' was the median of eleven per-course "
+                            f"medians presented as a median over every hole; naming both is the fix.")
+    cm = re.search(r"corpus median ([\d.]+) ft", doc)
+    pm = re.search(r"median of the \d+ per-course medians is ([\d.]+) ft", doc)
+    if cm and pm and cm.group(1) == pm.group(1):
+        problems.append(
+            f"elev_phrase quotes the same value ({cm.group(1)}) for the corpus median and for the "
+            f"median of the per-course medians. They are different statistics and on this corpus they "
+            f"measure differently; one of the two is a copy of the other.")
+    assert not problems, (
+        "the 3 ft print floor's recorded justification does not match the corpus it describes. This is "
+        "the gate deciding whether any elevation number reaches a card, so a stale figure here is the "
+        "derivation, not a comment:\n  " + "\n  ".join(problems))
+
+
+# THE FIGURES legal/09 ITEM 1 PUBLISHES for the elevation bound, as this file can read them. One place,
+# because two tests grade them: the offline one below, and the network one after it that re-runs the
+# tool. Written against the document's own sentences rather than a template, so a reworded record fails
+# as "unreadable" (which _elev_bound_published reports as a defect, not a skip) instead of silently
+# grading nothing.
+_ELEV_BOUND_FIGS = (
+    ("holes", r"[Oo]ver all (\d+) measured holes", "the hole count the run reached"),
+    ("courses", r"measured holes on the (\d+) courses", "the course count"),
+    ("abs_pc_worst", r"worst per.course median of ([\d.]+) m", "the worst per-course absolute median"),
+    ("abs_worst", r"worst single green of ([\d.]+) m \(([A-Za-z-]+)\)",
+     "the worst single green's absolute offset, and the course it is on"),
+    ("chg_worst", r"worst single hole of ([\d.]+) ft \(([A-Za-z-]+) (\d+)\)",
+     "the worst single hole's tee-to-green disagreement, and which hole it is"),
+    ("chg_pc_lo", r"per.course medians from ([\d.]+) to [\d.]+ ft", "the best per-course median"),
+    ("chg_pc_hi", r"per.course medians from [\d.]+ to ([\d.]+) ft", "the worst per-course median"),
+    # The RAW figure the range's upper end is rounded outward FROM. Without it on the page a reader
+    # cannot tell 0.63 from a typo, and the record cannot be checked for containment at all -- which is
+    # how "0.03 to 0.62 ft" stood against a measured 0.6243 that it EXCLUDES. `verify_elevation.py`
+    # carries the same sentence and has since the tool's own range was repaired.
+    ("chg_pc_raw", r"worst per.course median\s+measures ([\d.]+) ft",
+     "the raw worst per-course median the range's upper end is rounded outward from"),
+    ("chg_pc_med", r"median of those eleven course medians is ([\d.]+) ft",
+     "the median of the per-course medians"),
+    ("chg_med", r"median over all \d+ holes is ([\d.]+) ft", "the corpus median"),
+    ("chg_mean", r"the mean ([\d.]+) ft", "the corpus mean"),
+    ("over2", r"(\d+) of the \d+ exceed 2 ft", "the count over 2 ft"),
+    ("over3", r"exceed 2 ft and (none|\d+) exceeds 3 ft", "the count over 3 ft"),
+)
+
+
+def _elev_bound_published():
+    """{key: match} for every figure legal/09 item 1 publishes about the elevation bound.
+
+    A figure this cannot parse is reported as a defect rather than skipped, for the reason the whole
+    record needed re-deriving: the version before this round said "the tool prints no corpus-wide
+    median, so this says which one it is" -- a sentence that was false when written and unreadable by
+    anything, in the bullet a reader goes to for what the printed heights are worth.
+    """
+    with open(os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    # ITEM 1 ONLY, sliced on the document's own numbering before any figure is read. A pattern like
+    # "mean **N ft**" searched over the whole record would find whichever sentence happens to come
+    # first and then grade the wrong experiment -- this document publishes a cross-flight table, a
+    # flight-line overlap table and this bound, and two of the three quote figures in the same units.
+    body = doc.split("**Does not:**", 1)
+    assert len(body) == 2, "legal/09 no longer has the 'Does not' list that holds the elevation bound"
+    item1 = re.split(r"\n2\.\s", body[1], 1)[0]
+    assert "precision, not accuracy" in item1, (
+        "legal/09's item 1 is no longer the precision-not-accuracy bullet; the slice above is reading "
+        "the wrong part of the record")
+    doc = _flow(item1).replace("*", "")     # emphasis is presentation; a figure is not bold or plain
+    out, missing = {}, []
+    for key, pat, label in _ELEV_BOUND_FIGS:
+        m = re.search(pat, doc)
+        if m is None:
+            missing.append(f"{label} ({pat!r})")
+        else:
+            out[key] = m
+    assert not missing, (
+        "legal/09 item 1 no longer publishes these in a form this test can read, so nothing grades "
+        "them:\n  " + "\n  ".join(missing))
+    return out
+
+
+@needs_corpus
+def test_legal_09s_elevation_bound_describes_the_corpus_that_is_actually_on_disk():
+    """legal/09 item 1 is the ONLY published bound on the fault class nothing else here can see.
+
+    Every other check in this project compares our processing with itself, so a constant vertical
+    offset -- a unit read wrong, a CRS or grid misalignment, a geoid/ellipsoid mixup -- cancels out of
+    every height CHANGE and is invisible to all of them. Item 1 cites `verify_elevation --all` as the
+    bound on that class, and its figures had been quarantined since 2026-08-02 as "upper bounds
+    awaiting re-measurement" while the tool they came from was re-run and re-measured without them.
+
+    Three of item 1's claims can be checked with no network at all, and they are the three that went
+    wrong before:
+
+      (a) THE CORPUS. The hole and course counts are properties of hole_elev.json on disk.
+      (b) THE LABELLING. A corpus median and a median of per-course medians are different statistics,
+          and this document published one figure for the pair while asserting "the tool prints no
+          corpus-wide median" -- which `_print_corpus` had made false. Both must be named, and they
+          must not be the same number.
+      (c) THE INTERNAL ARITHMETIC. The worst per-course median cannot exceed the worst single hole, the
+          best per-course median cannot exceed the worst, and a count over 3 ft cannot exceed the count
+          over 2 ft. None of those needs the wire and all three catch a transcription slip.
+
+    The figures THEMSELVES need the service, so they are graded by the network test below. This one is
+    what runs on every commit.
+    """
+    fig = _elev_bound_published()
+    rows, courses = [], 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "hole_elev.json"))):
+        with open(p, encoding="utf-8") as fh:
+            vals = [v for v in (json.load(fh).get("holes") or {}).values()
+                    if v.get("change_ft") is not None]
+        rows += vals
+        courses += 1 if vals else 0
+    assert rows, "no hole_elev.json row carries a height change; nothing here would be measured"
+
+    bad = []
+    if int(fig["holes"].group(1)) != len(rows):
+        bad.append(f"item 1 says the run covered {fig['holes'].group(1)} holes; the corpus on disk "
+                   f"records a height change on {len(rows)}")
+    if int(fig["courses"].group(1)) != courses:
+        bad.append(f"item 1 says {fig['courses'].group(1)} courses; {courses} have a recorded height")
+    if fig["chg_med"].group(1) == fig["chg_pc_med"].group(1):
+        bad.append(f"item 1 quotes {fig['chg_med'].group(1)} for both the corpus median and the median "
+                   f"of the per-course medians. They are different statistics and on this corpus they "
+                   f"differ; one of the two is a copy of the other.")
+    lo, hi = float(fig["chg_pc_lo"].group(1)), float(fig["chg_pc_hi"].group(1))
+    worst = float(fig["chg_worst"].group(1))
+    if not lo <= hi <= worst:
+        bad.append(f"item 1's per-course medians ({lo} to {hi} ft) and worst single hole ({worst} ft) "
+                   f"cannot all be true together: a per-course median cannot exceed the worst hole in "
+                   f"the corpus, and the range cannot run backwards")
+    over3 = 0 if fig["over3"].group(1) == "none" else int(fig["over3"].group(1))
+    if over3 > int(fig["over2"].group(1)):
+        bad.append(f"item 1 says {fig['over2'].group(1)} holes exceed 2 ft and {over3} exceed 3 ft")
+    if float(fig["abs_pc_worst"].group(1)) > float(fig["abs_worst"].group(1)):
+        bad.append(f"item 1's worst per-course absolute median ({fig['abs_pc_worst'].group(1)} m) "
+                   f"exceeds its worst single green ({fig['abs_worst'].group(1)} m)")
+
+    # (d) THE RANGE HAS TO CONTAIN ITS OWN MEASUREMENT, and it did not. Item 1 published "per-course
+    #     medians from 0.03 to 0.62 ft" against a worst per-course median of 0.6243 ft, which 0.62
+    #     EXCLUDES. It passed only because a range ENDPOINT was graded as a POINT figure by nearest
+    #     rounding, and 0.62 is the correct two-digit rounding of 0.6243. `grade_bound` refuses exactly
+    #     that shape elsewhere in this file, and it is a defect already corrected three times in this
+    #     area -- 7-9x against a true 7.526-9.329, 72.2% against 72.2339, and this same 0.62 against
+    #     0.6243 in verify_elevation.py's own docstring. An endpoint must be rounded OUTWARD.
+    #     Needs no network: the raw figure is on the page beside the range, and the two records that
+    #     carry it are compared to each other here and to the live run below.
+    raw = float(fig["chg_pc_raw"].group(1))
+    if hi < raw - 1e-12:
+        bad.append(f"item 1 publishes the per-course medians as running up to {hi} ft and states the "
+                   f"worst one measures {raw} ft. A published range must CONTAIN the corpus it "
+                   f"describes; rounding an endpoint toward the middle is how it stops doing that")
+    elif hi - raw > 0.1:
+        bad.append(f"item 1 rounds its upper endpoint out to {hi} ft from a measured {raw} ft, which is "
+                   f"more than one rounding step of slack -- an endpoint that loose stops bounding")
+    if lo > raw + 1e-12:
+        bad.append(f"item 1's per-course range starts at {lo} ft, above the worst per-course median it "
+                   f"states ({raw} ft)")
+    # ...and the tool that PRODUCED both figures publishes the same range and the same raw figure. The
+    # tool's copies are graded against the live service in the network test below, so agreeing with them
+    # is what carries this record's figures back to a measurement on a checkout with no network.
+    with open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8") as fh:
+        ve_doc = _flow(fh.read())
+    for pat, mine, what in (
+            (r"per-course median of ([\d.]+)-[\d.]+ ft", lo, "the range's lower end"),
+            (r"per-course median of [\d.]+-([\d.]+) ft", hi, "the range's upper end"),
+            (r"the worst per-course median measures ([\d.]+) ft", raw,
+             "the raw worst per-course median")):
+        m = re.search(pat, ve_doc)
+        if m is None:
+            bad.append(f"tools/verify_elevation.py -- the producer of these figures, and the copy the "
+                       f"network test grades against the live service -- no longer publishes {what} "
+                       f"({pat!r}), so legal/09's {mine} is left with nothing behind it")
+        elif abs(float(m.group(1)) - mine) > 1e-9:
+            bad.append(f"legal/09 item 1 puts {what} at {mine} and tools/verify_elevation.py puts it at "
+                       f"{m.group(1)}. One run produced both; the two records went stale independently "
+                       f"once already, which is why they are compared digit for digit")
+
+    assert not bad, (
+        "legal/09 item 1 does not describe the corpus it was measured over. This bullet is the "
+        "project's only bound on a whole class of vertical fault, and it has been wrong in both "
+        "directions before:\n  " + "\n  ".join(bad))
+
+
+@pytest.mark.network
+@pytest.mark.skipif(not os.environ.get("VERIFY_ELEV"),
+                    reason="set VERIFY_ELEV=1 to run: needs the 3DEP elevation service, ~340 patch "
+                           "fetches and about five minutes")
+@needs_corpus
+def test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today():
+    """The figures in item 1, against a live run of the command item 1 names as their reproducer.
+
+    THE ONLY grader that can see both records drift at once, and the reason it has to exist: those
+    figures live in two places -- this bullet and `verify_elevation.py`'s own docstring -- and on
+    2026-08-05 the tool was re-run and re-measured while the bullet kept the pre-georeference-fix
+    numbers (0.47 m and 0.10 m) it had carried since 2026-08-02. Grading one record against the other
+    would have reproduced exactly the failure this project keeps finding, so this runs the producer.
+
+    Gated behind VERIFY_ELEV=1 and marked `network` because it is the only honest way to measure it: a
+    stubbed elevation service would be this project inventing the reference it is checking itself
+    against. It skips otherwise, and a skip is visibly not a pass.
+
+    Tolerance is taken from the PRECISION the document chose for each figure, so quoting fewer digits
+    is allowed and quoting a digit the service does not support is not.
+
+    FOUR FIGURES ARE GRADED DIFFERENTLY, and the difference is the point: a RANGE endpoint. Rounding to
+    the nearest is right for a point figure quoted to fewer digits and wrong for the end of a range --
+    0.62 is the correct two-digit rounding of a worst per-course median of 0.6243 and it still EXCLUDES
+    it, so a range published as 0.03-0.62 ft does not contain the corpus it describes. This file's own
+    `grade_bound` refuses exactly that shape elsewhere. BOTH RECORDS CARRIED IT: the tool's docstring was
+    repaired first, and legal/09 went on publishing "from 0.03 to 0.62 ft" for as long as its endpoint was
+    graded here as a point figure. So both ranges -- the tool's and item 1's, four endpoints in all -- are
+    now graded by CONTAINMENT plus one rounding step against the same run, and item 1 states the raw
+    0.6243 beside its range so the outward rounding can be checked without the wire at all.
+    """
+    import subprocess
+    fig = _elev_bound_published()
+    r = subprocess.run([sys.executable, os.path.join("tools", "verify_elevation.py"), "--all"],
+                       cwd=ROOT, capture_output=True, text=True, timeout=3600)
+    out = r.stdout
+    assert "CORPUS over" in out, (
+        f"the run printed no corpus block, so nothing was measured (exit {r.returncode}). An "
+        f"unreachable service must read as 'could not check', never as agreement:\n"
+        f"{out[-1500:]}{r.stderr[-1500:]}")
+    # The per-course blocks, in order, so a figure that names a COURSE can be checked against the
+    # course the run puts it on. "worst" with no hole beside it is a figure nobody can check against
+    # the corpus, which is how three rival values for the worst single green sat here at once.
+    per, slug = {}, None
+    for line in out.splitlines():
+        m = re.match(r"([a-z0-9-]+)\s+\(independent check", line)
+        if m:
+            slug = m.group(1)
+            continue
+        m = re.search(r"=> \d+ holes checked, median \|diff\| ([\d.]+) ft", line)
+        if m and slug:
+            per.setdefault(slug, {})["med"] = float(m.group(1))
+        m = re.search(r"absolute green elevation vs the DEM: median [-+][\d.]+ m, worst "
+                      r"([-+][\d.]+) m", line)
+        if m and slug:
+            per.setdefault(slug, {})["abs"] = abs(float(m.group(1)))
+    assert per and all("med" in v for v in per.values()), (
+        f"the run printed no per-course medians, so the range item 1 publishes cannot be "
+        f"measured:\n{out[-1500:]}")
+
+    def one(pat, what):
+        m = re.search(pat, out)
+        assert m, f"the run does not print {what} ({pat!r}):\n{out[-1500:]}"
+        return m
+
+    c_n = one(r"CORPUS over (\d+) hole\(s\) in (\d+) course\(s\)", "the corpus counts")
+    c_d = one(r"median ([\d.]+) ft, mean ([\d.]+), worst ([\d.]+) \((\S+) (\d+)\)", "the |diff| line")
+    c_p = one(r"per-COURSE medians\s*: worst ([\d.]+) ft \((\S+)\), best ([\d.]+) \((\S+)\), median of "
+              r"the \d+ course medians ([\d.]+)", "the per-course line")
+    c_2 = one(r"holes over 2 ft\s*: (\d+)", "the count over 2 ft")
+    c_3 = one(r"holes over 3 ft\s*: (\d+)", "the count over 3 ft")
+    c_a = one(r"absolute green vs DEM: worst per-course median ([\d.]+) m, worst single green ([\d.]+) m",
+              "the absolute line")
+    live = {
+        "holes": int(c_n.group(1)), "courses": int(c_n.group(2)),
+        "abs_pc_worst": float(c_a.group(1)), "abs_worst": float(c_a.group(2)),
+        "chg_worst": float(c_d.group(3)), "chg_med": float(c_d.group(1)),
+        "chg_mean": float(c_d.group(2)), "chg_pc_hi": float(c_p.group(1)),
+        "chg_pc_med": float(c_p.group(5)), "chg_pc_lo": float(c_p.group(3)),
+        "over2": int(c_2.group(1)), "over3": int(c_3.group(1)),
+    }
+    # The RAW worst per-course median is the same measurement as chg_pc_hi; item 1 publishes it beside the
+    # range precisely so the outward rounding can be checked, so it is graded as the POINT figure it is,
+    # to its own four decimals -- while the two ENDS of the range are graded by containment below.
+    live["chg_pc_raw"] = live["chg_pc_hi"]
+    assert abs(live["chg_pc_lo"] - min(v["med"] for v in per.values())) <= 0.005, (
+        f"the corpus block's best per-course median ({live['chg_pc_lo']}) is not the smallest the "
+        f"per-course lines print ({min(v['med'] for v in per.values())}). One of the two is measuring "
+        f"a different set of courses than the other.")
+    off = []
+    # RANGE ENDPOINTS ARE NOT POINT FIGURES, and grading them as such is what let item 1 publish a range
+    # that excludes its own corpus: nearest rounding accepted "0.62" for a measured 0.6243 because 0.62
+    # IS its correct two-digit rounding, while the range 0.03-0.62 does not contain 0.6243 at all. They
+    # are graded by containment plus one rounding step, immediately after this loop -- the same way this
+    # test already grades the producer's copy of the same range.
+    _RANGE_ENDS = ("chg_pc_lo", "chg_pc_hi")
+    for key, _pat, label in _ELEV_BOUND_FIGS:
+        if key in _RANGE_ENDS:
+            continue
+        raw = fig[key].group(1)
+        said = 0.0 if raw == "none" else float(raw)
+        digits = len(raw.split(".")[1]) if "." in raw else 0
+        if abs(said - live[key]) > 0.5 * 10 ** -digits + 1e-9:
+            off.append(f"item 1 publishes {label} as {raw}; this run measured {live[key]:.4f}")
+    # ITEM 1'S OWN RANGE, by CONTAINMENT. Both ends must be rounded OUTWARD, so the range holds the corpus
+    # it describes; a step of more than one rounding unit is refused too, because an endpoint that loose
+    # has stopped bounding anything. This is the check "0.03 to 0.62 ft" needed and did not have.
+    for key, want, side, label in (("chg_pc_lo", live["chg_pc_lo"], "lo", "the best per-course median"),
+                                   ("chg_pc_hi", live["chg_pc_hi"], "hi", "the worst per-course median")):
+        got = float(fig[key].group(1))
+        contains = got <= want + 1e-12 if side == "lo" else got >= want - 1e-12
+        if not contains:
+            off.append(f"item 1 publishes {label} as {got:g}, which EXCLUDES the measured {want:.4g} -- "
+                       f"a published range must contain its own corpus, and rounding an endpoint toward "
+                       f"the middle is how it stops doing that")
+        elif abs(got - want) > 0.1:
+            off.append(f"item 1 publishes {label} as {got:g}; measured {want:.4g}, which is more than "
+                       f"one rounding step away")
+    # And the two figures that name WHERE the worst case is.
+    labels = {k: lab for k, _p, lab in _ELEV_BOUND_FIGS}
+    worst_abs_slug = max((v.get("abs", -1.0), s) for s, v in per.items())[1]
+    for key, want in (("abs_worst", [_short(worst_abs_slug)]),
+                      ("chg_worst", [_short(c_d.group(4)), c_d.group(5)])):
+        said_where = [g.lower() for g in fig[key].groups()[1:]]
+        if said_where != [w.lower() for w in want]:
+            off.append(f"item 1 puts {labels[key]} on {' '.join(said_where)}; the run puts it on "
+                       f"{' '.join(want)}")
+
+    # THE TOOL'S OWN RANGE, graded by CONTAINMENT rather than by rounding -- see the docstring. Both
+    # ends, because a range has two and the low one had no producer at all until this run printed the
+    # best per-course median beside the worst.
+    ve_doc = _flow(open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8").read())
+    m = re.search(r"per-course median of ([\d.]+)-([\d.]+) ft", ve_doc)
+    assert m, ("tools/verify_elevation.py's docstring no longer publishes the per-course range this run "
+               f"measures, so nothing grades it: measured {live['chg_pc_lo']:.4f}-"
+               f"{live['chg_pc_hi']:.4f} ft")
+    for grp, want, side, label in ((1, live["chg_pc_lo"], "lo", "the best per-course median"),
+                                   (2, live["chg_pc_hi"], "hi", "the worst per-course median")):
+        got = float(m.group(grp))
+        contains = got <= want + 1e-12 if side == "lo" else got >= want - 1e-12
+        if not contains:
+            off.append(f"verify_elevation.py's docstring publishes {label} as {got:g}, which EXCLUDES "
+                       f"the measured {want:.4g} -- a published range must contain its own corpus, and "
+                       f"rounding an endpoint toward the middle is how it stops doing that")
+        elif abs(got - want) > 0.1:
+            off.append(f"verify_elevation.py's docstring publishes {label} as {got:g}; measured "
+                       f"{want:.4g}, which is more than one rounding step away")
+    m = re.search(r"the worst per-course median measures ([\d.]+) ft", ve_doc)
+    assert m, ("tools/verify_elevation.py's docstring no longer says what the worst per-course median "
+               "measures, which is the figure its rounded-outward endpoint is rounded FROM -- without it "
+               f"a reader cannot tell 0.63 from a typo: measured {live['chg_pc_hi']:.4f} ft")
+    if abs(float(m.group(1)) - live["chg_pc_hi"]) > 0.00005:
+        off.append(f"verify_elevation.py's docstring says the worst per-course median measures "
+                   f"{m.group(1)} ft; this run measured {live['chg_pc_hi']:.4f}")
+    assert not off, (
+        "legal/09 item 1 publishes elevation figures the 3DEP service does not give today. Both copies "
+        "of this run's output have gone stale independently before -- re-run\n"
+        "  python3 tools/verify_elevation.py --all\n"
+        "and replace every figure in that bullet AND the matching ones in the tool's own docstring:\n  "
+        + "\n  ".join(off))
+
+
+
+@needs_corpus
 def test_an_absolute_elevation_fault_cannot_be_reported_as_agreement():
     """verify_elevation printed "this is a processing fault", then exited 0 and called it agreement.
 
@@ -18902,10 +26534,12 @@ def test_the_absolute_offset_marker_fires_at_the_size_its_own_sentence_names():
     The SENTENCE is treated as the truth here, not the threshold, for two reasons. It is the promise the
     tool makes to whoever reads its output, and a gate looser than its own stated promise is a false
     statement in a document this project cites as evidence. And 1 m is where the evidence puts it: the
-    absolute offsets legal/09 publishes are a worst per-course median of 0.10 m and a worst single green
-    under 0.5 m, so 1 m clears healthy data by a factor of two while every fault this line names -- a
-    US-survey-foot cloud read as metres, a geoid/ellipsoid confusion in California -- lands tens of
-    metres out.
+    absolute offsets legal/09 publishes are a worst per-course median of 0.045 m and a worst single
+    green of 0.312 m, so 1 m clears healthy data by a factor of three while every fault this line names
+    -- a US-survey-foot cloud read as metres, a geoid/ellipsoid confusion in California -- lands tens of
+    metres out. That margin is READ OUT of legal/09 below rather than restated: those figures were
+    0.10 m and 0.35 m until 2026-08-05, and a threshold justified by a copy of a figure is how the
+    factor-of-two claim outlived the measurement behind it.
 
     The marker text is required to QUOTE the constant so the two cannot drift apart again, and a
     sub-threshold offset is required to stay silent and stay 'ok' so this cannot be satisfied by a tool
@@ -18913,6 +26547,13 @@ def test_the_absolute_offset_marker_fires_at_the_size_its_own_sentence_names():
     """
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import verify_elevation as ve
+    # The margin this gate is justified by, READ OUT of the record that publishes it. Those figures are
+    # themselves graded against a live run of the tool (see the two legal/09 elevation-bound tests), so
+    # this is a chain to a measurement rather than to a copy -- and when the corpus moves, the gate's
+    # justification moves with it instead of going quietly stale here.
+    _fig = _elev_bound_published()
+    _pc_worst_m = float(_fig["abs_pc_worst"].group(1))
+    _worst_green_m = float(_fig["abs_worst"].group(1))
     prev = os.environ.get("COURSE")
     slug = "bay-view-golf-club" if "bay-view-golf-club" in CORPUS else CORPUS[0]
     try:
@@ -18933,15 +26574,21 @@ def test_the_absolute_offset_marker_fires_at_the_size_its_own_sentence_names():
         f"{loud_out}")
     assert ve.ABS_FAULT_M <= 1.0, (
         f"ABS_FAULT_M is {ve.ABS_FAULT_M:g} m, looser than the metre its own warning promises. The "
-        f"published absolute offsets are a worst per-course median of 0.10 m, so a metre is not a tight "
-        f"gate -- it is two orders of magnitude below the faults it names.")
+        f"published absolute offsets are a worst per-course median of {_pc_worst_m:g} m, so a metre is "
+        f"not a tight gate -- it is two orders of magnitude below the faults it names.")
+    assert ve.ABS_FAULT_M >= 2 * _worst_green_m, (
+        f"ABS_FAULT_M is {ve.ABS_FAULT_M:g} m and legal/09 publishes a worst single green of "
+        f"{_worst_green_m:g} m, so the gate no longer clears the corpus's own healthy worst by a factor "
+        f"of two. Either the corpus has moved or the gate has: a threshold that fires on real data makes "
+        f"the tool useless rather than strict, which is the failure the quiet half below pins.")
     assert marker in loud_out and loud[0] != "ok", (
         f"an absolute offset of {l_worst:+.2f} m printed with no marker (or still returned "
         f"{loud[0]!r}), while the tool's own sentence calls a metre or more a processing fault. Anything "
         f"between the sentence and the threshold reads as agreement:\n{loud_out}")
     assert marker not in quiet_out and quiet[0] == "ok", (
-        f"an absolute offset of {q_worst:+.2f} m -- inside what the corpus already shows on healthy "
-        f"courses (worst per-course median 0.10 m) -- was marked as a processing fault and returned "
+        f"an absolute offset of {q_worst:+.2f} m -- below the metre the tool's own sentence names, and "
+        f"the same order as the {_worst_green_m:g} m worst single green the corpus already shows -- was "
+        f"marked as a processing fault and returned "
         f"{quiet[0]!r}. A gate that fires on the real corpus makes the tool useless rather than "
         f"strict:\n{quiet_out}")
 
@@ -19161,8 +26808,33 @@ def test_water_on_the_card_depends_on_where_the_water_is_not_how_it_was_noded():
 # ---------------------------------------------------------------------------
 # End-cap exclusion, on AUTHORED geometry so it runs on a bare clone
 # ---------------------------------------------------------------------------
-WATER_CORRIDOR_M = 45.0      # render_hole's own water corridor width: any_within(g, 45), and the
-                             # same 45 the area-water gate uses on both of its halves
+def _rh_corridor_m():
+    """render_hole.CORRIDOR_M, PARSED rather than imported.
+
+    The per-class drawing half-widths belong in exactly one place, and this suite had respelt two of
+    them as literals -- 45.0 for water, 40.0 for sand -- each commented with the call form fc6b7cc
+    replaced. A class widened in render_hole would then leave the tests grading the old width while
+    their names claim to grade the engine's, which is the defect the tool's own `CORRIDOR_M = 45.0`
+    already caused once.
+
+    ast rather than `import render_hole`, because importing it binds config and config needs a
+    course.json, and the tests these constants feed are the authored-geometry ones that must run on a
+    bare clone. The parse is checked against the runtime values wherever a corpus IS present -- see
+    test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws.
+    """
+    import ast
+    with open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8") as fh:
+        for node in ast.parse(fh.read()).body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and getattr(node.targets[0], "id", None) == "CORRIDOR_M"):
+                return ast.literal_eval(node.value)
+    raise AssertionError("render_hole.CORRIDOR_M is no longer a module-level literal mapping, so this "
+                         "suite cannot read the half-widths the engine draws at")
+
+
+_RH_CORRIDOR_M = _rh_corridor_m()
+WATER_CORRIDOR_M = _RH_CORRIDOR_M["water"]   # the corridor render_hole selects area water AND
+                                             # watercourses on, both halves of the gate
 WATER_GAP_M = 25.0           # how far past an end vertex the end-cap streams start: inside the
                              # corridor as a plain capsule, outside the PLAYED line
 WATER_OFF_M = 20.0           # lateral offset of the streams that must be counted
@@ -19627,7 +27299,7 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
         f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
 
 
-SAND_CORRIDOR_M = 40.0       # render_hole's own bunker corridor: the 40 in `edge_within(g,40)`
+SAND_CORRIDOR_M = _RH_CORRIDOR_M["bunker"]   # the corridor render_hole selects sand on, by nearest EDGE
 SAND_FILL = 'fill="#efe3b8"'  # one drawn bunker
 
 # The one bunker this suite and render_hole both name by OSM way id: the case the edge rule was
@@ -21564,8 +29236,8 @@ def test_the_engine_names_every_printed_tilt_that_appears_both_marked_and_unmark
     seen = collections.Counter()
     # Per HOLE PANEL, so a footer is attributed to the card it sits on -- the comment under test names
     # cards, not just percentages.
-    FEED = re.compile(r"feeds <b>[^<]+</b>( \(faint\))? &middot; (\d+\.\d+)%")
-    SENTINEL = re.compile(r"<b>no clear fall</b> &middot; (\d+\.\d+)%")
+    FEED = re.compile(r"feeds <b>[^<]+</b>( \(faint\))? &middot; (?:[a-z]+ )?(\d+\.\d+)%")
+    SENTINEL = re.compile(r"<b>no clear fall</b> &middot; (?:[a-z]+ )?(\d+\.\d+)%")
     for slug in BOOKS:
         p = os.path.join(ROOT, "courses", slug, "greenbook.html")
         with open(p, encoding="utf-8") as fh:
@@ -22132,6 +29804,18 @@ _TICK_BANDS = {}
 # whenever the corpus is present, so this literal cannot drift from the ground either.
 _TICK_SOUTHMOST_LAT = 37.4529
 
+# A latitude NORTH OF EVERY COURSE this corpus holds, used to bound the LIVE column on a clone. That
+# column had no clone-side bound at all: 0.9999 yd in both records passed at every row. The live pair is
+# exact at the latitude it is taken at, so what it can be wrong by over the table's published reach is the
+# drift of geo.mlat/geo.mlon across that much latitude -- and that drift GROWS northward, so evaluating it
+# here rather than at 37.45N is the conservative direction and makes the bound hold for any course south of
+# it. Set well north of the contiguous United States, which is where every course in this corpus is, so
+# that adding one cannot silently invalidate the arithmetic. No figure for the corpus's own northern edge
+# is written here on purpose -- an uncheckable literal in a comment is what this file keeps finding -- and
+# the relation that actually matters, that the whole corpus lies south of this, is asserted off the corpus
+# below and reported with its measured value when it fails.
+_TICK_LIVE_BOUND_LAT = 60.0
+
 
 def _agrees_to_last_digit(text, measured, least=4):
     """Does the decimal string `text` state `measured` to its own last digit, at `least` decimals?
@@ -22267,11 +29951,21 @@ def _grade_tick_error_table(rec, note, measured):
         "(%s), each row reading `| <R> yd tick | <retired worst> yd | <live worst> yd |`. Found rows "
         "for %s. That table is what a reader is told his yardage ticks were worth."
         % (radii, sorted(published) or "none"))
-    far = re.search(r"\|\s*any centreline vertex[^|]*?\|\s*([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|", rec)
+    # ONE reading of the closing row, reach included. The reach is the DENOMINATOR of both ceilings
+    # below, and it used to be read by a second, unanchored `re.search` over the whole collapsed
+    # document -- which takes the FIRST match, while the uniqueness guard under this counts rows that
+    # begin with a `|`. So one PROSE sentence naming a larger reach bought a larger denominator and
+    # waved the closing row's own figures through; a table row updated while a prose restatement lagged
+    # did the same thing by accident. Captured here, so there is nothing else to keep in step.
+    far = re.search(r"\|\s*any centreline vertex, out to ([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|"
+                    r"\s*([\d.]+) yd\s*\|", rec)
     assert far, (
         "legal/11_HORIZONTAL_EARTH_MODEL.md no longer closes the tick table with the worst over ALL "
-        "centreline vertices. Its row must read `| any centreline vertex, out to <R> yd | <retired> yd "
-        "| <live> yd |` -- the ticks stop at %d yd and the map draws the whole line." % max(radii))
+        "centreline vertices, stated with the distance it reaches. Its row must read `| any centreline "
+        "vertex, out to <R> yd | <retired> yd | <live> yd |` -- the ticks stop at %d yd and the map draws "
+        "the whole line, and that reach is what both of this row's figures are weighed against, so "
+        "without it the last row of the table is bounded by nothing on a clone with no courses/."
+        % max(radii))
     assert len(re.findall(r"\|\s*any centreline vertex", rec)) == 1, (
         "legal/11 carries more than one `| any centreline vertex ... |` row. This grader reads the first; "
         "the rest are reader-facing figures nothing checks.")
@@ -22344,9 +30038,19 @@ def _grade_tick_error_table(rec, note, measured):
         f"recomputed from the {retired_lat_scale} m/deg constant it names, at the {lat_s}N it names, it "
         f"is {100 * ceiling:.4f}%. An inflated ceiling would admit exactly the figures it exists to "
         f"refuse.")
-    impossible = [f"{R} yd tick: {published[R][0]} yd is {float(published[R][0]) / R * 100:.4f}% of the "
-                  f"radius, over the {100 * ceiling:.4f}% the retired pair can be wrong by"
-                  for R in sorted(published) if float(published[R][0]) > ceiling * R]
+    # EVERY PUBLISHED ROW, INCLUDING THE LAST ONE. This iterated `sorted(published)` -- the NUMERIC tick
+    # rows -- so the closing `| any centreline vertex, out to <R> yd |` row, the one that judges the whole
+    # drawn line, was exempt from the only argument the record makes about its own retired column. 9.9999
+    # yd passed there, 1.6784% of the 595.8 yd reach the row itself states and 5.6x the ceiling published
+    # two paragraphs below it. The reach comes from the row's own match above, so this needed no new input.
+    ceiling_rows = [(f"{R} yd tick", float(R), published[R][0], published[R][1])
+                    for R in sorted(published)]
+    ceiling_rows.append((f"any centreline vertex, out to {far.group(1)} yd",
+                         float(far.group(1)), far.group(2), far.group(3)))
+    impossible = [f"{label}: {said} yd is {float(said) / R * 100:.4f}% of the "
+                  f"{'radius' if label.endswith('tick') else 'reach'}, over the "
+                  f"{100 * ceiling:.4f}% the retired pair can be wrong by"
+                  for label, R, said, _live in ceiling_rows if float(said) > ceiling * R]
     assert not impossible, (
         "a retired-model figure in legal/11's tick table cannot happen. The retired pair was "
         f"{retired_lat_scale} m/deg of latitude and {retired_lat_scale}*cos(lat) per degree of "
@@ -22355,6 +30059,52 @@ def _grade_tick_error_table(rec, note, measured):
         + "\n  ".join(impossible)
         + "\n  A figure above this bound is a 'worst anywhere beyond this tick' figure printed in a "
           "column headed by the tick, which is what the reader takes it for. Measure at the tick.")
+    # ...AND THE PUBLISHED WORST OFFSET ITSELF, unconditionally. It was weighed against this ceiling only
+    # when a corpus existed, so on a clone "+0.9999%" passed -- 3.3x the ceiling the SAME PARAGRAPH
+    # derives for it. A worst above its own bound is a contradiction inside one paragraph and needs no
+    # measurement to see; the corpus check in (d) is what pins it to the ground, this is what stops the
+    # paragraph refuting itself for a reader who has only the clone.
+    rel_said = re.search(_SHARED_REL_OFFSET[0][3], rec)
+    assert rel_said, (
+        "legal/11 no longer states the retired pair's worst relative offset, which is the figure its "
+        "whole impossibility argument is stated in.")
+    assert float(rel_said.group(1)) <= 100.0 * ceiling + 1e-9, (
+        f"legal/11 publishes the retired pair's worst relative offset as {rel_said.group(1)}% and derives "
+        f"a ceiling of {100 * ceiling:.4f}% for it in the same paragraph, from the "
+        f"{retired_lat_scale} m/deg constant at {lat_s}N. A worst cannot exceed its own bound. Whichever "
+        f"of the two is wrong, the paragraph a reader is asked to check the retired column against "
+        f"contradicts itself.")
+    # THE LIVE COLUMN, bounded by arithmetic instead of by nothing. Its six cells were graded against
+    # geo.py's copies of themselves and against the corpus, so on a clone 0.9999 yd in BOTH records passed
+    # at every row -- publishing the live model as four hundred times worse than the retired one it
+    # replaced. What bounds it without a corpus: the live model takes ONE pair of scales, geo.mlat/geo.mlon
+    # at the drawn line's centroid, and applies them to points up to the published reach away, so its
+    # relative error is bounded by how far those two scales drift across that much latitude (the geodesic-
+    # versus-planar term over 545 m is ~7e-9 relative and cannot matter here). Deliberately loose in three
+    # ways, so it bounds rather than calibrates: the FULL reach stands in for the half-span that actually
+    # separates a point from the frame's own latitude, the larger of the two scales is taken, and it is
+    # evaluated at _TICK_LIVE_BOUND_LAT rather than at the corpus's own latitudes because the drift grows
+    # northward. That is a bound to within about one order of magnitude. LAST-DIGIT GRADING OF THE LIVE
+    # COLUMN ON A CLONE IS IRREDUCIBLE: the failure mode is a both-sided edit, the two records are already
+    # compared digit for digit above, and this tree holds no third witness to the measurement.
+    reach_deg = float(far.group(1)) * 0.9144 / _geo_live.mlat(_TICK_LIVE_BOUND_LAT)
+    live_ceiling = max(abs(scale(_TICK_LIVE_BOUND_LAT) / scale(_TICK_LIVE_BOUND_LAT + d) - 1.0)
+                       for scale in (_geo_live.mlat, _geo_live.mlon)
+                       for d in (-reach_deg, reach_deg))
+    unbounded = [f"{label}: {said} yd is {float(said) / R * 100:.4f}% of the "
+                 f"{'radius' if label.endswith('tick') else 'reach'}, over the "
+                 f"{100 * live_ceiling:.4f}% one pair of WGS84 scales can be wrong by over "
+                 f"{far.group(1)} yd"
+                 for label, R, _retired, said in ceiling_rows if float(said) > live_ceiling * R]
+    assert not unbounded, (
+        "a live-model figure in legal/11's tick table cannot happen either. The live pair is exact at the "
+        f"latitude it is taken at, so over the {far.group(1)} yd this table's own last row reaches "
+        f"it can be wrong by at most {100 * live_ceiling:.4f}% per unit length (evaluated at "
+        f"{_TICK_LIVE_BOUND_LAT}N, north of this corpus, because that drift grows with latitude):\n  "
+        + "\n  ".join(unbounded)
+        + "\n  This bounds the live column to within about an order of magnitude and no further. A cell "
+          "wrong in its last digit in BOTH records is not reachable from this tree at all -- re-run the "
+          "corpus grader.")
     # The record does not leave that ceiling as a percentage: it turns it into yardages per radius, and
     # THOSE are the numbers a reader weighs the old 0.43 / 0.73 / 0.99 against. Ungraded, the sentence
     # read "cannot be out by more than 0.90 yd, 200 by more than 1.60, or 300 by more than 2.90" and
@@ -22397,8 +30147,8 @@ def _grade_tick_error_table(rec, note, measured):
                            f"{got:.6f} yd (worst {slug} h{hn})")
     for col, model in ((0, "retired"), (1, "live")):
         got, slug, hn, at_yd = vertex[model]
-        if not _agrees_to_last_digit(far.group(col + 1), got):
-            bad.append(f"any centreline vertex, {model} model: published {far.group(col + 1)} yd, "
+        if not _agrees_to_last_digit(far.group(col + 2), got):
+            bad.append(f"any centreline vertex, {model} model: published {far.group(col + 2)} yd, "
                        f"measured {got:.6f} yd (worst {slug} h{hn} at {at_yd:.1f} yd)")
     assert not bad, (
         "legal/11's tick-error table does not match the corpus to its own last published digit. Each "
@@ -22412,12 +30162,13 @@ def _grade_tick_error_table(rec, note, measured):
     # ...and the furthest-vertex row has to say how far that is, and the population has to be one the
     # code can justify. "the same 391 vertices" named a set nothing in this tree produces -- and that
     # same class of defect then sat unread in legal/11's own crossing, centreline and vertex counts,
-    # which nothing graded at all. BOTH records state them, so both are graded.
-    reach = re.search(r"any centreline vertex, out to ([\d.]+) yd", rec)
-    assert reach and abs(float(reach.group(1)) - counts["furthest_vertex_yd"]) <= 0.1, (
+    # which nothing graded at all. BOTH records state them, so both are graded. The reach graded here is
+    # the ROW'S, `far.group(1)` -- the same one the two ceilings divide by, so the corpus cannot confirm
+    # one reading of it while the bounds use another.
+    assert abs(float(far.group(1)) - counts["furthest_vertex_yd"]) <= 0.1, (
         "legal/11's last table row must say how far the drawn centrelines reach from their green -- "
         "'any centreline vertex, out to <R> yd' -- and the figure is %.1f yd, not %s."
-        % (counts["furthest_vertex_yd"], reach.group(1) if reach else "absent"))
+        % (counts["furthest_vertex_yd"], far.group(1)))
     for label, text, pats in (("legal/11", rec, (r"(\d+) radius crossings the (\d+) drawn centrelines",
                                                  r"over all (\d+) centreline vertices")),
                               ("geo.py's note", note, (r"(\d+) radius crossings the (\d+) drawn "
@@ -22465,6 +30216,12 @@ def _grade_tick_error_table(rec, note, measured):
         "the southernmost latitude pinned in this file (%.4f) is not the corpus's (%.4f). That literal "
         "is what grades the record on a clone with no courses/, so it has to be the ground."
         % (_TICK_SOUTHMOST_LAT, counts["southmost_lat"]))
+    assert counts["northmost_lat"] < _TICK_LIVE_BOUND_LAT, (
+        "the latitude this file bounds the LIVE column at (%.1f deg N) is not north of the corpus, whose "
+        "northernmost hole-line centroid is %.4f deg N. The drift of geo.mlat/geo.mlon over the table's "
+        "reach GROWS with latitude, so a bound evaluated south of a course is not a bound for that "
+        "course's cells at all -- move _TICK_LIVE_BOUND_LAT north of the new corpus."
+        % (_TICK_LIVE_BOUND_LAT, counts["northmost_lat"]))
     assert abs(100.0 * ceiling - counts["retired_rel_bound_pct"]) <= 0.001, (
         "the ceiling legal/11 publishes (%.4f%%, at the latitude it names) is not the widest the retired "
         "pair is actually wrong by anywhere in this corpus (%.4f%%). The bound has to bound the corpus, "
@@ -22557,6 +30314,7 @@ def _tick_radius_errors(retired_lat_scale):
     worst_rel = 0.0
     bound_rel = 0.0
     southmost = 90.0
+    northmost = -90.0
 
     def keep(store, slot, cand):
         if slot not in store or cand[0] > store[slot][0]:
@@ -22587,6 +30345,7 @@ def _tick_radius_errors(retired_lat_scale):
             lat0 = sum(p["lat"] for p in line) / len(line)
             lon0 = sum(p["lon"] for p in line) / len(line)
             southmost = min(southmost, lat0)
+            northmost = max(northmost, lat0)
             gcla = sum(p["lat"] for p in green["geometry"]) / len(green["geometry"])
             gclo = sum(p["lon"] for p in green["geometry"]) / len(green["geometry"])
             same = (lambda a, b: abs(a["lat"] - b["lat"]) < 1e-9 and abs(a["lon"] - b["lon"]) < 1e-9)
@@ -22626,6 +30385,7 @@ def _tick_radius_errors(retired_lat_scale):
     counts["worst_retired_rel_pct"] = 100.0 * worst_rel
     counts["retired_rel_bound_pct"] = 100.0 * bound_rel
     counts["southmost_lat"] = southmost
+    counts["northmost_lat"] = northmost
     _TICK_ERRORS[key] = (per_tick, vertex, counts)
     return _TICK_ERRORS[key]
 
@@ -22927,6 +30687,130 @@ def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed
         f"the geo.py ones because legal/11 quotes the same figures, the other two by arithmetic.")
 
 
+def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_is_stated_in():
+    """Two more clone-runnable holes in the same grader, and neither needs the gitignored corpus.
+
+      (1) THE CLOSING ROW WAS EXEMPT FROM THE CEILING. `impossible` iterated `sorted(published)`, which
+          holds the NUMERIC tick rows only, so `| any centreline vertex, out to 595.8 yd |` -- the row
+          the whole drawn line is judged by -- was never weighed against the bound. 9.9999 yd passed
+          there. That is 9.9999/595.8 = 1.6784% against the 0.3008% ceiling the record itself publishes
+          two paragraphs below the row: FIVE POINT SIX TIMES ABOVE IT, in the one column the record
+          calls arithmetically impossible. The reach is stated by the row, so closing it needed no new
+          input at all.
+
+      (2) THE PUBLISHED WORST OFFSET WAS COMPARED TO THE CEILING ONLY WITH A CORPUS. "+0.2975%" is the
+          figure the impossibility argument is stated in, and the same paragraph derives a ceiling of
+          "+0.3008%" for it -- so a worst above its own bound is a contradiction inside one paragraph,
+          visible without measuring anything. On a clone "+0.9999%" passed, three and a third times the
+          ceiling.
+
+    So the residual disclosed for this table -- that a clone can only be shown "sub-ceiling retired
+    figures" -- was WRONG in both directions it named: the closing row admitted 5.6x the ceiling and the
+    published worst admitted 3.3x it.
+
+    AND THE LIVE COLUMN, which had no clone-side bound of any kind. Its six cells were graded against
+    geo.py's copies of themselves and against the corpus, so on a clone 0.9999 yd in both records passed
+    at every row -- a live model published as four hundred times worse than the retired one it replaced.
+    It is now bounded by arithmetic: the live model takes ONE pair of scales, `geo.mlat`/`geo.mlon` at the
+    drawn line's centroid, and applies them to points up to the published reach away, so what it can be
+    wrong by per unit length is bounded by how far those two scales drift over that much latitude. That
+    is a bound to within about one order of magnitude, not to the last digit. LAST-DIGIT GRADING OF THE
+    LIVE COLUMN ON A CLONE IS IRREDUCIBLE and is stated as such rather than papered over: the failure
+    mode is a both-sided edit, the two records are already compared digit for digit, and there is no
+    third witness to the measurement anywhere in this tree.
+
+    AND THE REACH BOTH CEILINGS DIVIDE BY WAS TAKEN FROM THE WHOLE DOCUMENT, not from the row it judges.
+    Both bounds above are `figure / reach`, so the reach is the denominator of the only argument the
+    closing row has -- and it was read by a second, UNANCHORED `re.search` over the collapsed document
+    that takes the FIRST match, while the uniqueness guard beside it counts TABLE rows only. One inserted
+    PROSE sentence naming a 5000.0 yd reach therefore bought a denominator 8.4x too large and both new
+    checks accepted 9.9999 yd retired and 0.9999 yd live -- the exact figures they were written to
+    refuse. Reachable by honest drift too: a table row updated while a prose restatement lags bounds the
+    row against the stale reach, silently. The reach now comes from the ROW'S OWN match, so there is one
+    reading of it and the uniqueness guard covers it.
+
+    Driven through `_grade_tick_error_table` on doctored copies, with `measured=None` so every case is
+    proved on a clone specifically. The files on disk are never written."""
+    with open(os.path.join(ROOT, "legal", "11_HORIZONTAL_EARTH_MODEL.md"), encoding="utf-8") as fh:
+        rec = " ".join(fh.read().split()).replace("−", "-").replace("*", "")
+    with open(os.path.join(ROOT, "geo.py"), encoding="utf-8") as fh:
+        note = _prose(fh.read())
+    _grade_tick_error_table(rec, note, None)   # the real records pass on a clone, or nothing below means
+                                               # anything
+
+    far = re.search(r"\|\s*any centreline vertex, out to ([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|"
+                    r"\s*([\d.]+) yd\s*\|", rec)
+    assert far, ("legal/11's closing tick-table row is no longer readable as `| any centreline vertex, "
+                 "out to <R> yd | <retired> yd | <live> yd |`, so the cases below measure nothing.")
+    reach, retired_far, live_far = far.group(1), far.group(2), far.group(3)
+    # A reach far enough above the row's own that 9.9999 yd falls back under the ceiling: the bypass
+    # only needs the DENOMINATOR to grow, so it is derived from the real reach rather than picked.
+    prose_reach = round(float(reach) * 10, 1)
+
+    cases = [
+        (f"the closing row's RETIRED figure at {9.9999 / float(reach) * 100:.4f}% of its own "
+         f"{reach} yd reach, over five times the ceiling the record publishes",
+         [(f"out to {reach} yd | {retired_far} yd", f"out to {reach} yd | 9.9999 yd")],
+         [(f"was {retired_far} yd against", "was 9.9999 yd against")]),
+        ("the published worst relative offset above the ceiling the same paragraph derives for it",
+         [("worst relative offset over these 589 vertices is +0.2975%",
+           "worst relative offset over these 589 vertices is +0.9999%")],
+         [("at worst +0.2975% over these vertices", "at worst +0.9999% over these vertices")]),
+        ("the closing row's LIVE figure at 0.9999 yd, in both records at once",
+         [(f"out to {reach} yd | {retired_far} yd | {live_far} yd",
+           f"out to {reach} yd | {retired_far} yd | 0.9999 yd")],
+         [(f"against {live_far} yd now", "against 0.9999 yd now")]),
+        ("the 100 yd tick's LIVE figure at 0.9999 yd, in both records at once",
+         [("| 100 yd tick | 0.2962 yd | 0.0013 yd |", "| 100 yd tick | 0.2962 yd | 0.9999 yd |")],
+         [("radii is 0.0013,", "radii is 0.9999,")]),
+        ("the 300 yd tick's LIVE figure at 0.9999 yd, in both records at once",
+         [("| 300 yd tick | 0.8891 yd | 0.0019 yd |", "| 300 yd tick | 0.8891 yd | 0.9999 yd |")],
+         [("0.0022 and 0.0019 yd", "0.0022 and 0.9999 yd")]),
+        # THE BYPASS. One PROSE sentence above the table, naming a reach 8.4x the row's own, and the
+        # same closing-row figures the two cases above are refused for. The denominator of both
+        # ceilings has to come from the row being judged; an unanchored document-wide search for it
+        # takes whichever restatement comes first, and the uniqueness guard next to it counts only rows
+        # that begin with a `|`, so prose is invisible to it.
+        (f"a PROSE restatement of the reach at {prose_reach} yd inserted above the table, with the "
+         f"closing row doctored to 9.9999 yd retired and 0.9999 yd live -- accepted at "
+         f"{9.9999 / prose_reach * 100:.4f}% of the prose reach where the row's own "
+         f"{reach} yd makes it {9.9999 / float(reach) * 100:.4f}%",
+         [("centreline vertices for the last row:",
+           "centreline vertices for the last row: The drawn centrelines carry a tick at any centreline "
+           f"vertex, out to {prose_reach} yd from the green."),
+          (f"out to {reach} yd | {retired_far} yd | {live_far} yd",
+           f"out to {reach} yd | 9.9999 yd | 0.9999 yd")],
+         [(f"was {retired_far} yd against", "was 9.9999 yd against"),
+          (f"against {live_far} yd now", "against 0.9999 yd now")]),
+    ]
+    waved = []
+    for what, rec_edits, note_edits in cases:
+        r, n = rec, note
+        for old, new in rec_edits:
+            assert old in r, (
+                f"the legal/11 mutation for {what!r} no longer applies ({old!r} is not in the record), so "
+                f"this case measures nothing. Re-read the table and re-anchor it.")
+            r = r.replace(old, new, 1)
+        for old, new in note_edits:
+            assert old in n, (
+                f"the geo.py mutation for {what!r} no longer applies ({old!r} is not in the note), so "
+                f"this case measures nothing. Re-read the note and re-anchor it.")
+            n = n.replace(old, new, 1)
+        assert (r, n) != (rec, note)
+        try:
+            _grade_tick_error_table(r, n, None)
+        except AssertionError:
+            continue
+        waved.append(what)
+    assert not waved, (
+        "the tick-error table's grader accepts a doctored record on a clone with no courses/, which is "
+        "the checkout a reader of a public repository has. Each of these was applied to the real "
+        "legal/11 and geo.py together and passed:\n  " + "\n  ".join(waved)
+        + "\n  Every one of them is refusable by arithmetic the grader already has -- the ceiling it "
+          "recomputes from the retired constant, and the drift of geo.mlat/geo.mlon over the reach the "
+          "table's own last row states.")
+
+
 def test_the_earth_models_published_spread_names_every_module_that_carries_it():
     """geo.py published the blast radius of its own constant and undercounted it by a module.
 
@@ -23097,6 +30981,12 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
       2. DRAW_CORRIDOR_M really is the maximum of the named set, and the treenode radius is what sets it;
       3. no feature selector in render_hole is called with a bare numeric buffer -- a new class added
          with a literal is exactly how the 45 got left behind, and it would not raise the derived max.
+      4. ...and no selector DECLARES one as a default either. Check 3 reads call sites only, and two
+         defaults outlived it: `in_corridor(g, buf=45)` and `in_corr_pt(lat, lon, buf=48)`. The 45 is
+         the number this whole guard is about -- the tool's own literal was named after this default.
+      5. the COUNTS published in prose -- how many classes the set names, how many call sites read it --
+         are derived here, because both were published wrong (nine and nine; it is eight and eleven);
+      6. and this suite may not respell a half-width either, for the reason the tool's 45 proves.
 
     The set is read out of the source with ast rather than imported, so a stranger with no course data
     still gets this check: importing render_hole binds config, which needs a course.json. Where a corpus
@@ -23153,6 +31043,99 @@ def test_the_bbox_preflight_measures_the_widest_corridor_the_engine_draws():
         + "\n  Every half-width belongs in CORRIDOR_M, because DRAW_CORRIDOR_M is the max of that set "
           "and tools/check_osm_bbox.py sizes the fetch box from it. A literal here is a corridor the "
           "pre-flight cannot see.")
+
+    # 4. ...and no selector may carry a numeric half-width as a DEFAULT. Check 3 reads call sites, so a
+    # default is invisible to it -- and two survived it: `in_corridor(g, buf=45)` and
+    # `in_corr_pt(lat, lon, buf=48)`. The 45 is the very number this whole guard is about: it is the
+    # figure tools/check_osm_bbox.py carried, "render_hole.in_corridor's drawing buffer", named after
+    # this function's default. Both call sites pass CORRIDOR_M explicitly today, so neither default is
+    # reachable -- which is exactly the state the 45 in the tool was in until a class was widened past
+    # it. A default is a half-width spelled in a second place, DRAW_CORRIDOR_M cannot see it, and the
+    # next selector added without an explicit buffer silently inherits it.
+    defaults = []
+    for node in ast.walk(ast.parse(rh_src)):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if node.name not in ("edge_within", "in_corridor", "frac_in", "any_within", "in_corr_pt",
+                             "corridor_pts"):
+            continue
+        for arg, dflt in zip(node.args.args[len(node.args.args) - len(node.args.defaults):],
+                             node.args.defaults):
+            if isinstance(dflt, ast.Constant) and isinstance(dflt.value, (int, float)):
+                defaults.append(f"render_hole.py:{node.lineno} def {node.name}(... "
+                                f"{arg.arg}={dflt.value})")
+        for arg, dflt in zip(node.args.kwonlyargs, node.args.kw_defaults):
+            if isinstance(dflt, ast.Constant) and isinstance(dflt.value, (int, float)):
+                defaults.append(f"render_hole.py:{node.lineno} def {node.name}(*, "
+                                f"{arg.arg}={dflt.value})")
+    assert not defaults, (
+        "a feature selector in render_hole declares a numeric corridor buffer as a DEFAULT:\n  "
+        + "\n  ".join(defaults)
+        + "\n  That is a half-width named in a second place, and DRAW_CORRIDOR_M -- the figure the "
+          "fetch-box pre-flight sizes itself from -- is the max of CORRIDOR_M only. Take the default "
+          "away so every caller must name the class it is selecting.")
+
+    # 5. THE PUBLISHED COUNTS, derived. How many classes the set names and how many places read it are
+    # both stated in prose -- render_hole "Those nine numbers were nine literals at nine call sites",
+    # tools/check_osm_bbox twice over "45 is one of nine per-class radii" -- and every one of those was
+    # wrong. CORRIDOR_M names EIGHT classes, and fc6b7cc's own diff replaced ELEVEN literals at eleven
+    # selector call sites (water's 45 appeared four times, on ten lines). A count nothing grades is the
+    # same shape of defect as the 45 the tool carried: nobody checks it until it is load-bearing.
+    #
+    # THE CLASS COUNT IS STATED IN TWO SHAPES AND ONLY ONE WAS READ. "N per-class radii" was graded;
+    # render_hole's own "Those eight numbers were eleven literals at eleven call sites" -- the sentence
+    # that INTRODUCES the set, three lines above the dict -- was not, because it spells the same count as
+    # a bare noun. Proven by mutation: retyped as "Those nineteen numbers", with the call-site half left
+    # correct, this test passed. Both shapes are read now, and each is counted separately so that
+    # deleting either sentence fails instead of passing.
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+             "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14}
+
+    def _count(tok):
+        return int(tok) if tok.isdigit() else words.get(tok.lower())
+    reads = len(re.findall(r"(?<![A-Z_])CORRIDOR_M\s*\[", rh_code))
+    stale, seen_radii, seen_sites, seen_intro = [], 0, 0, 0
+    for rel, src in ((os.path.relpath(rh_path, ROOT), rh_src),
+                     (os.path.relpath(tool, ROOT), tool_src)):
+        for m in re.finditer(r"([A-Za-z]+|\d+)[ -]per-class radii", src):
+            seen_radii += 1
+            if _count(m.group(1)) != len(radii):
+                stale.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} says {m.group(0)!r}; "
+                             f"CORRIDOR_M names {len(radii)}: {sorted(radii)}")
+        for m in re.finditer(r"Those ([A-Za-z]+|\d+) numbers\b", src):
+            seen_intro += 1
+            if _count(m.group(1)) != len(radii):
+                stale.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} says {m.group(0)!r}; "
+                             f"CORRIDOR_M names {len(radii)}: {sorted(radii)}")
+        for m in re.finditer(r"([A-Za-z]+|\d+) literals at ([A-Za-z]+|\d+) (?:selector )?call sites",
+                             src):
+            seen_sites += 1
+            if _count(m.group(1)) != reads or _count(m.group(2)) != reads:
+                stale.append(f"{rel}:{src[:m.start()].count(chr(10)) + 1} says {m.group(0)!r}; "
+                             f"{reads} selector call sites read CORRIDOR_M")
+    assert seen_intro, (
+        f"render_hole no longer introduces CORRIDOR_M with a count of the classes it names ("
+        f"{seen_intro} mentions of the 'Those N numbers' form). That sentence published the count "
+        f"ungraded while its own second half was graded, so it is read here -- if the wording moved, "
+        f"move this pattern with it rather than dropping the claim.")
+    assert seen_radii and seen_sites, (
+        f"the prose no longer states how many per-class radii there are ({seen_radii} mentions) or how"
+        f"many call sites read them ({seen_sites}) -- both were published wrong, so both are graded, "
+        f"and deleting the sentence must not be the way to pass")
+    assert not stale, ("a published count of the corridor set is not what the set holds:\n  "
+                      + "\n  ".join(stale))
+
+    # 6. ...AND THIS FILE MAY NOT RESPELL ONE EITHER. Check 1 forbids the TOOL its own corridor literal,
+    # for the reason the tool's 45 proves. This suite carried two more -- `WATER_CORRIDOR_M = 45.0` and
+    # `SAND_CORRIDOR_M = 40.0`, each commented with the call form fc6b7cc replaced -- so a class widened
+    # in CORRIDOR_M would leave the tests grading the old width while claiming to grade the engine's.
+    with open(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), encoding="utf-8") as fh:
+        here_code = _code_only(fh.read())
+    own_here = re.findall(r"^\s*([A-Z_]*CORRIDOR[A-Z_]*)\s*=\s*([0-9.]+)", here_code, re.M)
+    assert not own_here, (
+        f"this suite declares its own corridor half-width literal {own_here}. Derive it from "
+        f"render_hole.CORRIDOR_M (see _RH_CORRIDOR_M) so a class widened there widens the test with "
+        f"it, rather than leaving the test measuring a corridor the engine no longer draws.")
 
 
 @needs_corpus
@@ -23787,6 +31770,26 @@ def distribution_is_corpus(slug):
 _SOURCE_NOUN = (r"(?:imagery|orthoimagery|orthophotos?|aerials?|photography|photos?|basemaps?|tiles?|"
                 r"rasters?|satellite|maps?|data|datasets?|LiDAR|DEMs?|elevation|point clouds?)")
 
+# The two token patterns `_security_claimed_sources` reads a document with, at module level because the
+# test that grades that function's allowlist has to use THE SAME ONES. It duplicated both as literals in
+# its own body, so its guards could drift from the extraction they exist to protect while both still
+# looked right.
+#   _SOURCE_SHAPE -- dataset-shaped: CamelCase (OpenStreetMap), acronyms with or without a leading digit
+#                    (USGS, 3DEP, ODbL), Name-digit datasets (Sentinel-2, Landsat-8).
+#   _CAPITALISED_WORD -- any capitalised word, which is what catches an ordinary brand name.
+_SOURCE_SHAPE = r"(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)"
+_CAPITALISED_WORD = r"\b[A-Z][A-Za-z0-9]*(?:[-‑]\d+)?\b"
+
+# The ordinary PROSE words SECURITY.md's graded sections open sentences with, and the only capitalised
+# openers `_security_claimed_sources` exempts. It used to exempt EVERY sentence opener and add back the
+# ones followed by a data-source noun, which left the hole open in the commonest shape English has:
+# "Esri was used for two greens." A brand name must never be added here -- the point of the list is that
+# it holds prose words, and three properties of it are graded in
+# test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sentence: it must be minimal
+# (every entry really opens a sentence in the live document), disjoint from the dataset shapes the first
+# pass claims, and overridable by a following data-source noun.
+_PROSE_OPENERS = ("Every", "In", "No", "Out", "See")
+
 
 def _security_claimed_sources(doc):
     """The data-source names SECURITY.md announces to the public, out of the sections that announce them.
@@ -23797,16 +31800,27 @@ def _security_claimed_sources(doc):
         half was the whole check and it closed its example rather than its class: "Esri imagery",
         "Maxar imagery" and "Google Earth imagery" are none of those shapes and each one passed.
       * any CAPITALISED word that is not the first word of its line and does not follow `.!?:` -- i.e.
-        not a sentence opener -- plus sentence openers immediately followed by a data-source noun. That
+        not a sentence opener -- plus sentence openers that are neither one of the ordinary prose words
+        this document really opens with (`_PROSE_OPENERS`) nor followed by a data-source noun. That
         catches Esri, Maxar, Nearmap, Vexcel, Bing and Planet without demanding legal/01 mention
         "Every", "In", "No", "Out" or "See", which are exactly the words this document opens lines and
         sentences with.
 
+        THE OPENER EXEMPTION WAS UNCONDITIONAL, and the hole it left was the commonest shape English
+        has: SENTENCE-OPENER + any noun outside `_SOURCE_NOUN`. "Esri was used for two greens.",
+        "Vexcel scans were used for one green." and the possessive "Esri's imagery is used for one
+        file." -- which defeats the noun rule even for a listed noun, because the follower pattern
+        demands `\\s+NOUN` and the apostrophe intervenes -- all passed the whole suite. Measured: 126 of
+        126 brand-by-predicate insertions passed before the allowlist, 0 after. So the exemption now
+        names the five prose words instead of the whole grammatical position, and adding an ordinary
+        opener costs one word in `_PROSE_OPENERS`, graded by
+        test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sentence.
+
     Tokens naming something in THIS repository are dropped, mechanically off the filesystem, so that
     cannot become a place to park a source name. A callable, not a block inside the test, because the
     only way to know whether a pattern closes a class is to drive doctored copies through it."""
-    shape = r"\b(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)\b"
-    word = r"\b[A-Z][A-Za-z0-9]*(?:[-‑]\d+)?\b"
+    shape = r"\b%s\b" % _SOURCE_SHAPE
+    word = _CAPITALISED_WORD
     claimed = set()
     for heading in ("A note on data", "Scope"):
         sec = re.search(r"##\s*%s\s*(.+?)(?=\n##|\Z)" % re.escape(heading), doc, re.S)
@@ -23821,7 +31835,9 @@ def _security_claimed_sources(doc):
                 before = line[:m.start()].rstrip()
                 opener = first or (before and before[-1] in ".!?:")
                 first = False
-                if not opener or re.match(r"\s+%s\b" % _SOURCE_NOUN, line[m.end():], re.I):
+                exempt = (opener and m.group(0) in _PROSE_OPENERS
+                          and not re.match(r"\s+%s\b" % _SOURCE_NOUN, line[m.end():], re.I))
+                if not exempt:
                     claimed.add(m.group(0))
     own = {p.split(".")[0].upper() for p in os.listdir(ROOT)} | {"SECURITY", "README", "PIPELINE"}
     return {t for t in claimed if t.upper() not in own}
@@ -23839,14 +31855,25 @@ def _legal01_documents_source(token, sources):
     Mechanical: a mention counts only in a `## ` section whose HEADING carries no removal or
     never-used marker, on a LINE that carries none either. Both levels are needed -- section 4's heading
     disclaims it while its licence line reads as ordinary prose, and section 5's per-source lines
-    disclaim individually under a heading that already does."""
+    disclaim individually under a heading that already does.
+
+    Matched on WORD BOUNDARIES, not by bare containment, so "Planet" is not documented by the word
+    "Planetary" and "Bing" is not documented by "Bingo". That is a narrowing of a false-NEGATIVE channel
+    rather than a fix for one: this remains a containment test at word granularity, so any word legal/01
+    happens to use on a non-disclaiming line reads as "documented" -- `_legal01_documents_source("Every",
+    ...)` is True. It does not reach the live records (legal/01 mentions Nearmap, Vexcel and Planet not at
+    all, and Esri, Maxar, Google, Apple and Bing only under disclaiming headings), and the forward half no
+    longer exempts sentence openers, so no ordinary prose word is passed to it from SECURITY.md. But a
+    brand whose name is also an English word would be waved through here, and that is a coverage gap this
+    file does not close."""
     disclaimed = (r"NOT used|never|no longer|REMOVED|FORMERLY|is gone|contains no|\bnot\b|\bno\b|"
                   r"neither|nothing")
     for part in re.split(r"(?m)^##\s+", sources):
         if re.search(disclaimed, part.split("\n", 1)[0], re.I):
             continue
         for line in part.split("\n"):
-            if token in line and not re.search(disclaimed, line, re.I):
+            if re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(token), line) \
+                    and not re.search(disclaimed, line, re.I):
                 return True
     return False
 
@@ -23923,6 +31950,167 @@ def test_the_public_source_summary_refuses_a_source_legal_01_only_names_to_discl
             f"legal/01 no longer reads as documenting {token!r} as a source in use, so the check above "
             f"would refuse the summary for naming a source this project does use. The negation markers "
             f"are matching a line that makes a positive statement -- re-derive them.")
+
+
+def test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sentence():
+    """The source check exempted every SENTENCE OPENER, and that is the DEFAULT shape of an added sentence.
+
+    The pass that catches an ordinary capitalised brand -- Esri, Maxar, Nearmap, Vexcel, Planet -- read
+    every capitalised word that is NOT the first word of its line and does not follow `.!?:`, and then
+    added back sentence openers that are immediately followed by a data-source noun. So the hole was
+    exactly SENTENCE-OPENER + any noun outside `_SOURCE_NOUN`, and beginning a sentence with its subject
+    is the commonest form in English. Measured through the real callables, each of these inserted into
+    SECURITY.md's data note passed:
+
+        'Esri was used for two greens.'          'Maxar orthomosaic was used.'
+        'Nearmap supplied the aerial reference for two courses.'
+        'Vexcel scans were used for one green.'  'Planet mosaics fill two gaps.'
+        "Esri's imagery is used for one file."
+
+    THREE REASONS IT IS REACHABLE BY AN HONEST EDIT rather than only by sabotage. (1) The subject-first
+    sentence is the default, so the hole is the default. (2) The POSSESSIVE breaks the exemption even
+    when the noun IS in `_SOURCE_NOUN`, because the follower pattern demands `\\s+NOUN` and the
+    apostrophe intervenes -- "Esri's imagery is used for one file." passed. (3) Plainly source-shaped
+    nouns are simply absent from that list: scans, coverage, products, feeds, contours, orthomosaic,
+    surveys, mosaics.
+
+    The exemption is now the other way round: an opener is exempt only if it is one of the ordinary
+    prose words this document really opens with, and only if a data-source noun does not follow it. That
+    allowlist is graded here too, because an allowlist is the obvious next place to park a brand:
+      * DISJOINT FROM THE DATASET SHAPES -- no CamelCase, acronym or Name-digit token can be exempted,
+        so OpenStreetMap, USGS, 3DEP, ODbL and Sentinel-2 are unreachable through it;
+      * MINIMAL -- every entry must actually open a sentence in the two graded sections, so no word can
+        be parked for later use;
+      * OVERRIDDEN BY THE NOUN -- an allowlisted word followed by a data-source noun is still claimed.
+
+    THE THIRD PROPERTY WAS IN THIS LIST AND NOTHING GRADED IT: deleting the second half of the exemption
+    (`and not re.match(...)`), which is the whole override, left the suite green. It is the half that
+    stops the allowlist from exempting "See imagery is used for two greens." -- so it is checked now,
+    over every entry crossed with every noun `_SOURCE_NOUN` names, both derived rather than restated.
+
+    AND THE ORDER OF THE FIRST TWO MATTERS. Minimality fired first, and it fires for every dataset-shaped
+    token as well -- no acronym opens a sentence in those sections -- so the disjointness check was inert:
+    it could never be the assertion that reported the defect it names. Disjointness runs first now, so
+    each of the two grades the case it was written for.
+
+    THE TWO TOKEN PATTERNS ARE THE EXTRACTION'S OWN, imported rather than copied. They were duplicated
+    here as literals, which is how a guard drifts away from the thing it guards while both still look
+    right.
+
+    WHAT THIS DOES NOT CLOSE, stated rather than implied: a brand whose name is an ordinary English word
+    can still be exempted by adding BOTH a sentence that opens with it AND its own allowlist entry. That
+    is a deliberate, reviewable, one-word edit to a list this test says out loud is for prose words --
+    not the silent default it replaces. The residual is named here so the next reader does not have to
+    re-derive it.
+
+    Driven through the real callables on doctored copies; SECURITY.md and legal/01 are never written."""
+    with open(os.path.join(ROOT, "SECURITY.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    with open(os.path.join(ROOT, "legal", "01_DATA_SOURCES_AND_LICENSES.md"), encoding="utf-8") as fh:
+        sources = fh.read()
+
+    def undocumented(d):
+        return sorted(t for t in _security_claimed_sources(d) if not _legal01_documents_source(t, sources))
+
+    assert not undocumented(doc), (
+        f"the real SECURITY.md already fails this check ({undocumented(doc)}), so nothing below means "
+        f"anything. Either an ordinary prose opener is missing from _PROSE_OPENERS, or legal/01 stopped "
+        f"documenting a source the summary credits.")
+
+    # (a) THE ALLOWLIST CANNOT REACH A DATASET-SHAPED NAME. The first pass claims those unconditionally,
+    #     so this asserts the two halves stay disjoint -- an exemption for "Sentinel-2" or "USGS" would
+    #     otherwise be one word away. FIRST, because the minimality check below also fires on every one
+    #     of those tokens and firing first made this one unreachable.
+    shaped = sorted(w for w in _PROSE_OPENERS if re.fullmatch(_SOURCE_SHAPE, w))
+    assert not shaped, (
+        f"_PROSE_OPENERS contains the dataset-shaped token(s) {shaped}. Those are what the first pass "
+        f"exists to claim -- CamelCase, acronyms and Name-digit datasets -- and exempting one there is "
+        f"how 'Sentinel-2 imagery' or an acronym would walk straight back through.")
+
+    # (b) THE ALLOWLIST IS MINIMAL. Measured off the live document rather than asserted: every exempt
+    #     word must really open a sentence in the graded sections, so the list cannot hold a name that
+    #     is there for a future edit to lean on.
+    openers = set()
+    for heading in ("A note on data", "Scope"):
+        sec = re.search(r"##\s*%s\s*(.+?)(?=\n##|\Z)" % re.escape(heading), doc, re.S)
+        assert sec, f"SECURITY.md no longer has a '## {heading}' section"
+        for line in re.sub(r"[*_`]", "", sec.group(1)).split("\n"):
+            first = True
+            for m in re.finditer(_CAPITALISED_WORD, line):
+                before = line[:m.start()].rstrip()
+                if first or (before and before[-1] in ".!?:"):
+                    openers.add(m.group(0))
+                first = False
+    parked = sorted(set(_PROSE_OPENERS) - openers)
+    assert not parked, (
+        f"_PROSE_OPENERS exempts {parked} from the source check and SECURITY.md's graded sections do not "
+        f"open a single sentence with any of them. An entry that exempts nothing the document says is an "
+        f"entry waiting for a source name to be written behind it. The openers in play are "
+        f"{sorted(openers)}.")
+
+    # (c) THE NOUN OVERRIDES THE ALLOWLIST. The third property this test's docstring has always claimed
+    #     to grade, and the one nothing read: deleting the `and not re.match(...)` half of the exemption
+    #     left the suite green. Every entry crossed with every noun `_SOURCE_NOUN` names, and the nouns
+    #     are derived from that pattern rather than restated, so a noun added there is exercised here.
+    #     Graded on the extraction directly: what must not happen is the token going UNCLAIMED, and
+    #     routing an ordinary prose word through `_legal01_documents_source` would answer a different
+    #     question (legal/01 uses those words, so it "documents" them).
+    nouns = sorted({re.sub(r"\?", "", a) for a in
+                    re.sub(r"\(\?:|\)", "", _SOURCE_NOUN).split("|") if a})
+    assert len(nouns) >= 12 and "imagery" in nouns and "point clouds" in nouns, (
+        f"the data-source nouns could not be read back out of _SOURCE_NOUN ({nouns}); this case would "
+        f"then be crossing the allowlist with nothing.")
+    exempted = []
+    for opener in _PROSE_OPENERS:
+        for noun in nouns:
+            insert = f"{opener} {noun} were used for one green."
+            anchor = "No commercial"
+            assert anchor in doc, (
+                f"the doctoring anchor {anchor!r} is no longer in SECURITY.md, so this case measures "
+                f"nothing. Re-read the data note and re-anchor it.")
+            if opener not in _security_claimed_sources(doc.replace(anchor, insert + " " + anchor, 1)):
+                exempted.append(insert)
+    assert not exempted, (
+        f"an allowlisted opener followed by a data-source noun is still exempt, so the second half of "
+        f"the exemption grades nothing. {len(exempted)} of {len(_PROSE_OPENERS) * len(nouns)} "
+        f"opener x noun pairs were let through:\n  " + "\n  ".join(exempted[:12])
+        + ("\n  ..." if len(exempted) > 12 else "")
+        + "\n  That half is what stops the allowlist itself from becoming the parking place -- the list "
+          "holds prose words, and a prose word in front of a source noun is naming a source.")
+
+    # (d) EVERY INSERTION SHAPE THAT USED TO PASS. Brand x predicate, at the start of a sentence and at
+    #     the start of a line, plus the possessive that defeated the noun rule. The brands are the ones
+    #     legal/01 either disclaims or never mentions, so every one of these is a public claim this
+    #     project cannot support.
+    brands = ("Esri", "Maxar", "Nearmap", "Vexcel", "Planet", "Google", "Bing", "Apple", "Landsat")
+    predicates = ("{b} was used for two greens.",
+                  "{b} orthomosaic was used.",
+                  "{b} scans were used for one green.",
+                  "{b} supplied the aerial reference for two courses.",
+                  "{b} mosaics fill two gaps.",
+                  "{b} coverage fills two gaps.",
+                  "{b}'s imagery is used for one file.")
+    waved = []
+    for b in brands:
+        for pred in predicates:
+            insert = pred.format(b=b)
+            for where, old, new in (("opening a sentence mid-paragraph",
+                                     "No commercial", insert + " No commercial"),
+                                    ("opening its own line",
+                                     "\n\nEvery distributed book", "\n\n" + insert + "\n\nEvery "
+                                     "distributed book")):
+                assert old in doc, (
+                    f"the doctoring anchor {old!r} is no longer in SECURITY.md, so this case measures "
+                    f"nothing. Re-read the data note and re-anchor it.")
+                if not undocumented(doc.replace(old, new, 1)):
+                    waved.append(f"{insert!r} {where}")
+    assert not waved, (
+        f"SECURITY.md can announce a data source to the public that legal/01 does not document, by the "
+        f"commonest sentence shape in English -- naming it first. {len(waved)} of "
+        f"{len(brands) * len(predicates) * 2} insertions passed:\n  " + "\n  ".join(waved[:12])
+        + ("\n  ..." if len(waved) > 12 else "")
+        + "\n  Esri is the live case: legal/01 records it as REMOVED and rebuilt from public-domain "
+          "NAIP, so the record would be contradicting the public summary.")
 
 
 def test_the_security_record_still_describes_this_repository():
@@ -24389,3 +32577,3229 @@ def test_the_template_says_which_of_its_fields_the_engine_never_reads():
         assert k in known, (
             f"{k} is hand-authored and was hidden from the template by a waiver claiming a fetch stage "
             f"writes it; the template must document it")
+
+
+# ---------------------------------------------------------------------------
+# fetch_osm.py's shrink guard: the unit it counts in, and the exemption it grants
+# ---------------------------------------------------------------------------
+def _osm_module():
+    """fetch_osm bound to a built course, or SKIP. Read-only: nothing below writes a cache.
+
+    No sys.modules surgery here on purpose. The autouse COURSE fixture has already bound this test to
+    CORPUS[0] and drops `config` on teardown, and none of what these tests call -- census,
+    _check_response, the two kind sets -- reads config at all; it is only the module-level
+    `config.COURSE["osm_bbox"]` that needs a course to exist for the import to succeed."""
+    a_course()                      # skips a fresh clone, where `import config` cannot succeed
+    import fetch_osm
+    return fetch_osm
+
+
+_OSM_WAIVERS = ("ALLOW_SHRINK", "ALLOW_STRUCTURAL_SHRINK", "ALLOW_HAZARD_SHRINK")
+
+
+def _osm_el(i, tags):
+    return {"type": "way", "id": i, "tags": dict(tags),
+            "geometry": [{"lat": 37.7, "lon": -122.1}]}
+
+
+def _osm_reply(**counts):
+    """A synthetic Overpass reply with the given census: kind -> count.
+
+    The tag each census kind is spelled with matters here and did not before: `water` and `waterway`
+    used to land in the SAME bucket, so a stub could reach the water branch either way."""
+    els, n = [], iter(range(1, 200000))
+    for kind, count in counts.items():
+        tags = ({"natural": "water"} if kind == "water" else
+                {"waterway": "stream"} if kind == "waterway" else
+                {"building": "yes"} if kind == "building" else
+                {"natural": kind} if kind in ("tree", "tree_row", "wood", "scrub") else
+                {"golf": kind})
+        els += [_osm_el(next(n), tags) for _ in range(count)]
+    return {"version": 0.6, "elements": els}
+
+
+def test_a_drained_pond_cannot_hide_behind_a_new_stream_in_the_shrink_guard(tmp_path):
+    """The shrink guard's UNIT was a census bucket, and one bucket held two different drawn classes.
+
+    `census` merged `natural=water` AREAS with `waterway=*` LINES into a single `water` key. The
+    engine has never merged them: render_hole draws the areas in `waters` (the same list as
+    golf=water_hazard, same filled blue) and the lines in `creeks` (a blue polyline), and the card
+    footer reports them as two numbers, `water_hazards` and `watercourses`. So a reply could delete
+    every pond a course has and replace them, one for one, with new stream ways -- and the bucket
+    would not move.
+
+    Measured on the caches as the guard sees them (fetchable, i.e. less the flattened relation rings
+    and the hand-digitized greens):
+
+        bay-view          natural=water 2, waterway 14   -- prints water on 11 of its 18 cards
+        philadelphia      natural=water 2, waterway 16
+        copper-valley     natural=water 4, waterway 25
+        merion            natural=water 4, waterway 20
+        the-reserve       natural=water 6, waterway 53
+        valley-hi         natural=water 1, waterway 3
+        callippe 0/21, castlewood-hill 0/3, castlewood-valley 0/7, micke-grove 0/15, monarch-bay 0/1
+
+    Deleting BOTH of bay-view's ponds while the same reply carries two more stream ways was accepted
+    SILENTLY. This is the defect 60b9eb2 fixed one level up -- it gave `water` no rarity exemption and
+    no tolerance floor -- reappearing inside the bucket that check counts in.
+
+    The fix is to count the two classes separately, and it changes no bound: `waterway` inherits
+    exactly what the merged `water` key had (hazard AND volatile, so the proportional tolerance a
+    re-segmented creek network earns -- the-reserve's 53 lines give 2% == 1), while `water` areas join
+    the other things `waters` draws and get what golf=water_hazard already had, which is nothing.
+    """
+    fetch_osm = _osm_module()
+
+    # the two classes must be DISTINGUISHABLE at all, or nothing below can be checked
+    mixed = _osm_reply(water=2, waterway=14)
+    c = fetch_osm.census(mixed["elements"])
+    assert c["water"] == 2 and c["waterway"] == 14, (
+        "census merges natural=water areas with waterway lines into one bucket, so the shrink guard "
+        "cannot see one replaced by the other: %s" % dict(c))
+
+    # bay-view, as the guard sees it
+    BAYVIEW = dict(green=16, hole=18, fairway=4, tee=28, bunker=25, cartpath=15,
+                   water_hazard=6, water=2, waterway=14, building=7)
+    cache = tmp_path / "bay-view.json"
+    cache.write_text(json.dumps(_osm_reply(**BAYVIEW)))
+
+    def check(**delta):
+        got = dict(BAYVIEW); got.update(delta)
+        return fetch_osm._check_response(_osm_reply(**got), str(cache),
+                                        "bay-view-golf-club/osm_course.json")
+
+    for var in _OSM_WAIVERS:
+        os.environ.pop(var, None)
+    try:
+        check()                                        # unchanged -> silent
+        # THE REPRODUCED DEFECT: both ponds gone, two stream ways arrive, bucket total unmoved
+        with pytest.raises(SystemExit) as ei:
+            check(water=0, waterway=16)
+        msg = str(ei.value)
+        assert "water 2 -> 0" in msg, (
+            "a reply that deleted both of bay-view's ponds and added two stream ways was accepted, or "
+            "aborted without naming the loss: %s" % msg)
+        assert "ALLOW_HAZARD_SHRINK" in msg, (
+            "the loss of a drawn pond must abort under the HAZARD waiver, not another check's: %s" % msg)
+        # one pond, not both
+        with pytest.raises(SystemExit, match="water 2 -> 1"):
+            check(water=1, waterway=99)
+        # ...and the same in the other direction: a lost stream is not covered by a new pond
+        with pytest.raises(SystemExit) as ei:
+            check(waterway=13, water=9)
+        assert "waterway 14 -> 13" in msg or "waterway 14 -> 13" in str(ei.value), (
+            "a lost watercourse was hidden by an added pond: %s" % ei.value)
+        assert "ALLOW_HAZARD_SHRINK" in str(ei.value), str(ei.value)
+
+        # THE PROPORTIONAL TOLERANCE IS UNCHANGED AND STILL EARNED, on the line class that earns it.
+        # the-reserve: 53 waterway ways, 2% == 1, so one re-segmentation at a road crossing is free
+        # and two are not; its 6 pond areas get nothing, exactly like a golf=water_hazard.
+        RESERVE = dict(green=21, hole=18, fairway=2, tee=78, bunker=76, cartpath=8,
+                       lateral_water_hazard=9, water=6, waterway=53,
+                       tree=2462, tree_row=9, building=1530, driving_range=1)
+        rpath = tmp_path / "the-reserve.json"
+        rpath.write_text(json.dumps(_osm_reply(**RESERVE)))
+
+        def reserve(**delta):
+            got = dict(RESERVE); got.update(delta)
+            return fetch_osm._check_response(_osm_reply(**got), str(rpath),
+                                            "the-reserve-at-spanos-park/osm_course.json")
+
+        reserve()                                      # unchanged -> silent
+        reserve(waterway=52)                           # 2% of 53 -> one free re-segmentation
+        with pytest.raises(SystemExit, match="waterway 53 -> 51"):
+            reserve(waterway=51)
+        with pytest.raises(SystemExit, match="water 6 -> 5"):
+            reserve(water=5)                           # a pond area earns no tolerance at all
+
+        # the hazard waiver still covers a real drainage, and still does not spend another check
+        os.environ["ALLOW_HAZARD_SHRINK"] = "1"
+        try:
+            check(water=0, waterway=0)
+            with pytest.raises(SystemExit, match="ALLOW_STRUCTURAL_SHRINK"):
+                check(water=0, green=15)
+        finally:
+            os.environ.pop("ALLOW_HAZARD_SHRINK", None)
+        # ...and the churn waiver does not cover either half of the water
+        os.environ["ALLOW_SHRINK"] = "1"
+        try:
+            with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
+                check(water=0, waterway=16)
+            with pytest.raises(SystemExit, match="ALLOW_HAZARD_SHRINK"):
+                check(waterway=10)
+        finally:
+            os.environ.pop("ALLOW_SHRINK", None)
+    finally:
+        for var in _OSM_WAIVERS:
+            os.environ.pop(var, None)
+
+    # the two kinds must be in the sets that give them their treatment, by NAME -- a future edit that
+    # drops either from HAZARD_KINDS puts the free loss straight back
+    assert "water" in fetch_osm.HAZARD_KINDS and "waterway" in fetch_osm.HAZARD_KINDS, \
+        "both classes the map draws in blue must be hazard kinds: %s" % sorted(fetch_osm.HAZARD_KINDS)
+    assert "waterway" in fetch_osm.VOLATILE_KINDS, \
+        "waterway lines are the class that is re-segmented at road crossings; they keep the churn part"
+
+
+def test_the_rarity_exemption_reaches_only_the_kinds_that_churn(tmp_path):
+    """`oc[k] < 4` exempted a kind for being RARE, and it reached STRUCTURAL DRAWN kinds.
+
+    VOLATILE_KINDS' own comment said otherwise: "green, hole, fairway, tee, bunker, cartpath, rough,
+    water_hazard, and any kind not yet seen -- keeps ZERO tolerance, because losing one of those
+    rebinds or re-draws a hole." Measured false against the caches on disk, as the guard sees them:
+
+        monarch-bay    its only fetchable golf=fairway way, 1 -> 0     accepted silently
+        the-reserve    fairway 2 -> 0                                  accepted silently
+        philadelphia   rough 1 -> 0                                    accepted silently
+        callippe, merion, micke-grove, monarch-bay, philadelphia, the-reserve
+                       driving_range 1 -> 0                            accepted silently
+
+    (monarch-bay's 36 fairways and the-reserve's 18 are multipolygon rings, which the baseline filter
+    correctly removes -- so what the guard compares really is 1 and 2, and both were free.)
+
+    A fairway is the largest feature on the card; `rough` decides where the pale band is drawn. Losing
+    one of those is not churn, and the exemption is for churn. So it now applies only to kinds listed
+    as volatile -- which is what its own justification always said, and what fetch_trees.py's
+    TREE_HOLE_FLOOR cites it as."""
+    fetch_osm = _osm_module()
+
+    # the real fetchable censuses of the three courses, trimmed to what this check reads
+    MONARCH = dict(green=20, hole=18, fairway=1, tee=55, bunker=81, cartpath=7, rough=20,
+                   water_hazard=1, waterway=1, building=99, driving_range=1)
+    RESERVE = dict(green=21, hole=18, fairway=2, tee=78, bunker=76, cartpath=8,
+                   lateral_water_hazard=9, water=6, waterway=53, tree=2462, tree_row=9,
+                   building=1530, driving_range=1)
+    PHILLY = dict(green=30, hole=18, fairway=24, tee=67, bunker=131, cartpath=41, rough=1,
+                  lateral_water_hazard=3, water=2, waterway=16, tree=1, wood=4,
+                  building=175, driving_range=1)
+    # ...and two whose only rare kinds ARE volatile: the exemption must survive for them
+    HILL = dict(green=20, hole=18, fairway=24, tee=68, bunker=36, cartpath=24,
+                water_hazard=1, waterway=3, wood=2, building=182)
+    MICKE = dict(green=19, hole=18, fairway=4, tee=35, bunker=41, cartpath=8, water_hazard=8,
+                 waterway=15, tree=532, tree_row=3, building=153, driving_range=1)
+
+    def guard(base, name):
+        p = tmp_path / (name + ".json")
+        p.write_text(json.dumps(_osm_reply(**base)))
+
+        def check(**delta):
+            got = dict(base); got.update(delta)
+            return fetch_osm._check_response(_osm_reply(**got), str(p), f"{name}/osm_course.json")
+        return check
+
+    for var in _OSM_WAIVERS:
+        os.environ.pop(var, None)
+    try:
+        # 1. a rare STRUCTURAL kind has no exemption, and says which waiver it needs
+        for name, base, rare in (("monarch-bay", MONARCH, ("fairway", "driving_range")),
+                                 ("the-reserve", RESERVE, ("fairway", "driving_range")),
+                                 ("philadelphia", PHILLY, ("rough", "driving_range"))):
+            check = guard(base, name)
+            check()                                    # unchanged -> silent
+            for kind in rare:
+                assert base[kind] < 4, f"{name} {kind} is not in the rare band this tests"
+                with pytest.raises(SystemExit) as ei:
+                    check(**{kind: 0})
+                msg = str(ei.value)
+                assert f"{kind} {base[kind]} -> 0" in msg, (
+                    f"{name}: losing all {base[kind]} {kind} feature(s) was accepted, or aborted "
+                    f"without naming the loss: {msg}")
+                assert "ALLOW_STRUCTURAL_SHRINK" in msg, (
+                    f"{name}: a {kind} is drawn from the cache, so its loss belongs to the structural "
+                    f"waiver: {msg}")
+                assert "ALLOW_SHRINK=1" not in msg, (
+                    f"{name}: the structural abort must not prescribe the churn flag: {msg}")
+
+        # 2. the exemption SURVIVES for the churning kinds it was written for -- this fix is not a
+        #    general tightening. castlewood-hill 2 wood polygons and micke-grove 3 tree_rows may
+        #    still go, because nothing a card measures comes from them.
+        guard(HILL, "castlewood-hill")(wood=0)
+        guard(MICKE, "micke-grove")(tree_row=0)
+        guard(PHILLY, "philadelphia2")(tree=0)          # philadelphia's single natural=tree node
+
+        # 3. every kind census can emit that is NOT volatile must be zero-tolerance at every count in
+        #    the rare band, or the comment is false again for some other kind
+        for kind in ("green", "hole", "fairway", "tee", "bunker", "cartpath", "rough",
+                     "water_hazard", "lateral_water_hazard", "driving_range", "other"):
+            assert kind not in fetch_osm.VOLATILE_KINDS, f"{kind} is listed as churning"
+            for n in (1, 2, 3):
+                base = dict(green=18, hole=18)
+                base[kind] = n
+                check = guard(base, f"rare-{kind}-{n}")
+                with pytest.raises(SystemExit) as ei:
+                    check(**{kind: n - 1})
+                assert f"{kind} {n} -> {n - 1}" in str(ei.value), (
+                    f"a {kind} count of {n} lost one feature unremarked: {ei.value}")
+    finally:
+        for var in _OSM_WAIVERS:
+            os.environ.pop(var, None)
+
+
+def test_the_shrink_guard_is_silent_on_every_layer_this_corpus_already_stores(tmp_path):
+    """The guard must not refuse a LEGITIMATE re-fetch, so replay every stored cache through it.
+
+    A real Overpass reply carries exactly the FETCHABLE elements: not the hand-digitized greens
+    (merged in after this check runs) and not the rings flattened out of multipolygon relations. So
+    the faithful no-change simulation is `reply = _fetchable(cache)` against the cache itself, for
+    every layer of every course -- osm_geom.json, osm_course.json and osm_relations.json.
+
+    This is the same proof 60b9eb2 recorded for its own change, repeated because a guard that fires on
+    an unchanged re-fetch trains you to switch it off, and both flags in reach then waive the checks
+    that matter. It also grades the split of the water bucket and the withdrawal of the rarity
+    exemption from structural kinds: neither may cost a single stored layer its silence.
+
+    Then the other half, which the trivial direction cannot show: on every layer, dropping ONE
+    feature of a kind the cards are DRAWN from must abort. That is measured per course from the
+    layer's own census rather than from a list written here, so a course added later is graded too."""
+    if not CORPUS:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    fetch_osm = _osm_module()
+    for var in _OSM_WAIVERS:
+        os.environ.pop(var, None)
+
+    layers = 0
+    graded = 0
+    try:
+        for slug in CORPUS:
+            for fn in ("osm_geom.json", "osm_course.json", "osm_relations.json"):
+                path = os.path.join(ROOT, "courses", slug, fn)
+                if not os.path.exists(path):
+                    continue
+                cached = json.load(open(path)).get("elements") or []
+                fetchable = [e for e in cached
+                             if "_digitized" not in (e.get("tags") or {})
+                             and e.get("_from_relation") is None]
+                # 1. THE NO-CHANGE RE-FETCH: silent, or this guard cannot be lived with
+                fetch_osm._check_response({"version": 0.6, "elements": list(fetchable)}, path, fn)
+                layers += 1
+
+                # 2. ...and one feature lighter, for each kind no card may quietly lose
+                cen = fetch_osm.census(fetchable)
+                for kind, n in sorted(cen.items()):
+                    if kind in fetch_osm.VOLATILE_KINDS and kind not in fetch_osm.HAZARD_KINDS:
+                        continue        # trees, buildings, landcover: churn, nothing measured from it
+                    tol = (int(n * fetch_osm.CHURN_TOLERANCE)
+                           if kind in fetch_osm.VOLATILE_KINDS else 0)
+                    if tol >= 1:
+                        continue        # a re-segmented creek network legitimately loses one
+                    drop = next(e for e in fetchable
+                                if fetch_osm.census([e]).most_common(1)[0][0] == kind)
+                    short = [e for e in fetchable if e is not drop]
+                    with pytest.raises(SystemExit) as ei:
+                        fetch_osm._check_response({"version": 0.6, "elements": short}, path, fn)
+                    assert f"{kind} {n} -> {n - 1}" in str(ei.value), (
+                        f"{slug}/{fn}: losing one of {n} {kind} feature(s) did not abort by name: "
+                        f"{ei.value}")
+                    graded += 1
+    finally:
+        for var in _OSM_WAIVERS:
+            os.environ.pop(var, None)
+
+    assert layers >= 3 * len(CORPUS), (
+        f"only {layers} stored layers were replayed for {len(CORPUS)} courses -- a course missing a "
+        f"cache file is a corpus this proof did not cover")
+    assert graded >= 8 * len(CORPUS), (
+        f"only {graded} single-feature losses were graded across {layers} layers; the proof that the "
+        f"guard still BITES has to cover every drawn kind of every course")
+
+
+def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_path):
+    """Every count fetch_osm.py quotes from this corpus, re-measured against the caches.
+
+    Two had gone stale and neither was graded by anything:
+
+      * `census`'s building example said "on castlewood-hill all 145 of them". It is 182. febbbba
+        widened that course's osm_bbox to cover the drawing corridor and re-fetched it -- its own
+        message reports the 9 tree markers that landed on two newly-fetched houses -- and the figure
+        beside the census was not re-measured with it.
+      * CHURN_TOLERANCE and HAZARD_KINDS both said "the-reserve 60 water ways". 60 is the RAW count
+        and it merged two classes; the number the guard actually compares is the fetchable one, and
+        after the classes are separated it is 53 waterway ways and 6 pond areas (one pond carries
+        _from_relation, which is the whole of the 60/59 difference).
+
+    A figure in a comment that no test reads is a figure that drifts. These are the guard's own
+    calibration: they are the evidence for a 2% tolerance and for buildings being counted first."""
+    if not CORPUS:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+    fetch_osm = _osm_module()
+    src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+
+    SLUG = {"castlewood-hill": "castlewood-hill-course",
+            "callippe": "callippe-preserve-golf-course",
+            "the-reserve": "the-reserve-at-spanos-park",
+            "micke-grove": "micke-grove-golf-links",
+            "merion": "merion-golf-club"}
+
+    def fetchable_census(short):
+        slug = SLUG[short]
+        if slug not in CORPUS:
+            return None
+        els = json.load(open(os.path.join(ROOT, "courses", slug, "osm_course.json")))["elements"]
+        return fetch_osm.census([e for e in els
+                                 if "_digitized" not in (e.get("tags") or {})
+                                 and e.get("_from_relation") is None])
+
+    def num(s):
+        return int(s.replace(",", ""))
+
+    # (regex, short slug, census kind) -- every figure fetch_osm.py publishes about a named course
+    CLAIMS = [
+        (r"castlewood-hill all ([\d,]+) of them", "castlewood-hill", "building"),
+        (r"callippe all ([\d,]+)", "callippe", "building"),
+        (r"the-reserve [\d,]+ of ([\d,]+)", "the-reserve", "building"),
+        (r"the-reserve ([\d,]+) trees", "the-reserve", "tree"),
+        (r"the-reserve [\d,]+ trees and[\s#]*([\d,]+) buildings", "the-reserve", "building"),
+        (r"micke-grove ([\d,]+) trees", "micke-grove", "tree"),
+        (r"the-reserve ([\d,]+) waterway ways", "the-reserve", "waterway"),
+        (r"merion ([\d,]+) wood", "merion", "wood"),
+    ]
+    checked = 0
+    for pat, short, kind in CLAIMS:
+        m = re.search(pat, src)
+        assert m, (
+            f"fetch_osm.py no longer carries the figure /{pat}/. These counts are the calibration for "
+            f"the churn tolerance and for the census's key order; if the claim moved, move this test "
+            f"with it rather than dropping the grading.")
+        cen = fetchable_census(short)
+        if cen is None:
+            continue
+        assert num(m.group(1)) == cen[kind], (
+            f"fetch_osm.py publishes {short} {kind} {m.group(1)}; the cache the guard compares holds "
+            f"{cen[kind]}. Re-measure the comment, not the cache.")
+        checked += 1
+
+    # the-reserve's 1,529-in-`other`: the ONE building that also carries a golf tag is why it is not
+    # 1,530, and that is the census's whole reason for testing `building` first
+    m = re.search(r"the-reserve ([\d,]+) of ([\d,]+)", src)
+    assert m, "fetch_osm.py no longer records how many of the-reserve's buildings landed in `other`"
+    if SLUG["the-reserve"] in CORPUS:
+        els = json.load(open(os.path.join(ROOT, "courses", SLUG["the-reserve"],
+                                          "osm_course.json")))["elements"]
+        blds = [e for e in els if (e.get("tags") or {}).get("building") not in (None, "no")]
+        in_other = sum(1 for e in blds if not any((e.get("tags") or {}).get(k)
+                                                 for k in ("golf", "natural", "landuse", "waterway")))
+        assert (num(m.group(1)), num(m.group(2))) == (in_other, len(blds)), (
+            f"fetch_osm.py says {m.group(1)} of {m.group(2)} the-reserve buildings fell into `other` "
+            f"under the old key chain; measured {in_other} of {len(blds)}")
+        checked += 1
+    assert checked >= 6, f"only {checked} of fetch_osm.py's published corpus figures were graded"
+
+
+def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
+    """fetch_osm.py disclaimed a question that has since been ANSWERED, and left it as unanswerable.
+
+    The comment beside the hazard guard is right that the pre-febbbba OSM caches are gone and
+    unrecoverable -- courses/ is gitignored, so git never held them. But the question it exists to
+    disclaim is narrower than the caches: did that re-fetch drop a hazard the book DRAWS? The printed
+    side survived. The 12 pre-re-fetch greenbook.html files were preserved outside the repo, and the
+    drawn ink can be counted in both:
+
+        castlewood-hill    pre-book tree 10,422 / tee 106  -- febbbba's own published pre-values
+        castlewood-valley  pre-book tree  9,238 / tee  60  -- likewise
+        drawn water polygons (fill #a9d3ef): IDENTICAL on all 12 preserved books
+        drawn watercourse polylines (stroke #5b9bd0 width 1.8): IDENTICAL on all 12
+
+    So no water was lost, and the module must say that rather than leaving a reader to conclude the
+    opposite from a comment that only says the caches are gone. The evidence is named by path because
+    a claim whose evidence is not locatable is the thing this whole comment was written about."""
+    src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+    EV = "greenbook-prefetch-evidence-2026-08-03"
+    assert EV in src, (
+        "fetch_osm.py must name where the pre-re-fetch books are kept. Without the path this is "
+        "another unlocatable claim, which is exactly what the surrounding comment complains of.")
+    low = src.lower()
+    for want, why in (("greenbook.html", "say which artifact settled it"),
+                      ("water", "say what was compared")):
+        assert want in low, f"fetch_osm.py must {why}"
+    m = re.search(r"(\d+) pre-re-fetch greenbook\.html files", src)
+    assert m and int(m.group(1)) == 12, (
+        "fetch_osm.py must say how many pre-re-fetch books survived; 12 were preserved")
+
+    # ...and where BOTH sides are on this machine, re-measure rather than trusting the comment. The
+    # source half above is the part that always runs; this half needs the preserved books (which live
+    # outside the repo, so a fresh clone has none) AND the rebuilt ones (courses/ is gitignored).
+    ev = os.path.join(os.path.expanduser("~"), EV)
+    PAT = {"water polygon": 'fill="#a9d3ef"',
+           "watercourse line": 'stroke="#5b9bd0" stroke-width="1.8"'}
+    have = []
+    if os.path.isdir(ev):
+        for slug in sorted(os.listdir(ev)):
+            old = os.path.join(ev, slug, "greenbook.html")
+            new = os.path.join(ROOT, "courses", slug, "greenbook.html")
+            if os.path.exists(old) and os.path.exists(new):
+                have.append((slug, old, new))
+    for slug, old, new in have:
+        o = open(old, encoding="utf-8").read()
+        n = open(new, encoding="utf-8").read()
+        for what, needle in PAT.items():
+            assert o.count(needle) == n.count(needle), (
+                f"{slug}: drawn {what} count {o.count(needle)} before the re-fetch, "
+                f"{n.count(needle)} now -- fetch_osm.py claims these are identical")
+    # anti-vacuous, but only where the corpus that backs the claim is actually built
+    if len(CORPUS) >= 11:
+        assert len(have) >= 11, (
+            f"only {len(have)} preserved books could be compared against a corpus of {len(CORPUS)} "
+            f"courses; the claim in fetch_osm.py covers all of them, so either the evidence at {ev} "
+            f"has been moved or the books have not been rebuilt")
+
+
+def test_the_tree_hole_floors_smallest_per_hole_count_is_the_one_the_corpus_shows():
+    """TREE_HOLE_FLOOR's justification quoted a per-hole minimum that does not reproduce.
+
+    fetch_trees.py said "the smallest per-hole count in this corpus outside monarch-bay's three
+    survey-edge holes is 15". Measured over the eleven stored tree layers: monarch-bay holes 1, 17 and
+    18 are the three zeros, and the smallest count above them is 16 (monarch-bay 16), then 19
+    (monarch-bay 7). Outside monarch-bay entirely the smallest is 47 (philadelphia 11).
+
+    The figure is the whole argument for the floor: a hole with fewer than four markers is a filter
+    edge case, and the failures the guard has to catch take a hole from tens or hundreds to zero. A
+    floor of 4 against a real minimum of 16 leaves a clear gap; a floor of 4 quoted against a made-up
+    15 does not tell the next reader whether it still does."""
+    layers = {}
+    for slug in sorted(os.listdir(os.path.join(ROOT, "courses"))):
+        if slug.startswith("_"):
+            continue
+        p = os.path.join(ROOT, "courses", slug, "trees_lidar.json")
+        if not os.path.exists(p):
+            continue
+        j = json.load(open(p))
+        layers[slug] = {h: len(v) for h, v in j.items() if isinstance(v, list)}
+    if not layers:
+        pytest.skip("per-course tree layers are gitignored; nothing to measure")
+
+    counts = sorted((n, slug, h) for slug, c in layers.items() for h, n in c.items())
+    zeros = [(slug, h) for n, slug, h in counts if n == 0]
+    nonzero = [t for t in counts if t[0] > 0]
+    assert nonzero, "every stored tree layer is empty; there is no minimum to grade"
+    smallest = nonzero[0]
+    outside_mb = next((t for t in nonzero if t[1] != "monarch-bay-golf-club"), None)
+
+    src = open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8").read()
+    m = re.search(r"the smallest per-hole count above them is (\d+)", src)
+    assert m, (
+        "fetch_trees.py no longer states the smallest per-hole marker count it derives TREE_HOLE_FLOOR "
+        "from. That figure is the whole argument for the floor; if the wording moved, move this test "
+        "with it rather than leaving the number ungraded.")
+    assert int(m.group(1)) == smallest[0], (
+        "fetch_trees.py publishes a smallest per-hole count of %s outside monarch-bay's zero holes; "
+        "the stored layers hold %d, on %s hole %s. The three zeros are %s."
+        % (m.group(1), smallest[0], smallest[1], smallest[2],
+           ", ".join(f"{s.split('-')[0]} {h}" for s, h in zeros) or "none"))
+
+    m2 = re.search(r"outside monarch-bay entirely it is (\d+)", src)
+    assert m2, "fetch_trees.py must also say what the smallest count is once monarch-bay is excluded"
+    if outside_mb is not None:
+        assert int(m2.group(1)) == outside_mb[0], (
+            "fetch_trees.py publishes %s as the smallest per-hole count outside monarch-bay; measured "
+            "%d, on %s hole %s" % (m2.group(1), outside_mb[0], outside_mb[1], outside_mb[2]))
+
+    # ...and the floor itself must sit below that minimum, or "had canopy and lost it" is not what it
+    # measures. The module is imported rather than source-scraped so the live constant is the one graded;
+    # the autouse COURSE fixture drops it again afterwards.
+    a_course()
+    import fetch_trees
+    assert fetch_trees.TREE_HOLE_FLOOR < smallest[0], (
+        "TREE_HOLE_FLOOR is %d and the smallest per-hole count that is not zero is %d -- the floor is "
+        "meant to sit BELOW every real corridor, so that losing every marker on a hole that had them "
+        "is a loss and not churn" % (fetch_trees.TREE_HOLE_FLOOR, smallest[0]))
+
+
+# ---------------------------------------------------------------------------
+# The seamless greens' SOURCE GRID -- measured from the arrays, never from prose
+# ---------------------------------------------------------------------------
+def _resampled_patch(H, W, cell_x_px, cell_y_px, seed=0):
+    """A patch built the way 3DEP's exportImage builds one: a coarse source grid, bilinear to pixels.
+
+    Ground truth for the detector, so the detector is graded against a cell size THIS function chose
+    rather than against the corpus it is meant to measure. Cast through float32 because that is the
+    precision the service serves and the .npy stores, and the detector's flat-cell test is calibrated
+    to exactly that quantisation.
+    """
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    nx = int(W / cell_x_px) + 4
+    ny = int(H / cell_y_px) + 4
+    nodes = rng.normal(0.0, 1.0, (ny, nx)).cumsum(0).cumsum(1) * 0.02 + 30.0
+    xs = (np.arange(nx) - 1) * cell_x_px
+    ys = (np.arange(ny) - 1) * cell_y_px
+    xf = np.arange(W, dtype=float)
+    yf = np.arange(H, dtype=float)
+    mid = np.array([np.interp(xf, xs, row) for row in nodes])          # (ny, W)
+    out = np.array([np.interp(yf, ys, col) for col in mid.T]).T        # (H,  W)
+    return out.astype("float32").astype("float64")
+
+
+def _measured_cells():
+    """{(slug, hole): (cell E-W m, cell N-S m, resampled?)} for every built green surface.
+
+    The LIVE measurement every published figure below is graded against. It reads only the .npy
+    arrays and their own bboxes, so it needs no network and no service metadata -- which is the whole
+    point: the resolution claim on these cards was checked against a hardcoded string for the life of
+    the project, and a string cannot be measured.
+    """
+    import numpy as np
+    import render_green as rg
+    out = {}
+    for mp in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        slug = os.path.basename(os.path.dirname(os.path.dirname(mp)))
+        if slug.startswith("_"):
+            continue
+        ap = mp[:-5] + ".npy"
+        if not os.path.exists(ap):
+            continue
+        with open(mp, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        arr = np.load(ap).astype("float64")
+        arr[~np.isfinite(arr)] = np.nan
+        arr[np.abs(arr) > 1e30] = np.nan
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        px_x = (xmax - xmin) * _mlon(clat) / meta["W"]
+        px_y = (ymax - ymin) * _mlat(clat) / meta["H"]
+        lat = rg.source_lattice(arr, px_x, px_y)
+        out[(slug, int(meta["hole"]))] = (lat["cell_ew_m"], lat["cell_ns_m"], lat["resampled"],
+                                          "seamless" in str(meta.get("source", "")).lower())
+    return out
+
+
+def test_a_resampled_dem_patch_gives_up_its_own_source_grid_with_no_network():
+    """The claim "1 m data" was never measurable, and that is why it survived six cards and legal/03.
+
+    `fetch_dem.py` hardcoded `source="USGS 3DEP seamless 1 m @0.5m sampling"`. 3DEP's seamless
+    ImageServer is a MULTI-RESOLUTION MOSAIC, and at monarch-bay's six bayside greens -- the only
+    greens in the corpus this stage has ever run on -- it does not serve the 1 m product at all. The
+    six cards, the guide note and two lines of legal/03 all overstated the resolution by 2.7x E-W and
+    3.4x N-S, about 9x in area, on the ONE label the honesty argument rests on. `sampling_note`
+    structurally could not catch it: it is a RATIO test (square-in-metres) with no notion of absolute
+    source resolution, so every mosaic tier passes it silently.
+
+    The detector that CAN catch it needs no service metadata and no network. A bilinear resample is
+    piecewise linear along each axis, so its second difference is EXACTLY zero strictly inside a
+    source cell and spikes at the source nodes; the spacing of those spikes is the source grid. Both
+    halves are graded here:
+
+      * against GROUND TRUTH -- a patch this test builds at a cell size it chose (`_resampled_patch`),
+        so a detector that merely agreed with the corpus could not pass;
+      * against the CORPUS -- the six seamless greens must come back resampled from a grid several
+        pixels wide, and the 192 LiDAR greens must NOT, or the discriminator is decoration.
+
+    The 0.4 m greens are interpolated from a dense point cloud over a Delaunay triangulation, which
+    has no rectangular lattice at all: measured, 0.2-19.8% of their second differences land at the
+    float32 floor against 49.5-72.3% on the six. That 2.51x gap is what SOURCE_LATTICE_FLAT_MIN sits
+    in -- not the 8x this docstring and render_green's own comment both published for it.
+    """
+    import numpy as np
+    import render_green as rg
+
+    assert hasattr(rg, "source_lattice"), (
+        "render_green has no source_lattice(): nothing measures the grid a green surface was "
+        "resampled FROM, so the card's resolution label is back to being an unverifiable string")
+
+    # (a) ground truth -- cell sizes this test chose, in pixels, at a known metres-per-pixel
+    for cx_px, cy_px, px in ((5.415, 6.816, 0.5027), (2.5, 2.5, 0.5), (9.0, 4.0, 0.4)):
+        patch = _resampled_patch(112, 104, cx_px, cy_px, seed=int(cx_px * 100))
+        got = rg.source_lattice(patch, px, px)
+        assert got["resampled"], (
+            f"a patch built as a bilinear resample of a {cx_px} x {cy_px} px grid was not recognised "
+            f"as resampled at all (flat fractions {got['flat_ew']:.3f} / {got['flat_ns']:.3f} against "
+            f"a floor of {rg.SOURCE_LATTICE_FLAT_MIN})")
+        for axis, want_px, got_m in (("E-W", cx_px, got["cell_ew_m"]), ("N-S", cy_px, got["cell_ns_m"])):
+            want = want_px * px
+            assert abs(got_m - want) <= 0.02 * want, (
+                f"the detector reads the {axis} source cell of a synthetic {want_px} px "
+                f"({want:.4f} m) lattice as {got_m:.4f} m -- {100 * (got_m / want - 1):+.2f}%")
+
+    # (b) a surface that is NOT a resample of anything coarser must not be reported as one
+    rng = np.random.default_rng(7)
+    smooth = rng.normal(0, 1, (120, 120)).cumsum(0).cumsum(1) * 0.01
+    smooth = rg.gauss(smooth, 2.0).astype("float32").astype("float64")
+    assert not rg.source_lattice(smooth, 0.4, 0.4)["resampled"], (
+        "a smoothed random surface with no source lattice at all is reported as resampled, so the "
+        "detector would relabel every 0.4 m LiDAR green as coarse")
+
+    # (c) the corpus: the discriminator must actually discriminate
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    seam = {k: v for k, v in cells.items() if v[3]}
+    lidar = {k: v for k, v in cells.items() if not v[3]}
+    assert seam and lidar, (
+        f"the corpus here holds {len(seam)} seamless and {len(lidar)} LiDAR greens; both kinds are "
+        f"needed or this test cannot show the detector separates them")
+    missed = sorted(k for k, v in seam.items() if not v[2])
+    assert not missed, (
+        "a green recorded as coming from the seamless mosaic shows no resampling lattice, so nothing "
+        f"can say what resolution its card should print: {missed}")
+    falsely = sorted(k for k, v in lidar.items() if v[2])
+    assert not falsely, (
+        f"{len(falsely)} of {len(lidar)} 0.4 m LiDAR greens are reported as resampled from a coarser "
+        f"grid: {falsely[:6]}. The detector must separate the two or the label it drives is noise.")
+    for k, v in sorted(seam.items()):
+        assert min(v[0], v[1]) >= 2.0, (
+            f"{k} measures a source cell of {v[0]:.3f} x {v[1]:.3f} m. Under 2 m the '1 m' claim "
+            f"this test exists to refute would be arguable again -- re-read it before editing.")
+
+
+def test_the_lattice_detector_refuses_to_measure_a_cell_off_quantisation_dust():
+    """An exact PLANE stored as float32 used to come back resampled, with a fabricated source cell.
+
+    Found by a ground-truth sweep of 20 constructed cases: 18 pass, one misses and fails safe, and this
+    one FABRICATED. A plane's second differences are algebraically zero, so in float32 they are
+    rounding dust; `_flat_fraction` reads 1.0 -- flatter than any real resample, which tops out at
+    72.3% -- and `_comb_period`'s `if not np.any(p)` guard catches only the EXACTLY CONSTANT profile,
+    not a profile that is entirely dust. So it returned whichever dust period happened to peak and the
+    caller published it as a source cell, several metres wide, measured off rounding error and carrying
+    no warning.
+
+    Unreachable on the real corpus and conservative in direction -- it overstates coarseness, and the
+    corpus's own relief is orders of magnitude above the dust -- but it is still a number the data
+    cannot support, and this project does not print those. The guard is the physics: a real comb's
+    teeth ARE the source nodes, so they carry real elevation differences, while dust cannot rise above
+    the storage floor by construction.
+
+    Graded BOTH ways, because a guard that also killed the true positives would be worse than the
+    fabrication: the constructed plane must be refused, and the six real seamless greens must still be
+    found, with the margin on each side measured rather than assumed.
+    """
+    import numpy as np
+    import render_green as rg
+
+    H, W = 104, 112
+    yy, xx = np.mgrid[0:H, 0:W]
+    for name, z in (
+            ("an exact plane in float32",
+             (100.0 + 0.03 * xx + 0.02 * yy).astype("float32").astype("float64")),
+            ("an exact plane in float64", 100.0 + 0.03 * xx + 0.02 * yy),
+            ("an exactly constant array", np.full((H, W), 42.0)),
+            ("a plane with a tiny float32 offset",
+             (12.5 + 0.007 * xx - 0.011 * yy).astype("float32").astype("float64"))):
+        got = rg.source_lattice(z, 0.5027, 0.5044)
+        assert not got["resampled"], (
+            f"{name} is reported as a resample of a "
+            f"{got['cell_ew_m']:.2f} x {got['cell_ns_m']:.2f} m grid. There is no lattice in it to "
+            f"find -- its second differences are quantisation dust -- so that cell is measured off "
+            f"rounding error, and the caller publishes it as the resolution of a green's data.")
+        for axis, cell, px in (("E-W", got["cell_ew_m"], 0.5027), ("N-S", got["cell_ns_m"], 0.5044)):
+            assert abs(cell - px) < 1e-9, (
+                f"{name} reports a {axis} figure of {cell:.4f} m where `resampled` is False, which by "
+                f"source_lattice's contract must be the PIXEL size {px:.4f} m and carry no claim")
+
+    # the margin, both sides, measured
+    rows = [r for r in _lattice_arrays() if r[2]]
+    if not rows:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    ratios = []
+    for _slug, _hole, _seam, arr, _px_x, _px_y in rows:
+        scale = float(np.nanmax(np.abs(arr)))
+        floor = rg._storage_floor(scale)
+        for M in (arr, arr.T):
+            prof, _d2 = rg._lattice_profile(M)
+            ratios.append(float(prof.max() / floor))
+    plane = (100.0 + 0.03 * xx + 0.02 * yy).astype("float32").astype("float64")
+    pprof, _pd2 = rg._lattice_profile(plane)
+    pratio = float(pprof.max() / rg._storage_floor(float(np.nanmax(np.abs(plane)))))
+    assert pratio < 1.0 <= min(ratios), (
+        f"the guard has no room: a plane's peak tooth stands {pratio:.3f}x above the storage floor and "
+        f"the weakest real seamless green's stands {min(ratios):.0f}x. The floor has to fall between "
+        f"them or it either fabricates again or starts refusing real greens.")
+    said = _published_figures(rg._comb_period.__doc__,
+                      r"peak\s+tooth stands ([\d]+)x to ([\d]+)x above this floor",
+                      "_comb_period's docstring")
+    assert said[0] <= min(ratios) and said[1] >= max(ratios) and \
+        abs(said[0] - min(ratios)) < 1 and abs(said[1] - max(ratios)) < 1, (
+        f"_comb_period's docstring publishes the real greens' margin as {said[0]:.0f}x to "
+        f"{said[1]:.0f}x; measured {min(ratios):.1f}x to {max(ratios):.1f}x")
+
+
+def test_the_producer_records_the_source_cell_it_measured_instead_of_a_resolution_tier():
+    """The string `fetch_dem.py` writes is the origin of every downstream resolution claim.
+
+    generate.py stamps it on the card, generate.py's guide note explains it, and
+    tools/gen_provenance.py prints it into legal/03. It said "1 m" because someone typed "1 m", and
+    the surface it describes is measured at 2.72 x 3.43 m. So the producer must MEASURE, and the word
+    "seamless" must survive because `is_seamless` is how every consumer classifies these greens.
+    """
+    import numpy as np
+    # COURSE bound so config resolves on a machine whose default course is not built; the module is
+    # NOT dropped from sys.modules, because nothing here reads course data -- sampling_note and
+    # source_cell_clause are pure functions of a bbox and an array.
+    os.environ["COURSE"] = a_course()
+    fd = _import_first_party("fetch_dem")
+
+    clat = 37.6916
+    W = H = 104
+    dlon, dlat = W * 0.5 / _mlon(clat), H * 0.5 / _mlat(clat)
+    square = [0.0, clat, dlon, clat + dlat]
+    patch = _resampled_patch(H, W, 5.415, 6.816, seed=3)
+
+    src, warn = fd.sampling_note(square, W, H, patch)
+    assert warn is None, f"a square grid warned anyway: {warn}"
+    assert fd.is_seamless({"source": src}), f"{src!r} no longer reads as a seamless surface"
+    assert not re.search(r"\b1 m\b", src), (
+        f"the recorded source still claims a 1 m product: {src!r}. 3DEP's seamless service is a "
+        f"multi-resolution mosaic and this stage runs ONLY on greens the 0.4 m LiDAR refused -- and "
+        f"3DEP's 1 m tier is derived from that same LiDAR, so wherever this code path runs the 1 m "
+        f"tier is void by construction.")
+    nums = [float(x) for x in re.findall(r"([\d.]+) m", src)]
+    want = (5.415 * 0.5, 6.816 * 0.5)
+    for w in want:
+        assert any(abs(n - w) <= 0.03 for n in nums), (
+            f"the recorded source names no measured cell near {w:.2f} m: {src!r} -> {nums}")
+
+    # a patch with NO detectable lattice must not have its PIXEL size published as a source cell:
+    # that understates the coarseness, which is the dangerous direction.
+    rng = np.random.default_rng(11)
+    fine = rng.normal(0, 1, (H, W)).cumsum(0).cumsum(1) * 0.01 + 30.0
+    src2, warn2 = fd.sampling_note(square, W, H, fine.astype("float32").astype("float64"))
+    assert not re.search(r"0\.5\d* m (?:E-W|N-S|source)", src2), (
+        f"a reply whose source grid could not be measured records its own 0.5 m pixel as the source "
+        f"cell: {src2!r}. That is a resolution claim the data does not support.")
+    assert "NOT MEASURED" in src2 and warn2, (
+        f"a reply whose source grid could not be measured says nothing about it: {src2!r} / {warn2!r}")
+
+
+def _lattice_arrays():
+    """[(slug, hole, seamless?, array, px_x, px_y)] for every built green -- loaded once, ~0.1 s."""
+    import numpy as np
+    out = []
+    for mp in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        slug = os.path.basename(os.path.dirname(os.path.dirname(mp)))
+        if slug.startswith("_"):
+            continue
+        ap = mp[:-5] + ".npy"
+        if not os.path.exists(ap):
+            continue
+        with open(mp, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        arr = np.load(ap).astype("float64")
+        arr[~np.isfinite(arr)] = np.nan
+        arr[np.abs(arr) > 1e30] = np.nan
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        out.append((slug, int(meta["hole"]), "seamless" in str(meta.get("source", "")).lower(), arr,
+                    (xmax - xmin) * _mlon(clat) / meta["W"],
+                    (ymax - ymin) * _mlat(clat) / meta["H"]))
+    return out
+
+
+def _flow(text):
+    """Source text with comment markers stripped and every whitespace run collapsed to one space.
+
+    So a pattern can span the line wrap. Without it these graders were hostage to where the 100-column
+    limit happened to break a sentence: re-wrapping a paragraph would have made the pattern stop
+    matching, and the test then reports a MISSING figure rather than a wrong one -- which is a real
+    failure, but the wrong one, and after two of those nobody trusts the message.
+    """
+    return re.sub(r"\s+", " ", re.sub(r"(?m)^[ \t]*#", " ", text))
+
+
+def _published_figures(text, pattern, where):
+    """Every numeric group of `pattern` in `text`, or an assertion naming what went missing.
+
+    A grader that silently finds no figure to compare passes, which is the failure mode this whole
+    file exists to prevent: 108a894's sweep and the "8x gap" both survived because nothing objected to
+    their absence. So a pattern that stops matching is an error, not a skip.
+
+    Named apart from `_published` above, which does the same job for fetch_hole_elev.py and returns the
+    MATCH rather than the numbers. Two of them because this one flows the text first and coerces to
+    float; naming them the same shadowed that one at module scope and broke its twenty call sites with
+    a TypeError, caught by running the full suite.
+    """
+    m = re.search(pattern, _flow(text))
+    assert m, (f"{where} no longer publishes the figure this grades ({pattern!r}). Either the sentence "
+               f"was reworded -- update the pattern -- or the justification was deleted, which is worse: "
+               f"the constant then has no recorded derivation at all.")
+    return [float(g) for g in m.groups() if g is not None]
+
+
+@needs_corpus
+def test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_measures():
+    """Six figures in the detector's OWN threshold justification were wrong, one of them by 3.2x.
+
+    `SOURCE_LATTICE_FLAT_MIN`'s comment is the only recorded derivation of the constant that decides
+    whether a green's card prints a coarse-data caveat, and it published the LiDAR greens' flat
+    fraction as "0.3-6.1%". Measured per axis over the 192 of them: 0.2-19.8%. ELEVEN LiDAR greens
+    carry an axis above 6.1% (the-reserve 18 at 19.7%, its 17 at 18.8%, valley-hi 16 at 16.9%), the
+    gap the threshold sits in is 2.51x rather than the "8x" that comment and this file's own detector
+    test both claimed, and the constant stands 1.27x above the worst LiDAR green rather than 4x. The
+    margin is REAL -- 0 false positives over 192 greens, 6 of 6 true positives -- but it is about
+    three times thinner than the paragraph whose whole job is to justify the number said it was, and a
+    restyler tightening the constant would have been working from that paragraph.
+
+    `_comb_period` published "15-18 periods" for arrays that hold 12.4-20.1, and `_flat_fraction`
+    published "nothing at all between 5e-7 and 1e-4" for a band that holds 0.6% of the values -- with
+    the tolerance it actually uses sitting INSIDE that band. That last one is the interesting one: the
+    threshold IS insensitive, but the insensitivity is a plateau in the FRACTION, not an empty band in
+    the values, so the evidence offered for it was evidence for something else.
+
+    Every figure above is re-derived here from the arrays on disk and compared to the text of the
+    comment and the docstrings that publish it -- in BOTH records, because two copies of one figure
+    with no cross-check is how five of these six drifted. Verdict stability is measured by re-running
+    the whole detector at nine tolerance multipliers (~2 s).
+    """
+    import numpy as np
+    import render_green as rg
+    rows = _lattice_arrays()
+    if not rows:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+
+    flats = {}
+    periods = []
+    for slug, hole, seam, arr, px_x, px_y in rows:
+        scale = float(np.nanmax(np.abs(arr))) if np.isfinite(arr).any() else 0.0
+        for key, M, px in (("E-W", arr, px_x), ("N-S", arr.T, px_y)):
+            prof, d2 = rg._lattice_profile(M)
+            flats[(slug, hole, key)] = (seam, rg._flat_fraction(d2, scale))
+            per = rg._comb_period(prof) if flats[(slug, hole, key)][1] >= \
+                rg.SOURCE_LATTICE_FLAT_MIN else None
+            if seam and per:
+                periods.append(prof.size / per)
+    lid = [v for (_s, _h, _k), (seam, v) in flats.items() if not seam]
+    sea = [v for (_s, _h, _k), (seam, v) in flats.items() if seam]
+    assert lid and sea and periods, "the corpus holds no seamless/LiDAR pair to measure against"
+    thr = rg.SOURCE_LATTICE_FLAT_MIN
+    m = {"lidar_lo": min(lid) * 100, "lidar_hi": max(lid) * 100,
+         "seam_lo": min(sea) * 100, "seam_hi": max(sea) * 100,
+         "gap": min(sea) / max(lid), "above_worst_lidar": thr / max(lid),
+         "below_weakest_seam": min(sea) / thr,
+         "per_lo": min(periods), "per_hi": max(periods)}
+
+    src = open(os.path.join(ROOT, "render_green.py"), encoding="utf-8").read()
+    here = open(__file__, encoding="utf-8").read()
+    problems = []
+
+    def grade(where, got, want, tol, label):
+        if abs(got - want) > tol:
+            problems.append(f"{where} publishes {label} as {got:g}; measured {want:.4g}")
+
+    def grade_bound(where, got, want, side, label, step=0.1):
+        """A published RANGE endpoint must contain the measurement and be one rounding step from it.
+
+        Not `abs(got - want) <= tol`: an upper bound that rounds DOWN excludes the very green it is
+        supposed to cover, and a bound rounded away by more than a step is not a rounding, it is a
+        different figure. So the two errors are graded separately and named differently.
+        """
+        contains = got <= want + 1e-12 if side == "lo" else got >= want - 1e-12
+        if not contains:
+            problems.append(f"{where} publishes {label} as {got:g}, which EXCLUDES the measured "
+                            f"{want:.4g} -- a range that does not contain its own corpus")
+        elif abs(got - want) > step:
+            problems.append(f"{where} publishes {label} as {got:g}; measured {want:.4g}")
+
+    # (a) the constant's own comment, and this file's detector test, publish the same four figures
+    for where, text, pat in (
+            ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
+             r"six seamless greens sit at ([\d.]+)-([\d.]+)% \(measured per axis\) and the 192 LiDAR "
+             r"ones at ([\d.]+)-([\d.]+)%"),
+            ("this file's detector test", here,
+             r"measured, ([\d.]+)-([\d.]+)% of their second differences land at the float32 floor "
+             r"against ([\d.]+)-([\d.]+)% on the six")):
+        vals = _published_figures(text, pat, where)
+        order = ("seam_lo", "seam_hi", "lidar_lo", "lidar_hi") if "seamless greens sit" in pat \
+            else ("lidar_lo", "lidar_hi", "seam_lo", "seam_hi")
+        for got, key in zip(vals, order):
+            grade_bound(where, got, m[key], key[-2:], f"the {key} flat fraction")
+
+    for where, text, pat, key, label in (
+            ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
+             r"0\.25 is ([\d.]+)x above the worst LiDAR green", "above_worst_lidar",
+             "the margin above the worst LiDAR green"),
+            ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
+             r"and ([\d.]+)x below the weakest seamless one", "below_weakest_seam",
+             "the margin below the weakest seamless green"),
+            ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
+             r"the gap the threshold sits in is ([\d.]+)x", "gap", "the gap"),
+            ("this file's detector test", here,
+             r"That ([\d.]+)x gap is what SOURCE_LATTICE_FLAT_MIN sits in", "gap", "the gap"),
+            ("render_green's _comb_period docstring", src,
+             r"holds only ([\d.]+)-([\d.]+) periods", "per", "the periods an array holds")):
+        vals = _published_figures(text, pat, where)
+        if key == "per":
+            grade_bound(where, vals[0], m["per_lo"], "lo", "the low end of " + label)
+            grade_bound(where, vals[1], m["per_hi"], "hi", "the high end of " + label)
+        else:
+            grade(where, vals[0], m[key], 0.01, label)
+
+    # (b) how many LiDAR greens exceed the figure that WAS published, since the comment now says so
+    over = sorted({(s, h) for (s, h, _k), (seam, v) in flats.items() if not seam and v > 0.061})
+    said = _published_figures(src, r"([\d.]+) LiDAR greens carry an axis above 6\.1%",
+                      "render_green's SOURCE_LATTICE_FLAT_MIN comment")
+    grade("render_green's SOURCE_LATTICE_FLAT_MIN comment", said[0], len(over), 0.5,
+          "the count of LiDAR greens above the figure it used to publish")
+
+    # (c) _flat_fraction's band, on the green it names, and the tolerance it actually uses
+    doc = rg._flat_fraction.__doc__
+    h1 = [r for r in rows if r[0] == "monarch-bay-golf-club" and r[1] == 1]
+    assert h1, "monarch-bay hole 1 is the green _flat_fraction's docstring measures; it is not built"
+    arr = h1[0][3]
+    scale = float(np.nanmax(np.abs(arr)))
+    tol_used = 8.0 * np.finfo(np.float32).eps * max(scale, 1.0)
+    prof, d2 = rg._lattice_profile(arr)
+    fin = d2[np.isfinite(d2)]
+    said = _published_figures(doc, r"([\d.]+)% of its second differences are exactly 0\.0 and a "
+                           r"further ([\d.]+)% sit under 5e-7", "_flat_fraction's docstring")
+    grade("_flat_fraction's docstring", said[0], float((fin == 0.0).mean()) * 100, 0.06,
+          "the share exactly 0.0")
+    grade("_flat_fraction's docstring", said[1],
+          float(((fin > 0) & (fin < 5e-7)).mean()) * 100, 0.06, "the share under 5e-7")
+    said = _published_figures(doc, r"and ([\d.]+)% of the values lie in that band", "_flat_fraction's docstring")
+    grade("_flat_fraction's docstring", said[0],
+          float(((fin >= 5e-7) & (fin <= 1e-4)).mean()) * 100, 0.06, "the share inside the band")
+    assert 5e-7 <= tol_used <= 1e-4, (
+        f"_flat_fraction's docstring says the tolerance it uses sits inside the 5e-7 to 1e-4 band; it "
+        f"measures {tol_used:.3g} on monarch-bay hole 1, which does not")
+    said = _published_figures(doc, r"INSIDE it.*?([\d.]+e-[\d]+) on that green", "_flat_fraction's docstring")
+    grade("_flat_fraction's docstring", said[0], tol_used, 0.01e-6, "the tolerance it uses")
+
+    # (d) the verdict-stability claim, SWEPT rather than SAMPLED. The figure this replaces was measured
+    #     at {0.5, 1, 2, 4, 8, 16, 32, 64, 128} and reported the break at 128 and the headroom at 16x.
+    #     The break is at 80.8514. The whole answer lies inside the 64-to-128 interval that set steps
+    #     over, so the grader that certified it could not see it -- the same defect class as the six
+    #     figures this test was written for, one order smaller, and a sampled grid is how it hid.
+    #
+    #     A BISECTION and not a denser grid, because `resampled` is MONOTONE in the multiplier: a larger
+    #     tolerance can only move a green from "not flat enough" to "flat enough" (the comb term does not
+    #     depend on the multiplier at all), so there is exactly one crossing and bisection finds it
+    #     exactly rather than bounding it. 0.1-grid checked once over the whole stable range: no dirty
+    #     multiplier anywhere below the crossing. The bracket is [0.5, 1024] and is NOT taken from the
+    #     docstring -- a bisection seeded with the claim it is grading would confirm any claim inside it.
+    said = _published_figures(doc, r"from ([\d.]+) to ([\d.]+) times eps", "_flat_fraction's docstring")
+    breaks = _published_figures(doc, r"first breaks at ([\d.]+), which is ([\d.]+)x the ([\d.]+) used here",
+                        "_flat_fraction's docstring")
+    culprit = re.search(r"where ([a-z][a-z-]+) (\d+) becomes the first LiDAR green called resampled",
+                        _flow(doc))
+    assert culprit, ("_flat_fraction's docstring no longer names the green whose verdict the break "
+                     "actually turns on. A multiplier with no hole attached cannot be checked against "
+                     "the corpus, and this paragraph is the derivation of the shipped constant.")
+    orig = rg._flat_fraction
+
+    def _verdict(mult):
+        """(false positives, missed seamless) and the LiDAR greens called resampled, at `mult` * eps."""
+        def ff(dd, sc, _m=mult):
+            f = dd[np.isfinite(dd)]
+            return float((f <= _m * np.finfo(np.float32).eps * max(sc, 1.0)).mean()) if f.size else 0.0
+        rg._flat_fraction = ff
+        fp, fn, who = 0, 0, []
+        for _s, _h, seam, a, px, py in rows:
+            r = rg.source_lattice(a, px, py)
+            if r["resampled"] and not seam:
+                fp += 1
+                who.append((_short(_s), _h))
+            fn += bool(seam and not r["resampled"])
+        return (fp, fn), sorted(who)
+
+    try:
+        lo, hi = 0.5, 1024.0
+        v_lo, _w = _verdict(lo)
+        v_hi, _w = _verdict(hi)
+        assert v_lo == (0, 0), (
+            f"the corpus verdict is already wrong at {lo} times eps ({v_lo}), so there is no clean end "
+            f"to bisect from and every figure below would be measured against a broken bracket")
+        assert v_hi != (0, 0), (
+            f"the corpus verdict is still clean at {hi} times eps, so the detector has no breaking "
+            f"multiplier inside the bracket this sweeps and the headroom is unbounded -- re-derive the "
+            f"paragraph before trusting it")
+        for _ in range(24):                      # 1024 -> ~6e-5 absolute, well inside the 0.001 graded
+            mid = (lo + hi) / 2
+            if _verdict(mid)[0] == (0, 0):
+                lo = mid
+            else:
+                hi = mid
+        first_fp = _verdict(hi)[1]
+        stable = {k: _verdict(k)[0] for k in (said[0], said[1])}
+        broke = _verdict(breaks[0])[0]
+    finally:
+        rg._flat_fraction = orig
+    if set(stable.values()) != {(0, 0)}:
+        problems.append(f"_flat_fraction's docstring says the verdict is unchanged from {said[0]} to "
+                        f"{said[1]} times eps; measured {sorted(stable.items())} "
+                        f"(false positives, missed seamless)")
+    elif lo - said[1] > 0.2:
+        problems.append(f"_flat_fraction's docstring stops its stable range at {said[1]:g} times eps "
+                        f"while the corpus stays clean to {lo:.4f}; a range that stops well short of "
+                        f"the crossing understates the headroom the constant actually has")
+    if broke == (0, 0):
+        problems.append(f"_flat_fraction's docstring says the verdict first breaks at {breaks[0]:g} "
+                        f"times eps; at that multiplier it is still clean, and it breaks at {hi:.4f}")
+    grade("_flat_fraction's docstring", breaks[0], hi, 0.001,
+          "the multiplier at which the corpus verdict first breaks")
+    if (culprit.group(1), int(culprit.group(2))) not in first_fp:
+        problems.append(f"_flat_fraction's docstring says {culprit.group(1)} {culprit.group(2)} is the "
+                        f"first LiDAR green called resampled; at the measured crossing {hi:.4f} it is "
+                        f"{first_fp}")
+    grade("_flat_fraction's docstring", breaks[1], breaks[0] / breaks[2], 0.01,
+          "how far the breaking multiplier stands above the one used")
+    said = _published_figures(doc, r"([\d.]+) of ([\d.]+) LiDAR greens called resampled, ([\d.]+) of ([\d.]+) "
+                           r"seamless found", "_flat_fraction's docstring")
+    grade("_flat_fraction's docstring", said[1], len([r for r in rows if not r[2]]), 0.5,
+          "the LiDAR green count")
+    grade("_flat_fraction's docstring", said[3], len([r for r in rows if r[2]]), 0.5,
+          "the seamless green count")
+
+    assert not problems, (
+        "the source-lattice detector's own justification publishes figures the corpus denies. This is "
+        "the paragraph a future restyler tunes the constant against, so a stale figure here is not a "
+        "comment defect -- it is the derivation:\n  " + "\n  ".join(problems))
+
+
+
+# legal/03's resolution figures are published per AXIS ("2.70-2.73 m E-W x 3.42-3.43 m N-S"), because a
+# lone "A x B m" pair reads as one cell and these two axes differ by 26%. Parsed that way here so a
+# range on one axis cannot be silently graded against the other's measurements.
+def _axis_cells(text):
+    """([E-W values], [N-S values]) named in `text`, ranges expanded to their endpoints."""
+    out = []
+    for axis in ("E-W", "N-S"):
+        vals = []
+        for m in re.finditer(r"([\d.]+)(?:\s*[–-]\s*([\d.]+))?\s*m\s+" + axis, text):
+            vals += [float(g) for g in m.groups() if g]
+        out.append(vals)
+    return out[0], out[1]
+
+
+def _cells_off(where, said, measured, axis, tol=0.06):
+    if not said or not measured:
+        return []
+    lo, hi = min(measured), max(measured)
+    return [f"{where} publishes a {axis} source cell of {v} m; measured {lo:.3f}-{hi:.3f} m"
+            for v in said if not (lo - tol <= v <= hi + tol)]
+
+
+# "1 m" may still appear in this record -- the corrected note has to be able to say what the record
+# USED to claim, and a course.json field quoted verbatim may still contain it. What must not survive is
+# an unrefuted assertion that these greens ARE 1 m data. Same clause-level shape as
+# _noise_floor_claims: the unit is a clause, and a refutation in the same clause clears it.
+_ONE_METRE = re.compile(r"\b1 m\b|\b1 ?m data\b", re.I)
+_ONE_METRE_REFUTED = re.compile(r"\bnot\b|\bno\b|never|nowhere|instead of|rather than|until|"
+                                r"used to|overstat|wrong|false|both called|claimed", re.I)
+
+
+# ITEM A. The fallback raster's own vintage is recorded NOWHERE in this build -- grep for `ned19`,
+# `arc-second`, `2011-04` or `sanfranciscocoast` across legal/, tools/, fetch_dem.py, README.md and
+# PIPELINE.md and nothing comes back -- while every row beside it publishes a LiDAR flight date decoded
+# from LAZ point records. Matched as a CLAUSE carrying both halves (a date, and a negation of it)
+# rather than as a fixed phrase, because the honest wordings are many and a phrase list would pass on
+# the one that was not thought of.
+def _says_the_raster_is_undated(text):
+    for clause in re.split(r"(?<=[.;:])\s+|\s+—\s+|\s+--\s+", text):
+        if re.search(r"acquisition|flight|date", clause, re.I) and \
+                re.search(r"\bno\b|\bnot\b|nowhere|cannot|undated|never", clause, re.I):
+            return True
+    return False
+
+
+def _unrefuted_one_metre_claims(where, text):
+    bad = []
+    for clause in re.split(r"(?<=[.;:])\s+|\s+—\s+|\s+--\s+", text):
+        if _ONE_METRE.search(clause) and not _ONE_METRE_REFUTED.search(clause):
+            bad.append(f"{where} still asserts a 1 m product: {clause.strip()[:180]}")
+    return bad
+
+
+def _green_labels(path):
+    """{hole: minilab text} for every green card in one built book, read off the shipped HTML."""
+    with open(path, encoding="utf-8") as fh:
+        html = fh.read()
+    out = {}
+    for blk in re.split(r'<div class="panel hole">', html)[1:]:
+        hn = re.search(r'<div class="hnum">(\d+)</div>', blk)
+        lab = re.search(r'<div class="minilab">(GREEN[^<]*)</div>', blk)
+        if hn and lab:
+            out[int(hn.group(1))] = lab.group(1)
+    return out
+
+
+# Every wording in which a printed page binds a resolution figure to the coarse-green caveat: the card
+# mark and the quoted mark inside the guide note ("2.7&times;3.4 m data"), and the guide note's own name
+# for the product ("the coarser <b>2.7&times;3.4 m</b> national model"). Both halves carry `<b>` and
+# smart quotes in the shipped HTML, so the tags are part of the pattern rather than stripped first.
+_PRINTED_CELL_WORDING = re.compile(
+    r"(?<![\d.])([\d.]+(?:&times;[\d.]+)?)\s*m(?:</b>)?(?:&rdquo;)?\s*data\b"
+    r"|coarser\s*(?:<b>)?\s*(?<![\d.])([\d.]+(?:&times;[\d.]+)?)\s*m(?:</b>)?\s*national model\b",
+    re.I)
+
+
+@needs_corpus
+def test_the_card_prints_the_source_cell_its_own_array_measures():
+    """Six cards said `1 m data` for greens whose source grid measures 2.72 x 3.43 m.
+
+    The label is the one place the book tells a junior to trust a green LESS, so an overstatement of
+    2.7x E-W and 3.4x N-S -- about 9x in area -- lands in the worst possible sentence. It was not
+    fixable by editing the string: the string had to become a MEASUREMENT, or the next reader of
+    legal/03 and the next reader of the card would again be checking two copies of one figure against
+    each other instead of against the data.
+
+    So this grades the printed label against `render_green.source_lattice` run fresh over the .npy on
+    disk -- no network, no service metadata, no hardcoded expectation of what the answer should be.
+    BOTH editions, because the enlarged deck is the one that shipped none of these caveats at all
+    until 10b8a61 and is ungraded by tools/check_scale.py by design.
+
+    The reader note on the guide card is graded the same way and against the same measurement: it is
+    the only place in either book that says what the mark MEANS, and it carried the same "1 m".
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    books = [f for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html")))
+             if not os.path.basename(os.path.dirname(f)).startswith("_")]
+    if not books:
+        pytest.skip("no book built")
+
+    problems, seen, graded = [], collections.Counter(), 0
+    for bf in books:
+        slug = os.path.basename(os.path.dirname(bf))
+        labels = _green_labels(bf)
+        if not labels:
+            continue                     # yardage mode prints no green cards
+        seen[slug] += 1
+        want = {h for (s, h) in cells if s == slug and cells[(s, h)][3]}
+        got = {h for h, lab in labels.items() if re.search(r"[\d.]+&times;[\d.]+ m data", lab)}
+        # ITEM B, on the card side: the count the book prints IS the count of seamless greens.
+        if got != want:
+            problems.append(f"{os.path.relpath(bf, ROOT)}: cards carrying a measured-cell label are "
+                            f"{sorted(got)}; greens built from the seamless mosaic are {sorted(want)}")
+        for h in sorted(got):
+            ew, ns, _res, _seam = cells[(slug, h)]
+            nums = [float(x) for x in re.findall(r"([\d.]+)&times;([\d.]+) m data", labels[h])[0]]
+            if abs(nums[0] - ew) > 0.06 or abs(nums[1] - ns) > 0.06:
+                problems.append(f"{os.path.relpath(bf, ROOT)} hole {h}: the card prints "
+                                f"{nums[0]}&times;{nums[1]} m; its own array measures "
+                                f"{ew:.3f} x {ns:.3f} m")
+            graded += 1
+        with open(bf, encoding="utf-8") as fh:
+            html = fh.read()
+        if want:
+            note = re.search(r'<div class="legrow"><span><b>Holes[^<]*</b> had no usable point '
+                             r'cloud.*?</span></div>', html, re.S)
+            if not note:
+                problems.append(f"{os.path.relpath(bf, ROOT)}: {len(want)} card(s) carry a coarse-data "
+                                f"label and the guide card explains it nowhere")
+            else:
+                txt = note.group(0)
+                pairs = re.findall(r"([\d.]+)&times;([\d.]+) m", txt)
+                if not pairs:
+                    problems.append(f"{os.path.relpath(bf, ROOT)}: the guide note names no measured "
+                                    f"cell: {txt[:160]}")
+                lo_ew = min(cells[(slug, h)][0] for h in want)
+                hi_ew = max(cells[(slug, h)][0] for h in want)
+                lo_ns = min(cells[(slug, h)][1] for h in want)
+                hi_ns = max(cells[(slug, h)][1] for h in want)
+                for a, b in pairs:
+                    if not (lo_ew - 0.06 <= float(a) <= hi_ew + 0.06):
+                        problems.append(f"{os.path.relpath(bf, ROOT)}: the guide note says the E-W "
+                                        f"cell is {a} m; measured {lo_ew:.3f}-{hi_ew:.3f} m")
+                    if not (lo_ns - 0.06 <= float(b) <= hi_ns + 0.06):
+                        problems.append(f"{os.path.relpath(bf, ROOT)}: the guide note says the N-S "
+                                        f"cell is {b} m; measured {lo_ns:.3f}-{hi_ns:.3f} m")
+                # ITEM A: nothing in the build records when that raster was flown, and the card prints
+                # a LiDAR flight date two rows above it.
+                if re.search(r"<b>Measured</b> from public USGS 3DEP LiDAR flown", html):
+                    assert re.search(r"we cannot date|no date|undated|not theirs", txt), (
+                        f"{os.path.relpath(bf, ROOT)}: the card dates its LiDAR and then explains the "
+                        f"coarse greens without saying the date is not theirs. Those six greens come "
+                        f"from a separately produced raster whose acquisition date this build records "
+                        f"nowhere, so a flight date beside them implies a contemporaneity nothing "
+                        f"establishes.")
+        # ...and no OTHER resolution may appear on the printed page in any of the wordings this caveat
+        # uses -- the card mark, the guide note's model name, and the quoted mark inside it.
+        # DERIVED from the measurement, not a list of the three wordings that were wrong once: a
+        # hardcoded copy of the dead label catches only the mistake already made, and it is itself a
+        # literal that every prose sweep in this file then has to be taught to ignore. Any figure the
+        # arrays do not measure fails here, including one nobody has typed yet.
+        measured = {_norm_label(f"{v[0]:.1f}&times;{v[1]:.1f} m data") for (s, _h), v in cells.items()
+                    if s == slug and v[3]}
+        for m in _PRINTED_CELL_WORDING.finditer(html):
+            said = m.group(1) or m.group(2)
+            if _norm_label(f"{said} m data") not in measured:
+                problems.append(f"{os.path.relpath(bf, ROOT)} prints {' '.join(m.group(0).split())!r}; "
+                                f"its seamless greens measure {sorted(measured)}")
+
+    assert graded, "no card carrying a measured-cell label was graded, so this test verified nothing"
+    assert_no_course_skipped(seen, "test_the_card_prints_the_source_cell_its_own_array_measures")
+    assert not problems, ("the printed resolution does not match the data:\n  "
+                          + "\n  ".join(problems[:12]))
+
+
+@needs_corpus
+def test_the_legal_record_publishes_the_measured_source_cell_and_the_right_hole_count():
+    """legal/03 published "6 green(s) fall back to the 1 m seamless DEM" and, nine lines apart, "5".
+
+    Two defects in one document. The RESOLUTION was false -- the mosaic served 3DEP's 1/9 arc-second
+    tier, 2.72 x 3.43 m here, not its 1 m tier -- and the COUNT contradicted itself, because the row
+    is derived from the artifacts while the "Sources in full" entry reproduces a `dem_source` string
+    typed by hand. Six is right: holes 1, 9, 10, 16, 17 and 18, and the shipped book carries exactly
+    six labels.
+
+    Graded against the arrays, never against the card. That is the point of doing it twice: two
+    records publishing one figure need a cross-check or the ungraded copy becomes the next defect, and
+    this repo has now produced roughly a dozen of those. Here both the card and this document are
+    checked against `render_green.source_lattice` run over the .npy files, so neither can drift onto
+    the other.
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    rec = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
+    with open(rec, encoding="utf-8") as fh:
+        pub = fh.read()
+
+    seam_by_slug = collections.defaultdict(list)
+    for (slug, hole), v in cells.items():
+        if v[3]:
+            seam_by_slug[slug].append((hole, v[0], v[1]))
+    assert seam_by_slug, "no course here has a seamless green, so this record has nothing to publish"
+
+    problems = []
+    # (a) the shared note. It must name a measured cell, and any surviving "1 m" must be a REFUTATION
+    # of the old claim rather than the claim itself -- the note's job now includes saying what the
+    # record used to publish, so a blanket ban on the string would police the correction.
+    note = re.search(r"^- \*\*(.+?fallback.*?)\*\*(.*?)(?=\n- \*\*)", pub, re.S | re.M)
+    assert note, ("legal/03 no longer carries a bullet about the seamless fallback; that bullet is "
+                  "where the resolution claim lives, so re-read this test before editing")
+    body = " ".join((note.group(1) + note.group(2)).split())
+    problems += _unrefuted_one_metre_claims("the fallback note", body)
+    ew, ns = _axis_cells(body)
+    if not (ew and ns):
+        problems.append(f"the fallback note names no measured source cell per axis: {body[:220]}")
+    all_ew = [c[1] for v in seam_by_slug.values() for c in v]
+    all_ns = [c[2] for v in seam_by_slug.values() for c in v]
+    problems += _cells_off("the fallback note", ew, all_ew, "E-W")
+    problems += _cells_off("the fallback note", ns, all_ns, "N-S")
+    # ITEM A: the vintage. Nothing in the build decodes an acquisition date for that raster, and the
+    # same row dates the LiDAR -- so the record has to say the two are not the same survey.
+    if not _says_the_raster_is_undated(body):
+        problems.append("the fallback note never says the build records no date for that raster, "
+                        "while every row beside it publishes a decoded LiDAR flight date")
+
+    # (b) per course: the count and the cell in the derived row, and the count in the hand prose
+    for slug, greens in sorted(seam_by_slug.items()):
+        cj = os.path.join(ROOT, "courses", slug, "course.json")
+        with open(cj, encoding="utf-8") as fh:
+            name = json.load(fh).get("name", slug)
+        row = next((ln for ln in pub.splitlines() if ln.startswith(f"| {name} |")), None)
+        if not row:
+            problems.append(f"{slug}: no table row for {name!r}")
+            continue
+        cell = row.split("|")[4]
+        m = re.search(r"(\d+)\s+green\(s\)", cell)
+        if not m:
+            problems.append(f"{slug}: the Green slope cell no longer counts the fallback greens: {cell}")
+        elif int(m.group(1)) != len(greens):
+            problems.append(f"{slug}: the row says {m.group(1)} fallback green(s); {len(greens)} of "
+                            f"its greens come from the seamless mosaic ({sorted(g[0] for g in greens)})")
+        problems += _unrefuted_one_metre_claims(f"{slug}: the Green slope cell", cell)
+        row_ew, row_ns = _axis_cells(cell)
+        if not (row_ew and row_ns):
+            problems.append(f"{slug}: the Green slope cell publishes no measured source cell: {cell}")
+        problems += _cells_off(f"{slug}: the row", row_ew, [g[1] for g in greens], "E-W")
+        problems += _cells_off(f"{slug}: the row", row_ns, [g[2] for g in greens], "N-S")
+        # ITEM A again, per row: this cell carries a decoded LiDAR flight date beside the fallback
+        # clause, and it is NOT the fallback raster's date.
+        if "flown" in cell and not re.search(r"not theirs|not recorded|does not cover", cell, re.I):
+            problems.append(f"{slug}: the row dates the LiDAR and names a seamless fallback in the "
+                            f"same cell without saying the date is not the fallback's: {cell}")
+        # the hand-written dem_source, reproduced uncut under "Sources in full" -- ITEM B's source
+        sec = re.search(rf"^### {re.escape(name)}$(.*?)(?=^### |\Z)", pub, re.S | re.M)
+        if sec:
+            ds = next((ln for ln in sec.group(1).splitlines()
+                       if ln.startswith("- **dem_source**")), "")
+            for n in re.findall(r"(\d+)\s+(?:\w+\s+)?(?:hole|green)s?\b", ds):
+                if int(n) not in (len(greens), len(cells) and
+                                  len([1 for (s, _h) in cells if s == slug])):
+                    problems.append(f"{slug}: dem_source publishes a count of {n} beside its "
+                                    f"seamless fallback; {len(greens)} greens are on it. Line: {ds}")
+
+    assert not problems, "the legal record does not match the data it describes:\n  " + "\n  ".join(problems[:12])
+
+    # (c) and the generator must be the thing that wrote it -- a hand edit here would drift again
+    import subprocess
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "gen_provenance.py"), "--check"],
+                       cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0, (f"legal/03 is stale against tools/gen_provenance.py:\n"
+                               f"{r.stdout[-2000:]}{r.stderr[-2000:]}")
+
+
+# A green label as this project writes one: a resolution, then the word "data" --
+# "GREEN &middot; 2.7&times;3.4 m data". Deliberately narrow. "LiDAR data" and "public data" are not
+# resolution claims and must not be swept in; what must be swept in is any figure a reader would take
+# as the resolution a card prints.
+_CELL_LABEL_CLAIM = re.compile(
+    r"(?<![\d.])(\d[\d.]*(?:\s*(?:&times;|&#215;|×|x)\s*\d[\d.]*)?)\s*m\b[^\w<]{0,4}data\b", re.I)
+
+
+# THE HISTORY EXEMPTION, and it is an ALLOWLIST KEYED TO CONTENT, not a vocabulary. A record has to be
+# able to say what it used to publish; the question is how a grader tells that from a live claim.
+#
+# WHAT IT REPLACES. It was a keyword rule -- any clause containing no / not / was / were / said / had /
+# claimed / shipped / typed / replace cleared the mention -- and the project's OWN house phrasing for
+# this caveat contains "no": the shipped guide row reads "greens with NO usable point cloud". So the
+# plainest live-stale sentences walked straight through it. MEASURED, all three missed (writing <L> for
+# the retired label, which is never typed in this file -- see the fixture note below):
+#     "Six greens have no usable point cloud, so each is <L>."
+#     "These greens were built from <L>."
+#     "Those holes had no LiDAR return, so they are <L>."
+# and the same sentence with no keyword in it failed. An exemption a live defect earns by coincidence of
+# wording is worse than no exemption: it certifies the absence of the thing it let through.
+#
+# WHY NOT A QUOTATION RULE, which is the obvious structural replacement and looks right -- 10 of the
+# 12 historical mentions in this repo do sit inside quotes or backticks. Because the LIVE sites this grader
+# family exists for were quoted TOO: the defect IS a stale copy of a quoted label. At 9f37857^,
+# PIPELINE.md said <Those cards print `L`.> and fetch_lidar.py's SystemExit said <their cards are
+# labelled 'L'.> Both are quotations; both were false. Measured: the keyword rule catches both of those,
+# and a quotation rule exempts both. That is a regression on the exact class, so quotation is refused and
+# the measurement is kept in
+# test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording, which drives both
+# directions.
+#
+# Nor tense, nor proximity to the corrected value: 8 of the 12 historical clauses carry no corrected
+# figure and no commit sha, so neither discriminator is complete. What is left that is both safe and
+# complete is to name them. A clause not on this list fails HOWEVER it is worded, so no phrasing earns an
+# exemption by accident; the key is the content, so a mention that MOVES keeps its exemption while a
+# mention that is REWORDED loses it -- which is the right way round, because rewording a record about a
+# retired figure is exactly when someone should have to say again that it is still history. Every entry
+# is proved to be load-bearing by the same test: an unused key fails, so a stale exemption cannot sit
+# here waiting to match something else.
+#
+# AND KEYING ON CONTENT HAS ITS OWN GAP, which is why the checks are a COUNT and not set membership: a
+# content key is granted to every copy of its clause, anywhere in the tree, so an exempted record pasted
+# into a second file arrives exempt. Set membership cannot tell "the record moved" (which should keep its
+# exemption) from "the record was copied" (which should not), and copies are this project's own stated
+# propagation mechanism -- a record copied, with one copy later going stale, is the most frequent single
+# defect shape this campaign has found. Proven on a scratch tree and closed by requiring EXACTLY ONE
+# match per key.
+#
+# WHAT IS STILL NOT CHECKED, stated because it is the residual and not an oversight: nothing here
+# verifies that a keyed clause actually REFUTES the label it names. All twelve do, inside the clause, but
+# a key added for a live-stale sentence would be honoured -- the exemption is exactly as good as the
+# review that adds a key. That is deliberate: telling a refutation from an assertion by rule IS the
+# keyword rule, and it was measured clearing the plainest live-stale sentences this project writes. What
+# these checks can do is keep every key visible, make each one prove it is doing work, and break the
+# moment the clause it names is reworded, deleted or duplicated -- which is the smallest surface a human
+# review can be asked to cover.
+def _clause_key(clause):
+    """A content identity for one clause of prose: whitespace collapsed, lowercased, sha256, 16 hex."""
+    import hashlib
+    return hashlib.sha256(" ".join(clause.split()).lower().encode("utf-8")).hexdigest()[:16]
+
+
+_HISTORICAL_LABEL_CLAUSES = {
+    # Each value says WHERE the clause lives and WHAT it is doing, by owner rather than by line number,
+    # because line numbers move and the key does not. None of them spells the retired label: a value that
+    # did would itself become a mention needing an exemption.
+    "7a0b2febb71152e9": "generate.green_honesty's docstring -- names the label 9f37857 replaced, beside "
+                        "the measured cell that replaced it",
+    "94b98623ad858363": "render_green's source-lattice note -- why the seamless six carried the retired "
+                        "label for the life of the project",
+    "19f5d1883c1d4b04": "tools/gen_provenance -- 'the claim this replaces', quoting the two copies of "
+                        "one typed string that legal/03 and the cards shared",
+    "33bee944e2c0201d": "this file, the card-label pin -- the literal a test used to assert, named as "
+                        "the defect so nobody re-pins it",
+    "0a8c1ebe5d540826": "this file, the minilab grader -- what the label said for six greens whose own "
+                        "arrays measure otherwise",
+    "d5b5c2446846762e": "this file, the _ONE_METRE note -- states what must NOT survive, which requires "
+                        "naming it",
+    "d2772b07d160f9c3": "this file, the enlarged-card grader's docstring -- the assertion that pinned "
+                        "the defect as its expected value",
+    "0634140fe3ebb7bd": "this file, the both-editions grader -- the warnings a revert silently dropped "
+                        "from Monarch Bay's enlarged book",
+    "bccb1d84ae0d334a": "this file, the legal/03 cell grader -- 'the claim ... was never measurable', "
+                        "which is why it survived",
+    "25f83af454facd82": "this file, the card-caveat grader -- what six cards said against a source grid "
+                        "that measures 2.72 x 3.43 m",
+    "5a94d6465a02b108": "this file, _string_literals_of's docstring -- the print() example that was "
+                        "invisible to 108a894's collector",
+    "9d78c40961f73639": "this file, the label grader's docstring -- the sites that went on quoting the "
+                        "retired label in the present tense",
+}
+
+
+def _norm_label(s):
+    """"2.7&times;3.4 m data", "2.7x3.4 m data" and "2.7 × 3.4 m data" are one claim."""
+    for ent, ch in (("&times;", "x"), ("&#215;", "x"), ("×", "x")):
+        s = s.replace(ent, ch)
+    return re.sub(r"\s+", "", s).lower()
+
+
+def _py_sources(root=None):
+    """Every .py file this repo owns: root, tools/ and tests/."""
+    root = root or ROOT
+    return (sorted(glob.glob(os.path.join(root, "*.py")))
+            + sorted(glob.glob(os.path.join(root, "tools", "*.py")))
+            + sorted(glob.glob(os.path.join(root, "tests", "*.py"))))
+
+
+def _prose_docs(root=None):
+    """The repo's user-facing documents: the READMEs and SECURITY.md a reader starts from, and every
+    legal record.
+
+    legal/*.md is in here because two of those records carried a stale resolution and NOTHING graded
+    them -- they are the most public prose the project has, and they were the last prose any grader
+    could see. Globbed rather than listed so a new record cannot be added ungraded, and that includes
+    the two GENERATED ones (legal/03, legal/05): if a generator prints a stale figure into them, the
+    document is still wrong on disk, and the repair is to fix the generator and regenerate.
+
+    SECURITY.md is in here because it was the one root user-facing document this set omitted while some
+    27 other references in this suite grade it for other things. It is where a reader is invited to
+    compare the public summary against the compliance record, so a stale figure in it is as public as
+    one in a legal record.
+    """
+    root = root or ROOT
+    return ["README.md", "PIPELINE.md", "SECURITY.md"] + sorted(
+        os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "legal", "*.md")))
+
+
+def _string_literals_of(path):
+    """[(lineno, text)] -- every string literal in one .py file that is NOT a docstring.
+
+    The hole 108a894 left. Its grader promised to refuse "any record OR RUNTIME STRING that names a
+    mark the engine does not produce", and it collected tokenize COMMENT tokens and AST docstrings
+    only -- so `print("... 1 m data ...")` was invisible to the one test whose entire job was to find
+    exactly that, and injecting the dead label into a print() left the full suite byte-identical to
+    baseline. A runtime message is the most user-facing prose a pipeline module has: it is read while
+    the pipeline runs, by the person deciding whether to trust the output.
+
+    THREE shapes are collected, because the first was a hole and the other two were ways past it.
+      * a plain `str` Constant. Docstrings are excluded by identity (the Constant that IS a docstring),
+        never by content, so a literal that merely looks like prose is still graded.
+      * a `bytes` Constant, decoded with errors="replace". `isinstance(node.value, str)` skipped these
+        outright, and a record is prose whatever type it happens to be stored as.
+      * a JoinedStr with its own Constant parts CONCATENATED, so a claim SPLIT across an interpolation
+        -- f"...{a}9.9{b} m data..." -- is one string here. The parts are still emitted individually as
+        well, so nothing that was graded stops being graded. The mutation fixture below forbids this
+        dodge for its own probes; the grader was open to it until now, which is the wrong way round.
+    """
+    import ast
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    docs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if ast.get_docstring(node):
+                docs.add(id(node.body[0].value))
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and id(node) not in docs:
+            if isinstance(node.value, str):
+                out.append((node.lineno, node.value))
+            elif isinstance(node.value, bytes):
+                out.append((node.lineno, node.value.decode("utf-8", "replace")))
+        elif isinstance(node, ast.JoinedStr):
+            joined = "".join(p.value for p in node.values
+                             if isinstance(p, ast.Constant) and isinstance(p.value, str))
+            if joined:
+                out.append((node.lineno, joined))
+    return out
+
+
+def _prose_of_repo(root=None):
+    """[(where, text)] -- every comment BLOCK, docstring, STRING LITERAL and user-facing doc.
+
+    Comments come out as blocks (consecutive `#` lines joined) because a sentence is written across
+    them, and the grader below judges a whole clause. Docstrings come from the AST rather than a regex
+    so a string that merely looks like one is not mistaken for prose.
+
+    String literals and legal/*.md were the two surfaces 108a894 claimed to cover and did not. Both
+    are in now, and the mutation test for it is
+    test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_in, which injects the
+    dead label into all eight surfaces one at a time and requires a failure from each. A grader that
+    cannot see the class it was written for is worse than no grader: it certifies the absence of the
+    defect.
+
+    `root` exists only for that mutation test, which needs to point the collector at a scratch copy.
+    """
+    import tokenize
+    root = root or ROOT
+    out = []
+    for p in _py_sources(root):
+        rel = os.path.relpath(p, root)
+        with open(p, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+        block, first = [], None
+        with open(p, "rb") as fh:
+            prev = None
+            for tok in tokenize.tokenize(fh.readline):
+                if tok.type != tokenize.COMMENT:
+                    continue
+                if prev is not None and tok.start[0] != prev + 1:
+                    # A gap of BLANK lines does not end a comment region: a claim written as
+                    # "# every green here is 9.9" / (blank) / "# m data." dodged the whole sweep,
+                    # measured, while the same claim across a blank COMMENT line ("#") did not,
+                    # because that stays a consecutive token. Only a gap holding real CODE ends the
+                    # region -- prose separated by whitespace is still one piece of prose.
+                    if any(lines[ln].strip() for ln in range(prev, tok.start[0] - 1)):
+                        out.append((f"{rel}:{first}", " ".join(block)))
+                        block, first = [], None
+                if first is None:
+                    first = tok.start[0]
+                block.append(tok.string.lstrip("#").strip())
+                prev = tok.start[0]
+        if block:
+            out.append((f"{rel}:{first}", " ".join(block)))
+        import ast
+        with open(p, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                doc = ast.get_docstring(node)
+                if doc:
+                    out.append((f"{rel}:{getattr(node, 'lineno', 1)} docstring", doc))
+        for lineno, text in _string_literals_of(p):
+            out.append((f"{rel}:{lineno} string literal", text))
+    for d in _prose_docs(root):
+        with open(os.path.join(root, d), encoding="utf-8") as fh:
+            out.append((d, fh.read()))
+    return out
+
+
+def _stale_label_mentions(live, root=None, exempt=None):
+    """[(where, said, clause)] -- prose naming a resolution label the engine does not print.
+
+    Split out from the assertion so the mutation test above can drive the SAME collector and the SAME
+    clause rule over a scratch copy. Two graders reading one function is the point: a mutation test
+    against a re-implementation of the scan would prove nothing about the scan that ships.
+
+    `exempt` is the history allowlist, defaulting to the shipped one. It is a parameter so a grader can
+    ask what this sweep would report with NO exemption at all -- which is the only way to show that a
+    key on that list is load-bearing rather than decorative.
+    """
+    exempt = _HISTORICAL_LABEL_CLAUSES if exempt is None else exempt
+    out = []
+    for where, text in _prose_of_repo(root):
+        for clause in _clauses(text):
+            for m in _CELL_LABEL_CLAIM.finditer(clause):
+                if _norm_label(m.group(0)) in live or _clause_key(clause) in exempt:
+                    continue
+                out.append((where, m.group(0), " ".join(clause.split())[:140]))
+    return out
+
+
+def _clause_occurrences(root=None):
+    """{clause key: [(where, clause)]} over every prose surface, in the mentions' own spelling.
+
+    WHERE a keyed clause is, and how many times, which set membership cannot answer. `_clause_key` is a
+    hash of the content, so an exemption granted to one clause is granted to every copy of it anywhere
+    in the tree -- and copying a record, then letting one copy go stale, is the most frequent single
+    defect shape this campaign has found. A count is what tells "the record moved" from "the record was
+    duplicated".
+    """
+    occ = {}
+    for where, text in _prose_of_repo(root):
+        for clause in _clauses(text):
+            occ.setdefault(_clause_key(clause), []).append((where, " ".join(clause.split())[:140]))
+    return occ
+
+
+def _duplicated_exemptions(allowlist, occ):
+    """[(key, [where, ...])] -- every allowlisted clause that exists more than once.
+
+    The rule, in one place, so the assertion below and the mutation probe beside it are the same rule.
+    """
+    return sorted((k, [w for w, _c in occ[k]]) for k in allowlist if len(occ.get(k, ())) > 1)
+
+
+def _clauses(text):
+    """Split prose into clauses. HTML entities are decoded FIRST -- `&middot;` ends in a semicolon,
+    and splitting on it cut the one sentence in generate.py that states the correction in half."""
+    for ent, ch in (("&middot;", "·"), ("&times;", "×"), ("&ndash;", "–"),
+                    ("&mdash;", "—"), ("&nbsp;", " "), ("&#215;", "×")):
+        text = text.replace(ent, ch)
+    return re.split(r"(?<=[.;:])\s+|\s+—\s+|\s+--\s+|\n\s*\n", text)
+
+
+@needs_corpus
+def test_no_record_names_a_green_label_the_engine_does_not_print():
+    """The card label was relabelled and eight records went on quoting the label it replaced.
+
+    9f37857 measured the seamless six's source cell off their own arrays and the label became
+    `GREEN &middot; 2.7&times;3.4 m data`. `1 m data` was then still quoted, in the PRESENT TENSE, in two
+    runtime prints a user reads while running the pipeline (fetch_lidar's green-coverage NOTE,
+    lidar_coverage's uncovered-green report -- twice), in lidar_coverage's module docstring, in two
+    engine comments, in PIPELINE.md, and in four docstrings of this file. A repo that contradicts
+    itself about a printed label is the defect class this project keeps finding, and the fix for a
+    stale copy is never another copy.
+
+    So the label vocabulary is taken from the ENGINE -- `generate.green_honesty` driven with the cells
+    `render_green.source_lattice` measures off the arrays on disk -- and no prose anywhere in the repo
+    may name a resolution label outside it. The next relabel cannot strand these again: it moves this
+    set, and every record that still quotes the old figure fails here by name.
+
+    A HISTORICAL mention is cleared by being NAMED, in `_HISTORICAL_LABEL_CLAUSES`, keyed to the content
+    of its clause -- not by carrying a keyword. The keyword rule this replaces cleared any clause holding
+    "no", and this project's house phrasing for the very caveat in question is "greens with NO usable
+    point cloud", so the plainest live-stale sentence in the shape the repo actually writes went straight
+    through it. See the note at that dict for the measurement, in both directions, including why the
+    obvious structural replacement -- exempt a figure inside a quotation -- is a REGRESSION here: the
+    live sites this grader exists for were quoted too, because the defect is a stale copy of a quoted
+    label.
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    slug = a_course()
+    os.environ["COURSE"] = slug
+    for m in ("config", "render_green", "render_hole", "generate"):
+        sys.modules.pop(m, None)
+    import generate
+
+    seam = [(v[0], v[1]) for v in cells.values() if v[3] and v[2]]
+    assert seam, ("no built green measures a source lattice, so the engine's coarse label carries no "
+                  "figure here and this test would grade nothing")
+    emitted = set()
+    for over in ([dict(source="USGS 3DEP seamless mosaic @0.5m sampling", source_cell_m=list(c))
+                  for c in seam]
+                 + [dict(), dict(_outdated=True),
+                    dict(source="USGS 3DEP seamless mosaic, source cell NOT MEASURED @0.5m sampling")]):
+        s = _fake_summary(**{k: v for k, v in over.items() if not k.startswith("_")})
+        hole = sorted(generate.HOLES)[0]
+        prev = generate.config.COURSE.get("greens_possibly_outdated")
+        if over.get("_outdated"):
+            generate.config.COURSE["greens_possibly_outdated"] = [hole]
+        try:
+            label, _slope = generate.green_honesty(hole, s)
+        finally:
+            if prev is None:
+                generate.config.COURSE.pop("greens_possibly_outdated", None)
+            else:
+                generate.config.COURSE["greens_possibly_outdated"] = prev
+        emitted.add(label)
+    live = {_norm_label(m.group(0)) for lab in emitted for m in _CELL_LABEL_CLAIM.finditer(lab)}
+    assert live, (f"generate.green_honesty prints no resolution figure on any label for a seamless "
+                  f"green ({sorted(emitted)}), so the caveat carries no measurement. Either the cell "
+                  f"stopped being measured or the label stopped naming it; both are the defect "
+                  f"9f37857 fixed.")
+
+    stale = [f"{where}: says {said!r}; the engine prints {sorted(emitted)} -- clause: {clause}"
+             for where, said, clause in _stale_label_mentions(live)]
+    assert not stale, (
+        f"a record names a green label the engine does not print. The label is the one mark whose job "
+        f"is to tell a junior to trust that green LESS, so a stale copy of it is not cosmetic. Say what "
+        f"the engine says, or mark the mention as history -- which means adding its clause key to "
+        f"_HISTORICAL_LABEL_CLAUSES on purpose, not finding a word that clears it:\n  "
+        + "\n  ".join(stale))
+
+
+# The TWELVE surfaces a resolution label can hide in, each with the shape of injection that reaches it,
+# plus one CONTROL that must be caught by the same collector (the blank-COMMENT-line variant) -- so
+# thirteen entries below, twelve of them measured dodges.
+# 108a894's grader saw three of them and its message claimed all of them; a60fcae widened it to eight.
+# The four added after that were each measured as a live dodge past the eight:
+#   * an f-string whose claim is SPLIT ACROSS Constant parts. `ast.walk` reached each part separately, so
+#     the claim existed in no single collected string.
+#   * a `bytes` literal, which `isinstance(node.value, str)` skipped outright.
+#   * a comment claim split across a TRULY BLANK line, which ended the block mid-claim. Note the variant
+#     that does NOT dodge: a blank COMMENT line ("#") keeps the tokens consecutive, so the block survives
+#     and the claim is caught. Both are probed, because the difference is not obvious from the code.
+#   * SECURITY.md, the one root user-facing document `_prose_docs()` omitted.
+#
+# The label to inject is PASSED IN, never typed here. A mutation test for a grader that reads this file
+# would otherwise trip its own grader on its own fixtures -- and the way out of that must not be to
+# split the phrase across two literals to hide it, because a repo where prose can dodge the sweep by
+# spelling is a repo where the next stale label dodges it too. The two SPLIT probes therefore take the
+# label apart at a boundary computed from it, rather than spelling either half.
+#
+# WHERE that boundary is decides whether those two probes grade anything, and the first choice of it made
+# them VACUOUS. They split by position -- the first two characters against the rest -- and the REST IS
+# ITSELF A COMPLETE CLAIM: a digit, the unit and the word, which is all `_CELL_LABEL_CLAIM` asks for, so
+# the collector reports it from the tail alone. MEASURED: with both widenings under test reverted, the
+# position split still came back CAUGHT from both probes, so they passed with or without the fix they
+# existed to grade. Splitting at the word instead leaves a figure with no word on one side and a word
+# with no figure on the other, and neither half matches; re-measured the same way, both probes then
+# report MISSED with the widenings reverted and CAUGHT with them in place. That is the difference between
+# a probe and a decoration.
+#
+# (Neither half is spelled above, and that is not fastidiousness: the first draft of this very note
+# spelled the tail to explain the point, which made the note itself a live stale label in a file this
+# grader sweeps. The full suite caught it.)
+def _label_injections(dead):
+    cut = dead.index(" data")                # at the WORD, so neither half is a claim on its own
+    head, tail = dead[:cut], dead[cut:]
+    return (
+        ("a comment", "lidar_coverage.py",
+         lambda s: s + f"\n# every green here is {dead}.\n"),
+        ("a docstring", "lidar_coverage.py",
+         lambda s: s.replace('"""', f'"""Reads greens that are {dead}.\n\n', 1)),
+        ("a print() string literal", "lidar_coverage.py",
+         lambda s: s + f'\n\ndef _probe():\n    print("hole 9: {dead}")\n'),
+        ("a SystemExit message", "fetch_lidar.py",
+         lambda s: s + f'\n\ndef _probe(n):\n    raise SystemExit(f"{{n}} greens are {dead}")\n'),
+        ("an f-string SPLIT across Constant parts", "lidar_coverage.py",
+         lambda s: s + f'\n\ndef _probe2(a, b):\n    print(f"{{a}}{head}{{b}}{tail} on that green")\n'),
+        ("a bytes literal", "lidar_coverage.py",
+         lambda s: s + f'\n\ndef _probe3():\n    return b"hole 9: {dead}"\n'),
+        ("a comment claim split across a TRULY BLANK line", "lidar_coverage.py",
+         lambda s: s + f"\n# every green here is {head}\n\n# {tail}.\n"),
+        ("a comment claim split across a blank COMMENT line", "lidar_coverage.py",
+         lambda s: s + f"\n# every green here is {head}\n#\n# {tail}.\n"),
+        ("README.md", "README.md", lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+        ("PIPELINE.md", "PIPELINE.md", lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+        ("SECURITY.md", "SECURITY.md", lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+        ("legal/01_DATA_SOURCES_AND_LICENSES.md", "legal/01_DATA_SOURCES_AND_LICENSES.md",
+         lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+        ("legal/11_HORIZONTAL_EARTH_MODEL.md", "legal/11_HORIZONTAL_EARTH_MODEL.md",
+         lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+    )
+
+
+def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_in():
+    """MUTATION TEST. 108a894 shipped a grader that could not see the class it was written for.
+
+    Its message said it refuses "any record OR RUNTIME STRING that names a mark the engine does not
+    produce, so the next relabel cannot strand these again". That was not true and no test could have
+    said so. Measured afterwards: the dead card label injected into PIPELINE.md did fail the grader by
+    name, and the same three words injected into a `print()` literal in lidar_coverage.py left the FULL
+    SUITE byte-identical to baseline -- because `_prose_of_repo` collected tokenize COMMENT tokens, AST
+    docstrings, README.md and PIPELINE.md, and nothing else. String literals and every one of the legal
+    records were invisible to the one test whose whole job was to find a stale label anywhere in the
+    repo.
+
+    A grader that misses the exact class it was written for is worse than no grader: it certifies the
+    absence of the defect, so the next person to look does not look. So the collector is now
+    MUTATION-TESTED rather than asserted. Each surface gets a dead label injected into a real copy of a
+    real file, one surface at a time, and the grader must come back with that surface named. The
+    unmutated copy must come back clean first, so every failure below is attributable to its injection
+    and not to something the copy already carried.
+
+    a60fcae widened it to eight surfaces; four more dodges were measured past those eight and are probed
+    here too -- a claim SPLIT across the Constant parts of one f-string, a `bytes` literal, a comment
+    claim split across a truly blank line, and SECURITY.md. Each was verified to walk through the
+    eight-surface collector before the collector was widened, and for the two SPLIT probes that
+    verification is now the fixture's own rather than a claim about a past measurement: they were vacuous
+    as first written (see the note above `_label_injections`, which measures it) and they fail with the
+    widenings reverted now. The blank-COMMENT-line variant that does NOT dodge is probed beside the one
+    that does, so the difference stays measured rather than assumed.
+
+    Fast and hermetic: the copy holds only the files the injections touch, so the collector's globs
+    (`*.py`, `legal/*.md`) find exactly those and the whole sweep runs in well under a second.
+    """
+    import shutil
+    import tempfile
+    live = {"2.7x3.4mdata"}          # a stand-in for the engine's vocabulary; this test grades the
+    #                                  COLLECTOR, and test_no_record_names... grades the vocabulary
+    dead = f"{9.9:.1f} m data"       # a figure outside it, BUILT rather than written down
+    assert _norm_label(dead) not in live and _CELL_LABEL_CLAIM.search(dead), (
+        f"the probe label {dead!r} is not a resolution claim outside the vocabulary, so injecting it "
+        f"would prove nothing about any surface")
+    injections = _label_injections(dead)
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "legal"))
+        for rel in sorted({s[1] for s in injections} | set(_prose_docs())):
+            shutil.copyfile(os.path.join(ROOT, rel), os.path.join(td, rel))
+        pristine = {rel: open(os.path.join(td, rel), encoding="utf-8").read()
+                    for rel in sorted({s[1] for s in injections})}
+
+        clean = _stale_label_mentions(live, root=td)
+        assert not clean, (
+            f"the unmutated copy already names a label outside the engine's vocabulary, so no "
+            f"injection below would be attributable: {clean[:4]}")
+
+        missed = []
+        for name, rel, inject in injections:
+            path = os.path.join(td, rel)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(inject(pristine[rel]))
+            try:
+                found = [w for w, _said, _cl in _stale_label_mentions(live, root=td)]
+            finally:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(pristine[rel])
+            if not any(w.split(":")[0] == rel for w in found):
+                missed.append(f"{name}: put {dead!r} in {rel} and the grader reported "
+                              f"{found or 'nothing at all'}")
+        assert not missed, (
+            "the stale-label grader cannot see one of the surfaces a stale label has actually hidden "
+            "in, so it certifies prose it never read:\n  " + "\n  ".join(missed))
+
+
+# The LIVE-STALE sentences the history exemption must refuse, written in the shapes this repo actually
+# uses. `{L}` is filled in with the probe label so it is never typed here (see the fixture note above).
+#
+# The first three are the shapes the keyword rule cleared: the project's own house phrasing for this very
+# caveat is "greens with NO usable point cloud", so "no" is a word this repo writes while making a LIVE
+# claim, and "was"/"were"/"had" are ordinary English inside one. The last two are not hypotheses -- they
+# are the wordings two REAL live sites carried, quoted off the tree at 9f37857^ (PIPELINE.md's card
+# sentence and fetch_lidar.py's coverage SystemExit) -- and they are here because they are what refutes a
+# quotation-based exemption: both put the figure inside quotes while asserting it of the current build.
+_LIVE_STALE_SHAPES = (
+    ("the house phrasing, with 'no' in it", "Six greens have no usable point cloud, so each is {L}."),
+    ("past-tense passive", "These greens were built from {L}."),
+    ("'had' plus 'no'", "Those holes had no LiDAR return, so they are {L}."),
+    ("a REAL live site: PIPELINE.md at 9f37857^", "Those cards print `{L}`."),
+    ("a REAL live site: fetch_lidar's SystemExit", "their cards are labelled '{L}'."),
+)
+
+
+def test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording():
+    """MUTATION TEST, BOTH DIRECTIONS. The exemption that let a record say what it used to publish was a
+    KEYWORD rule, and the keyword it turned on is a word this project writes inside live claims.
+
+    `_DEAD_LABEL_REFUTED` cleared any clause holding no / not / was / were / said / had / claimed /
+    shipped / typed / replace. The shipped guide row reads "greens with NO usable point cloud", so the
+    plainest live-stale sentence in the house style was exempt. MEASURED against the retired rule, all
+    three of the first shapes below were MISSED and the same sentence with no keyword in it FAILED --
+    the exemption was decided by vocabulary, not by whether the claim was true.
+
+    The obvious structural replacement -- clear a figure that sits inside a QUOTATION -- was measured and
+    REFUSED. 10 of the 12 historical mentions in this repo are quoted, so it looks right; but the defect
+    this grader family exists for IS a stale copy of a quoted label, and the last two shapes below are
+    the exact wordings of two live sites at 9f37857^. A quotation rule exempts both. Swapping a rule that
+    catches them for one that does not, in the name of being structural, would be the campaign's own
+    failure mode.
+
+    So the exemption is an explicit content-keyed allowlist, and this grades it in both directions:
+
+      FORWARD  every live-stale shape, injected into a real file, must FAIL -- and must fail from a
+               clause that does NOT appear in the allowlist, so it cannot be passing by accident.
+      REVERSE  every clause already on the allowlist must still be found in the repo and still be
+               cleared. A key that matches nothing is a STALE exemption sitting ready to clear a future
+               clause nobody looked at, and a historical record that has quietly stopped being cleared
+               means the sweep is about to be waived rather than fixed.
+    """
+    import shutil
+    import tempfile
+    live = {"2.7x3.4mdata"}
+    dead = f"{9.9:.1f} m data"
+    assert _norm_label(dead) not in live and _CELL_LABEL_CLAIM.search(dead), (
+        f"the probe label {dead!r} is not a resolution claim outside the vocabulary, so nothing below "
+        f"would prove anything about the exemption")
+
+    # FORWARD. Each live-stale shape must be reported, in a real copy, one at a time.
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "legal"))
+        for rel in sorted(set(_prose_docs()) | {"lidar_coverage.py"}):
+            shutil.copyfile(os.path.join(ROOT, rel), os.path.join(td, rel))
+        pristine = open(os.path.join(td, "lidar_coverage.py"), encoding="utf-8").read()
+        assert not _stale_label_mentions(live, root=td), (
+            "the unmutated copy already names a label outside the vocabulary, so no injection below "
+            "would be attributable")
+        waved = []
+        for name, shape in _LIVE_STALE_SHAPES:
+            sentence = shape.replace("{L}", dead)
+            path = os.path.join(td, "lidar_coverage.py")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(pristine + f"\n# {sentence}\n")
+            try:
+                found = _stale_label_mentions(live, root=td)
+            finally:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(pristine)
+            if not any(w.split(":")[0] == "lidar_coverage.py" for w, _s, _c in found):
+                waved.append(f"{name}: {sentence!r} was cleared by the history exemption")
+        assert not waved, (
+            "the history exemption clears a LIVE claim that the engine's own label denies. An exemption "
+            "a live defect earns by how it happens to be worded certifies the absence of the defect it "
+            "let through -- which is what the keyword rule did:\n  " + "\n  ".join(waved))
+
+    # THE DUPLICATE PROBE, on a scratch tree, because the gap it closes is structural rather than a
+    # matter of wording: a content key exempts its clause WHEREVER that clause appears, so a copy is
+    # exempt for free -- and set membership cannot tell "the record moved" (which should keep its
+    # exemption) from "the record was copied" (which should not). Copies are this project's own stated
+    # propagation mechanism, and a copied record with one copy going stale is the single most frequent
+    # defect shape in this whole campaign. So the rule is a COUNT, and this is what proves the count can
+    # see a second copy at all.
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "legal"))
+        for rel in sorted(_prose_docs()):
+            shutil.copyfile(os.path.join(ROOT, rel), os.path.join(td, rel))
+        sentence = f"a green built from {dead} sits here"
+        key = _clause_key(sentence)
+        first = os.path.join(td, "aprobe.py")
+        with open(first, "w", encoding="utf-8") as fh:
+            fh.write(f"# {sentence}\n")
+        assert not _duplicated_exemptions({key: "the probe"}, _clause_occurrences(td)), (
+            "one copy of the probe clause is reported as duplicated, so the count below is not counting "
+            "what it claims and every result from it is unattributable")
+        with open(os.path.join(td, "bprobe.py"), "w", encoding="utf-8") as fh:
+            fh.write(f"# {sentence}\n")
+        dup = _duplicated_exemptions({key: "the probe"}, _clause_occurrences(td))
+        assert len(dup) == 1 and len(dup[0][1]) == 2, (
+            "the same allowlisted clause in TWO files is not reported as duplicated, so the exemption "
+            f"can be copied without anything objecting: {dup}")
+
+    # REVERSE. Every allowlisted clause must still exist, exactly once, and still be doing work.
+    assert _HISTORICAL_LABEL_CLAUSES, (
+        "the history allowlist is empty. Either every historical mention of a retired label has been "
+        "removed from the repo -- check, because this suite documents several deliberately -- or the "
+        "exemption has been switched off and the records that describe the old label are now failing.")
+    occ = _clause_occurrences()
+    dead_keys = sorted(k for k in _HISTORICAL_LABEL_CLAUSES if k not in occ)
+    assert not dead_keys, (
+        "the history allowlist holds a key that matches no clause in the repo. A stale exemption is a "
+        "pre-approved hole waiting for a clause nobody has looked at: if the record was reworded, "
+        "re-key it deliberately; if it was deleted, delete the key.\n  "
+        + "\n  ".join(f"{k}: {_HISTORICAL_LABEL_CLAUSES[k]}" for k in dead_keys))
+    copied = _duplicated_exemptions(_HISTORICAL_LABEL_CLAUSES, occ)
+    assert not copied, (
+        "an allowlisted clause exists more than once, and one exemption is clearing every copy. Whatever "
+        "the second copy is for, it is now a record about a retired label that nothing grades: if the "
+        "clause moved, the old site should be gone; if it was duplicated on purpose, the copies have to "
+        "be worded as the separate statements they are, and keyed separately. A record copied, with one "
+        "copy later going stale, is the defect shape this allowlist exists to keep out:\n  "
+        + "\n  ".join(f"{k} in {len(w)} places ({', '.join(w)}): {_HISTORICAL_LABEL_CLAUSES[k]}"
+                      for k, w in copied))
+    # USED, and used means the key CHANGES THE OUTCOME. The old check asked only whether the clause still
+    # carried *a* resolution label -- which the LIVE label satisfies, so a key pointing at a clause that
+    # names only the label the engine does print would have counted as used while exempting nothing. This
+    # asks the sweep directly, with no exemption at all, and requires each key's own clause to be among
+    # what it then reports.
+    bare = {(w, c) for w, _said, c in _stale_label_mentions(live, exempt=())}
+    inert = sorted(k for k in _HISTORICAL_LABEL_CLAUSES if not set(occ[k]) & bare)
+    assert not inert, (
+        "the history allowlist holds a key that exempts nothing: with the exemption switched off, that "
+        "clause is not reported as a stale label at all, so the key is a pre-approved hole doing no "
+        "work. Delete it, or re-key the clause it was meant for:\n  "
+        + "\n  ".join(f"{k}: {_HISTORICAL_LABEL_CLAUSES[k]}" for k in inert))
+
+
+# A resolution bound to the seamless product with at most TWO words between the figure and the product
+# word: "1 m seamless DEM", "seamless 1 m", "1 m fallback", "1 m green fallback", "1 m from the seamless
+# DEM".
+#
+# THE AXIS THAT WORKS IS THE GAP, NOT THE WORD LIST, and that took three failed widenings to find. Every
+# earlier round added a word -- "fill" went on because fetch_dem_hd.py:269 called the product "the coarse
+# 1 m fill", one word outside the set -- and each time another live site turned up just outside the new
+# set. MEASURED HERE, by sweeping the number of filler words the pattern tolerates and counting what each
+# width flags over the prose in this tree. Every row is re-derived by _widening_costs on every run, off
+# the SHIPPED pattern (see _gap_widths), and graded:
+#     | gap | reaches a figure bound by a preposition | clauses flagged | of those, legitimate 0.4 m |
+#     |  0  |  no  |  18  |  0  |
+#     |  1  |  no  |  20  |  0  |
+#     |  2  |  yes |  20  |  0  |
+#     |  3  |  yes |  22  |  2  |
+#     |  4  |  yes |  32  |  11 |
+# Gap 2 is the last free width: it reaches the preposition shape that defeats every word list, and the
+# first false positive appears only at gap 3 -- true sentences that put the OTHER stage's real 0.4 m
+# figure a few words from the fallback it exists to replace. So the pattern is gap 2 and the limit is
+# asserted at gap 3, both probed below on a figure this file builds rather than types. The clause counts
+# are LOWER bounds and the false-positive counts are exact at the free widths; see _widening_costs.
+#
+# WHAT THAT WIDENING FOUND, on the surfaces this rule already graded: a seventh live site. A failure
+# message in this file called legal/03's seamless-mosaic fallbacks "1 m green fallbacks" -- present
+# tense, one filler word ("green") outside the shipped gap, in a string literal the sweep had been
+# reading all along.
+#
+# CO-OCCURRENCE -- any figure anywhere in a clause that mentions the product -- is still refused, and
+# still on measurement: _widening_costs puts it at a LOWER BOUND of 113 figures in 91 places, 47 of them
+# the 0.4 m LiDAR figure the arrays DO measure, named beside the fallback it exists to replace. Bounds
+# rather than an exact triple on purpose (see that helper); the triple this note carried before this
+# round -- 121 figures in 56 places, 61 at 0.4 m -- reproduces under no definition of the rule it
+# described, which is what an ungraded measurement eventually reads like.
+_SEAMLESS_RES = re.compile(
+    r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b(?:\s+\w+){0,2}\s+"
+    r"(?:seamless|mosaic|national\s+model|fallback|fill|DEM\b)"
+    r"|(?:seamless|mosaic|fallback|fill)\s+(?:DEM\s+|service\s+)?(?<![\d.])(\d[\d.]*)\s*"
+    r"(?:m|metres?|meters?)\b",
+    re.I)
+
+# THE SECOND MECHANISM: a resolution ATTRIBUTED TO A PRODUCER BY NAME -- the shape `<module>.py at N m`,
+# which is how surface_io.py's module docstring states the contract for both stages. The anchor is the
+# FILENAME rather than the product, and that buys two things the gap-2 rule above cannot have:
+#   * IT READS COMMENTS AND DOCSTRINGS WITH NO ALLOWLIST. The rule above is confined to string literals
+#     and published documents because pointing it at comments would flag two dozen clauses that RECORD
+#     the retired claim, each needing a content-keyed exemption (measured by _widening_costs). A
+#     filename cannot be quoted the way a product name can: prose about this defect quotes the label,
+#     not an attribution, so this rule crosses that surface for free -- which is how it reached
+#     surface_io.py's module docstring, where the live site was.
+#   * IT GRADES WHICH STAGE A FIGURE IS CLAIMED FOR. 0.5 m is true of one producer and false of the
+#     other, and every product rule in this file would pass both. This one measures each stage's own
+#     greens (_producer_grid_figures) and grades the attribution against them.
+# Every shape named in this block is BUILT in the probes below rather than typed here, because this rule
+# reads comments -- a literal example would be swept by it and fail as a finding against itself, which is
+# exactly what it did on the first run of this note.
+#
+# Bound by "at" alone, and that narrowness is measured rather than timid. Widened to any short run of
+# words between the producer and the figure it reaches 10 clauses in this tree, and 3 of those attribute
+# a figure to a producer that does not produce it while being perfectly true English -- a sentence about
+# one stage REPLACING the other's 0.4 m surface, or REFUSING its own attempt at one. An attribution rule
+# cannot grade a sentence like that, so it does not try to read one.
+_PRODUCER_RES = re.compile(
+    r"(fetch_dem(?:_hd)?\.py)`?\s+at\s+(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b", re.I)
+
+
+def _seamless_grid_figures():
+    """(sorted allowed metre figures, how each was measured) for the seamless surfaces.
+
+    TWO figures describe those arrays and they are not the same thing: the SOURCE cell the reply was
+    resampled from (render_green.source_lattice, read off the pixels) and the OUTPUT sampling the patch
+    was delivered at (the recorded bbox over the array's own shape). Prose may name either -- both are
+    true and both are useful. What it may not name is a THIRD figure, and "1 m" is a third figure: it
+    was typed into `source` once, and 3DEP's seamless ImageServer is a multi-resolution mosaic that
+    answered from a tier 2.7x and 3.4x coarser at every green this project has ever taken from it.
+    """
+    cells = _measured_cells()
+    seam = [(s, h) for (s, h), v in cells.items() if v[3]]
+    figs = {}
+    for s, h in seam:
+        v = cells[(s, h)]
+        figs.setdefault(round(v[0], 2), "a measured E-W source cell")
+        figs.setdefault(round(v[1], 2), "a measured N-S source cell")
+        mp = os.path.join(ROOT, "courses", s, "dem_hd", f"hole{h:02d}.json")
+        with open(mp, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        figs.setdefault(round((xmax - xmin) * _mlon(clat) / meta["W"], 2), "the output sampling")
+        figs.setdefault(round((ymax - ymin) * _mlat(clat) / meta["H"], 2), "the output sampling")
+    return figs
+
+
+def _producer_grid_figures():
+    """{producer module: {metre figure: how it was measured}} for the two stages that write dem_hd/.
+
+    The measurement _PRODUCER_RES is graded against. Read off the arrays and their own metas, never off
+    a `source` string, because the claim being graded is exactly the one a string cannot settle: "1 m"
+    was typed into `source` and stood for the life of the project.
+
+    A green belongs to fetch_dem.py when its meta's `source` names the seamless product and to
+    fetch_dem_hd.py otherwise -- the same test every consumer in this repo makes. Per PRODUCER rather
+    than one pooled set, because pooling would let a claim survive by naming the OTHER stage's true
+    figure: on this corpus the seamless stage's greens sample at 0.50 m and the LiDAR stage's at 0.40 m,
+    so a claim attributing 0.50 m to the LiDAR stage is as false as one attributing 1 m to either, and
+    has to fail the same way.
+    """
+    cells = _measured_cells()
+    out = {"fetch_dem.py": {}, "fetch_dem_hd.py": {}}
+    for (s, h), v in sorted(cells.items()):
+        figs = out["fetch_dem.py" if v[3] else "fetch_dem_hd.py"]
+        if v[3]:
+            figs.setdefault(round(v[0], 2), "a measured E-W source cell")
+            figs.setdefault(round(v[1], 2), "a measured N-S source cell")
+        mp = os.path.join(ROOT, "courses", s, "dem_hd", f"hole{h:02d}.json")
+        with open(mp, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        figs.setdefault(round((xmax - xmin) * _mlon(clat) / meta["W"], 2), "the output sampling")
+        figs.setdefault(round((ymax - ymin) * _mlat(clat) / meta["H"], 2), "the output sampling")
+    return out
+
+
+def _gap_widths(pattern=None):
+    """{filler words tolerated: compiled pattern} for the gap sweep, DERIVED from the shipped rule.
+
+    Rebuilt by substituting the filler quantifier inside `_SEAMLESS_RES.pattern` rather than by writing
+    the pattern out again at each width. A sweep measured on a re-implementation of the scan proves
+    nothing about the scan that ships -- the same reason the label grader's mutation test drives the
+    shipped collector -- and it is how a note about a rule's reach goes stale while the rule moves.
+    """
+    src = (pattern or _SEAMLESS_RES).pattern
+    marker = r"(?:\s+\w+){0,2}"
+    assert marker in src, (
+        f"_SEAMLESS_RES no longer carries the filler quantifier {marker!r} this sweep varies, so the gap "
+        f"table in the note above it would be measured on a pattern the repo does not ship:\n  {src}")
+    return {n: re.compile(src.replace(marker, r"(?:\s+\w+){0,%d}" % n), re.I) for n in range(0, 5)}
+
+
+def _widening_costs():
+    """What each way of widening _SEAMLESS_RES would cost, measured over the prose in this tree.
+
+    The note above that pattern chose its width and refused two other roads on these numbers, and an
+    argument made from figures nothing re-derives is how "1 m" survived six cards: the co-occurrence
+    triple that note carried before this round (121 figures in 56 places, 61 of them 0.4 m) reproduces
+    under no definition of the rule this file can construct.
+
+    Published and graded as BOUNDS, deliberately, each in the direction that could mislead. An exact
+    count over the repo's OWN PROSE fails on the next unrelated sentence anybody writes about the
+    fallback, which turns a measurement into a tripwire.
+
+      gap[n]  the GAP road, and the one taken: (does width n reach a figure bound to the product by a
+              preposition, clauses it flags, how many of those carry the OTHER stage's legitimate 0.4 m
+              figure). Width 2 is the last one that costs nothing.
+      co_*    the CO-OCCURRENCE road: any metre figure in a clause that mentions the product, over every
+              prose surface. `co_lidar` is the part that kills it.
+      surf_*  the SURFACE road: the shipped pattern pointed at comments and docstrings, which it does not
+              grade today. `surf_denied` is the content-keyed history allowlist that road must buy first.
+      quoted / unquoted
+              the same denied matches split on whether the figure sits inside a quotation or a backtick.
+              A structural "a quotation is a record, not a claim" exemption would cost `unquoted` keys
+              instead of `surf_denied` ones -- so `quoted` is published as a lower bound and `unquoted`
+              as an UPPER one, because that is the number whose growth would make the cheap road dear.
+    """
+    allowed, tol = _seamless_grid_figures(), 0.06
+    docs = set(_prose_docs())
+    unmeasured = lambda v: not any(abs(v - a) <= tol for a in allowed)      # noqa: E731
+    near = re.compile(r"seamless|mosaic|national\s+model|fallback|fill|\bDEM\b", re.I)
+    anym = re.compile(r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b")
+    widths = _gap_widths()
+    co_figs = co_lidar = quoted = unquoted = 0
+    co_places, surf_clauses, surf_denied = set(), set(), set()
+    gap = {n: [set(), set()] for n in widths}                # clauses flagged, of those at 0.4 m
+    for where, text in _prose_of_repo():
+        unread = where not in docs and not where.endswith("string literal")
+        for clause in _clauses(text):
+            flat = " ".join(clause.split())
+            key = (where, flat[:200])
+            if near.search(clause):
+                said = [v for v in (float(m.group(1)) for m in anym.finditer(clause)) if unmeasured(v)]
+                if said:
+                    co_figs += len(said)
+                    co_places.add(key)
+                    co_lidar += sum(1 for v in said if abs(v - 0.4) <= tol)
+            for n, pat in widths.items():
+                for m in pat.finditer(clause):
+                    v = float(m.group(1) or m.group(2))
+                    if not unmeasured(v):
+                        continue
+                    gap[n][0].add(key)
+                    if abs(v - 0.4) <= tol:
+                        gap[n][1].add(key)
+            if unread:
+                for m in _SEAMLESS_RES.finditer(clause):
+                    v = float(m.group(1) or m.group(2))
+                    surf_clauses.add(key)
+                    if not unmeasured(v):
+                        continue
+                    surf_denied.add(key)
+                    span = " ".join(m.group(0).split())
+                    before = flat[:flat.find(span)] if span in flat else ""
+                    if before.count('"') % 2 or before.count("`") % 2:
+                        quoted += 1
+                    else:
+                        unquoted += 1
+    return {"co_figures": co_figs, "co_places": len(co_places), "co_lidar": co_lidar,
+            "surf_clauses": len(surf_clauses), "surf_denied": len(surf_denied),
+            "quoted": quoted, "unquoted": unquoted, "denied_matches": quoted + unquoted,
+            "gap": {n: (len(c), len(l)) for n, (c, l) in gap.items()}}
+
+
+@needs_corpus
+def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_one_metre_product():
+    """Six live sites went on calling the seamless fallback "the 1 m seamless DEM" after 9f37857.
+
+    9f37857 measured that product off the arrays and corrected the CARD. It did not correct the places
+    a user actually meets the same claim: `lidar_coverage.py`'s uncovered-green report prints "built
+    from the 1 m seamless DEM" three lines below the corrected text and in the same output block,
+    `fetch_lidar.py` says it in a SystemExit, `fetch_dem.py` says it in a print, and legal/01 and
+    legal/11 both say it in a published record. Those two legal records were graded by NOTHING: the
+    label grader above could not see legal/*.md at all, and the one-metre grader ran only over
+    course.json fields.
+
+    All of it is one claim -- that the raster those six greens come from has a 1 m cell -- and the
+    arrays deny it. The direction is the dangerous one: it tells a reader the coarse greens are nearly
+    three times better than they are, on the exact greens the book is asking them to trust least.
+
+    GRADED AGAINST THE ARRAYS, never against the corrected card. The allowed figures are the source
+    cell `render_green.source_lattice` measures and the sampling the patch was delivered at, both from
+    `_seamless_grid_figures()`; any other figure bound to the product fails here by name and by file.
+
+    SCOPE, stated positively so it cannot be read as more than it is. TWO rules run here, over two
+    surfaces, because one anchor cannot reach the whole claim:
+
+      * THE PRODUCT rule (`_SEAMLESS_RES`) over every STRING LITERAL in the repo's .py files -- the
+        runtime messages a user reads while the pipeline runs, and the fixtures that stand in for
+        recorded artifacts -- plus README.md, PIPELINE.md and every legal record. It tolerates up to two
+        words between the figure and the product word; the note above the pattern has the sweep that
+        chose 2 and the false positives that start at 3. Widening the gap to 2 is what found the SEVENTH
+        live site, in this very file: a failure message calling legal/03's seamless-mosaic fallbacks
+        "1 m green fallbacks", present tense, one filler word outside the shipped width.
+      * THE PRODUCER rule (`_PRODUCER_RES`) over EVERY prose surface, comments and docstrings included,
+        because its anchor is a filename and no history allowlist is needed to read one. This is the rule
+        that caught the sixth: `surface_io.py`'s module docstring attributed 1 m to `fetch_dem.py` in the
+        present tense, live, in the parallel position where the other producer's true 0.4 m sits -- so
+        the sentence read as a matched pair and the wrong half looked right.
+
+    WHAT IS STILL NOT GRADED, named so the next round has a target rather than a rediscovery. The
+    product rule does NOT read comments or docstrings, so `fetch_dem_hd.py`'s `keeps_existing_surface`
+    docstring -- the site the word "fill" was added to the vocabulary FOR -- is graded by nothing:
+    putting the retired wording back there leaves every gate in this file green. Pointing the rule at
+    those surfaces costs the content-keyed history allowlist `_widening_costs` counts, keyed to clauses
+    in files a later round is still confirming. MEASURED alternative, for whoever takes it: 24 of the 25
+    denied matches on that surface sit inside quotation marks or backticks -- the remainder is 1 clause
+    today -- so a structural "a figure inside a quotation is a record, not a claim" exemption would cost
+    one key instead of twenty. But it is the exemption a previous round measured as a REGRESSION for
+    the label grader above, because the live sites THAT grader exists for were quoted too. Different
+    graders, different answer, and the difference has to be measured before it is believed.
+    """
+    allowed = _seamless_grid_figures()
+    # THE VOCABULARY, probed on the shipped pattern itself rather than described. "fill" is on the
+    # adjacency list because it was NOT, and one word is all it took: fetch_dem_hd.py's
+    # keeps_existing_surface said "the coarse 1 m fill" inside its own docstring, live and present-tense
+    # from 27f5c25, twenty lines above a site 7d8d131 corrected in the same paragraph -- and 7d8d131
+    # measured that paragraph with this very pattern, so the miss and the measurement were one word
+    # apart. The dead figure is BUILT rather than typed, exactly as the label fixture above builds
+    # its own: a probe spelled out as a literal here would be swept by the scan below and fail as a
+    # finding against itself.
+    dead = f"{9.9:.1f} m"
+    for shape in (f"built from a {dead} fill", f"the fill {dead} answered with",
+                  f"{dead} seamless DEM", f"seamless {dead}", f"a {dead} mosaic",
+                  f"the coarser {dead} national model",
+                  f"at {dead} from the seamless DEM", f"a {dead} green fallback",
+                  f"{dead} of national model under it"):
+        assert _SEAMLESS_RES.search(shape), (
+            f"the shipped adjacency pattern no longer binds a figure to the product in {shape!r}, so a "
+            f"live claim in that shape would pass unseen")
+    # THE GAP IS TWO WORDS, and the limit is asserted at THREE. This REPLACES an assertion that the
+    # pattern must not reach a figure bound to the product by a preposition at all. That limit was
+    # recorded when the axis under discussion was the word LIST, where it holds, and it is false of the
+    # GAP: widening the gap to two reached both shapes three word-list widenings had missed, and it was
+    # the change that found the seventh live site. It is measured, not assumed -- gap 3 is where the
+    # first LEGITIMATE clause is flagged (3 of them in this tree, each a true sentence putting the other
+    # stage's real 0.4 m figure two or three words from a product word), so the line sits between the
+    # last free widening and the first one that costs something.
+    assert not _SEAMLESS_RES.search(f"a green built at {dead} by the coarse seamless stage"), (
+        "the adjacency pattern now tolerates THREE filler words between the figure and the product. "
+        "Measured in this tree, that is where it starts flagging true sentences -- prose that names the "
+        "0.4 m LiDAR figure a few words from the fallback it exists to replace -- so a grader at that "
+        "width gets switched off within a day. Re-measure the gap sweep in the note above _SEAMLESS_RES "
+        "before moving this line.")
+    # THE PRODUCER RULE, probed on the same built figure: it binds a figure ATTRIBUTED to a stage, which
+    # is a different question from binding one to the product, and it must not read a sentence that
+    # merely mentions a stage near a figure.
+    for who in ("fetch_dem.py", "fetch_dem_hd.py"):
+        assert _PRODUCER_RES.search(f"{who} at {dead} from the point cloud"), (
+            f"_PRODUCER_RES no longer binds a figure attributed to {who} by name, so nothing grades "
+            f"which STAGE a figure is claimed for -- and a figure that is true of one stage and false "
+            f"of the other is invisible to every product rule in this file.")
+    assert not _PRODUCER_RES.search(f"fetch_dem.py replaces a good {dead} LiDAR surface"), (
+        "_PRODUCER_RES has widened past attribution: it now reads a figure out of a sentence that only "
+        "MENTIONS a producer near one. Three clauses in this tree say exactly that and are true, so a "
+        "rule that grades them cannot be kept -- see the note above the pattern.")
+    if not allowed:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    tol = 0.06                          # the same cell tolerance the card and legal/03 graders use
+    ranges = {}
+    for a, why in allowed.items():
+        lo, hi = ranges.get(why, (a, a))
+        ranges[why] = (min(lo, a), max(hi, a))
+    measured = "; ".join(f"{lo:.2f}-{hi:.2f} m {why}" if lo != hi else f"{lo:.2f} m {why}"
+                         for why, (lo, hi) in sorted(ranges.items()))
+    surfaces = []
+    for p in _py_sources():
+        rel = os.path.relpath(p, ROOT)
+        surfaces += [(f"{rel}:{ln} string literal", t) for ln, t in _string_literals_of(p)]
+    for d in _prose_docs():
+        with open(os.path.join(ROOT, d), encoding="utf-8") as fh:
+            surfaces.append((d, fh.read()))
+
+    bad = []
+    for where, text in surfaces:
+        for clause in _clauses(text):
+            for m in _SEAMLESS_RES.finditer(clause):
+                said = float(m.group(1) or m.group(2))
+                if any(abs(said - a) <= tol for a in allowed):
+                    continue
+                bad.append(f"{where}: calls it {m.group(0)!r}; measured {measured} "
+                           f"-- clause: {' '.join(clause.split())[:130]}")
+
+    # THE PRODUCER RULE, over EVERY prose surface. Its anchor is a filename, so it needs no history
+    # allowlist to read a comment: a clause QUOTING the retired claim quotes it as a string, not as an
+    # attribution, and this rule cannot see a string. That is the whole reason it can go where the
+    # vocabulary cannot -- and it is graded against each producer's OWN surfaces, so naming the other
+    # stage's true figure fails too.
+    prod = _producer_grid_figures()
+    for where, text in _prose_of_repo():
+        for clause in _clauses(text):
+            for m in _PRODUCER_RES.finditer(clause):
+                who, said = m.group(1), float(m.group(2))
+                figs = prod.get(who) or {}
+                if any(abs(said - a) <= tol for a in figs):
+                    continue
+                bad.append(
+                    f"{where}: attributes {m.group(0)!r} to {who}; the surfaces {who} actually writes "
+                    f"measure "
+                    + (", ".join(f"{a:g} m ({why})" for a, why in sorted(figs.items())) or "nothing")
+                    + f" -- clause: {' '.join(clause.split())[:130]}")
+
+    # THE COST OF EACH WIDTH AND OF EACH ROAD NOT TAKEN, re-derived here rather than quoted from the note
+    # that chose between them. The figures that note carried before this round did not reproduce under any
+    # reading of the rule they described, which is what an ungraded measurement eventually reads like --
+    # and this grader's own history is seven live sites that a note had already described accurately.
+    costs = _widening_costs()
+    here = _flow(open(__file__, encoding="utf-8").read())
+    widths = _gap_widths()
+    prep = f"at {dead} from the seamless DEM"
+    table = re.findall(r"\|\s*([0-4])\s*\|\s*(no|yes|YES)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|", here)
+    assert len(table) == len(widths), (
+        f"the gap sweep in the note above _SEAMLESS_RES no longer has one row per width this test can "
+        f"read ({len(table)} of {len(widths)}), so the width the shipped pattern uses was chosen on "
+        f"nothing: measured {costs['gap']}, reach "
+        f"{ {n: bool(p.search(prep)) for n, p in widths.items()} }")
+    for raw_n, raw_reach, raw_clauses, raw_fp in table:
+        n = int(raw_n)
+        flagged, at_lidar = costs["gap"][n]
+        said_reach = raw_reach.lower() == "yes"
+        if bool(widths[n].search(prep)) != said_reach:
+            bad.append(f"the gap table says width {n} does{'' if said_reach else ' not'} reach a figure "
+                       f"bound to the product by a preposition; probing the shipped pattern at that "
+                       f"width says the opposite")
+        if int(raw_clauses) > flagged:
+            bad.append(f"the gap table says width {n} flags {raw_clauses} clauses; measured {flagged}, "
+                       f"so that bound does not hold")
+        if int(raw_fp) == 0 and at_lidar:
+            bad.append(f"the gap table says width {n} flags no legitimate 0.4 m figure; measured "
+                       f"{at_lidar}. If the width the pattern SHIPS at now has false positives in it, "
+                       f"that is the finding -- re-measure the sweep before widening anything")
+        elif int(raw_fp) > at_lidar:
+            bad.append(f"the gap table says width {n} flags {raw_fp} legitimate 0.4 m figures; measured "
+                       f"{at_lidar}, so the cost of that width is overstated")
+    for pat, keys, what, side in (
+            (r"LOWER BOUND of (\d+) figures in (\d+) places, (\d+) of them the 0\.4 m LiDAR figure",
+             ("co_figures", "co_places", "co_lidar"), "the co-occurrence road", "lo"),
+            (r"(\d+) of the (\d+) denied matches on that surface sit inside quotation marks",
+             ("quoted", "denied_matches"), "the quotation split", "lo"),
+            (r"the remainder is (\d+) clauses? today", ("unquoted",), "the unquoted remainder", "hi")):
+        m = re.search(pat, here)
+        assert m, (f"the record of what {what} would cost is no longer in a form this test can read, so "
+                   f"the decision rests on nothing: measured {costs}")
+        for i, key in enumerate(keys, start=1):
+            said = int(m.group(i))
+            if side == "lo" and said > costs[key]:
+                bad.append(f"{what} publishes {key} as at least {said}; measured {costs[key]} in this "
+                           f"tree, so the bound does not hold")
+            if side == "hi" and said < costs[key]:
+                bad.append(f"{what} publishes {key} as at most {said}; measured {costs[key]}, so the "
+                           f"cheap road is dearer than the record says")
+    if not costs["co_lidar"]:
+        bad.append(
+            "the co-occurrence road no longer flags a single figure the arrays DO measure, which is the "
+            "whole reason it was refused. Re-measure it and re-decide, rather than leaving a refusal "
+            f"standing on a fact that has expired: measured {costs}")
+
+    # The other half of the same claim, and the half that replaces the figures just removed: a document
+    # that names the source cell PER AXIS is graded against the axis it names. legal/01 now carries such
+    # a pair, and a corrected figure nothing grades is the next stale figure -- that is how "1 m"
+    # survived six cards and two lines of legal/03.
+    cells = _measured_cells()
+    seam = [v for v in cells.values() if v[3]]
+    for d in _prose_docs():
+        with open(os.path.join(ROOT, d), encoding="utf-8") as fh:
+            said_ew, said_ns = _axis_cells(fh.read())
+        bad += _cells_off(d, said_ew, [v[0] for v in seam], "E-W")
+        bad += _cells_off(d, said_ns, [v[1] for v in seam], "N-S")
+
+    assert not bad, (
+        "a runtime message or a published record names a resolution for the seamless fallback that the "
+        "surfaces built from it deny. Name the measured figure, or name no figure at all -- "
+        "\"the seamless DEM\" is both shorter and true:\n  " + "\n  ".join(bad))
+
+
+@needs_corpus
+def test_no_course_record_claims_an_elevation_source_its_own_surfaces_deny():
+    """`sources.elevation` and `dem_source` are hand-typed, reproduced VERBATIM in legal/03, and four
+    of the twelve named a seamless 1 m fallback the artifacts deny.
+
+    monarch-bay's was FALSE -- its six seamless greens measure 2.70-2.73 x 3.42-3.43 m, not 1 m.
+    castlewood-hill's and castlewood-valley's were STALE: both courses build all 18 greens from 0.4 m
+    LiDAR and have never taken a green from the mosaic. copper-valley's `dem_source` said "USGS 3DEP
+    seamless 1 m (CA Sierra Nevada 2025 / Central Valley 2017)" for a course whose 18 greens are ALL
+    0.4 m ground returns from CA_SierraNevada_B22, flown 2021-12-02.
+
+    Nothing graded these. The row beside them in legal/03 is DERIVED from the same artifacts, so the
+    document stated both readings of one fact, four times, and agreed with itself nowhere.
+
+    Graded against the surfaces on disk, never against the derived row: two records that check each
+    other are how "1 m" survived six cards and two lines of that document.
+    """
+    cells = _measured_cells()
+    if not cells:
+        pytest.skip("per-course green surfaces are gitignored; nothing to measure")
+    problems, graded = [], 0
+    for slug in sorted(geometry_courses()):
+        mine = {h: v for (s, h), v in cells.items() if s == slug}
+        if not mine:
+            continue
+        graded += 1
+        seam = {h: v for h, v in mine.items() if v[3]}
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
+            cj = json.load(fh)
+        fields = [("dem_source", str(cj.get("dem_source") or "")),
+                  ("sources.elevation", str((cj.get("sources") or {}).get("elevation") or ""))]
+        for name, text in fields:
+            if not text:
+                continue
+            where = f"{slug}: {name}"
+            if not seam:
+                for clause in _clauses(text):
+                    if re.search(r"seamless|fallback|fill\b", clause, re.I) and \
+                            not re.search(r"\bnot\b|\bno\b|never|none", clause, re.I):
+                        problems.append(
+                            f"{where} names a seamless fallback; all {len(mine)} of this course's "
+                            f"greens are built from the point cloud and none has ever come from the "
+                            f"mosaic. Clause: {' '.join(clause.split())[:140]}")
+            problems += _unrefuted_one_metre_claims(where, text)
+            said_ew, said_ns = _axis_cells(text)
+            problems += _cells_off(where, said_ew, [v[0] for v in seam.values()], "E-W")
+            problems += _cells_off(where, said_ns, [v[1] for v in seam.values()], "N-S")
+            # `(?<![\d.])` because "0.4 m greens" is a RESOLUTION, not a count of four greens.
+            for n in re.findall(r"(?<![\d.])(\d+)\s+(?:\w+\s+)?(?:hole|green)s?\b", text):
+                if int(n) not in (len(seam), len(mine)):
+                    problems.append(f"{where} publishes a count of {n} greens; this course has "
+                                    f"{len(mine)} built surfaces, {len(seam)} of them from the mosaic")
+    assert graded >= 2, f"only {graded} course record(s) read; this graded almost nothing"
+    assert not problems, ("a course record claims an elevation source its own surfaces deny:\n  "
+                          + "\n  ".join(problems[:12]))
+
+
+def _reaches_the_drawing(lam_m, cell_m, px_m, gauss, sig_px=3.0, n=640, rows=23, nph=4):
+    """Amplitude of a `lam_m` ripple in the GROUND that survives to the drawn surface, 0..1.
+
+    The whole chain, end to end, and not a formula: sample the ground at the measured source cell,
+    bilinear-interpolate to the served pixel (np.interp IS bilinear along one axis), smooth with the
+    module's OWN gauss(), then project the result back onto the input wavelength -- so what is
+    reported is the faithful component at `lam_m` and not the long-wavelength artefact that a ripple
+    finer than the source Nyquist folds into.
+
+    Averaged over the sampling phase. The whole-array minimum and maximum differ by under 0.002 at
+    every wavelength measured here, so the phase is not doing any of the work.
+    """
+    import numpy as np
+    xf = np.arange(n) * px_m
+    amps = []
+    for ph in np.linspace(0.0, cell_m, nph, endpoint=False):
+        xs = np.arange(-3, n * px_m / cell_m + 4) * cell_m + ph
+        y = np.interp(xf, xs, np.sin(2 * math.pi * xs / lam_m))
+        s = gauss(np.repeat(y[None, :], rows, axis=0), sig_px)[rows // 2][160:-160]
+        t = xf[160:-160]
+        a = 2 * (s * np.sin(2 * math.pi * t / lam_m)).mean()
+        b = 2 * (s * np.cos(2 * math.pi * t / lam_m)).mean()
+        amps.append(float(math.hypot(a, b)))
+    return sum(amps) / len(amps)
+
+
+@needs_corpus
+def test_the_module_bounds_the_seamless_greens_by_their_source_grid_not_only_by_the_gaussian():
+    """The resolution paragraph quoted ONE half-amplitude wavelength for all 198 greens.
+
+    Its arithmetic was right and its SCOPE was wrong, which is the harder kind of wrong to see: the
+    figures verify to four decimals against the module's own kernel on a 0.4 m grid (0.0002 at 1.5 m,
+    0.1682 at 4, 0.3206 at 5, 0.5012 at 6.4, half-amplitude 6.39 m) and they describe 192 of the 198
+    greens correctly. On the six seamless ones they are simply not the binding term. Those greens are
+    0.5 m PIXELS carrying a bilinear resample of a 2.72 x 3.43 m SOURCE lattice, so two things throw
+    detail away and the paragraph named one -- attributing the whole limit to the Gaussian while the
+    coarser term was 2.7x wider than the pixel it was computed from.
+
+    Measured end to end here (`_reaches_the_drawing`), through the module's own gauss() at the pixel
+    those six actually carry and the source cell their own arrays measure. So the paragraph is graded
+    against the data twice over: the cell comes from `source_lattice` over the .npy files, and the
+    response comes from pushing ripples through the real chain.
+    """
+    import numpy as np
+    import render_green as rg
+    doc = " ".join(rg.__doc__.split())
+    cells = _measured_cells()
+    seam = [(k, v) for k, v in cells.items() if v[3]]
+    if not seam:
+        pytest.skip("no seamless green here; nothing to bound")
+
+    # the pixel and the source cell those greens actually carry, measured
+    ew = [v[0] for _k, v in seam]
+    ns = [v[1] for _k, v in seam]
+    pxs = []
+    for (slug, hole), _v in seam:
+        with open(os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}.json"),
+                  encoding="utf-8") as fh:
+            m = json.load(fh)
+        xmin, ymin, xmax, ymax = m["bbox"]
+        clat = m["green_center"][0]
+        pxs += [(xmax - xmin) * _mlon(clat) / m["W"], (ymax - ymin) * _mlat(clat) / m["H"]]
+    px = sum(pxs) / len(pxs)
+    cell_ew, cell_ns = sum(ew) / len(ew), sum(ns) / len(ns)
+
+    called = re.search(r"gauss\(arr,\s*([\d.]+)\)", open(os.path.join(ROOT, "render_green.py"),
+                                                          encoding="utf-8").read())
+    assert called, "green_summary no longer calls gauss(arr, ...); re-read this test before editing"
+    sig_px = float(called.group(1))
+
+    # (a) the docstring must publish the MEASURED source cell for those greens
+    claim = re.search(r"([\d.]+) m E-W by ([\d.]+) m N-S", doc)
+    assert claim, ("the docstring never states the source cell the seamless greens are resampled "
+                   f"from, so the limit it publishes is missing its coarser term:\n{doc}")
+    assert abs(float(claim.group(1)) - cell_ew) <= 0.04 and abs(float(claim.group(2)) - cell_ns) <= 0.04, (
+        f"the docstring puts the seamless source cell at {claim.group(1)} x {claim.group(2)} m; "
+        f"measured over the {len(seam)} arrays it is {cell_ew:.3f} x {cell_ns:.3f} m")
+
+    # (b) the half-amplitude wavelength it publishes for those greens must actually halve them
+    half = re.search(r"half-amplitude ([\d.]+) m E-W and ([\d.]+) m N-S", doc)
+    assert half, ("the docstring publishes no half-amplitude wavelength for the seamless greens -- it "
+                  f"used to quote the 0.4 m figure for all 198:\n{doc}")
+    for axis, lam, cell in (("E-W", float(half.group(1)), cell_ew),
+                            ("N-S", float(half.group(2)), cell_ns)):
+        got = _reaches_the_drawing(lam, cell, px, rg.gauss, sig_px)
+        assert abs(got - 0.5) <= 0.03, (
+            f"the docstring puts the {axis} half-amplitude wavelength for the seamless greens at "
+            f"{lam} m; pushed through the real chain at a {cell:.3f} m source cell and a {px:.4f} m "
+            f"pixel, {got:.3f} of a {lam} m ripple survives, not 0.5")
+
+    # (c) ...and the 0.4 m figure must be visibly NOT that bound, or the scope error is not fixed
+    lidar_half = re.search(r"so the half-amplitude wavelength is ([\d.]+) m", doc)
+    assert lidar_half, "the 0.4 m half-amplitude sentence is gone; re-read this test before editing"
+    at_lidar = _reaches_the_drawing(float(lidar_half.group(1)), cell_ew, px, rg.gauss, sig_px)
+    assert at_lidar < 0.35, (
+        f"a {lidar_half.group(1)} m ripple keeps {at_lidar:.3f} of its amplitude on a seamless green, "
+        f"so quoting that wavelength for them would not be the error this test polices -- re-measure "
+        f"before relaxing anything")
+
+    # (d) the 5 m hollow, on those six, in the docstring's own words
+    hollow = re.search(r"survives at ([\d.]+) \(E-W\) and ([\d.]+) \(N-S\) of its depth", doc)
+    assert hollow, ("the docstring no longer says how much of a 5 m hollow reaches those six cards; "
+                    "that sentence is the one a reader uses to decide how much to trust a flat-looking "
+                    "area")
+    for axis, said, cell in (("E-W", float(hollow.group(1)), cell_ew),
+                             ("N-S", float(hollow.group(2)), cell_ns)):
+        got = _reaches_the_drawing(5.0, cell, px, rg.gauss, sig_px)
+        assert abs(got - said) <= 0.008, (
+            f"the docstring says {said} of a 5 m hollow survives {axis} on the seamless greens; "
+            f"measured {got:.4f}")
+
+    # (e) the limit must be attributed to BOTH terms, and to the function that measures the second one
+    assert "source_lattice" in doc, (
+        "the resolution paragraph does not point at source_lattice(), the only thing in the module "
+        "that measures the coarser of its two terms -- so the next reader has no way to check it")
+    assert not re.search(r"and about 1\.5 m only on the six", doc), (
+        "the paragraph still presents the six seamless greens as differing from the rest only by "
+        "their smoothing sigma. Their source grid is 2.7x their pixel; the sigma is the smaller term.")
+
+
+# ===========================================================================
+# THE BACK COVER, THE ENLARGED COVER, AND THE TWO EDITIONS' SHARED RULES
+#
+# generate.py builds two books from one engine, and every defect below is one of two shapes: a card
+# that INVITES what its own foot forbids, or a rule the enlarged deck re-implemented instead of
+# calling. Both shapes have shipped here before -- green_honesty(), the hazard footer and the playline
+# each drifted between the two code paths -- so each test drives the real card builders.
+# ===========================================================================
+
+def _fresh_generate(slug):
+    """`generate` imported bound to ONE course.
+
+    generate binds config, DISTRIBUTABLE and HOLE_ELEV at IMPORT time, so the module and everything
+    under it that reads COURSE has to be dropped and re-imported per course. Routed through
+    _restore_course() rather than popping sys.modules again here: README.md publishes the number of
+    module-drop sites in this suite as the evidence for its shuffled-order advice, and a helper is not
+    a good enough reason to move that figure."""
+    _restore_course(slug)
+    import generate
+    return generate
+
+
+def _drop_generate():
+    """Undo _fresh_generate, so a later test does not inherit a course-bound generate."""
+    _restore_course(CORPUS[0] if CORPUS else None)
+
+
+def _book_prose(html):
+    """The words a READER sees: tags stripped, the book's entities flattened, lower-cased.
+
+    Entity-flattened because the invitation the shipped defect printed is spelled with &rsquo; and
+    &mdash; inside it, and a grader that matches raw markup would miss the sentence it exists to
+    catch for a purely typographic reason."""
+    h = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S | re.I)
+    t = re.sub(r"<[^>]+>", " ", h)
+    for ent, ch in (("&rsquo;", "'"), ("&lsquo;", "'"), ("&mdash;", "--"), ("&ndash;", "-"),
+                    ("&middot;", "."), ("&nbsp;", " "), ("&ldquo;", '"'), ("&rdquo;", '"'),
+                    ("&amp;", "&"), ("&copy;", "(c)"), ("&trade;", "(TM)"), ("&rarr;", "->"),
+                    ("&ge;", ">="), ("&times;", "x")):
+        t = t.replace(ent, ch)
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
+# THE FORMS BY WHICH A CARD INVITES THE READER TO PASS THE BOOK ON. A set of patterns, not one
+# literal, and that distinction is the whole finding: the test that existed to catch this
+# (test_a_book_that_may_not_be_shared_says_so_on_the_page) asserts the absence of the exact string
+# "free to share, not for sale", and the shipped back cover said "free to use and share" and "pass it
+# on" instead -- so a card that invited redistribution twice and forbade it once read as clean.
+# Self-validated below against the sentence that actually shipped.
+_SHARE_INVITATIONS = (
+    r"free to (?:\w+ (?:and|or) )?share",
+    r"free to (?:copy|distribute|redistribute|hand out|hand on|print and share)",
+    r"\bpass (?:it|this|them|these) on\b",
+    r"\bshare (?:it|this|them) (?:with|freely|around)\b",
+    r"\bfeel free to (?:share|copy|print|hand)",
+    r"\byours to (?:share|copy|give|pass)\b",
+)
+
+# Verbatim out of courses/poppy-ridge-golf-course/greenbook.html as it shipped -- the back cover of a
+# book distribution.py has always classed personal-use only, whose own foot reads "THIS COPY IS FOR
+# PERSONAL USE ONLY -- PLEASE DO NOT SHARE OR REDISTRIBUTE IT" and whose page 1 carries the same mark.
+_SHIPPED_INVITATION = (
+    "it is not for sale. it's a small personal contribution to junior golf, free to use and share. "
+    "play well, read true, and pass it on."
+)
+
+# ...and the sentence the same card prints at its foot, which must NOT read as an invitation. Two of
+# these patterns were drafted wide enough to match "share or redistribute" inside it; a grader that
+# fires on the prohibition would force the fix to delete the notice rather than the invitation.
+_SHIPPED_PROHIBITION = (
+    "this copy is for personal use only -- please do not share or redistribute it, because its "
+    "greens are blank for want of trustworthy survey data and a reader elsewhere cannot know that. "
+    "not for sale. all rights reserved."
+)
+
+
+def _invitations_in(text):
+    return [re.search(p, text).group(0) for p in _SHARE_INVITATIONS if re.search(p, text)]
+
+
+def test_a_book_that_may_not_be_shared_does_not_invite_the_reader_to_share_it():
+    """A personal-use book's back cover told the reader it was "free to use and share" and to "pass it on".
+
+    SHIPPED. courses/poppy-ridge-golf-course/greenbook.html, back cover, in order: "It is not for
+    sale. It's a small personal contribution to junior golf, FREE TO USE AND SHARE. ... Play well,
+    read true, and PASS IT ON. ... THIS COPY IS FOR PERSONAL USE ONLY -- PLEASE DO NOT SHARE OR
+    REDISTRIBUTE IT". Page 1 of the same book carries "PERSONAL USE ONLY - PLEASE DO NOT SHARE" via
+    _cover_badge(). One card invited redistribution twice and forbade it once, which is precisely the
+    failure sharing_line()'s docstring says it exists to end: "The verdict lived in the policy and the
+    paperwork while the artifact invited the opposite."
+
+    THE GRADER CATCHES THE INVITATION, NOT A SPELLING OF IT. The test that was supposed to hold this
+    line scans for the literal "free to share, not for sale" -- the distributable licence sentence --
+    and the dedication evaded it by wording the same permission differently. So this asks whether the
+    card grants permission to pass the book on, in any of the forms a warm hand-written dedication
+    would use, and proves against the shipped text that it can see the one that got through.
+
+    BOTH DIRECTIONS. A distributable pocket book must still carry the invitation: the fix is to make
+    the sentence conditional, not to strip the warmth out of eleven books that have every right to it.
+    """
+    # (0) the grader must be able to see the defect it exists to catch, and must NOT fire on the
+    #     prohibition printed on the same card.
+    saw = _invitations_in(_SHIPPED_INVITATION)
+    assert saw, ("none of _SHARE_INVITATIONS matches the invitation that actually shipped, so this "
+                 f"test cannot see the defect it was written for:\n  {_SHIPPED_INVITATION}")
+    assert not _invitations_in(_SHIPPED_PROHIBITION), (
+        "an invitation pattern fires on the DO-NOT-SHARE notice "
+        f"({_invitations_in(_SHIPPED_PROHIBITION)}), so this test would demand the notice be deleted "
+        f"rather than the invitation")
+
+    # (1) the live builder, so this holds on a fresh clone with no poppy-ridge built. The back-cover
+    #     builder is resolved by either name because this defect round also renames it (it was called
+    #     legend_panel while building the dedication) -- see the D-11 test below.
+    import distribution
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        build = getattr(gen, "dedication_panel", None) or getattr(gen, "legend_panel", None)
+        assert build is not None, "generate has no back-cover / dedication panel builder"
+        real = gen.DISTRIBUTABLE
+        try:
+            gen.DISTRIBUTABLE = True
+            free = _book_prose(build())
+            gen.DISTRIBUTABLE = False
+            owned = _book_prose(build())
+        finally:
+            gen.DISTRIBUTABLE = real
+    finally:
+        _drop_generate()
+    assert _invitations_in(free), (
+        "a book that MAY be shared no longer says so anywhere on its back cover. The fix for the "
+        "personal-use book is a conditional sentence, not the deletion of the dedication's warmth "
+        f"from every book:\n  {free[-400:]}")
+    assert not _invitations_in(owned), (
+        "the back cover of a book that may NOT be shared still invites the reader to pass it on "
+        f"({_invitations_in(owned)}):\n  {owned[-400:]}")
+    assert "not for sale" in owned, (
+        "the personal-use back cover dropped 'not for sale' along with the invitation; that clause is "
+        "true of every book and is the one the dedication is actually about")
+
+    # (2) ...and the artifact, because a source-only revert is weak evidence here: this defect was
+    #     found by reading a shipped book, not the engine.
+    checked = 0
+    for path, slug, _coach in _built_books():
+        with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
+            shareable = distribution.is_distributable(json.load(fh))
+        with open(path, encoding="utf-8") as fh:
+            text = _book_prose(fh.read())
+        checked += 1
+        if shareable:
+            continue
+        assert not _invitations_in(text), (
+            f"{os.path.relpath(path, ROOT)} may not be shared and invites it anyway "
+            f"({_invitations_in(text)}). Its own foot and its page 1 forbid it.")
+    assert checked >= 10, f"only {checked} built books scanned; expected the whole corpus"
+    assert any(not distribution.is_distributable(
+        json.load(open(os.path.join(ROOT, "courses", s, "course.json"), encoding="utf-8")))
+        for _p, s, _c in _built_books()), \
+        "no non-distributable book is built here, so the branch that matters went unmeasured"
+
+
+def test_every_panel_that_enumerates_the_book_s_sources_credits_naip_where_it_was_used():
+    """coach_about_card() was the one source-enumerating panel that did not splice in _naip_line().
+
+    guide_panel() and yardage_guide_panel() both do. coach_about_card()'s About block named
+    OpenStreetMap, USGS 3DEP and the scorecard and stopped -- so an enlarged book of a course whose
+    greens were traced from NAIP would omit a credit its own pocket edition carries. _naip_line() is
+    non-empty for exactly two courses today (bay-view, whose two greens ARE NAIP tracings, and
+    poppy-ridge, which used it as a site reference) and neither has an enlarged build, which is the
+    only reason this was latent: `COURSE=bay-view-golf-club COACH=1 python3 generate.py` makes it live.
+
+    Graded per panel rather than per book, because the population that would catch it in a built book
+    is empty by coincidence of which course got an enlarged edition.
+
+    BOTH DIRECTIONS: a course that used no NAIP must credit none, or the fix is "print it always",
+    which is the stale credit _naip_line()'s docstring records having already shipped once."""
+    if not BOOKS:
+        pytest.skip("per-course data is gitignored; no course record to read a NAIP decision from")
+    naip, plain = None, None
+    for slug in BOOKS:
+        gen = _fresh_generate(slug)
+        try:
+            if gen._naip_line():
+                naip = naip or slug
+            else:
+                plain = plain or slug
+        finally:
+            _drop_generate()
+    assert naip, "no course in this tree used NAIP, so the credit branch cannot be measured"
+    assert plain, "every course used NAIP, so the no-credit branch cannot be measured"
+
+    # The panels that ENUMERATE the book's sources -- each names USGS 3DEP and the scorecard in its
+    # About block, and each is asserted to do so, so this list cannot quietly stop being the right
+    # list. NOT OpenStreetMap: yardage_guide_panel belongs to a course built from the scorecard alone,
+    # with no OSM geometry to credit, which is why the shared premise is the pair below.
+    PANELS = ("guide_panel", "yardage_guide_panel", "coach_about_card")
+    for slug, expect in ((naip, True), (plain, False)):
+        gen = _fresh_generate(slug)
+        try:
+            line = gen._naip_line()
+            assert bool(line) == expect, f"{slug}: _naip_line() changed under re-import"
+            for name in PANELS:
+                fn = getattr(gen, name, None)
+                assert fn is not None, f"generate.{name} is gone; re-read this test before editing"
+                html = fn()
+                assert "USGS" in html and "scorecard" in html, (
+                    f"{slug}: {name} no longer enumerates the book's sources, so this test is "
+                    f"measuring the wrong set of panels")
+                if expect:
+                    assert "USDA NAIP" in html, (
+                        f"{slug} used NAIP and {name} does not credit it, while the other "
+                        f"source-enumerating panels do. A book that lists its sources lists all of them.")
+                else:
+                    assert "NAIP" not in html, (
+                        f"{slug} used no NAIP and {name} credits it anyway -- the stale credit "
+                        f"_naip_line()'s docstring records having shipped once already")
+        finally:
+            _drop_generate()
+
+    # ...and the artifact, for whichever books happen to exist.
+    for path, slug, _coach in _built_books():
+        gen = _fresh_generate(slug)
+        try:
+            want = bool(gen._naip_line())
+        finally:
+            _drop_generate()
+        with open(path, encoding="utf-8") as fh:
+            html = fh.read()
+        assert ("USDA NAIP" in html) == want, (
+            f"{os.path.relpath(path, ROOT)}: the printed book "
+            f"{'omits' if want else 'carries'} the NAIP credit that _naip_line() "
+            f"{'requires' if want else 'withholds'} for this course")
+
+
+def test_the_no_tree_caveat_is_keyed_on_what_the_hole_drew_not_on_the_lidar_list():
+    """"no tree data" was gated on the LiDAR marker list, and render_hole falls back to OSM trees.
+
+    render_hole.render_hole picks its markers `lt = _lidar_trees().get(str(hnum), []); if lt: ... else:
+    tree_src = [(e['lat'], e['lon']) for e in treenodes]` -- a PER-HOLE fallback. So a hole with zero
+    LiDAR markers and some OSM tree nodes in its corridor printed "no tree data" beside a map that
+    DRAWS trees, and a course with no LiDAR layer at all drew sparse OSM trees on every hole while the
+    caveat was suppressed as noise on all of them. Both were latent only by coincidence of which
+    course has which data: monarch-bay is the only course with empty marker lists (holes 1, 17, 18)
+    and it has 0 OSM tree nodes, while micke-grove (532 nodes) and the-reserve (2462) have no empty
+    marker hole.
+
+    Two code claims stated the opposite of the renderer and are checked for below by name:
+    _course_has_trees()'s "A course with no tree layer at all draws none anywhere" and hole_panel()'s
+    "a hole the survey does not reach draws NONE".
+
+    The caveat now asks what the hole DREW -- LiDAR markers, or the OSM trees/woods/tree-rows
+    render_hole counts in `info["trees"]` -- so it can neither contradict the map beside it nor go
+    silent on a book whose canopy is entirely OSM. Measured over the corpus: no card moves today
+    (monarch-bay 1, 17 and 18 draw 0 LiDAR markers and 0 OSM tree marks each), which is why
+    test_a_hole_the_survey_missed_does_not_print_as_open_ground still holds.
+    """
+    # (1) the premise: the fallback is live in the renderer. If it is ever removed, this fails and the
+    #     next reader is sent back here rather than left with a guard aimed at nothing. Checked against
+    #     the CODE-ONLY token stream so a comment about the fallback cannot stand in for it -- and the
+    #     needle carries no quotes because _code_only strips string literals, so `e['lat']` arrives as
+    #     `e [ ]`.
+    with open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8") as fh:
+        rh_src = fh.read()
+    assert "else:tree_src=[(e[],e[])foreintreenodes]" in re.sub(r"\s+", "", _code_only(rh_src)), (
+        "render_hole no longer falls back to OSM tree nodes when a hole has no LiDAR markers. That "
+        "fallback is the whole reason this caveat cannot be keyed on the LiDAR list -- re-read this "
+        "test and generate._drew_trees() before changing either.")
+
+    # (2) the false claims about it must be gone from generate.py
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        gen_src = fh.read()
+    for claim in ("A course with no tree layer at all draws none anywhere",
+                  "a hole the survey does not reach draws NONE"):
+        assert claim not in gen_src, (
+            f"generate.py still states {claim!r}. render_hole draws OSM trees on a hole with no LiDAR "
+            f"markers, so that sentence is false about the renderer it describes.")
+
+    # (3) the live gate, driven through the real card builders in BOTH editions. EVERY hole gets a
+    #     layout: _no_tree_note() walks all of config.HOLE_NUMS, so a stub that populates two of them
+    #     leaves sixteen holes looking as though they drew nothing.
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        holes = sorted(gen.HOLES)
+        bare, treed = holes[0], holes[1]
+        gen._TREES = {str(h): [(37.0, -122.0)] for h in gen.config.HOLE_NUMS}
+        gen._TREES[str(bare)] = []            # the one hole the point cloud does not reach
+        for h in gen.config.HOLE_NUMS:
+            gen.GREENS[h] = ("<svg></svg>", _fake_summary())
+            gen.LAYOUTS[h] = ("<svg></svg>", dict(bunkers=1, waters=0, trees=0))
+
+        def cards(bare_osm_trees):
+            gen.LAYOUTS[bare] = ("<svg></svg>", dict(bunkers=1, waters=0, trees=bare_osm_trees))
+            return (gen.hole_panel(bare, "1-6"), gen.coach_map_card(bare))
+
+        pocket, coach = cards(3)
+        assert "no tree data" not in pocket, (
+            "a POCKET card whose map draws 3 OSM trees still says 'no tree data'. The mark is read as "
+            "'the survey did not reach', which contradicts the trees printed beside it.")
+        assert "no tree data" not in coach, (
+            "an ENLARGED card whose map draws 3 OSM trees still says 'no tree data'")
+        pocket, coach = cards(0)
+        assert "no tree data" in pocket, (
+            "a POCKET card that drew NO tree mark of either kind, in a book that draws them elsewhere, "
+            "does not carry the caveat -- the blank corridor reads as open ground while the legend "
+            "promises trees")
+        assert "no tree data" in coach, (
+            "the ENLARGED card of that same hole does not carry the caveat")
+        assert "no tree data" not in gen.hole_panel(treed, "1-6"), (
+            "a hole with a LiDAR canopy carries the caveat anyway")
+
+        # ...and the enlarged edition's definition of the mark follows the same gate.
+        cards(0)
+        assert gen._no_tree_note(), (
+            "a book that prints the mark does not define it on its enlarged guide card")
+        cards(7)
+        assert not gen._no_tree_note(), (
+            "the enlarged guide card defines a mark this book no longer prints -- the clutter "
+            "_no_tree_note()'s own docstring promises not to add")
+
+        # A book whose canopy is ENTIRELY OSM must not be silent: every hole drew trees, so no hole is
+        # owed the caveat, and that is the honest answer rather than the accident of a missing layer.
+        gen._TREES = {str(h): [] for h in gen.config.HOLE_NUMS}
+        for h in gen.config.HOLE_NUMS:
+            gen.LAYOUTS[h] = ("<svg></svg>", dict(bunkers=1, waters=0, trees=4))
+        assert "no tree data" not in gen.hole_panel(bare, "1-6"), (
+            "a course with no LiDAR tree layer draws OSM trees on every hole, and its cards claim "
+            "'no tree data' anyway")
+        assert not gen._no_tree_note(), (
+            "the enlarged guide card of a book with no tree-less hole still defines the mark")
+    finally:
+        _drop_generate()
+
+
+def test_the_enlarged_deck_pads_its_leaves_with_the_rule_the_pocket_book_publishes():
+    """build_coach re-implemented the imposition inline, under a comment saying it did not.
+
+    "the SAME rule the pocket book uses, not a second copy of it" sat immediately after 32 lines that
+    were a second copy of it. Normalised against main()'s build_pages the two blocks differed in
+    exactly one place: `cards = pad_to_leaves(cards)` against
+    `if len(cards) % 2: cards = cards + ['<div class="panel"></div>']`.
+
+    pad_to_leaves()'s docstring states the rule the inline copy breaks: "The final card is Lucas's
+    dedication and prints upright as the back cover, so APPENDING the blank would land the dedication
+    a leaf early and end the book on a blank page." The enlarged deck is 2 + 2*len(HOLE_NUMS) + 2
+    cards, always even, so the branch was dead and the claim was false the day it was written -- one
+    more leading or trailing card makes it live and ends the enlarged book on a blank page.
+
+    Graded structurally, because the deck's card count cannot be made odd from outside: the two
+    imposition blocks must be the SAME TOKENS, which is what the comment claims."""
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        src = fh.read()
+
+    def block(nth):
+        """The nth imposition block: from its padding line to the end of its BACK-sheet append."""
+        lines = src.splitlines()
+        starts = [i for i, l in enumerate(lines) if "pad_to_leaves(cards)" in l]
+        assert len(starts) > nth, (
+            f"generate.py has {len(starts)} call(s) to pad_to_leaves(cards) in an imposition block; "
+            f"both main()'s build_pages and build_coach must use it, and build_coach still carries "
+            f"its own `if len(cards) % 2` copy if this fails")
+        i = starts[nth]
+        for j in range(i, len(lines)):
+            if "BACK (duplex, flip on LONG edge)" in lines[j]:
+                return "\n".join(lines[i:j + 1])
+        raise AssertionError("no BACK-sheet append after the padding line; re-read this test")
+
+    def tokens(text):
+        import io
+        import textwrap
+        import tokenize
+        out = []
+        for tok in tokenize.generate_tokens(io.StringIO(textwrap.dedent(text)).readline):
+            if tok.type in (tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
+                            tokenize.DEDENT, tokenize.ENDMARKER):
+                continue
+            if tok.string.strip():
+                out.append(tok.string)
+        return out
+
+    pocket, coach = tokens(block(0)), tokens(block(1))
+    assert pocket == coach, (
+        "the enlarged deck's imposition is not the pocket book's, under a comment that says it is. "
+        "First difference:\n  pocket: "
+        + " ".join(pocket[:40]) + "\n  coach:  " + " ".join(coach[:40]))
+    assert not _in_code("cards = cards + [", src), (
+        "build_coach still appends its blank leaf, which lands the dedication one leaf early and ends "
+        "the enlarged book on a blank page -- the exact failure pad_to_leaves() exists to prevent")
+
+
+def test_the_wasted_words_note_counts_the_books_that_actually_waste_them():
+    """_no_tree_note()'s docstring published its own cost off by one, twice.
+
+    It said "11 of the 12 pocket books carry six words for a mark they never print" and "Six wasted
+    words on eleven cards is the cheaper error", and then named monarch-bay as the one book that DOES
+    print the mark. Both cannot be true: a book that prints the mark is not wasting the words on it.
+
+    Measured over the built pocket corpus: 11 of 12 books carry the inline definition (poppy-ridge's
+    yardage guide card has no colour row and carries none) and exactly 1 of those 11 prints the mark,
+    so the words are wasted on TEN books.
+
+    The figures are re-derived here rather than restated, so the next rewrite of that paragraph cannot
+    publish a count nothing measures -- which is the failure elev_phrase()'s own docstring records."""
+    if not BOOKS:
+        pytest.skip("no book built")
+    gen = _fresh_generate(a_course())
+    try:
+        doc = gen._no_tree_note.__doc__ or ""
+    finally:
+        _drop_generate()
+
+    # The inline definition the pocket colour row carries, and the mark itself, read off the artifact.
+    DEFN = "&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground"
+    MARK = "<b>no tree data</b>"
+    pocket = [p for p, _s, coach in _built_books() if not coach]
+    carry = [p for p in pocket if DEFN in open(p, encoding="utf-8").read()]
+    prints = [p for p in carry if MARK in open(p, encoding="utf-8").read()]
+    wasted = len(carry) - len(prints)
+    assert len(pocket) >= 10 and carry, (
+        f"only {len(pocket)} pocket book(s) here and {len(carry)} carrying the inline definition; "
+        f"nothing measurable")
+
+    words = {n: w for w, n in
+             (("zero", 0), ("one", 1), ("two", 2), ("three", 3), ("four", 4), ("five", 5),
+              ("six", 6), ("seven", 7), ("eight", 8), ("nine", 9), ("ten", 10), ("eleven", 11),
+              ("twelve", 12))}
+    # The claims are line-wrapped in the docstring, so match against a whitespace-flattened copy: the
+    # first draft of this grader read `doc` directly and reported the second figure ABSENT because the
+    # sentence breaks between "words" and "on ten cards".
+    flat = re.sub(r"\s+", " ", doc)
+
+    m = re.search(r"(\d+) of the (\d+) pocket books carry", flat)
+    assert m, ("_no_tree_note()'s docstring no longer states how many pocket books carry the inline "
+               "definition for a mark they never print -- that count is the whole argument for "
+               "leaving the pocket half unconditional")
+    assert (int(m.group(1)), int(m.group(2))) == (wasted, len(pocket)), (
+        f"the docstring says {m.group(1)} of the {m.group(2)} pocket books carry the words for a mark "
+        f"they never print; measured over the built corpus it is {wasted} of {len(pocket)} "
+        f"({len(carry)} carry the definition, {len(prints)} of those print the mark)")
+
+    m2 = re.search(r"[Ss]ix wasted words on (\w+) cards", flat)
+    assert m2, "the docstring no longer weighs the cost it accepts ('Six wasted words on N cards')"
+    assert words.get(wasted) == m2.group(1) or m2.group(1) == str(wasted), (
+        f"the docstring accepts the cost on {m2.group(1)} cards; measured it is {wasted} "
+        f"({words.get(wasted)})")
+
+
+def test_the_licence_sentence_never_states_a_reason_the_book_contradicts():
+    """sharing_line() printed ONE reason for all three verdicts distribution.py can return.
+
+    Its docstring says it asks distribution.py "so the page and the paperwork cannot disagree", and
+    generate.py bound all three of its return values -- but `_DIST_LABEL` and `_DIST_WHY` were read
+    NOWHERE, and the card asserted "because its greens are blank for want of trustworthy survey data"
+    whatever the reason was. With `"build_mode": "yardge"` -- a typo distribution.py's own docstring
+    enumerates as realistic and fails closed on -- config.BUILD_MODE is "yardge", so main() builds the
+    FULL slope book with contours and arrows while every card, the cover and the back cover assert the
+    greens are blank. The book and legal/03 then give different reasons for the same verdict.
+
+    Two halves: no name may be bound from distribution and left unread (that is what made the claim
+    look true), and the printed reason must be one the book it prints on actually supports."""
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    code = _code_only(src)
+    bound = []
+    for m in re.finditer(r"^([A-Za-z_][\w,\s]*?)\s*=\s*distribution\.\w+\(", src, re.M):
+        bound += [n.strip() for n in m.group(1).split(",") if n.strip()]
+    assert bound, ("generate.py no longer binds anything from distribution.py at module level, so "
+                   "sharing_line()'s claim that it asks the shared rule is no longer checkable here")
+    for name in bound:
+        assert len(re.findall(rf"\b{re.escape(name)}\b", code)) > 1, (
+            f"generate.py binds {name} from distribution.py and never reads it. The three names made "
+            f"sharing_line() look as though it printed distribution.py's reason; it printed one "
+            f"reason for all three.")
+
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        real_mode = gen.config.COURSE.get("build_mode")
+        real_dist = gen.DISTRIBUTABLE
+        try:
+            gen.DISTRIBUTABLE = False
+            gen.config.COURSE["build_mode"] = "yardage"
+            blank = gen.sharing_line()
+            gen.config.COURSE["build_mode"] = "yardge"       # the typo, verbatim from the docstring
+            typo = gen.sharing_line()
+            gen.DISTRIBUTABLE = True
+            gen.config.COURSE["build_mode"] = real_mode
+            free = gen.sharing_line()
+        finally:
+            gen.DISTRIBUTABLE = real_dist
+            if real_mode is None:
+                gen.config.COURSE.pop("build_mode", None)
+            else:
+                gen.config.COURSE["build_mode"] = real_mode
+    finally:
+        _drop_generate()
+
+    for text in (blank, typo):
+        assert "personal use only" in _book_prose(text), (
+            f"a non-distributable book's licence sentence no longer says so: {text}")
+        assert "all rights reserved" in _book_prose(text), (
+            f"a non-distributable book's licence sentence dropped the reservation: {text}")
+    # The yardage wording is the one legal/05 quotes verbatim; changing it silently invalidates that
+    # record, so it is pinned here rather than left to a rebuild to discover.
+    assert "its greens are blank for want of trustworthy survey data" in blank, (
+        "a yardage-mode book prints blank greens and its licence sentence must still say why -- and "
+        "legal/05_DISCLAIMER_TEXT.md quotes this sentence verbatim")
+    assert "greens are blank" not in typo, (
+        "an unrecognised build_mode is refused by distribution.py while main() builds the FULL slope "
+        "book, and the licence sentence still tells the reader the greens are blank:\n  " + typo)
+    assert "CC" in free and "free to share" in _book_prose(free), (
+        f"a distributable book lost its licence sentence: {free}")
+
+
+def test_page_one_of_the_enlarged_edition_carries_the_do_not_share_mark_too():
+    """coach_cover_panel() never called _cover_badge(), so the enlarged edition's page 1 could not say it.
+
+    _cover_badge()'s docstring is explicit about why page 1 is the place: "page 1 is what anyone
+    receiving the PDF sees first" and "the personal-use notice added to the About text sits four cards
+    deep". cover_panel() reads it; the enlarged cover hardcoded "ENLARGED PRACTICE EDITION" with no
+    branch at all. build_coach refuses only BUILD_MODE == "yardage", and DISTRIBUTABLE is False for an
+    unrecognised build_mode too -- so a course with `"build_mode": "yardge"` builds an enlarged book
+    whose About text and back cover say "personal use only" while its cover says nothing.
+
+    The mark comes from _cover_badge() rather than a second copy of the words, so the two covers cannot
+    drift. The Rule 4.3 half must NOT follow it across: the enlarged edition is deliberately past the
+    scale cap and says so on its own guide card."""
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        real = gen.DISTRIBUTABLE
+        try:
+            gen.DISTRIBUTABLE = False
+            mark = gen._cover_badge()["badge_text"]
+            owned = gen.coach_cover_panel("")
+            gen.DISTRIBUTABLE = True
+            free = gen.coach_cover_panel("")
+            badge = gen._cover_badge()["badge_text"]
+        finally:
+            gen.DISTRIBUTABLE = real
+    finally:
+        _drop_generate()
+
+    assert "PERSONAL USE ONLY" in mark, (
+        f"_cover_badge()'s do-not-share text no longer names the restriction: {mark!r}")
+    assert mark in owned, (
+        "an enlarged book that may not be shared has nothing on page 1 saying so, while its About "
+        "text and back cover both do. Page 1 is what anyone receiving the PDF sees first.")
+    assert "ENLARGED PRACTICE EDITION" in owned, (
+        "the enlarged cover lost the claim that it is a practice aid rather than a conforming book")
+    assert mark not in free and "PERSONAL USE ONLY" not in free, (
+        "a distributable enlarged book's cover carries a do-not-share mark it has no reason to")
+    assert "DESIGNED TO CONFORM" not in free and "RULE" not in free, (
+        f"the enlarged cover now claims Rule 4.3 conformance ({badge!r}); this edition is "
+        f"deliberately printed past the scale cap and its own guide card says so")
+
+
+def test_a_long_course_name_never_prints_a_blank_first_line_on_the_cover():
+    """_title_lines() emitted a LEADING EMPTY line whenever a long name's first word was 20+ characters.
+
+    The greedy fill tests `len(cur) + len(w) + 1 <= 20` with `cur = ""` on the first word, so a
+    25-character first word takes the else branch and appends the empty `cur`. Run against the real
+    function: _title_lines("Rancholascasitasmunicipal Golf Links Course") returned
+    ['', 'Rancholascasitasmunicipal', 'Golf Links Course'].
+
+    cover_panel() then emits an empty <tspan> and computes `cy0 = 292 - (len(tlines)-1)*dyt/2` and
+    `addr_y` off the inflated count, shifting the title block and the address by half a line each. The
+    docstring promises to "word-wrap only a genuinely long (>30 char) name"; a blank leading line is
+    not a wrap. No corpus name triggers it, so this is a latent defect in shared code -- both covers
+    call this function."""
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        LONG = "Rancholascasitasmunicipal Golf Links Course"
+        cases = [LONG, "A" * 35, "Averyveryverylongsinglewordcoursename",
+                 "Short Name", "Monarch Bay Golf Club — Tony Lema Course",
+                 "The Really Quite Long National Golf Links of America"]
+        for name in cases + [n for _p, s, _c in _built_books()
+                             for n in [json.load(open(os.path.join(ROOT, "courses", s, "course.json"),
+                                                      encoding="utf-8")).get("name") or ""]]:
+            lines = gen._title_lines(name)
+            assert lines, f"_title_lines({name!r}) returned nothing"
+            assert all(l.strip() for l in lines), (
+                f"_title_lines({name!r}) -> {lines}: a blank line mis-centres the whole title block "
+                f"and prints an empty <tspan> on the cover")
+            if "—" not in name:
+                assert "".join(lines).replace(" ", "") == name.replace(" ", "").strip(), (
+                    f"_title_lines({name!r}) -> {lines} lost or reordered the name")
+        assert gen._title_lines("A" * 35) == ["A" * 35], (
+            f"a single unbreakable word must be its own only line, got {gen._title_lines('A' * 35)}")
+
+        # ...and the cover the function feeds: no empty tspan, and the vertical centring computed off
+        # the real line count.
+        real = gen.COURSE
+        try:
+            gen.COURSE = LONG
+            svg = gen.cover_panel()
+        finally:
+            gen.COURSE = real
+        spans = re.findall(r"<tspan[^>]*>(.*?)</tspan>", svg)
+        assert spans and all(s.strip() for s in spans), (
+            f"cover_panel() prints an empty <tspan> for {LONG!r}: {spans}")
+        assert len(spans) == len(gen._title_lines(LONG)), (
+            f"the cover draws {len(spans)} title lines where _title_lines gives "
+            f"{len(gen._title_lines(LONG))}")
+    finally:
+        _drop_generate()
+
+
+def test_the_back_cover_builder_is_not_called_a_legend_and_no_book_styles_a_class_it_never_uses():
+    """legend_panel() did not build a legend. It built the DEDICATION / back cover.
+
+    `<div class="panel dedic">`, "For every junior golfer", "Crafted by Lucas Wu", the copyright line.
+    The actual legend card is guide_panel(). Its enlarged counterpart is correctly named
+    coach_dedic_card(), and pad_to_leaves()/is_upright_back() both call this card "the dedication", so
+    the name was the only thing still saying otherwise -- in the one function a reader looking for the
+    legend would open first.
+
+    The fossil left a measurable trace: `.legend ol` and `.legend li` shipped in all 12 pocket books
+    and NO element in any book carries class="legend". Derived from the artifact, both halves."""
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    import ast
+    tree = ast.parse(src)
+    builders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            body = ast.get_source_segment(src, node) or ""
+            if 'class="panel dedic"' in body:
+                builders.append(node.name)
+    assert builders, ('no function in generate.py builds `<div class="panel dedic">`; re-read this '
+                      'test before editing')
+    for name in builders:
+        assert "legend" not in name.lower(), (
+            f"generate.{name}() builds the dedication / back cover and is named for a legend. The "
+            f"legend card is guide_panel(); a reader looking for it opens this instead.")
+        assert "dedic" in name.lower(), (
+            f"generate.{name}() builds the dedication and its name does not say so; its enlarged "
+            f"counterpart is coach_dedic_card()")
+
+    # ...and the stylesheet fossil, measured against every built book rather than argued.
+    for path, slug, coach in _built_books():
+        with open(path, encoding="utf-8") as fh:
+            html = fh.read()
+        used = set()
+        for m in re.findall(r'class="([^"]+)"', html):
+            used |= set(m.split())
+        style = "".join(re.findall(r"<style>(.*?)</style>", html, re.S))
+        assert "legend" not in used, (
+            f"{os.path.relpath(path, ROOT)} now uses class=\"legend\" somewhere -- re-read this test "
+            f"before deleting the rule again")
+        assert not re.search(r"\.legend\b", style), (
+            f"{os.path.relpath(path, ROOT)} styles `.legend`, which no element in it carries. The "
+            f"fossil of legend_panel(), shipped in every pocket book.")
