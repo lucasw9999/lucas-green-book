@@ -9770,6 +9770,18 @@ def test_a_bigger_clock_glitch_is_never_easier_to_publish_than_a_smaller_one():
             f"{k} junk readings 700 days from the bulk were TRIMMED to a published date. A value that "
             f"far out is a second epoch, not a glitch, and this function's own note says a tile holding "
             f"two epochs cannot be dated at all")
+    # ...AND THE NOTE THAT SENTENCE CITES HAS TO SAY IT. Two failure messages in this file quote
+    # lidar_dates.py's own note as the authority for refusing a second epoch and NOTHING read the note:
+    # reword it and the messages go on citing prose the module no longer carries, which is the same
+    # defect as a stale figure and harder to notice, because a message is only read when a test fails.
+    note = " ".join(re.sub(r"(?m)^\s*#\s?", "", _prose(open(
+        os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read())).split())
+    assert re.search(r"a tile holding two epochs cannot be dated at all", note), (
+        "lidar_dates.py's note no longer says that a tile holding two epochs cannot be dated at all, and "
+        "two assertion messages in this file cite it by that wording as the reason they refuse one. "
+        "Either the module changed its mind -- in which case these tests are asserting a rule it no "
+        "longer has -- or the sentence was reworded and the citations are now quoting nothing. Its note "
+        f"reads:\n  {note[max(0, note.find('second epoch') - 200):note.find('second epoch') + 200]}")
 
 
 def _lidar_dates_module():
@@ -10264,9 +10276,25 @@ def test_the_sparsest_endpoint_cluster_is_re_measured_from_the_tile_it_names():
         f"0.1944% fraction quoted with it is that ratio, so both need re-deriving")
     frac = 100.0 * mass / near.n
     src = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
-    assert f"{frac:.4f}%" in src, (
-        f"lidar_dates.py does not state the measured fraction {frac:.4f}% for this endpoint, so the "
-        f"percentage beside the count is unpinned")
+    # `assert f"{frac:.4f}%" in src` stood here, and a bare substring over a 700-line module says only
+    # that those seven characters occur SOMEWHERE -- in another course's row, in a density figure, in a
+    # tolerance. What has to hold is that the percentage sits beside THIS endpoint's count, in the
+    # sentence that publishes the pair, so read the pair out of that sentence and compare both halves.
+    beside = re.search(r"([\d,]+)\s*pts?\b[^\n]*\n?[^\n]*?\(\s*([\d.]+)%\s*of that set's\s*([\d,]+)",
+                       src)
+    assert beside, (
+        "lidar_dates.py no longer publishes the sparsest endpoint as a count with its fraction beside it "
+        "-- '<N> pts ... (<P>% of that set's <M> points'. That pair is what this test pins; without it a "
+        "bare percentage anywhere in the file would satisfy the check, which is what it used to do.")
+    said_pts, said_frac, said_of = (int(beside.group(1).replace(",", "")),
+                                    float(beside.group(2)), int(beside.group(3).replace(",", "")))
+    assert (said_pts, said_of) == (mass, near.n), (
+        f"lidar_dates.py publishes the sparsest endpoint as {said_pts:,} of {said_of:,} points; the tile "
+        f"it names holds {mass:,} of {near.n:,}. The percentage beside them is that ratio, so all three "
+        f"need re-deriving together.")
+    assert abs(said_frac - frac) < 0.0001, (
+        f"lidar_dates.py publishes {said_frac}% for this endpoint and {said_pts:,}/{said_of:,} is "
+        f"{frac:.4f}%. The count and the fraction are two readings of one measurement.")
 
 
 def test_the_flight_span_figures_quoted_in_this_file_are_the_ones_on_disk():
@@ -10337,22 +10365,69 @@ def test_the_flight_span_figures_quoted_in_this_file_are_the_ones_on_disk():
                 f"{dict(sorted(spans.items()))}")
 
     # (3) THE CALIBRATION GAP. A claim that nothing lies between two spans is a claim about the corpus,
-    # so read the corpus: the module states every measured span family in one comment block, and any
-    # figure between the two named bounds refutes the gap. Whitespace-tolerant on purpose -- one of the
-    # two stale copies is broken across a comment continuation, and a single-line pattern missed it.
+    # so MEASURE the corpus. This used to regex-scrape "36.7360 d" out of lidar_dates.py's own COMMENT
+    # and weigh the docstring against it -- a copy graded against a copy, which holds however far the
+    # real span moves and whichever of the two is wrong. The comment names the tile; the FIGURE is now
+    # decoded from that tile's point records through the module's own `tile_dates`, which is the same
+    # path production takes, and the comment's published figure is graded against it too.
     mod = open(os.path.join(ROOT, "tools", "lidar_dates.py"), encoding="utf-8").read()
-    between = sorted({float(m.group(1))
-                      for m in re.finditer(r"^#\s+\*?[^\n]*?\b(\d\d\.\d{4})\s*d", mod, re.M)
-                      if 11.0 < float(m.group(1)) < 100.0})
+    WHOLE_TILE_ROW = (r"^#\s+\*?[^\n]*?\b(\d\d\.\d{4})\s*d\s+([a-z][a-z-]+)\s+(\S+?)\s*\(")
+    RESERVE = {"castlewood-hill": "castlewood-hill-course", "callippe": "callippe-preserve-golf-course",
+               "the-reserve": "the-reserve-at-spanos-park", "micke-grove": "micke-grove-golf-links",
+               "merion": "merion-golf-club", "philadelphia": "philadelphia-country-club",
+               "valley-hi": "valley-hi-country-club", "copper-valley": "copper-valley-golf-club",
+               "monarch-bay": "monarch-bay-golf-club", "bay-view": "bay-view-golf-club",
+               "castlewood-valley": "castlewood-valley-course"}
+    between, witnesses = [], []
+    for m in re.finditer(WHOLE_TILE_ROW, mod, re.M):
+        said, short, tile = float(m.group(1)), m.group(2), m.group(3)
+        if not 11.0 < said < 100.0:
+            continue                      # outside the gap the docstrings claim is empty
+        slug = RESERVE.get(short)
+        hits = sorted(glob.glob(os.path.join(ROOT, "courses", slug or short, "laz", f"*{tile}*.laz")))
+        if not hits:
+            continue                      # laz/ is refetchable and gitignored; nothing to decode here
+        got = _lidar_dates_module().tile_dates(hits[0])
+        assert got and got[4] and got[5], (
+            f"lidar_dates.py names {short} {tile} as the span between the 11-day and 100-day families "
+            f"and that tile no longer dates at all, so the figure beside it is unverifiable.")
+        measured_span = (got[5] - got[4]).total_seconds() / 86400.0
+        witnesses.append(f"{short} {tile} {measured_span:.4f} d")
+        assert abs(measured_span - said) < 0.0001, (
+            f"lidar_dates.py publishes {said} d whole-tile for {short} {tile}; decoded from that tile's "
+            f"own gps_time through tile_dates it is {measured_span:.4f} d. This grader used to take the "
+            f"comment's figure on trust and weigh a docstring against it, which is a copy graded against "
+            f"a copy -- whichever of the two moved, the assertion held.")
+        between.append(round(measured_span, 4))
+    between = sorted(set(between))
     gap_claim = re.compile(r"nothing between" + r"[\s#]+11 and[\s#]+100"
                            r"|next widest family is" + r"[\s#]+11\.07")
     for m in gap_claim.finditer(src):
         if between:
             problems.append(
                 f"tests:{src[:m.start()].count(chr(10)) + 1} still claims nothing was measured "
-                f"between the 11-day and 100-day families, but lidar_dates.py itself records "
-                f"{between} d in that range (the-reserve t390135, whole tile). The module's comment "
-                f"was corrected for this and the sibling docstring was not")
+                f"between the 11-day and 100-day families, but the point records hold "
+                f"{'; '.join(witnesses)}. The module's comment was corrected for this and the sibling "
+                f"docstring was not")
+
+    # EACH OF THE THREE CHECKS ABOVE HAS TO BE ABLE TO FIRE, and none of them could be shown to. All
+    # three iterate `finditer` over this file, so a check whose pattern no longer matches anything
+    # reports nothing and passes -- and (2) and (3) match nothing TODAY, because the sentences they hunt
+    # were corrected. A pattern that has never been seen to fire is a pattern nobody knows the shape of:
+    # the stale wording is rebuilt from fragments here (a literal would be found in this file and make
+    # the checks fail against themselves) and each pattern is required to match it.
+    stale_probes = [
+        ("the widest pair with a UTC end", re.compile(r"\(\s*(\d{4}-\d\d-\d\d)\.\." + r"(\d{4}-\d\d-\d\d)"),
+         f"({wpair[0]}.." + f"{dt.date.fromisoformat(wpair[1]) + dt.timedelta(days=1)})"),
+        ("the collapsed span distribution", catchall, "everything else" + " " + "0 days"),
+        ("the empty calibration gap", gap_claim, "nothing between" + " 11 and" + " 100 days"),
+    ]
+    for what, pat, probe in stale_probes:
+        assert pat.search(probe), (
+            f"the pattern for {what} does not match the stale wording it exists to find ({probe!r}), so "
+            f"the check above it reports nothing whatever this file says. It matches nothing in this file "
+            f"today either, because that sentence was corrected -- which is exactly when a pattern stops "
+            f"being watched. Re-anchor it on the wording it must catch.")
     assert not problems, "a flight-span figure in this file is not what the records hold:\n  " + \
         "\n  ".join(problems)
 
