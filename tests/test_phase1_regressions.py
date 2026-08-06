@@ -18042,7 +18042,7 @@ def test_the_independent_checker_says_which_region_each_side_of_it_samples():
 
     problems = []
     for where, text, pat in (
-            ("tools/verify_elevation.py's SAMPLE_HALF_M note", ve,
+            ("tools/verify_elevation.py's THE TEE REGION note", ve,
              r"(\d+) of (\d+) mapped pads whose ring reaches past that window on an axis -- up to "
              r"([\d.]+) m, (\S+) (\d+)"),
             ("generate.elev_phrase's docstring", gen,
@@ -18940,15 +18940,22 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
     #    fallback row records `tee_points` and `tee_z_m`, and those are the producer's own outputs: a
     #    producer sampling the box would record the box's count and the box's median, and both are
     #    measured below and required to be the disc's. The count is the decisive discriminator -- the
-    #    disc holds 984-2211 returns against the box's 8384-17567, a 7-9x separation on all five -- while
-    #    the medians agree to 0.01 m on three of the five, so a z-only check would not have separated
-    #    them. What this states is exactly what it checks: the region the producer SAMPLED, as recorded,
-    #    is the disc. It does not reach inside the sampler, and it no longer says it does.
+    #    disc holds 984-2211 returns against the box's 8384-17567, a 7.52-9.33x separation on all five --
+    #    while the medians agree to within 0.01 m on 1 of the five (castlewood-hill 4, 0.0091 m) and to
+    #    within 0.05 m on 3, so a z-only check would not have separated them on every hole. What this
+    #    states is exactly what it checks: the region the producer SAMPLED, as recorded, is the disc. It
+    #    does not reach inside the sampler, and it no longer says it does.
+    #    Both summaries above were wrong before this round and both are graded now, after the loop: the
+    #    separation was published as "7-9x", which EXCLUDES its own top end, and the median agreement as
+    #    "three of the five", which is 1 -- three is the count at 0.05 m. A bound that excludes its own
+    #    measurement is the class the range grader further down this file refuses by name; these two sat
+    #    in a comment beside the loop that measures them.
     box_rows = sorted(k for k, r in S.items() if not r["on_pad"])
     assert len(box_rows) == 5, (
         f"{len(box_rows)} anchors take the fallback, not the five this derivation was measured on "
         f"({[(_short(s), h) for s, h in box_rows]}); re-measure before trusting the figures below")
     sep = []
+    counts, dzs = [], []
     for k in box_rows:
         r = S[k]
         with open(os.path.join(ROOT, "courses", k[0], "hole_elev.json"), encoding="utf-8") as fh:
@@ -18970,11 +18977,57 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
             f"{_short(k[0])} {k[1]}: the artifact records a tee height of {row['tee_z_m']:.3f} m; the "
             f"disc gives {z_disc:.3f} m and the box {z_box:.3f} m")
         sep.append((abs(z_disc - z_box), _short(k[0]), k[1], z_disc, z_box))
+        counts.append((n_disc, n_box))
+        dzs.append((abs(z_disc - z_box), _short(k[0]), k[1]))
     worst_sep = max(sep)
     assert worst_sep[0] > 0.1, (
         f"the disc and the box now give tee heights within {worst_sep[0]:.3f} m of each other on every "
         f"one of the five fallback holes, so the recorded height cannot distinguish the two regions at "
         f"all and only the count above is doing any work. Re-derive before relying on this.")
+
+    # 2b. THE TWO SUMMARIES the comment above publishes about that discrimination, against the five rows
+    #     just measured. A published RANGE has to CONTAIN its own measurements: an upper bound rounded
+    #     down excludes the case it exists to cover, which is what "7-9x" did to bay-view 16.
+    ratios = sorted(b / d for d, b in counts)
+    tight = sorted(v for v, _s, _h in dzs)
+    here = _flow(open(__file__, encoding="utf-8").read())
+    live_sep = (f"disc {min(d for d, _b in counts)}-{max(d for d, _b in counts)}, box "
+                f"{min(b for _d, b in counts)}-{max(b for _d, b in counts)}, ratio "
+                f"{ratios[0]:.2f}-{ratios[-1]:.2f}x; {sum(1 for v in tight if v <= 0.01)} of "
+                f"{len(tight)} medians within 0.01 m, {sum(1 for v in tight if v <= 0.05)} within 0.05")
+    m = re.search(r"disc holds (\d+)-(\d+) returns against the box's (\d+)-(\d+), a ([\d.]+)-([\d.]+)x "
+                  r"separation on all five -- while the medians agree to within 0\.01 m on (\d+) of the "
+                  r"five \(([a-z-]+) (\d+), ([\d.]+) m\) and to within 0\.05 m on (\d+)", here)
+    assert m, ("step 2's own comment no longer states the count separation and the median agreement in a "
+               f"form this test can read, so neither is graded: measured {live_sep}")
+    bad = []
+    for grp, want, label in ((1, min(d for d, _b in counts), "the disc's smallest count"),
+                             (2, max(d for d, _b in counts), "the disc's largest count"),
+                             (3, min(b for _d, b in counts), "the box's smallest count"),
+                             (4, max(b for _d, b in counts), "the box's largest count"),
+                             (7, sum(1 for v in tight if v <= 0.01),
+                              "how many medians agree to 0.01 m"),
+                             (11, sum(1 for v in tight if v <= 0.05), "how many agree to 0.05 m")):
+        if int(m.group(grp)) != want:
+            bad.append(f"step 2 publishes {label} as {m.group(grp)}; measured {want}")
+    for grp, want, side, label in ((5, ratios[0], "lo", "the lowest count ratio"),
+                                   (6, ratios[-1], "hi", "the highest count ratio")):
+        got = float(m.group(grp))
+        contains = got <= want + 1e-12 if side == "lo" else got >= want - 1e-12
+        if not contains:
+            bad.append(f"step 2 publishes {label} as {got:g}, which EXCLUDES the measured {want:.4g} -- "
+                       f"a separation range that does not contain its own five holes")
+        elif abs(got - want) > 0.1:
+            bad.append(f"step 2 publishes {label} as {got:g}; measured {want:.4g}")
+    closest = min(dzs)
+    if (m.group(8), int(m.group(9))) != (closest[1], closest[2]) or \
+            abs(float(m.group(10)) - closest[0]) > 0.0005:
+        bad.append(f"step 2 names {m.group(8)} {m.group(9)} at {m.group(10)} m as the hole where the two "
+                   f"medians agree closest; measured {closest[1]} {closest[2]} at {closest[0]:.4f} m")
+    assert not bad, (
+        "step 2's justification for reading the recorded COUNT rather than the recorded HEIGHT does not "
+        "match the five holes it is measured over. It is the reason this assertion is shaped the way it "
+        "is, so a wrong figure here is the argument, not a comment:\n  " + "\n  ".join(bad))
 
     # 3. THE FIVE PRINTED INTEGERS, both regions, from the point cloud. Nothing here is copied: the
     #    "before" is the median over the 15 m box and the "after" the median over the disc, each
@@ -30462,6 +30515,23 @@ _CELL_LABEL_CLAIM = re.compile(
 # retired figure is exactly when someone should have to say again that it is still history. Every entry
 # is proved to be load-bearing by the same test: an unused key fails, so a stale exemption cannot sit
 # here waiting to match something else.
+#
+# AND KEYING ON CONTENT HAS ITS OWN GAP, which is why the checks are a COUNT and not set membership: a
+# content key is granted to every copy of its clause, anywhere in the tree, so an exempted record pasted
+# into a second file arrives exempt. Set membership cannot tell "the record moved" (which should keep its
+# exemption) from "the record was copied" (which should not), and copies are this project's own stated
+# propagation mechanism -- a record copied, with one copy later going stale, is the most frequent single
+# defect shape this campaign has found. Proven on a scratch tree and closed by requiring EXACTLY ONE
+# match per key.
+#
+# WHAT IS STILL NOT CHECKED, stated because it is the residual and not an oversight: nothing here
+# verifies that a keyed clause actually REFUTES the label it names. All twelve do, inside the clause, but
+# a key added for a live-stale sentence would be honoured -- the exemption is exactly as good as the
+# review that adds a key. That is deliberate: telling a refutation from an assertion by rule IS the
+# keyword rule, and it was measured clearing the plainest live-stale sentences this project writes. What
+# these checks can do is keep every key visible, make each one prove it is doing work, and break the
+# moment the clause it names is reworded, deleted or duplicated -- which is the smallest surface a human
+# review can be asked to cover.
 def _clause_key(clause):
     """A content identity for one clause of prose: whitespace collapsed, lowercased, sha256, 16 hex."""
     import hashlib
@@ -30637,22 +30707,50 @@ def _prose_of_repo(root=None):
     return out
 
 
-def _stale_label_mentions(live, root=None):
+def _stale_label_mentions(live, root=None, exempt=None):
     """[(where, said, clause)] -- prose naming a resolution label the engine does not print.
 
     Split out from the assertion so the mutation test above can drive the SAME collector and the SAME
     clause rule over a scratch copy. Two graders reading one function is the point: a mutation test
     against a re-implementation of the scan would prove nothing about the scan that ships.
+
+    `exempt` is the history allowlist, defaulting to the shipped one. It is a parameter so a grader can
+    ask what this sweep would report with NO exemption at all -- which is the only way to show that a
+    key on that list is load-bearing rather than decorative.
     """
+    exempt = _HISTORICAL_LABEL_CLAUSES if exempt is None else exempt
     out = []
     for where, text in _prose_of_repo(root):
         for clause in _clauses(text):
             for m in _CELL_LABEL_CLAIM.finditer(clause):
-                if _norm_label(m.group(0)) in live or \
-                        _clause_key(clause) in _HISTORICAL_LABEL_CLAUSES:
+                if _norm_label(m.group(0)) in live or _clause_key(clause) in exempt:
                     continue
                 out.append((where, m.group(0), " ".join(clause.split())[:140]))
     return out
+
+
+def _clause_occurrences(root=None):
+    """{clause key: [(where, clause)]} over every prose surface, in the mentions' own spelling.
+
+    WHERE a keyed clause is, and how many times, which set membership cannot answer. `_clause_key` is a
+    hash of the content, so an exemption granted to one clause is granted to every copy of it anywhere
+    in the tree -- and copying a record, then letting one copy go stale, is the most frequent single
+    defect shape this campaign has found. A count is what tells "the record moved" from "the record was
+    duplicated".
+    """
+    occ = {}
+    for where, text in _prose_of_repo(root):
+        for clause in _clauses(text):
+            occ.setdefault(_clause_key(clause), []).append((where, " ".join(clause.split())[:140]))
+    return occ
+
+
+def _duplicated_exemptions(allowlist, occ):
+    """[(key, [where, ...])] -- every allowlisted clause that exists more than once.
+
+    The rule, in one place, so the assertion below and the mutation probe beside it are the same rule.
+    """
+    return sorted((k, [w for w, _c in occ[k]]) for k in allowlist if len(occ.get(k, ())) > 1)
 
 
 def _clauses(text):
@@ -30736,7 +30834,9 @@ def test_no_record_names_a_green_label_the_engine_does_not_print():
         + "\n  ".join(stale))
 
 
-# The TWELVE surfaces a resolution label can hide in, each with the shape of injection that reaches it.
+# The TWELVE surfaces a resolution label can hide in, each with the shape of injection that reaches it,
+# plus one CONTROL that must be caught by the same collector (the blank-COMMENT-line variant) -- so
+# thirteen entries below, twelve of them measured dodges.
 # 108a894's grader saw three of them and its message claimed all of them; a60fcae widened it to eight.
 # The four added after that were each measured as a live dodge past the eight:
 #   * an f-string whose claim is SPLIT ACROSS Constant parts. `ast.walk` reached each part separately, so
@@ -30750,10 +30850,25 @@ def test_no_record_names_a_green_label_the_engine_does_not_print():
 # The label to inject is PASSED IN, never typed here. A mutation test for a grader that reads this file
 # would otherwise trip its own grader on its own fixtures -- and the way out of that must not be to
 # split the phrase across two literals to hide it, because a repo where prose can dodge the sweep by
-# spelling is a repo where the next stale label dodges it too. The split-f-string probe therefore takes
-# the label APART at a digit boundary it is given, rather than spelling either half.
+# spelling is a repo where the next stale label dodges it too. The two SPLIT probes therefore take the
+# label apart at a boundary computed from it, rather than spelling either half.
+#
+# WHERE that boundary is decides whether those two probes grade anything, and the first choice of it made
+# them VACUOUS. They split by position -- the first two characters against the rest -- and the REST IS
+# ITSELF A COMPLETE CLAIM: a digit, the unit and the word, which is all `_CELL_LABEL_CLAIM` asks for, so
+# the collector reports it from the tail alone. MEASURED: with both widenings under test reverted, the
+# position split still came back CAUGHT from both probes, so they passed with or without the fix they
+# existed to grade. Splitting at the word instead leaves a figure with no word on one side and a word
+# with no figure on the other, and neither half matches; re-measured the same way, both probes then
+# report MISSED with the widenings reverted and CAUGHT with them in place. That is the difference between
+# a probe and a decoration.
+#
+# (Neither half is spelled above, and that is not fastidiousness: the first draft of this very note
+# spelled the tail to explain the point, which made the note itself a live stale label in a file this
+# grader sweeps. The full suite caught it.)
 def _label_injections(dead):
-    head, tail = dead[:2], dead[2:]          # split BY POSITION, so neither half is spelled here
+    cut = dead.index(" data")                # at the WORD, so neither half is a claim on its own
+    head, tail = dead[:cut], dead[cut:]
     return (
         ("a comment", "lidar_coverage.py",
          lambda s: s + f"\n# every green here is {dead}.\n"),
@@ -30803,9 +30918,11 @@ def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_i
     a60fcae widened it to eight surfaces; four more dodges were measured past those eight and are probed
     here too -- a claim SPLIT across the Constant parts of one f-string, a `bytes` literal, a comment
     claim split across a truly blank line, and SECURITY.md. Each was verified to walk through the
-    eight-surface collector before the collector was widened, and the blank-COMMENT-line variant that
-    does NOT dodge is probed beside the one that does, so the difference stays measured rather than
-    assumed.
+    eight-surface collector before the collector was widened, and for the two SPLIT probes that
+    verification is now the fixture's own rather than a claim about a past measurement: they were vacuous
+    as first written (see the note above `_label_injections`, which measures it) and they fail with the
+    widenings reverted now. The blank-COMMENT-line variant that does NOT dodge is probed beside the one
+    that does, so the difference stays measured rather than assumed.
 
     Fast and hermetic: the copy holds only the files the injections touch, so the collector's globs
     (`*.py`, `legal/*.md`) find exactly those and the whole sweep runs in well under a second.
@@ -30928,27 +31045,65 @@ def test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording()
             "a live defect earns by how it happens to be worded certifies the absence of the defect it "
             "let through -- which is what the keyword rule did:\n  " + "\n  ".join(waved))
 
-    # REVERSE. Every allowlisted clause must still exist and still be cleared, and none may be dead.
+    # THE DUPLICATE PROBE, on a scratch tree, because the gap it closes is structural rather than a
+    # matter of wording: a content key exempts its clause WHEREVER that clause appears, so a copy is
+    # exempt for free -- and set membership cannot tell "the record moved" (which should keep its
+    # exemption) from "the record was copied" (which should not). Copies are this project's own stated
+    # propagation mechanism, and a copied record with one copy going stale is the single most frequent
+    # defect shape in this whole campaign. So the rule is a COUNT, and this is what proves the count can
+    # see a second copy at all.
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "legal"))
+        for rel in sorted(_prose_docs()):
+            shutil.copyfile(os.path.join(ROOT, rel), os.path.join(td, rel))
+        sentence = f"a green built from {dead} sits here"
+        key = _clause_key(sentence)
+        first = os.path.join(td, "aprobe.py")
+        with open(first, "w", encoding="utf-8") as fh:
+            fh.write(f"# {sentence}\n")
+        assert not _duplicated_exemptions({key: "the probe"}, _clause_occurrences(td)), (
+            "one copy of the probe clause is reported as duplicated, so the count below is not counting "
+            "what it claims and every result from it is unattributable")
+        with open(os.path.join(td, "bprobe.py"), "w", encoding="utf-8") as fh:
+            fh.write(f"# {sentence}\n")
+        dup = _duplicated_exemptions({key: "the probe"}, _clause_occurrences(td))
+        assert len(dup) == 1 and len(dup[0][1]) == 2, (
+            "the same allowlisted clause in TWO files is not reported as duplicated, so the exemption "
+            f"can be copied without anything objecting: {dup}")
+
+    # REVERSE. Every allowlisted clause must still exist, exactly once, and still be doing work.
     assert _HISTORICAL_LABEL_CLAUSES, (
         "the history allowlist is empty. Either every historical mention of a retired label has been "
         "removed from the repo -- check, because this suite documents several deliberately -- or the "
         "exemption has been switched off and the records that describe the old label are now failing.")
-    present = {_clause_key(c) for _w, text in _prose_of_repo() for c in _clauses(text)}
-    dead_keys = sorted(k for k in _HISTORICAL_LABEL_CLAUSES if k not in present)
+    occ = _clause_occurrences()
+    dead_keys = sorted(k for k in _HISTORICAL_LABEL_CLAUSES if k not in occ)
     assert not dead_keys, (
         "the history allowlist holds a key that matches no clause in the repo. A stale exemption is a "
         "pre-approved hole waiting for a clause nobody has looked at: if the record was reworded, "
         "re-key it deliberately; if it was deleted, delete the key.\n  "
         + "\n  ".join(f"{k}: {_HISTORICAL_LABEL_CLAUSES[k]}" for k in dead_keys))
-    cells = _measured_cells()
-    if cells:
-        keyed = {k for _w, text in _prose_of_repo() for c in _clauses(text)
-                 if _CELL_LABEL_CLAIM.search(c) for k in [_clause_key(c)]}
-        unused = sorted(k for k in _HISTORICAL_LABEL_CLAUSES if k not in keyed)
-        assert not unused, (
-            "the history allowlist holds a key for a clause that no longer names a resolution label at "
-            "all, so it is exempting nothing and grades nothing:\n  "
-            + "\n  ".join(f"{k}: {_HISTORICAL_LABEL_CLAUSES[k]}" for k in unused))
+    copied = _duplicated_exemptions(_HISTORICAL_LABEL_CLAUSES, occ)
+    assert not copied, (
+        "an allowlisted clause exists more than once, and one exemption is clearing every copy. Whatever "
+        "the second copy is for, it is now a record about a retired label that nothing grades: if the "
+        "clause moved, the old site should be gone; if it was duplicated on purpose, the copies have to "
+        "be worded as the separate statements they are, and keyed separately. A record copied, with one "
+        "copy later going stale, is the defect shape this allowlist exists to keep out:\n  "
+        + "\n  ".join(f"{k} in {len(w)} places ({', '.join(w)}): {_HISTORICAL_LABEL_CLAUSES[k]}"
+                      for k, w in copied))
+    # USED, and used means the key CHANGES THE OUTCOME. The old check asked only whether the clause still
+    # carried *a* resolution label -- which the LIVE label satisfies, so a key pointing at a clause that
+    # names only the label the engine does print would have counted as used while exempting nothing. This
+    # asks the sweep directly, with no exemption at all, and requires each key's own clause to be among
+    # what it then reports.
+    bare = {(w, c) for w, _said, c in _stale_label_mentions(live, exempt=())}
+    inert = sorted(k for k in _HISTORICAL_LABEL_CLAUSES if not set(occ[k]) & bare)
+    assert not inert, (
+        "the history allowlist holds a key that exempts nothing: with the exemption switched off, that "
+        "clause is not reported as a stale label at all, so the key is a pre-approved hole doing no "
+        "work. Delete it, or re-key the clause it was meant for:\n  "
+        + "\n  ".join(f"{k}: {_HISTORICAL_LABEL_CLAUSES[k]}" for k in inert))
 
 
 # A resolution bound DIRECTLY to the seamless product, in either order: "1 m seamless DEM",
