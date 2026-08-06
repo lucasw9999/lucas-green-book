@@ -547,10 +547,30 @@ def _blank_green(meta, tournament, rebuilt=False):
         f'<line x1="{VBx+4:.1f}" y1="{VBy+VBh*0.42+i*7:.1f}" x2="{VBx+VBw-4:.1f}" '
         f'y2="{VBy+VBh*0.42+i*7:.1f}" stroke="#cfcfcf" stroke-width="0.5"/>' for i in range(4))
     if tournament:
-        # no scale claim is needed (no green image is drawn to scale), so just fit the panel
+        # RULE 4.3 APPLIES TO THIS DRAWING TOO, and the comment that used to sit here denied it: "no
+        # scale claim is needed (no green image is drawn to scale), so just fit the panel". The path
+        # above IS an image of the putting green -- the same OSM ring the measured card draws,
+        # uniformly scaled -- so the Clarification's 3/8 in : 5 yd governs it exactly as it governs
+        # render()'s output, and this branch applied no cap at all.
+        #
+        # Measured across the 198 built green geometries as if each were blank: 23 exceed the
+        # 0.375 in : 5 yd limit and 31 exceed the 0.36 design target; the worst is castlewood-hill 14
+        # at 0.4772 in : 5 yd, 27% over -- on the POCKET card, which is the edition badged "DESIGNED
+        # TO CONFORM - RULE 4.3", and while legal/06 states "rendered at 0.36 in : 5 yd" as a blanket
+        # fact. tools/check_scale.py does measure this SVG (a blank card still matches its `.grn svg`
+        # selector) and would have failed afterwards -- but only in a browser, and only if run, so the
+        # cap was detected rather than prevented.
+        #
+        # LATENT today: no built green is blank. It is fixed rather than noted because the trigger is
+        # not one green -- see depth_width_yd, a course with no usable LiDAR blanks all 18 at once.
+        xmin, ymin, xmax, ymax = meta['bbox']
+        clat = meta['green_center'][0]
+        # The scalar mean of the two axes, which is the ground scale tools/check_scale.py divides the
+        # laid-out drawing by; render() sizes against the same mean for the same reason.
+        px_m = ((xmax-xmin)*mlon(clat)/meta['W'] + (ymax-ymin)*mlat(clat)/meta['H']) / 2.0
         grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)
         grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - 0.18
-        kf = min(grn_w_in/VBw, grn_h_in/VBh)
+        kf = min(0.36*px_m/4.572, grn_w_in/VBw, grn_h_in/VBh)   # legal ceiling, then fit the panel
         wattr, hattr = f'{VBw*kf:.3f}in', f'{VBh*kf:.3f}in'
         wrapopen = ('<div style="display:flex;align-items:center;justify-content:center;'
                     'width:100%;height:100%">'); wrapclose = '</div>'
@@ -572,7 +592,10 @@ def _blank_green(meta, tournament, rebuilt=False):
                      feeds=("rebuilt since survey" if rebuilt else "not surveyed"),
                      undul_ft=0.0, conf="no data", depth_yd=depth_yd, width_yd=width_yd,
                      front_bank_yd=0.0, back_bank_yd=0.0,
-                     scale_max_in=None, insufficient=True)
+                     # The legal max on-page height for this green, the same expression render()
+                     # records. It was None, which said "this card makes no scale claim" about a card
+                     # that draws a true-shape green -- see the cap above.
+                     scale_max_in=round(0.075 * d_yd, 3), insufficient=True)
 
 
 # Render-time gate. Deliberately looser than fetch_dem_hd.py's producer gate (NAN_FRAC_MAX=0.02):
