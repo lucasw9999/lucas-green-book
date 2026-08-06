@@ -143,8 +143,8 @@ def census(elements):
     weir (a structure beside water sits exactly where the water is NOT), and not a culverted, covered
     or underground reach (merion 13 once printed "1W" whose only blue mark was a 14.7 m culvert). So
     the same swap survived inside the surviving bucket -- lose a real stream, gain a culvert, count
-    unmoved, guard silent. Not hypothetical: 29 of this corpus's 179 waterways are undrawn today (24
-    culverts, 4 tunnel=yes, 1 tunnel=covered, 1 dam) on 9 of 12 courses, merion 8 of 20 and bay-view 4
+    unmoved, guard silent. Not hypothetical: 29 of this corpus's 178 waterways are undrawn today (23
+    culverts, 4 tunnel=yes, 1 tunnel=covered, 1 dam) on 8 of 12 courses, merion 8 of 20 and bay-view 4
     of 14 among them.
 
     The undrawn ones are counted in `waterway_undrawn` rather than dropped. Two reasons: the fetch

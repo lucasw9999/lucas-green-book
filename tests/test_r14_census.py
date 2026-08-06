@@ -475,8 +475,8 @@ def test_the_waterway_census_counts_exactly_the_watercourses_a_card_draws(tmp_pa
 
     Reproduced here at three ways: stream, stream, stream -> stream, stream, culverted stream. Both
     censuses read `waterway 3` and the guard was silent. And it is not a hypothetical shape: 29 of the
-    corpus's 179 waterways are undrawn today (24 culverts, 4 tunnel=yes, 1 dam, 1 tunnel=covered), on
-    9 of 12 courses -- merion 8 of 20, bay-view 4 of 14, philadelphia 4 of 16.
+    corpus's 178 waterways are undrawn today (23 culverts, 4 tunnel=yes, 1 dam, 1 tunnel=covered), on
+    8 of 12 courses -- merion 8 of 20, bay-view 4 of 14, philadelphia 4 of 16.
 
     Under the project's second rule a lost watercourse is a hazard the golfer can reach that the book
     no longer shows, so the loss has to reach the HAZARD waiver, by name.
@@ -602,6 +602,117 @@ def test_no_stored_cache_loses_a_drawn_watercourse_to_the_new_census(tmp_path):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+def test_the_undrawn_waterway_breakdown_is_derived_not_typed():
+    """The undrawn-waterway figures in fetch_osm.py's census() docstring -- mirrored, in a different
+    word order, in the docstring of test_the_waterway_census_counts_exactly_the_watercourses_a_card_draws
+    above -- were typed once and left ungraded. An audit found the sentence self-contradicting (its
+    own parenthesised breakdown summed to 30 while the headline said 29) and both the total and the
+    "N of 12 courses" figure stale against the corpus on disk.
+
+    Recompute everything here from courses/*/osm_course.json using fo.census() itself, so the
+    census's own bucketing is what gets graded rather than a second implementation of it, and require
+    BOTH copies of the sentence to state the freshly computed numbers. The courses-affected
+    denominator is this project's whole corpus (however many course directories exist under
+    courses/), not just however many happen to have a cached OSM reply today -- Poppy Ridge has none
+    (blocked on elevation) and correctly contributes zero undrawn ways to the numerator while still
+    counting toward that denominator.
+    """
+    fo = _osm_module()
+
+    cdir = os.path.join(ROOT, "courses")
+    slugs = sorted(s for s in os.listdir(cdir)
+                    if not s.startswith("_") and os.path.isdir(os.path.join(cdir, s)))
+    caches = [(s, os.path.join(cdir, s, "osm_course.json")) for s in slugs]
+    caches = [(s, p) for s, p in caches if os.path.exists(p)]
+    if not caches:
+        pytest.skip("per-course data is gitignored; nothing to measure")
+
+    total = undrawn = culverts = tunnel_yes = tunnel_covered = dams = 0
+    courses_with_undrawn = 0
+    per_course = {}
+    for slug, p in caches:
+        els = json.load(open(p))["elements"]
+        c = fo.census(els)
+        drawn, gone = c.get("waterway", 0), c.get("waterway_undrawn", 0)
+        total += drawn + gone
+        undrawn += gone
+        per_course[slug] = (gone, drawn + gone)
+        if gone:
+            courses_with_undrawn += 1
+        for e in els:
+            t = e.get("tags") or {}
+            if not t.get("waterway") or fo.is_visible_watercourse(e):
+                continue
+            if (t.get("building") not in (None, "no") or t.get("golf")
+                    or t.get("natural") == "water"):
+                continue                       # census buckets this elsewhere, not as waterway*
+            if t.get("waterway") == "dam":
+                dams += 1
+            elif t.get("tunnel") == "culvert":
+                culverts += 1
+            elif t.get("tunnel") == "yes":
+                tunnel_yes += 1
+            elif t.get("tunnel") == "covered":
+                tunnel_covered += 1
+            else:
+                pytest.fail(
+                    "%s: an undrawn waterway way (id %s, tags %s) matches none of this test's own "
+                    "reason buckets -- the corpus grew a new reason to go undrawn (a weir, a "
+                    "lock_gate, a `covered` tag...) that the comment's enumeration would then also "
+                    "be missing" % (slug, e.get("id"), t))
+    assert culverts + tunnel_yes + tunnel_covered + dams == undrawn, (
+        "this test's own breakdown (%d) does not sum to its own total (%d) -- fix the test before "
+        "trusting it" % (culverts + tunnel_yes + tunnel_covered + dams, undrawn))
+    want = (undrawn, total, culverts, tunnel_yes, tunnel_covered, dams,
+            courses_with_undrawn, len(slugs))
+
+    # Both docstrings wrap across source lines, so match against whitespace-collapsed text -- the
+    # sentence is what is graded, not which column it happens to wrap at.
+    osm_src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
+    osm_flat = re.sub(r"\s+", " ", osm_src)
+    m1 = re.search(
+        r"(\d+) of this corpus's (\d+) waterways are undrawn today \((\d+) culverts, (\d+) "
+        r"tunnel=yes, (\d+) tunnel=covered, (\d+) dam\) on (\d+) of (\d+) courses", osm_flat)
+    assert m1, ("fetch_osm.py's census() docstring no longer states the undrawn-waterway figures in "
+                "the expected shape -- update this test's regex to match the new prose, or the prose "
+                "regressed")
+    got1 = tuple(int(g) for g in m1.groups())
+    assert got1 == want, (
+        "fetch_osm.py's census() docstring says (undrawn, total, culverts, tunnel=yes, "
+        "tunnel=covered, dam, courses, of)=%s but courses/*/osm_course.json currently measures %s"
+        % (got1, want))
+    m1b = re.search(r"merion (\d+) of (\d+) and bay-view (\d+) of (\d+) among them", osm_flat)
+    assert m1b, "fetch_osm.py's census() docstring no longer names merion/bay-view's own figures"
+    assert (int(m1b.group(1)), int(m1b.group(2))) == per_course["merion-golf-club"], (
+        "fetch_osm.py says merion %s/%s, the corpus measures %s"
+        % (m1b.group(1), m1b.group(2), per_course["merion-golf-club"]))
+    assert (int(m1b.group(3)), int(m1b.group(4))) == per_course["bay-view-golf-club"], (
+        "fetch_osm.py says bay-view %s/%s, the corpus measures %s"
+        % (m1b.group(3), m1b.group(4), per_course["bay-view-golf-club"]))
+
+    test_src = open(os.path.join(ROOT, "tests", "test_r14_census.py"), encoding="utf-8").read()
+    test_flat = re.sub(r"\s+", " ", test_src)
+    m2 = re.search(
+        r"(\d+) of the corpus's (\d+) waterways are undrawn today \((\d+) culverts, (\d+) "
+        r"tunnel=yes, (\d+) dam, (\d+) tunnel=covered\), on (\d+) of (\d+) courses", test_flat)
+    assert m2, ("this file's own mirrored docstring no longer states the undrawn-waterway figures in "
+                "the expected shape -- update this test's regex to match the new prose, or the prose "
+                "regressed")
+    g = m2.groups()
+    got2 = (int(g[0]), int(g[1]), int(g[2]), int(g[3]), int(g[5]), int(g[4]), int(g[6]), int(g[7]))
+    assert got2 == want, (
+        "this file's own docstring says (undrawn, total, culverts, tunnel=yes, tunnel=covered, dam, "
+        "courses, of)=%s but courses/*/osm_course.json currently measures %s" % (got2, want))
+    m2b = re.search(r"merion (\d+) of (\d+), bay-view (\d+) of (\d+), philadelphia (\d+) of (\d+)",
+                     test_flat)
+    assert m2b, "this file's own docstring no longer names merion/bay-view/philadelphia's own figures"
+    assert (int(m2b.group(1)), int(m2b.group(2))) == per_course["merion-golf-club"]
+    assert (int(m2b.group(3)), int(m2b.group(4))) == per_course["bay-view-golf-club"]
+    assert (int(m2b.group(5)), int(m2b.group(6))) == per_course["philadelphia-country-club"], (
+        "this file says philadelphia %s/%s, the corpus measures %s"
+        % (m2b.group(5), m2b.group(6), per_course["philadelphia-country-club"]))
 
 
 # ---------------------------------------------------------------------------
