@@ -185,9 +185,16 @@ ground density in exchange for nothing measurable.
 
 `withheld` and `synthetic` are a different matter and are now filtered out in `fetch_dem_hd.py`. Those
 bits mark points the producer disowns — measurements it says not to use, and points computed rather than
-observed — and neither belongs under a printed slope read. Scanning every one of the **71 of the 72 LAZ tiles in the corpus, 582,510,577 class‑2 ground returns** (callippe's `w6159n2046`, added later and overlapping no green, is not among them), finds **zero** of
-both, so the filter changes no shipped surface: rebuilding bay-view with it produced all 36 files
-byte-identical. It is there for the next course's tiles.
+observed — and neither belongs under a printed slope read. A one‑off scan of the LAZ tiles then in the
+corpus — callippe's `w6159n2046`, added afterward and overlapping no green, was not among them — counted
+**582,510,577 class‑2 ground returns** and found **zero** flagged `withheld` or `synthetic`. That scan
+counted physical tiles, the same population the `withheld`‑on‑**78 of 78** figures elsewhere in this repo
+(`fetch_dem_hd.py`, the regression suite) use for the identical finding, not de‑duplicated tile
+footprints. Today's corpus holds **78 LAZ tiles on disk (71 distinct tile footprints; four Alameda tiles
+are held by more than one course)**, `w6159n2046` among them; the one‑off script itself is not preserved,
+so the exact tile count it ran over cannot be reproduced without re‑scanning 11.6 GiB of tiles. So the
+filter changes no shipped surface: rebuilding bay-view with it produced all 36 files byte-identical. It is
+there for the next course's tiles.
 
 ## What this does and does not establish
 
