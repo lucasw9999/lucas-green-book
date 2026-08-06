@@ -7413,8 +7413,9 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
     green_elevation() took the median of the whole dem_hd .npy, and that array is the green's bounding
     box padded by fetch_dem_hd.MARGIN_M = 12 m on every side -- a region 5.5x the green's area, of which
     a corpus-median 82% is not green. Because a green is usually a raised pad surrounded by fairway and
-    bunker, the figure read LOW: the interior median is higher on 137 of 171 holes, mean +0.458 ft,
-    one-sided at p = 2.7e-15. It moved 102 printed integers.
+    bunker, the figure read LOW: the interior median is higher on all but a few holes, and by how much
+    is measured at the end of this test rather than restated here -- this docstring's own "mean
+    +0.458 ft" was one of the four disagreeing copies that pin now grades. It moved 102 printed integers.
 
     The polygon was in the SAME meta file the whole time, and render_green.py rasterises it to measure
     every slope figure the card prints. So the test is a comparison between the two readers of one file:
@@ -7428,7 +7429,7 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
     """
     import numpy as np
     checked = agreed_with_patch = 0
-    problems = []
+    problems, shift_ft = [], []
     for slug in CORPUS:
         cdir = os.path.join(ROOT, "courses", slug)
         rp = os.path.join(cdir, "hole_elev.json")
@@ -7461,6 +7462,7 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
             checked += 1
             inside = float(np.nanmedian(a[mask]))
             whole = float(np.nanmedian(a))
+            shift_ft.append((inside - whole) * 3.28084)
             if abs(gz - inside) > 0.02:
                 problems.append(f"{slug} hole {hn}: recorded green_z_m {gz:.2f} m is not the median over "
                                 f"the green polygon ({inside:.2f} m). Whole-patch median is {whole:.2f} m "
@@ -7478,6 +7480,59 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
         f"{agreed_with_patch} of {checked} recorded heights equal the WHOLE-PATCH median, which is what "
         f"the collar bug produced. Either the mask is not being applied or it is selecting the whole "
         f"array.")
+
+    # HOW BIG that region error is, which three records publish and NOTHING measured -- so they had
+    # drifted apart from each other as well as from the corpus. Four values were in the tree for one
+    # quantity: `green_elevation` said "a mean +0.478 ft, positive on 140 of them" over 177 holes,
+    # this docstring said "mean +0.458 ft" over 171, `_tee_pads` said "+0.47 ft" and legal/09 item 1
+    # said "+0.46 ft". The difference is measured right here, hole by hole, and has been all along --
+    # the loop above already had both medians in hand and threw the difference away.
+    # The tolerance is taken from the PRECISION each record chose, so a two-decimal claim is held to
+    # two decimals and the four-decimal derivation to four. Publishing fewer digits is allowed;
+    # publishing a digit the corpus does not support is not.
+    mean_ft = float(np.mean(shift_ft))
+    pos = sum(1 for v in shift_ft if v > 0)
+    with open(os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md"), encoding="utf-8") as fh:
+        rec09 = _flow(fh.read())
+    SENTENCE = r"correcting only the green end would have shifted every height in the book by \+([\d.]+) ft"
+    stale = []
+    for where, text, pat in (
+            ("fetch_hole_elev.green_elevation", _fhe_prose(),
+             r"substituting the interior moves (\d+) holes by a mean \+([\d.]+) ft, positive on (\d+)"),
+            ("fetch_hole_elev._tee_pads", _fhe_prose(), SENTENCE),
+            ("legal/09 item 1", rec09, SENTENCE)):
+        m = re.search(pat, text)
+        if not m:
+            stale.append(f"{where} no longer publishes this shift in a form this test can read "
+                         f"({pat!r}); measured mean {mean_ft:+.4f} ft over {len(shift_ft)} holes, "
+                         f"positive on {pos}")
+            continue
+        g = list(m.groups())
+        said = float(g[1] if len(g) == 3 else g[0])
+        digits = len(g[1 if len(g) == 3 else 0].split(".")[1])
+        if abs(said - mean_ft) > 0.5 * 10 ** -digits + 1e-9:
+            stale.append(f"{where} publishes +{said} ft; measured {mean_ft:+.4f} ft over "
+                         f"{len(shift_ft)} holes")
+        if len(g) == 3 and (int(g[0]), int(g[2])) != (len(shift_ft), pos):
+            stale.append(f"{where} publishes {g[0]} holes, positive on {g[2]}; measured "
+                         f"{len(shift_ft)} holes, positive on {pos}")
+    assert not stale, (
+        "the size of the collar region error is published in three records and measured in none of "
+        "them. It is the number that says how much the correction was worth, and legal/09 cites it in "
+        "the one bullet a reader goes to for what the printed heights are worth:\n  "
+        + "\n  ".join(stale))
+    # The one-sidedness carries a p-value, so the p-value is derived here too rather than trusted: an
+    # exact binomial tail on the same count the sentence beside it publishes. A statistic quoted from a
+    # method nobody can name is the "mean 0.27 ft" failure in a different costume.
+    import math
+    m = re.search(r"positive on (\d+) of them, which a one-sided sign test puts at p = ([\d.]+e-\d+)",
+                  _fhe_prose())
+    assert m, ("fetch_hole_elev no longer states the sign-test p for that shift in a readable form; "
+               f"measured {pos} of {len(shift_ft)} positive")
+    exact = sum(math.comb(len(shift_ft), i) for i in range(pos, len(shift_ft) + 1)) / 2.0 ** len(shift_ft)
+    assert abs(float(m.group(2)) - exact) <= 0.05 * exact, (
+        f"fetch_hole_elev publishes p = {m.group(2)} for {m.group(1)} of {len(shift_ft)} holes higher; "
+        f"an exact one-sided binomial tail on {pos} of {len(shift_ft)} is {exact:.2g}")
 
 
 @needs_corpus
@@ -22801,10 +22856,11 @@ def test_the_dem_patch_is_read_on_the_extent_the_service_returned():
 
     What it cost is the one figure whose job is to bound our OWN processing: merion's absolute
     green-elevation offset against the DEM reads a median 0.1019 m as coded and 0.0522 m with the
-    returned georeference -- so roughly half of the "worst per-course median of 0.10 m" published in
-    legal/09 is this tool's own region error, in the same document that says the sample is taken over
-    "the same green polygon the pipeline measures, so the comparison is not dominated by a region
-    mismatch".
+    returned georeference -- so roughly half of the "worst per-course median of 0.10 m" legal/09
+    published at the time was this tool's own region error, in the same document that said the sample is
+    taken over "the same green polygon the pipeline measures, so the comparison is not dominated by a
+    region mismatch". (That prediction was borne out corpus-wide when the service came back: the run of
+    2026-08-05 measures 0.045 m, and legal/09 now publishes the measurement instead of the bound.)
 
     Synthetic, with the network stubbed at `urlopen` so the georeference travels through the real
     GeoTIFF the real code reads. A crowned green (a dome falling 8 m across the patch) makes the region
@@ -23117,6 +23173,223 @@ def test_the_print_floors_justification_quotes_only_figures_this_project_can_pro
         "derivation, not a comment:\n  " + "\n  ".join(problems))
 
 
+# THE FIGURES legal/09 ITEM 1 PUBLISHES for the elevation bound, as this file can read them. One place,
+# because two tests grade them: the offline one below, and the network one after it that re-runs the
+# tool. Written against the document's own sentences rather than a template, so a reworded record fails
+# as "unreadable" (which _elev_bound_published reports as a defect, not a skip) instead of silently
+# grading nothing.
+_ELEV_BOUND_FIGS = (
+    ("holes", r"[Oo]ver all (\d+) measured holes", "the hole count the run reached"),
+    ("courses", r"measured holes on the (\d+) courses", "the course count"),
+    ("abs_pc_worst", r"worst per.course median of ([\d.]+) m", "the worst per-course absolute median"),
+    ("abs_worst", r"worst single green of ([\d.]+) m \(([A-Za-z-]+)\)",
+     "the worst single green's absolute offset, and the course it is on"),
+    ("chg_worst", r"worst single hole of ([\d.]+) ft \(([A-Za-z-]+) (\d+)\)",
+     "the worst single hole's tee-to-green disagreement, and which hole it is"),
+    ("chg_pc_lo", r"per.course medians from ([\d.]+) to [\d.]+ ft", "the best per-course median"),
+    ("chg_pc_hi", r"per.course medians from [\d.]+ to ([\d.]+) ft", "the worst per-course median"),
+    ("chg_pc_med", r"median of those eleven course medians is ([\d.]+) ft",
+     "the median of the per-course medians"),
+    ("chg_med", r"median over all \d+ holes is ([\d.]+) ft", "the corpus median"),
+    ("chg_mean", r"the mean ([\d.]+) ft", "the corpus mean"),
+    ("over2", r"(\d+) of the \d+ exceed 2 ft", "the count over 2 ft"),
+    ("over3", r"exceed 2 ft and (none|\d+) exceeds 3 ft", "the count over 3 ft"),
+)
+
+
+def _elev_bound_published():
+    """{key: match} for every figure legal/09 item 1 publishes about the elevation bound.
+
+    A figure this cannot parse is reported as a defect rather than skipped, for the reason the whole
+    record needed re-deriving: the version before this round said "the tool prints no corpus-wide
+    median, so this says which one it is" -- a sentence that was false when written and unreadable by
+    anything, in the bullet a reader goes to for what the printed heights are worth.
+    """
+    with open(os.path.join(ROOT, "legal", "09_GREEN_SURFACE_REPEATABILITY.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    # ITEM 1 ONLY, sliced on the document's own numbering before any figure is read. A pattern like
+    # "mean **N ft**" searched over the whole record would find whichever sentence happens to come
+    # first and then grade the wrong experiment -- this document publishes a cross-flight table, a
+    # flight-line overlap table and this bound, and two of the three quote figures in the same units.
+    body = doc.split("**Does not:**", 1)
+    assert len(body) == 2, "legal/09 no longer has the 'Does not' list that holds the elevation bound"
+    item1 = re.split(r"\n2\.\s", body[1], 1)[0]
+    assert "precision, not accuracy" in item1, (
+        "legal/09's item 1 is no longer the precision-not-accuracy bullet; the slice above is reading "
+        "the wrong part of the record")
+    doc = _flow(item1).replace("*", "")     # emphasis is presentation; a figure is not bold or plain
+    out, missing = {}, []
+    for key, pat, label in _ELEV_BOUND_FIGS:
+        m = re.search(pat, doc)
+        if m is None:
+            missing.append(f"{label} ({pat!r})")
+        else:
+            out[key] = m
+    assert not missing, (
+        "legal/09 item 1 no longer publishes these in a form this test can read, so nothing grades "
+        "them:\n  " + "\n  ".join(missing))
+    return out
+
+
+@needs_corpus
+def test_legal_09s_elevation_bound_describes_the_corpus_that_is_actually_on_disk():
+    """legal/09 item 1 is the ONLY published bound on the fault class nothing else here can see.
+
+    Every other check in this project compares our processing with itself, so a constant vertical
+    offset -- a unit read wrong, a CRS or grid misalignment, a geoid/ellipsoid mixup -- cancels out of
+    every height CHANGE and is invisible to all of them. Item 1 cites `verify_elevation --all` as the
+    bound on that class, and its figures had been quarantined since 2026-08-02 as "upper bounds
+    awaiting re-measurement" while the tool they came from was re-run and re-measured without them.
+
+    Three of item 1's claims can be checked with no network at all, and they are the three that went
+    wrong before:
+
+      (a) THE CORPUS. The hole and course counts are properties of hole_elev.json on disk.
+      (b) THE LABELLING. A corpus median and a median of per-course medians are different statistics,
+          and this document published one figure for the pair while asserting "the tool prints no
+          corpus-wide median" -- which `_print_corpus` had made false. Both must be named, and they
+          must not be the same number.
+      (c) THE INTERNAL ARITHMETIC. The worst per-course median cannot exceed the worst single hole, the
+          best per-course median cannot exceed the worst, and a count over 3 ft cannot exceed the count
+          over 2 ft. None of those needs the wire and all three catch a transcription slip.
+
+    The figures THEMSELVES need the service, so they are graded by the network test below. This one is
+    what runs on every commit.
+    """
+    fig = _elev_bound_published()
+    rows, courses = [], 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "hole_elev.json"))):
+        with open(p, encoding="utf-8") as fh:
+            vals = [v for v in (json.load(fh).get("holes") or {}).values()
+                    if v.get("change_ft") is not None]
+        rows += vals
+        courses += 1 if vals else 0
+    assert rows, "no hole_elev.json row carries a height change; nothing here would be measured"
+
+    bad = []
+    if int(fig["holes"].group(1)) != len(rows):
+        bad.append(f"item 1 says the run covered {fig['holes'].group(1)} holes; the corpus on disk "
+                   f"records a height change on {len(rows)}")
+    if int(fig["courses"].group(1)) != courses:
+        bad.append(f"item 1 says {fig['courses'].group(1)} courses; {courses} have a recorded height")
+    if fig["chg_med"].group(1) == fig["chg_pc_med"].group(1):
+        bad.append(f"item 1 quotes {fig['chg_med'].group(1)} for both the corpus median and the median "
+                   f"of the per-course medians. They are different statistics and on this corpus they "
+                   f"differ; one of the two is a copy of the other.")
+    lo, hi = float(fig["chg_pc_lo"].group(1)), float(fig["chg_pc_hi"].group(1))
+    worst = float(fig["chg_worst"].group(1))
+    if not lo <= hi <= worst:
+        bad.append(f"item 1's per-course medians ({lo} to {hi} ft) and worst single hole ({worst} ft) "
+                   f"cannot all be true together: a per-course median cannot exceed the worst hole in "
+                   f"the corpus, and the range cannot run backwards")
+    over3 = 0 if fig["over3"].group(1) == "none" else int(fig["over3"].group(1))
+    if over3 > int(fig["over2"].group(1)):
+        bad.append(f"item 1 says {fig['over2'].group(1)} holes exceed 2 ft and {over3} exceed 3 ft")
+    if float(fig["abs_pc_worst"].group(1)) > float(fig["abs_worst"].group(1)):
+        bad.append(f"item 1's worst per-course absolute median ({fig['abs_pc_worst'].group(1)} m) "
+                   f"exceeds its worst single green ({fig['abs_worst'].group(1)} m)")
+    assert not bad, (
+        "legal/09 item 1 does not describe the corpus it was measured over. This bullet is the "
+        "project's only bound on a whole class of vertical fault, and it has been wrong in both "
+        "directions before:\n  " + "\n  ".join(bad))
+
+
+@pytest.mark.network
+@pytest.mark.skipif(not os.environ.get("VERIFY_ELEV"),
+                    reason="set VERIFY_ELEV=1 to run: needs the 3DEP elevation service, ~340 patch "
+                           "fetches and about five minutes")
+@needs_corpus
+def test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today():
+    """The figures in item 1, against a live run of the command item 1 names as their reproducer.
+
+    THE ONLY grader that can see both records drift at once, and the reason it has to exist: those
+    figures live in two places -- this bullet and `verify_elevation.py`'s own docstring -- and on
+    2026-08-05 the tool was re-run and re-measured while the bullet kept the pre-georeference-fix
+    numbers (0.47 m and 0.10 m) it had carried since 2026-08-02. Grading one record against the other
+    would have reproduced exactly the failure this project keeps finding, so this runs the producer.
+
+    Gated behind VERIFY_ELEV=1 and marked `network` because it is the only honest way to measure it: a
+    stubbed elevation service would be this project inventing the reference it is checking itself
+    against. It skips otherwise, and a skip is visibly not a pass.
+
+    Tolerance is taken from the PRECISION the document chose for each figure, so quoting fewer digits
+    is allowed and quoting a digit the service does not support is not.
+    """
+    import subprocess
+    fig = _elev_bound_published()
+    r = subprocess.run([sys.executable, os.path.join("tools", "verify_elevation.py"), "--all"],
+                       cwd=ROOT, capture_output=True, text=True, timeout=3600)
+    out = r.stdout
+    assert "CORPUS over" in out, (
+        f"the run printed no corpus block, so nothing was measured (exit {r.returncode}). An "
+        f"unreachable service must read as 'could not check', never as agreement:\n"
+        f"{out[-1500:]}{r.stderr[-1500:]}")
+    # The per-course blocks, in order, so a figure that names a COURSE can be checked against the
+    # course the run puts it on. "worst" with no hole beside it is a figure nobody can check against
+    # the corpus, which is how three rival values for the worst single green sat here at once.
+    per, slug = {}, None
+    for line in out.splitlines():
+        m = re.match(r"([a-z0-9-]+)\s+\(independent check", line)
+        if m:
+            slug = m.group(1)
+            continue
+        m = re.search(r"=> \d+ holes checked, median \|diff\| ([\d.]+) ft", line)
+        if m and slug:
+            per.setdefault(slug, {})["med"] = float(m.group(1))
+        m = re.search(r"absolute green elevation vs the DEM: median [-+][\d.]+ m, worst "
+                      r"([-+][\d.]+) m", line)
+        if m and slug:
+            per.setdefault(slug, {})["abs"] = abs(float(m.group(1)))
+    assert per and all("med" in v for v in per.values()), (
+        f"the run printed no per-course medians, so the range item 1 publishes cannot be "
+        f"measured:\n{out[-1500:]}")
+
+    def one(pat, what):
+        m = re.search(pat, out)
+        assert m, f"the run does not print {what} ({pat!r}):\n{out[-1500:]}"
+        return m
+
+    c_n = one(r"CORPUS over (\d+) hole\(s\) in (\d+) course\(s\)", "the corpus counts")
+    c_d = one(r"median ([\d.]+) ft, mean ([\d.]+), worst ([\d.]+) \((\S+) (\d+)\)", "the |diff| line")
+    c_p = one(r"per-COURSE medians\s*: worst ([\d.]+) ft \((\S+)\), median of the \d+ course medians "
+              r"([\d.]+)", "the per-course line")
+    c_2 = one(r"holes over 2 ft\s*: (\d+)", "the count over 2 ft")
+    c_3 = one(r"holes over 3 ft\s*: (\d+)", "the count over 3 ft")
+    c_a = one(r"absolute green vs DEM: worst per-course median ([\d.]+) m, worst single green ([\d.]+) m",
+              "the absolute line")
+    live = {
+        "holes": int(c_n.group(1)), "courses": int(c_n.group(2)),
+        "abs_pc_worst": float(c_a.group(1)), "abs_worst": float(c_a.group(2)),
+        "chg_worst": float(c_d.group(3)), "chg_med": float(c_d.group(1)),
+        "chg_mean": float(c_d.group(2)), "chg_pc_hi": float(c_p.group(1)),
+        "chg_pc_med": float(c_p.group(3)), "chg_pc_lo": min(v["med"] for v in per.values()),
+        "over2": int(c_2.group(1)), "over3": int(c_3.group(1)),
+    }
+    off = []
+    for key, _pat, label in _ELEV_BOUND_FIGS:
+        raw = fig[key].group(1)
+        said = 0.0 if raw == "none" else float(raw)
+        digits = len(raw.split(".")[1]) if "." in raw else 0
+        if abs(said - live[key]) > 0.5 * 10 ** -digits + 1e-9:
+            off.append(f"item 1 publishes {label} as {raw}; this run measured {live[key]:.4f}")
+    # And the two figures that name WHERE the worst case is.
+    labels = {k: lab for k, _p, lab in _ELEV_BOUND_FIGS}
+    worst_abs_slug = max((v.get("abs", -1.0), s) for s, v in per.items())[1]
+    for key, want in (("abs_worst", [_short(worst_abs_slug)]),
+                      ("chg_worst", [_short(c_d.group(4)), c_d.group(5)])):
+        said_where = [g.lower() for g in fig[key].groups()[1:]]
+        if said_where != [w.lower() for w in want]:
+            off.append(f"item 1 puts {labels[key]} on {' '.join(said_where)}; the run puts it on "
+                       f"{' '.join(want)}")
+    assert not off, (
+        "legal/09 item 1 publishes elevation figures the 3DEP service does not give today. Both copies "
+        "of this run's output have gone stale independently before -- re-run\n"
+        "  python3 tools/verify_elevation.py --all\n"
+        "and replace every figure in that bullet AND the matching ones in the tool's own docstring:\n  "
+        + "\n  ".join(off))
+
+
+
 @needs_corpus
 def test_an_absolute_elevation_fault_cannot_be_reported_as_agreement():
     """verify_elevation printed "this is a processing fault", then exited 0 and called it agreement.
@@ -23181,10 +23454,12 @@ def test_the_absolute_offset_marker_fires_at_the_size_its_own_sentence_names():
     The SENTENCE is treated as the truth here, not the threshold, for two reasons. It is the promise the
     tool makes to whoever reads its output, and a gate looser than its own stated promise is a false
     statement in a document this project cites as evidence. And 1 m is where the evidence puts it: the
-    absolute offsets legal/09 publishes are a worst per-course median of 0.10 m and a worst single green
-    under 0.5 m, so 1 m clears healthy data by a factor of two while every fault this line names -- a
-    US-survey-foot cloud read as metres, a geoid/ellipsoid confusion in California -- lands tens of
-    metres out.
+    absolute offsets legal/09 publishes are a worst per-course median of 0.045 m and a worst single
+    green of 0.312 m, so 1 m clears healthy data by a factor of three while every fault this line names
+    -- a US-survey-foot cloud read as metres, a geoid/ellipsoid confusion in California -- lands tens of
+    metres out. That margin is READ OUT of legal/09 below rather than restated: those figures were
+    0.10 m and 0.35 m until 2026-08-05, and a threshold justified by a copy of a figure is how the
+    factor-of-two claim outlived the measurement behind it.
 
     The marker text is required to QUOTE the constant so the two cannot drift apart again, and a
     sub-threshold offset is required to stay silent and stay 'ok' so this cannot be satisfied by a tool
@@ -23192,6 +23467,13 @@ def test_the_absolute_offset_marker_fires_at_the_size_its_own_sentence_names():
     """
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import verify_elevation as ve
+    # The margin this gate is justified by, READ OUT of the record that publishes it. Those figures are
+    # themselves graded against a live run of the tool (see the two legal/09 elevation-bound tests), so
+    # this is a chain to a measurement rather than to a copy -- and when the corpus moves, the gate's
+    # justification moves with it instead of going quietly stale here.
+    _fig = _elev_bound_published()
+    _pc_worst_m = float(_fig["abs_pc_worst"].group(1))
+    _worst_green_m = float(_fig["abs_worst"].group(1))
     prev = os.environ.get("COURSE")
     slug = "bay-view-golf-club" if "bay-view-golf-club" in CORPUS else CORPUS[0]
     try:
@@ -23212,15 +23494,21 @@ def test_the_absolute_offset_marker_fires_at_the_size_its_own_sentence_names():
         f"{loud_out}")
     assert ve.ABS_FAULT_M <= 1.0, (
         f"ABS_FAULT_M is {ve.ABS_FAULT_M:g} m, looser than the metre its own warning promises. The "
-        f"published absolute offsets are a worst per-course median of 0.10 m, so a metre is not a tight "
-        f"gate -- it is two orders of magnitude below the faults it names.")
+        f"published absolute offsets are a worst per-course median of {_pc_worst_m:g} m, so a metre is "
+        f"not a tight gate -- it is two orders of magnitude below the faults it names.")
+    assert ve.ABS_FAULT_M >= 2 * _worst_green_m, (
+        f"ABS_FAULT_M is {ve.ABS_FAULT_M:g} m and legal/09 publishes a worst single green of "
+        f"{_worst_green_m:g} m, so the gate no longer clears the corpus's own healthy worst by a factor "
+        f"of two. Either the corpus has moved or the gate has: a threshold that fires on real data makes "
+        f"the tool useless rather than strict, which is the failure the quiet half below pins.")
     assert marker in loud_out and loud[0] != "ok", (
         f"an absolute offset of {l_worst:+.2f} m printed with no marker (or still returned "
         f"{loud[0]!r}), while the tool's own sentence calls a metre or more a processing fault. Anything "
         f"between the sentence and the threshold reads as agreement:\n{loud_out}")
     assert marker not in quiet_out and quiet[0] == "ok", (
-        f"an absolute offset of {q_worst:+.2f} m -- inside what the corpus already shows on healthy "
-        f"courses (worst per-course median 0.10 m) -- was marked as a processing fault and returned "
+        f"an absolute offset of {q_worst:+.2f} m -- below the metre the tool's own sentence names, and "
+        f"the same order as the {_worst_green_m:g} m worst single green the corpus already shows -- was "
+        f"marked as a processing fault and returned "
         f"{quiet[0]!r}. A gate that fires on the real corpus makes the tool useless rather than "
         f"strict:\n{quiet_out}")
 

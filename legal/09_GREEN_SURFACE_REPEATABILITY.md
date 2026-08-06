@@ -14,7 +14,7 @@ used to name. Each section now says what does.
 | "A second, independent line of evidence: flight‑line overlap" | a one‑off script, not a shipped tool; it reuses `cross_flight_check`'s own gridding and differs only in how the points are partitioned |
 | the `withheld` / `synthetic` counts | a one‑off scan of every LAZ tile for those two classification‑flag bits on class‑2 points |
 | the plane‑R² figures beside the `(faint)` threshold, above | a one‑off script, not a shipped tool: it re‑fits `render_green.green_summary()`'s own plane over each green's putting‑surface cells and reports 1 − SS_res/SS_tot. Pinned by `test_the_faint_mark_is_not_published_as_a_survey_noise_floor`, which re‑measures it |
-| item 1 of "What this does and does not establish" (elevation) | `python3 tools/verify_elevation.py --all` — needs the network and `rasterio`. **The figures it publishes there predate a georeference fix in that tool and are upper bounds pending a re‑run — see the note inside that bullet** |
+| item 1 of "What this does and does not establish" (elevation) | `python3 tools/verify_elevation.py --all` — needs the network and `rasterio`. **Re‑measured 2026‑08‑05 from one run of that command that reached all 171 holes. The note inside that bullet records the figures it replaced and why they were bounds** |
 | the before/after figures inside item 1 | one‑off measurements taken when those faults were fixed. They describe states of the code that no longer exist and **cannot** be reproduced from the corpus as it stands |
 
 Every green card prints a dominant tilt to one decimal (`2.7%`), a `(faint)` mark where a single
@@ -203,11 +203,12 @@ had to hold, and it holds with two orders of magnitude of margin.
    82% of which is not green, against a median over an axis-aligned box at the tee that a mapped tee
    covers about 13% of. Those two region errors pointed opposite ways and largely cancelled in the
    printed *change*, which is why neither was visible in it: correcting only the green end would have
-   shifted every height in the book by +0.46 ft. Corrected together they moved 102 of the then-177 printed
+   shifted every height in the book by +0.45 ft. Corrected together they moved 102 of the then-177 printed
    integers, made 6 heights appear and 2 disappear at the 3 ft floor, flipped no above/below word on
    any card that prints one, and took this tool's agreement with the independent DEM from a median
-   0.80 ft to 0.09 ft (both of those are `verify_elevation.py` figures and both predate its georeference
-   fix — see the note in the first bullet below). Both passes come
+   0.80 ft to 0.09 ft (a matched pair of `verify_elevation.py` figures from the era *before* its
+   georeference fix, so neither is comparable with the corrected figures below — see the note in the
+   first bullet). Both passes come
    from the same USGS program, sensor class and processing chain, so a *systematic* bias would be
    present in both and invisible to the comparisons above. Two kinds of systematic bias are worth
    separating, because only one of them stays open:
@@ -215,41 +216,52 @@ had to hold, and it holds with two orders of magnitude of margin.
      mixup. This IS bounded, by checking the *absolute* elevation of our surfaces against the 3DEP
      seamless DEM, a separately produced raster this project does not build — sampled over the **same
      green polygon** the pipeline measures, so the comparison is not dominated by a region mismatch.
-     Over all 171 measured holes on the 11 courses the two agree to a **worst per‑course median of
-     0.10 m and a worst single green of 0.35 m**; the printed tee‑to‑green *change* agrees to a
-     **worst single hole of 3.14 ft**, with per‑course medians from 0.04 to 0.57 ft (the median of
-     those eleven is 0.09 ft — the tool prints no corpus‑wide median, so this says which one it is). A
-     **median 0.09 ft, worst 3.14 ft**. A US‑survey‑foot cloud
-     read as metres would show tens of metres; a geoid/ellipsoid confusion about 30 m in California.
-     Neither is present. (This project has shipped a foot/metre fault before — it put 74 of 175 holes'
-     elevations out by a median 298 ft — so the check is not hypothetical.)
+     Over all 171 measured holes on the 11 courses — one run of `verify_elevation.py --all` on
+     2026‑08‑05, which reached every one of them — the two agree to a **worst per‑course median of
+     0.045 m** and a **worst single green of 0.312 m** (Merion); the printed tee‑to‑green *change*
+     agrees to a **worst single hole of 2.46 ft** (Philadelphia 5), with per‑course medians from 0.03
+     to 0.62 ft. At a *mapped* tee this tool reads the whole OSM tee pad where the pipeline reads the
+     pad inside a 15 m window, so at those tees the change figures include a region difference that
+     inflates them — they are upper bounds there, and the tool records why it is not re‑pointed at the
+     pipeline's own choice. A corpus median and a median of per‑course medians are different statistics,
+     and this bullet used to publish one figure for the pair: the **median of those eleven course
+     medians is 0.069 ft**, the **median over all 171 holes is 0.067 ft**, and the mean **0.201 ft** —
+     the tool prints all three, named. **2** of the 171 exceed 2 ft and **none** exceeds 3 ft. A
+     US‑survey‑foot cloud read as metres would show tens of metres; a geoid/ellipsoid confusion about
+     30 m in California. Neither is present. (This project has shipped a foot/metre fault before — it
+     put 74 of 175 holes' elevations out by a median 298 ft — so the check is not hypothetical.)
 
-     > **Every number in this bullet is an upper bound awaiting re‑measurement, and the "same green
-     > polygon" sentence above overstates what the tool did.** They were all produced by
+     > **What the figures above replaced, and why they were quarantined for three days.** Until
+     > 2026‑08‑05 this bullet published 0.10 m, 0.35 m and 3.14 ft, flagged as upper bounds awaiting
+     > re‑measurement. They were produced by
      > `tools/verify_elevation.py` before 2026‑08‑02, when its patch fetcher was found to discard the
      > returned GeoTIFF's own georeference: it rebuilt its pixel centres from the bbox it *requested*,
      > while the ImageServer had **expanded** that bbox to match the square image size it was asked for.
      > So every sample sat at the wrong place on the ground and reached past the polygon it was meant to
      > be confined to — the short axis was expanded by more than 1.05× on 185 of the corpus's 198 greens,
      > worst 2.712× (castlewood‑valley 14), and on monarch‑bay 3 the mask took 2889 cells where the
-     > returned georeference puts 1945 inside the green.
+     > returned georeference puts 1945 inside the green. That sample pulled in collar the polygon
+     > excludes, which *inflates* the disagreement, so the direction was known and the size was not.
      >
-     > The **direction** is known: the sample pulled in collar the polygon excludes, which *inflates* the
-     > measured disagreement, so the figures above are bounds rather than measurements. The **size**, on
-     > the one course re‑measured against the returned georeference, is about a factor of two — merion's
-     > absolute‑offset median **0.1019 → 0.0522 m**, worst green **0.515 → 0.436 m**. Roughly half of the
-     > published 0.10 m was this tool's own region error. Note that merion's pre‑fix worst green, 0.515 m,
-     > is already larger than the **0.35 m** this bullet publishes as the corpus's worst single green (and
-     > the tool's own docstring says 0.47 m): those two were never reconciled either, which is a further
-     > reason to treat every figure here as pending. The tee‑to‑green *change* figures carry the same
-     > fault at **both** ends, where it partly cancels and the direction is therefore not known.
+     > The re‑run bears out the factor of two that the one course re‑measured by hand predicted —
+     > merion's absolute‑offset median **0.1019 → 0.0522 m**, worst green **0.515 → 0.436 m**, both
+     > one‑off measurements of a code state that no longer exists. Corpus‑wide the worst single green
+     > went **0.47 → 0.312 m** and the worst per‑course median **0.10 → 0.045 m**. So the three rival
+     > pre‑fix figures for one quantity that this note used to flag as never reconciled — 0.35 m here,
+     > 0.47 m in the tool's own docstring, and merion's own 0.515 m — are all superseded by the single
+     > run above. Why they disagreed was never established, and it is recorded because it is the reason
+     > this bullet was quarantined rather than corrected in place. The tee‑to‑green *change* figures
+     > carried the same fault at **both** ends, where it partly cancels, so their direction was never
+     > known either; they are re‑measured above from the same run.
      >
-     > The elevation service was unreachable from the machine where the fix was made (HTTP 502), so **no
-     > corrected corpus figure is substituted here** — inventing one would be exactly the fault this
-     > document exists to guard against. Re‑run `python3 tools/verify_elevation.py --all` when the service
-     > answers and replace every figure in this bullet, and the matching ones in that tool's docstring.
-     > The *conclusion* — that no tens‑of‑metres unit fault and no ~30 m geoid confusion is present —
-     > survives either way: the correction moves centimetres, and those faults move tens of metres.
+     > The service that answered HTTP 502 from the machine where the fix was made answered on
+     > 2026‑08‑05, so nothing here is a substituted guess — inventing one would be exactly the fault
+     > this document exists to guard against. Re‑run `python3 tools/verify_elevation.py --all` and the
+     > figures above are what it prints; `test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today`
+     > runs that command and compares this bullet against it, which is the only check that can see this
+     > record and the tool's own docstring go stale independently — as they just did. The *conclusion* —
+     > that no tens‑of‑metres unit fault and no ~30 m geoid confusion is present — was never in doubt
+     > either way: the correction moves centimetres, and those faults move tens of metres.
    - **The source program itself** — its absolute vertical datum, or a consistent
      ground‑classification bias in turfgrass. That remains open: the seamless DEM is derived from the
      same LiDAR, so it cannot independently confirm the program's own datum, and both products take

@@ -304,7 +304,7 @@ def _tee_pads(anchors, crs):
     medians 4.9% on valley-hi to 23.6% on merion) -- the same pathology as the green end, pointing the
     other way, because a box centred on a raised tee pad reaches down the surrounding ground and reads
     LOW. The two errors partly cancel in the printed CHANGE, which is why neither was visible in the
-    figure: correcting only the green end would have shifted every height in the book by +0.47 ft.
+    figure: correcting only the green end would have shifted every height in the book by +0.45 ft.
 
     That share was published as "about 13% on the six metric courses", and the qualifier was a leftover:
     it dates from when TEE_R_M was applied in raw CRS units and the box really was 9.1 m square on the
@@ -634,8 +634,13 @@ def green_elevation(hole):
     box padded by fetch_dem_hd.MARGIN_M = 12 m on all four sides -- so the "measured height of the green"
     was a median over a region 5.5x the green's area, of which a corpus-median 82% is not green. It is
     fairway, bunker and rough surrounding a green that is usually a raised pad, so the figure read LOW:
-    substituting the interior moves 177 holes by a mean +0.478 ft, positive on 140 of them, one-sided at
-    p = 2.7e-15.
+    substituting the interior moves 171 holes by a mean +0.4527 ft, positive on 137 of them, which a
+    one-sided sign test puts at p = 3.7e-16. (Published here as "+0.478 ft, positive on 140" of 177
+    holes, which was the corpus before fd39647; as "+0.47 ft" in _tee_pads and "+0.46 ft" in legal/09 --
+    four values for one quantity, none of them measured by anything. All three records are now graded
+    against this corpus by
+    test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings, which had both medians
+    in hand already and was throwing the difference away.)
 
     The polygon was in the SAME meta file the whole time -- meta["polygon"] -- and render_green.py
     rasterises it to measure every slope, tilt and feed figure the card prints. One .npy, read two
