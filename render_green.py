@@ -793,11 +793,9 @@ def render(hole, tournament=False):
 
     poly = poly_to_px(meta['polygon'], bbox, W, H)
     # rasterize polygon mask
-    ys, xs = np.mgrid[0:H, 0:W]
     mask = np.zeros((H, W), bool)
     # scanline point-in-poly (vectorized-ish, fine at this size)
     for r in range(H):
-        row = []
         yv = r+0.5
         xints = []
         n = len(poly); j = n-1
@@ -851,7 +849,7 @@ def render(hole, tournament=False):
     surf, core, S = green_summary(arr, mask, px_x, px_y)
     slope, dcol, drow = S['slope'], S['dcol'], S['drow']
     relief_m, med_slope = S['relief_m'], S['med_slope']
-    tilt_pct, undul_ft, rise_ft = S['tilt_pct'], S['undul_ft'], S['rise_ft']
+    tilt_pct, undul_ft = S['tilt_pct'], S['undul_ft']
     pdc, pdr = S['pdc'], S['pdr']
     conf = S['conf']
 

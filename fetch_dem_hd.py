@@ -229,7 +229,6 @@ def build_targets():
     # by distance to the course centre and REFUSES a near-tie rather than guessing.
     _loc = config.COURSE.get('location') or {}
     holes = list(geo.hole_lines(geom, _loc.get('lat'), _loc.get('lon')).values())
-    gc=[(g,*centroid(g)) for g in greens]
     targets={}
     bound={}          # hole -> green, so a green shared by two holes can be caught (see geo.py)
     for h in holes:
