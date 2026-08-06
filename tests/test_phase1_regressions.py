@@ -34083,6 +34083,454 @@ def test_a_book_that_may_not_be_shared_does_not_invite_the_reader_to_share_it():
         "no non-distributable book is built here, so the branch that matters went unmeasured"
 
 
+def test_every_panel_that_enumerates_the_book_s_sources_credits_naip_where_it_was_used():
+    """coach_about_card() was the one source-enumerating panel that did not splice in _naip_line().
+
+    guide_panel() and yardage_guide_panel() both do. coach_about_card()'s About block named
+    OpenStreetMap, USGS 3DEP and the scorecard and stopped -- so an enlarged book of a course whose
+    greens were traced from NAIP would omit a credit its own pocket edition carries. _naip_line() is
+    non-empty for exactly two courses today (bay-view, whose two greens ARE NAIP tracings, and
+    poppy-ridge, which used it as a site reference) and neither has an enlarged build, which is the
+    only reason this was latent: `COURSE=bay-view-golf-club COACH=1 python3 generate.py` makes it live.
+
+    Graded per panel rather than per book, because the population that would catch it in a built book
+    is empty by coincidence of which course got an enlarged edition.
+
+    BOTH DIRECTIONS: a course that used no NAIP must credit none, or the fix is "print it always",
+    which is the stale credit _naip_line()'s docstring records having already shipped once."""
+    if not BOOKS:
+        pytest.skip("per-course data is gitignored; no course record to read a NAIP decision from")
+    naip, plain = None, None
+    for slug in BOOKS:
+        gen = _fresh_generate(slug)
+        try:
+            if gen._naip_line():
+                naip = naip or slug
+            else:
+                plain = plain or slug
+        finally:
+            _drop_generate()
+    assert naip, "no course in this tree used NAIP, so the credit branch cannot be measured"
+    assert plain, "every course used NAIP, so the no-credit branch cannot be measured"
+
+    # The panels that ENUMERATE the book's sources -- each names USGS 3DEP and the scorecard in its
+    # About block, and each is asserted to do so, so this list cannot quietly stop being the right
+    # list. NOT OpenStreetMap: yardage_guide_panel belongs to a course built from the scorecard alone,
+    # with no OSM geometry to credit, which is why the shared premise is the pair below.
+    PANELS = ("guide_panel", "yardage_guide_panel", "coach_about_card")
+    for slug, expect in ((naip, True), (plain, False)):
+        gen = _fresh_generate(slug)
+        try:
+            line = gen._naip_line()
+            assert bool(line) == expect, f"{slug}: _naip_line() changed under re-import"
+            for name in PANELS:
+                fn = getattr(gen, name, None)
+                assert fn is not None, f"generate.{name} is gone; re-read this test before editing"
+                html = fn()
+                assert "USGS" in html and "scorecard" in html, (
+                    f"{slug}: {name} no longer enumerates the book's sources, so this test is "
+                    f"measuring the wrong set of panels")
+                if expect:
+                    assert "USDA NAIP" in html, (
+                        f"{slug} used NAIP and {name} does not credit it, while the other "
+                        f"source-enumerating panels do. A book that lists its sources lists all of them.")
+                else:
+                    assert "NAIP" not in html, (
+                        f"{slug} used no NAIP and {name} credits it anyway -- the stale credit "
+                        f"_naip_line()'s docstring records having shipped once already")
+        finally:
+            _drop_generate()
+
+    # ...and the artifact, for whichever books happen to exist.
+    for path, slug, _coach in _built_books():
+        gen = _fresh_generate(slug)
+        try:
+            want = bool(gen._naip_line())
+        finally:
+            _drop_generate()
+        with open(path, encoding="utf-8") as fh:
+            html = fh.read()
+        assert ("USDA NAIP" in html) == want, (
+            f"{os.path.relpath(path, ROOT)}: the printed book "
+            f"{'omits' if want else 'carries'} the NAIP credit that _naip_line() "
+            f"{'requires' if want else 'withholds'} for this course")
+
+
+def test_the_no_tree_caveat_is_keyed_on_what_the_hole_drew_not_on_the_lidar_list():
+    """"no tree data" was gated on the LiDAR marker list, and render_hole falls back to OSM trees.
+
+    render_hole.render_hole picks its markers `lt = _lidar_trees().get(str(hnum), []); if lt: ... else:
+    tree_src = [(e['lat'], e['lon']) for e in treenodes]` -- a PER-HOLE fallback. So a hole with zero
+    LiDAR markers and some OSM tree nodes in its corridor printed "no tree data" beside a map that
+    DRAWS trees, and a course with no LiDAR layer at all drew sparse OSM trees on every hole while the
+    caveat was suppressed as noise on all of them. Both were latent only by coincidence of which
+    course has which data: monarch-bay is the only course with empty marker lists (holes 1, 17, 18)
+    and it has 0 OSM tree nodes, while micke-grove (532 nodes) and the-reserve (2462) have no empty
+    marker hole.
+
+    Two code claims stated the opposite of the renderer and are checked for below by name:
+    _course_has_trees()'s "A course with no tree layer at all draws none anywhere" and hole_panel()'s
+    "a hole the survey does not reach draws NONE".
+
+    The caveat now asks what the hole DREW -- LiDAR markers, or the OSM trees/woods/tree-rows
+    render_hole counts in `info["trees"]` -- so it can neither contradict the map beside it nor go
+    silent on a book whose canopy is entirely OSM. Measured over the corpus: no card moves today
+    (monarch-bay 1, 17 and 18 draw 0 LiDAR markers and 0 OSM tree marks each), which is why
+    test_a_hole_the_survey_missed_does_not_print_as_open_ground still holds.
+    """
+    # (1) the premise: the fallback is live in the renderer. If it is ever removed, this fails and the
+    #     next reader is sent back here rather than left with a guard aimed at nothing. Checked against
+    #     the CODE-ONLY token stream so a comment about the fallback cannot stand in for it -- and the
+    #     needle carries no quotes because _code_only strips string literals, so `e['lat']` arrives as
+    #     `e [ ]`.
+    with open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8") as fh:
+        rh_src = fh.read()
+    assert "else:tree_src=[(e[],e[])foreintreenodes]" in re.sub(r"\s+", "", _code_only(rh_src)), (
+        "render_hole no longer falls back to OSM tree nodes when a hole has no LiDAR markers. That "
+        "fallback is the whole reason this caveat cannot be keyed on the LiDAR list -- re-read this "
+        "test and generate._drew_trees() before changing either.")
+
+    # (2) the false claims about it must be gone from generate.py
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        gen_src = fh.read()
+    for claim in ("A course with no tree layer at all draws none anywhere",
+                  "a hole the survey does not reach draws NONE"):
+        assert claim not in gen_src, (
+            f"generate.py still states {claim!r}. render_hole draws OSM trees on a hole with no LiDAR "
+            f"markers, so that sentence is false about the renderer it describes.")
+
+    # (3) the live gate, driven through the real card builders in BOTH editions. EVERY hole gets a
+    #     layout: _no_tree_note() walks all of config.HOLE_NUMS, so a stub that populates two of them
+    #     leaves sixteen holes looking as though they drew nothing.
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        holes = sorted(gen.HOLES)
+        bare, treed = holes[0], holes[1]
+        gen._TREES = {str(h): [(37.0, -122.0)] for h in gen.config.HOLE_NUMS}
+        gen._TREES[str(bare)] = []            # the one hole the point cloud does not reach
+        for h in gen.config.HOLE_NUMS:
+            gen.GREENS[h] = ("<svg></svg>", _fake_summary())
+            gen.LAYOUTS[h] = ("<svg></svg>", dict(bunkers=1, waters=0, trees=0))
+
+        def cards(bare_osm_trees):
+            gen.LAYOUTS[bare] = ("<svg></svg>", dict(bunkers=1, waters=0, trees=bare_osm_trees))
+            return (gen.hole_panel(bare, "1-6"), gen.coach_map_card(bare))
+
+        pocket, coach = cards(3)
+        assert "no tree data" not in pocket, (
+            "a POCKET card whose map draws 3 OSM trees still says 'no tree data'. The mark is read as "
+            "'the survey did not reach', which contradicts the trees printed beside it.")
+        assert "no tree data" not in coach, (
+            "an ENLARGED card whose map draws 3 OSM trees still says 'no tree data'")
+        pocket, coach = cards(0)
+        assert "no tree data" in pocket, (
+            "a POCKET card that drew NO tree mark of either kind, in a book that draws them elsewhere, "
+            "does not carry the caveat -- the blank corridor reads as open ground while the legend "
+            "promises trees")
+        assert "no tree data" in coach, (
+            "the ENLARGED card of that same hole does not carry the caveat")
+        assert "no tree data" not in gen.hole_panel(treed, "1-6"), (
+            "a hole with a LiDAR canopy carries the caveat anyway")
+
+        # ...and the enlarged edition's definition of the mark follows the same gate.
+        cards(0)
+        assert gen._no_tree_note(), (
+            "a book that prints the mark does not define it on its enlarged guide card")
+        cards(7)
+        assert not gen._no_tree_note(), (
+            "the enlarged guide card defines a mark this book no longer prints -- the clutter "
+            "_no_tree_note()'s own docstring promises not to add")
+
+        # A book whose canopy is ENTIRELY OSM must not be silent: every hole drew trees, so no hole is
+        # owed the caveat, and that is the honest answer rather than the accident of a missing layer.
+        gen._TREES = {str(h): [] for h in gen.config.HOLE_NUMS}
+        for h in gen.config.HOLE_NUMS:
+            gen.LAYOUTS[h] = ("<svg></svg>", dict(bunkers=1, waters=0, trees=4))
+        assert "no tree data" not in gen.hole_panel(bare, "1-6"), (
+            "a course with no LiDAR tree layer draws OSM trees on every hole, and its cards claim "
+            "'no tree data' anyway")
+        assert not gen._no_tree_note(), (
+            "the enlarged guide card of a book with no tree-less hole still defines the mark")
+    finally:
+        _drop_generate()
+
+
+def test_the_enlarged_deck_pads_its_leaves_with_the_rule_the_pocket_book_publishes():
+    """build_coach re-implemented the imposition inline, under a comment saying it did not.
+
+    "the SAME rule the pocket book uses, not a second copy of it" sat immediately after 32 lines that
+    were a second copy of it. Normalised against main()'s build_pages the two blocks differed in
+    exactly one place: `cards = pad_to_leaves(cards)` against
+    `if len(cards) % 2: cards = cards + ['<div class="panel"></div>']`.
+
+    pad_to_leaves()'s docstring states the rule the inline copy breaks: "The final card is Lucas's
+    dedication and prints upright as the back cover, so APPENDING the blank would land the dedication
+    a leaf early and end the book on a blank page." The enlarged deck is 2 + 2*len(HOLE_NUMS) + 2
+    cards, always even, so the branch was dead and the claim was false the day it was written -- one
+    more leading or trailing card makes it live and ends the enlarged book on a blank page.
+
+    Graded structurally, because the deck's card count cannot be made odd from outside: the two
+    imposition blocks must be the SAME TOKENS, which is what the comment claims."""
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        src = fh.read()
+
+    def block(nth):
+        """The nth imposition block: from its padding line to the end of its BACK-sheet append."""
+        lines = src.splitlines()
+        starts = [i for i, l in enumerate(lines) if "pad_to_leaves(cards)" in l]
+        assert len(starts) > nth, (
+            f"generate.py has {len(starts)} call(s) to pad_to_leaves(cards) in an imposition block; "
+            f"both main()'s build_pages and build_coach must use it, and build_coach still carries "
+            f"its own `if len(cards) % 2` copy if this fails")
+        i = starts[nth]
+        for j in range(i, len(lines)):
+            if "BACK (duplex, flip on LONG edge)" in lines[j]:
+                return "\n".join(lines[i:j + 1])
+        raise AssertionError("no BACK-sheet append after the padding line; re-read this test")
+
+    def tokens(text):
+        import io
+        import textwrap
+        import tokenize
+        out = []
+        for tok in tokenize.generate_tokens(io.StringIO(textwrap.dedent(text)).readline):
+            if tok.type in (tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
+                            tokenize.DEDENT, tokenize.ENDMARKER):
+                continue
+            if tok.string.strip():
+                out.append(tok.string)
+        return out
+
+    pocket, coach = tokens(block(0)), tokens(block(1))
+    assert pocket == coach, (
+        "the enlarged deck's imposition is not the pocket book's, under a comment that says it is. "
+        "First difference:\n  pocket: "
+        + " ".join(pocket[:40]) + "\n  coach:  " + " ".join(coach[:40]))
+    assert not _in_code("cards = cards + [", src), (
+        "build_coach still appends its blank leaf, which lands the dedication one leaf early and ends "
+        "the enlarged book on a blank page -- the exact failure pad_to_leaves() exists to prevent")
+
+
+def test_the_wasted_words_note_counts_the_books_that_actually_waste_them():
+    """_no_tree_note()'s docstring published its own cost off by one, twice.
+
+    It said "11 of the 12 pocket books carry six words for a mark they never print" and "Six wasted
+    words on eleven cards is the cheaper error", and then named monarch-bay as the one book that DOES
+    print the mark. Both cannot be true: a book that prints the mark is not wasting the words on it.
+
+    Measured over the built pocket corpus: 11 of 12 books carry the inline definition (poppy-ridge's
+    yardage guide card has no colour row and carries none) and exactly 1 of those 11 prints the mark,
+    so the words are wasted on TEN books.
+
+    The figures are re-derived here rather than restated, so the next rewrite of that paragraph cannot
+    publish a count nothing measures -- which is the failure elev_phrase()'s own docstring records."""
+    if not BOOKS:
+        pytest.skip("no book built")
+    gen = _fresh_generate(a_course())
+    try:
+        doc = gen._no_tree_note.__doc__ or ""
+    finally:
+        _drop_generate()
+
+    # The inline definition the pocket colour row carries, and the mark itself, read off the artifact.
+    DEFN = "&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground"
+    MARK = "<b>no tree data</b>"
+    pocket = [p for p, _s, coach in _built_books() if not coach]
+    carry = [p for p in pocket if DEFN in open(p, encoding="utf-8").read()]
+    prints = [p for p in carry if MARK in open(p, encoding="utf-8").read()]
+    wasted = len(carry) - len(prints)
+    assert len(pocket) >= 10 and carry, (
+        f"only {len(pocket)} pocket book(s) here and {len(carry)} carrying the inline definition; "
+        f"nothing measurable")
+
+    words = {n: w for w, n in
+             (("zero", 0), ("one", 1), ("two", 2), ("three", 3), ("four", 4), ("five", 5),
+              ("six", 6), ("seven", 7), ("eight", 8), ("nine", 9), ("ten", 10), ("eleven", 11),
+              ("twelve", 12))}
+    # The claims are line-wrapped in the docstring, so match against a whitespace-flattened copy: the
+    # first draft of this grader read `doc` directly and reported the second figure ABSENT because the
+    # sentence breaks between "words" and "on ten cards".
+    flat = re.sub(r"\s+", " ", doc)
+
+    m = re.search(r"(\d+) of the (\d+) pocket books carry", flat)
+    assert m, ("_no_tree_note()'s docstring no longer states how many pocket books carry the inline "
+               "definition for a mark they never print -- that count is the whole argument for "
+               "leaving the pocket half unconditional")
+    assert (int(m.group(1)), int(m.group(2))) == (wasted, len(pocket)), (
+        f"the docstring says {m.group(1)} of the {m.group(2)} pocket books carry the words for a mark "
+        f"they never print; measured over the built corpus it is {wasted} of {len(pocket)} "
+        f"({len(carry)} carry the definition, {len(prints)} of those print the mark)")
+
+    m2 = re.search(r"[Ss]ix wasted words on (\w+) cards", flat)
+    assert m2, "the docstring no longer weighs the cost it accepts ('Six wasted words on N cards')"
+    assert words.get(wasted) == m2.group(1) or m2.group(1) == str(wasted), (
+        f"the docstring accepts the cost on {m2.group(1)} cards; measured it is {wasted} "
+        f"({words.get(wasted)})")
+
+
+def test_the_licence_sentence_never_states_a_reason_the_book_contradicts():
+    """sharing_line() printed ONE reason for all three verdicts distribution.py can return.
+
+    Its docstring says it asks distribution.py "so the page and the paperwork cannot disagree", and
+    generate.py bound all three of its return values -- but `_DIST_LABEL` and `_DIST_WHY` were read
+    NOWHERE, and the card asserted "because its greens are blank for want of trustworthy survey data"
+    whatever the reason was. With `"build_mode": "yardge"` -- a typo distribution.py's own docstring
+    enumerates as realistic and fails closed on -- config.BUILD_MODE is "yardge", so main() builds the
+    FULL slope book with contours and arrows while every card, the cover and the back cover assert the
+    greens are blank. The book and legal/03 then give different reasons for the same verdict.
+
+    Two halves: no name may be bound from distribution and left unread (that is what made the claim
+    look true), and the printed reason must be one the book it prints on actually supports."""
+    with open(os.path.join(ROOT, "generate.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    code = _code_only(src)
+    bound = []
+    for m in re.finditer(r"^([A-Za-z_][\w,\s]*?)\s*=\s*distribution\.\w+\(", src, re.M):
+        bound += [n.strip() for n in m.group(1).split(",") if n.strip()]
+    assert bound, ("generate.py no longer binds anything from distribution.py at module level, so "
+                   "sharing_line()'s claim that it asks the shared rule is no longer checkable here")
+    for name in bound:
+        assert len(re.findall(rf"\b{re.escape(name)}\b", code)) > 1, (
+            f"generate.py binds {name} from distribution.py and never reads it. The three names made "
+            f"sharing_line() look as though it printed distribution.py's reason; it printed one "
+            f"reason for all three.")
+
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        real_mode = gen.config.COURSE.get("build_mode")
+        real_dist = gen.DISTRIBUTABLE
+        try:
+            gen.DISTRIBUTABLE = False
+            gen.config.COURSE["build_mode"] = "yardage"
+            blank = gen.sharing_line()
+            gen.config.COURSE["build_mode"] = "yardge"       # the typo, verbatim from the docstring
+            typo = gen.sharing_line()
+            gen.DISTRIBUTABLE = True
+            gen.config.COURSE["build_mode"] = real_mode
+            free = gen.sharing_line()
+        finally:
+            gen.DISTRIBUTABLE = real_dist
+            if real_mode is None:
+                gen.config.COURSE.pop("build_mode", None)
+            else:
+                gen.config.COURSE["build_mode"] = real_mode
+    finally:
+        _drop_generate()
+
+    for text in (blank, typo):
+        assert "personal use only" in _book_prose(text), (
+            f"a non-distributable book's licence sentence no longer says so: {text}")
+        assert "all rights reserved" in _book_prose(text), (
+            f"a non-distributable book's licence sentence dropped the reservation: {text}")
+    # The yardage wording is the one legal/05 quotes verbatim; changing it silently invalidates that
+    # record, so it is pinned here rather than left to a rebuild to discover.
+    assert "its greens are blank for want of trustworthy survey data" in blank, (
+        "a yardage-mode book prints blank greens and its licence sentence must still say why -- and "
+        "legal/05_DISCLAIMER_TEXT.md quotes this sentence verbatim")
+    assert "greens are blank" not in typo, (
+        "an unrecognised build_mode is refused by distribution.py while main() builds the FULL slope "
+        "book, and the licence sentence still tells the reader the greens are blank:\n  " + typo)
+    assert "CC" in free and "free to share" in _book_prose(free), (
+        f"a distributable book lost its licence sentence: {free}")
+
+
+def test_page_one_of_the_enlarged_edition_carries_the_do_not_share_mark_too():
+    """coach_cover_panel() never called _cover_badge(), so the enlarged edition's page 1 could not say it.
+
+    _cover_badge()'s docstring is explicit about why page 1 is the place: "page 1 is what anyone
+    receiving the PDF sees first" and "the personal-use notice added to the About text sits four cards
+    deep". cover_panel() reads it; the enlarged cover hardcoded "ENLARGED PRACTICE EDITION" with no
+    branch at all. build_coach refuses only BUILD_MODE == "yardage", and DISTRIBUTABLE is False for an
+    unrecognised build_mode too -- so a course with `"build_mode": "yardge"` builds an enlarged book
+    whose About text and back cover say "personal use only" while its cover says nothing.
+
+    The mark comes from _cover_badge() rather than a second copy of the words, so the two covers cannot
+    drift. The Rule 4.3 half must NOT follow it across: the enlarged edition is deliberately past the
+    scale cap and says so on its own guide card."""
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        real = gen.DISTRIBUTABLE
+        try:
+            gen.DISTRIBUTABLE = False
+            mark = gen._cover_badge()["badge_text"]
+            owned = gen.coach_cover_panel("")
+            gen.DISTRIBUTABLE = True
+            free = gen.coach_cover_panel("")
+            badge = gen._cover_badge()["badge_text"]
+        finally:
+            gen.DISTRIBUTABLE = real
+    finally:
+        _drop_generate()
+
+    assert "PERSONAL USE ONLY" in mark, (
+        f"_cover_badge()'s do-not-share text no longer names the restriction: {mark!r}")
+    assert mark in owned, (
+        "an enlarged book that may not be shared has nothing on page 1 saying so, while its About "
+        "text and back cover both do. Page 1 is what anyone receiving the PDF sees first.")
+    assert "ENLARGED PRACTICE EDITION" in owned, (
+        "the enlarged cover lost the claim that it is a practice aid rather than a conforming book")
+    assert mark not in free and "PERSONAL USE ONLY" not in free, (
+        "a distributable enlarged book's cover carries a do-not-share mark it has no reason to")
+    assert "DESIGNED TO CONFORM" not in free and "RULE" not in free, (
+        f"the enlarged cover now claims Rule 4.3 conformance ({badge!r}); this edition is "
+        f"deliberately printed past the scale cap and its own guide card says so")
+
+
+def test_a_long_course_name_never_prints_a_blank_first_line_on_the_cover():
+    """_title_lines() emitted a LEADING EMPTY line whenever a long name's first word was 20+ characters.
+
+    The greedy fill tests `len(cur) + len(w) + 1 <= 20` with `cur = ""` on the first word, so a
+    25-character first word takes the else branch and appends the empty `cur`. Run against the real
+    function: _title_lines("Rancholascasitasmunicipal Golf Links Course") returned
+    ['', 'Rancholascasitasmunicipal', 'Golf Links Course'].
+
+    cover_panel() then emits an empty <tspan> and computes `cy0 = 292 - (len(tlines)-1)*dyt/2` and
+    `addr_y` off the inflated count, shifting the title block and the address by half a line each. The
+    docstring promises to "word-wrap only a genuinely long (>30 char) name"; a blank leading line is
+    not a wrap. No corpus name triggers it, so this is a latent defect in shared code -- both covers
+    call this function."""
+    slug = a_course()
+    gen = _fresh_generate(slug)
+    try:
+        LONG = "Rancholascasitasmunicipal Golf Links Course"
+        cases = [LONG, "A" * 35, "Averyveryverylongsinglewordcoursename",
+                 "Short Name", "Monarch Bay Golf Club — Tony Lema Course",
+                 "The Really Quite Long National Golf Links of America"]
+        for name in cases + [n for _p, s, _c in _built_books()
+                             for n in [json.load(open(os.path.join(ROOT, "courses", s, "course.json"),
+                                                      encoding="utf-8")).get("name") or ""]]:
+            lines = gen._title_lines(name)
+            assert lines, f"_title_lines({name!r}) returned nothing"
+            assert all(l.strip() for l in lines), (
+                f"_title_lines({name!r}) -> {lines}: a blank line mis-centres the whole title block "
+                f"and prints an empty <tspan> on the cover")
+            if "—" not in name:
+                assert "".join(lines).replace(" ", "") == name.replace(" ", "").strip(), (
+                    f"_title_lines({name!r}) -> {lines} lost or reordered the name")
+        assert gen._title_lines("A" * 35) == ["A" * 35], (
+            f"a single unbreakable word must be its own only line, got {gen._title_lines('A' * 35)}")
+
+        # ...and the cover the function feeds: no empty tspan, and the vertical centring computed off
+        # the real line count.
+        real = gen.COURSE
+        try:
+            gen.COURSE = LONG
+            svg = gen.cover_panel()
+        finally:
+            gen.COURSE = real
+        spans = re.findall(r"<tspan[^>]*>(.*?)</tspan>", svg)
+        assert spans and all(s.strip() for s in spans), (
+            f"cover_panel() prints an empty <tspan> for {LONG!r}: {spans}")
+        assert len(spans) == len(gen._title_lines(LONG)), (
+            f"the cover draws {len(spans)} title lines where _title_lines gives "
+            f"{len(gen._title_lines(LONG))}")
+    finally:
+        _drop_generate()
+
+
 def test_the_back_cover_builder_is_not_called_a_legend_and_no_book_styles_a_class_it_never_uses():
     """legend_panel() did not build a legend. It built the DEDICATION / back cover.
 

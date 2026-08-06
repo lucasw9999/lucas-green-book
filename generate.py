@@ -55,7 +55,7 @@ def _data_uri(path):
 IG_QR = _data_uri(os.path.join(ROOT, "lucaswu.golf_qr_small.png"))
 
 
-DISTRIBUTABLE, _DIST_LABEL, _DIST_WHY = distribution.distribution_status(config.COURSE)
+DISTRIBUTABLE = distribution.is_distributable(config.COURSE)
 
 
 def sharing_line():
@@ -69,13 +69,34 @@ def sharing_line():
 
     Asks distribution.py rather than re-testing build_mode, for the same reason gen_provenance does: one
     rule, so the page and the paperwork cannot disagree.
+
+    THE VERDICT AND THE REASON ARE TWO QUESTIONS, and this printed one reason for all three verdicts
+    distribution_status() can return. generate.py used to bind all three of its return values and read
+    only the first -- `_DIST_LABEL` and `_DIST_WHY` appeared nowhere else in the file -- so the sentence
+    LOOKED as though it printed distribution.py's reason and did not. With `"build_mode": "yardge"`, a
+    typo distribution.py's own docstring enumerates as realistic and fails closed on, config.BUILD_MODE
+    is "yardge": main() builds the FULL slope book with contours and arrows while every card, the cover
+    and this line asserted the greens were blank. The book and legal/03 then gave different reasons for
+    the same verdict.
+
+    So the reason is keyed on distribution.is_yardage() -- the DATA fact that decides what the engine
+    actually drew, kept separate from the verdict in that module for exactly this purpose -- and blank
+    greens are claimed only by the book that has them. The other refusals are typos in a hand-edited
+    field, and what they were meant to say is unknown, so the sentence says that instead of guessing.
+
+    The yardage wording is quoted verbatim in legal/05_DISCLAIMER_TEXT.md; changing it invalidates that
+    record. test_the_licence_sentence_never_states_a_reason_the_book_contradicts pins both branches.
     """
     if DISTRIBUTABLE:
         return ("This book: free to share, not for sale &mdash; "
                 "CC&nbsp;BY-NC-ND&nbsp;4.0.")
+    if distribution.is_yardage(config.COURSE):
+        return ("<b>This copy is for personal use only &mdash; please do not share or redistribute "
+                "it</b>, because its greens are blank for want of trustworthy survey data and a reader "
+                "elsewhere cannot know that. Not for sale. All rights reserved.")
     return ("<b>This copy is for personal use only &mdash; please do not share or redistribute "
-            "it</b>, because its greens are blank for want of trustworthy survey data and a reader "
-            "elsewhere cannot know that. Not for sale. All rights reserved.")
+            "it</b>, because this course's build record is not one this project can vouch for and a "
+            "reader elsewhere cannot know that. Not for sale. All rights reserved.")
 
 
 def esc(s):
@@ -157,12 +178,14 @@ def _tree_markers(hole):
     """LiDAR tree markers on one hole, or [] -- cached; see the note at the footer that uses it.
 
     A layer that is ABSENT is []: render_hole._lidar_trees() returns {} for that with no exception, and
-    a course with no point cloud honestly has no canopy to draw. A layer that is UNREADABLE is a STOP.
+    a course with no point cloud has no LiDAR canopy to offer -- render_hole then draws whatever OSM
+    tree nodes lie in the corridor instead, which is why _drew_trees() and not this function decides
+    whether a card owes the "no tree data" caveat. A layer that is UNREADABLE is a STOP.
 
     The catch here used to be `except Exception: _TREES = {}`, and it could only ever absorb the second
     case: the absent-layer path raises nothing, and the tiles-but-no-layer path raises SystemExit, which
     is not an Exception. So the one thing it caught was a corrupt or truncated trees_lidar.json -- and it
-    turned it into zero markers on every hole, which _course_has_trees() then reads as "this course has
+    turned it into zero markers on every hole, which the caveat's gate then reads as "this course has
     no trees" and drops the per-card "no tree data" caveat as noise. A wrecked 126-245 KB canopy record
     printed as a clean, tree-free 18-hole book with nothing anywhere saying the data was missing. It also
     falsified the claim tools/lidar_dates.py used to justify writing that file in place -- that a
@@ -182,11 +205,42 @@ def _tree_markers(hole):
     return _TREES.get(str(hole)) or []
 
 
-def _course_has_trees():
-    """True when SOME hole has markers. A course with no tree layer at all draws none anywhere, and
-    marking all 18 holes "no tree data" would be noise rather than a caveat."""
-    _tree_markers(1)
-    return any(_TREES.values())
+def _drew_trees(hole):
+    """Did this hole's map put a tree mark on the paper at all -- of EITHER kind?
+
+    render_hole picks its markers per hole, and it FALLS BACK: `lt = _lidar_trees().get(str(hnum), [])`
+    then `if lt: tree_src = lt` `else: tree_src = [(e['lat'], e['lon']) for e in treenodes]`. So the
+    LiDAR marker list is not what a hole draws, and keying the "no tree data" caveat on it was wrong in
+    both directions:
+      * a hole with zero LiDAR markers but OSM tree nodes in its corridor printed "no tree data" beside
+        a map that DRAWS trees -- and the mark means "the survey did not reach", the opposite reading;
+      * a course with no trees_lidar.json at all drew sparse OSM trees on every hole while the old
+        course-level gate was False, so no hole carried the caveat and nothing said the canopy was thin.
+    Both were latent only by coincidence of which course has which data: monarch-bay holds the corpus's
+    only empty marker lists (holes 1, 17, 18) and has 0 OSM tree nodes, while micke-grove (532 nodes)
+    and the-reserve (2462) have no empty-marker hole.
+
+    `info["trees"]` is render_hole's own count of the OSM marks it drew -- tree nodes plus wood/scrub
+    polygons plus tree rows -- read from what the renderer published rather than re-derived here.
+    Tolerant of a missing key so a caller that hands in a stub layout (the honesty tests do) is not a
+    KeyError.
+
+    LAYOUTS is fully populated before any card is built, in both editions: build_deck and build_coach
+    each render every hole first, then build the panels.
+    """
+    if _tree_markers(hole):
+        return True
+    info = (LAYOUTS.get(hole) or (None, {}))[1] or {}
+    return bool(info.get("trees"))
+
+
+def _book_draws_trees():
+    """True when SOME hole in this book drew a tree mark.
+
+    What makes a blank corridor worth a caveat: the same book drew trees elsewhere, so the blank is the
+    survey's edge and not open ground. A book that draws none anywhere has nothing to distinguish, and
+    marking all 18 holes would be noise rather than a caveat."""
+    return any(_drew_trees(h) for h in config.HOLE_NUMS)
 
 
 def cell_text(cells):
@@ -479,21 +533,23 @@ def hole_panel(hole, sheet_label):
     lead = (f'green <b>{esc(s["feeds"])}</b> &middot; no slope printed' if slope is None else slope)
     playline = playline_html(hole, i)          # shared with the enlarged edition -- see playline_html
 
-    # Trees are found by height above ground in the point cloud, so a hole the survey does not reach
-    # draws NONE -- and on the map that is indistinguishable from a links hole that genuinely has none,
-    # while the guide card's legend promises "trees". Said on the hole's own card, beside the bunker and
-    # water counts it belongs with, because that is where the reader is looking at the blank corridor.
-    # Monarch Bay 1, 17 and 18 are the case: zero markers each, and exactly the three holes
-    # lidar_coverage.py reports as centreline outside the point data. They are the only zero-tree holes
-    # in the corpus, so the blank is the survey's edge and not open ground.
+    # Trees are found by height above ground in the point cloud, and where that layer is empty for a
+    # hole render_hole falls back to OSM tree nodes -- so a hole that ends up drawing NOTHING is
+    # indistinguishable on the map from a links hole that genuinely has none, while the guide card's
+    # legend promises "trees". Said on the hole's own card, beside the bunker and water counts it
+    # belongs with, because that is where the reader is looking at the blank corridor.
+    # Keyed on what the hole DREW, not on the LiDAR list: see _drew_trees. Monarch Bay 1, 17 and 18 are
+    # the case -- zero markers of either kind each, and exactly the three holes lidar_coverage.py
+    # reports as centreline outside the point data. They are the only tree-less holes in the corpus, so
+    # the blank is the survey's edge and not open ground.
     #
     # NOT on the guide card, where the other per-hole data caveats live: that panel is full. A single
     # extra row there overflowed monarch-bay's card by 20 px and clipped the legal notice and the
     # contact line, and trimming 33 characters of existing wording did not buy the line back. Derived
-    # from the shipped tree data, so it cannot go stale and needs no extra pipeline stage -- which also
+    # from what the renderer drew, so it cannot go stale and needs no extra pipeline stage -- which also
     # means it cannot prove WHY a hole is empty, hence "no tree data" rather than a coverage claim.
     notrees = ""
-    if not _tree_markers(hole) and _course_has_trees():
+    if not _drew_trees(hole) and _book_draws_trees():
         notrees = ' &middot; <b>no tree data</b>'
     foot = (f'<span>{lead}</span>'
             f'<span>{depth_phrase(s)} &middot; {i["bunkers"]}B {i["waters"]}W{notrees}'
@@ -519,7 +575,17 @@ def _title_lines(raw):
     """Cover-title lines, shared by the standard AND the enlarged (coach) covers:
     split a two-part name on the em-dash so the club and the course each keep their
     own line (e.g. "Monarch Bay Golf Club" / "Tony Lema Course"); otherwise keep a
-    short name on one line and word-wrap only a genuinely long (>30 char) name."""
+    short name on one line and word-wrap only a genuinely long (>30 char) name.
+
+    IT USED TO EMIT A LEADING EMPTY LINE. The greedy fill tests `len(cur) + len(w) + 1 <= 20` with
+    `cur = ""` on the first word, so any first word of 20+ characters failed on the empty accumulator
+    and the else branch appended it: _title_lines("Rancholascasitasmunicipal Golf Links Course")
+    returned ['', 'Rancholascasitasmunicipal', 'Golf Links Course'], and _title_lines("A"*35) returned
+    ['', 'AAAA...']. cover_panel() then drew an empty <tspan> and computed both
+    `cy0 = 292 - (len(tlines)-1)*dyt/2` and `addr_y` off the inflated line count, shifting the title
+    block and the address by half a line each. A blank leading line is not a wrap; a word longer than
+    the fill width is its own line. No corpus name reaches this, so it was latent in shared code that
+    both covers call."""
     raw = (raw or "").strip()
     if "—" in raw:
         return [p.strip() for p in raw.split("—") if p.strip()] or [raw]
@@ -527,7 +593,7 @@ def _title_lines(raw):
         return [raw]
     lines, cur = [], ""
     for w in raw.split():
-        if len(cur) + len(w) + 1 <= 20:
+        if not cur or len(cur) + len(w) + 1 <= 20:
             cur = (cur + " " + w).strip()
         else:
             lines.append(cur); cur = w
@@ -748,16 +814,17 @@ def _flown_line():
                 'cloud, so their greens use ' + scale + ', from a survey we cannot date '
                 '&mdash; tilt is real, small tiers may smooth away.</span></div>\n')
     # And the same treatment for the TREE layer, which had none. Trees are found by height above
-    # ground in the point cloud, so a hole the survey does not reach draws no trees -- indistinguishable
-    # on the card from a hole that genuinely has none, while the legend promises "trees". Monarch Bay 1,
-    # 17 and 18 are the case: zero markers each, and they are exactly the three holes lidar_coverage.py
-    # reports as having centreline outside the point data. They are also the only zero-tree holes in the
-    # whole corpus, so the blank is the survey's edge, not open ground.
+    # ground in the point cloud, and where that layer is empty for a hole render_hole draws whatever OSM
+    # tree nodes lie in the corridor -- so a hole that ends up drawing NEITHER is indistinguishable on
+    # the card from a hole that genuinely has none, while the legend promises "trees". Monarch Bay 1,
+    # 17 and 18 are the case: zero marks of either kind each, and they are exactly the three holes
+    # lidar_coverage.py reports as having centreline outside the point data. They are also the only
+    # tree-less holes in the whole corpus, so the blank is the survey's edge, not open ground.
     #
-    # Derived from the shipped tree data rather than from a coverage report, so it cannot go stale
+    # Derived from what the renderer DREW rather than from a coverage report, so it cannot go stale
     # against a rebuild and needs no extra pipeline stage. That also means it cannot prove WHY a hole
-    # is empty, so the wording claims only what is known: no markers fell here, do not read the blank
-    # as clear. Suppressed when a course has no tree data at all -- then every hole is blank and the
+    # is empty, so the wording claims only what is known: nothing was drawn here, do not read the blank
+    # as clear. Suppressed when a book draws no trees anywhere -- then every hole is blank and the
     # sentence would be noise rather than a caveat.
     return out
 
@@ -770,17 +837,25 @@ def _no_tree_note():
     the bunker/water key.
 
     Enlarged only, deliberately, and this is the honest scope: the POCKET edition defines it inline on
-    the colour row, unconditionally, so 11 of the 12 pocket books carry six words for a mark they never
+    the colour row, unconditionally, so 10 of the 12 pocket books carry six words for a mark they never
     print. Moving that to a conditional row of its own was tried and overflowed monarch-bay's guide
     card -- the book with 1.19 px of clearance and the only book that prints the mark. Six wasted words
-    on eleven cards is the cheaper error than a clipped licence line, so the pocket half stays inline.
+    on ten cards is the cheaper error than a clipped licence line, so the pocket half stays inline.
     An earlier draft of this docstring claimed both editions were gated; they are not.
+
+    THE COUNT IS 10, NOT 11, AND IT WAS PUBLISHED WRONG TWICE HERE. Measured over the built corpus: 11
+    of the 12 pocket books carry the inline definition -- poppy-ridge's yardage guide card has no colour
+    row and carries none -- and exactly 1 of those 11 (monarch-bay) PRINTS the mark. A book that prints
+    it is not wasting the words on it, so the waste falls on ten books, and this paragraph named
+    monarch-bay as that one book in the same breath as counting it among the eleven. Both figures are
+    re-derived from the shipped books by
+    test_the_wasted_words_note_counts_the_books_that_actually_waste_them.
 
     The wording matters more than most: an empty tree layer looks like open ground, and the mark says
     the survey did not reach -- the opposite reading. It is the one caveat whose misreading is the
     dangerous direction.
     """
-    if not any(not _tree_markers(h) and _course_has_trees() for h in config.HOLE_NUMS):
+    if not any(not _drew_trees(h) and _book_draws_trees() for h in config.HOLE_NUMS):
         return ''
     # ONE line: the enlarged guide card has 21.75 px of clearance and a row there costs 12.13 px per
     # line, so a two-line version overflows it. Same wording as the pocket edition's inline copy.
@@ -1382,6 +1457,19 @@ def main():
 # Guarded by env COACH=1 so it never affects the normal build of any course.
 # ===========================================================================
 def coach_cover_panel(coach_name):
+    """The enlarged edition's page 1 -- including the do-not-share mark when the book may not be shared.
+
+    IT HAD NO PATH TO THAT MARK AT ALL. cover_panel() reads _cover_badge(); this one hardcoded
+    "ENLARGED PRACTICE EDITION" with no DISTRIBUTABLE branch, so an enlarged book whose About text and
+    back cover both say "personal use only" said nothing on the page anyone receiving the PDF sees
+    first -- which is the whole argument _cover_badge()'s own docstring makes for putting it there.
+    build_coach refuses only BUILD_MODE == "yardage", and DISTRIBUTABLE is False for an unrecognised
+    build_mode too, so `"build_mode": "yardge"` reaches this cover.
+
+    The mark is taken FROM _cover_badge() rather than spelled again, so the two covers cannot drift.
+    Its Rule 4.3 half deliberately does NOT come across: this edition is printed past the scale cap on
+    purpose and its own guide card says so, so the badge here stays the enlarged-practice one.
+    """
     parts = config.BRAND.split()
     btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
     tlines = _title_lines(COURSE)          # exact same title logic as the standard cover
@@ -1392,6 +1480,20 @@ def coach_cover_panel(coach_name):
     tspans = "".join(f'<tspan x="175" dy="{0 if k == 0 else dyt:.1f}">{esc(ln)}</tspan>'
                      for k, ln in enumerate(tlines))
     addr_y = cy0 + (len(tlines) - 1) * dyt + 20
+    # Its own line UNDER the enlarged badge, at y=474 -- the exact baseline the pocket cover gives its
+    # own lowest line. Measured in chrome-headless-shell under print media by injecting this cover into
+    # a built enlarged deck's page 1 (no enlarged deck in the corpus is non-distributable, so there is
+    # no artifact to read it off): 180.20 px wide of the 336 px card, 77.90 px clear each side, and its
+    # bottom 3.80 px above the inner gold frame at 459.84 -- the same 3.80 px the pocket cover's
+    # copyright line sits at. At y=476 it was 1.88 px, tighter than anything else either cover prints.
+    # It prints only on a book that may not be shared, so the three distributed enlarged decks are
+    # byte-identical either way.
+    share_mark = ""
+    if not DISTRIBUTABLE:
+        b = _cover_badge()
+        share_mark = ('<text x="175" y="474" text-anchor="middle" '
+                      'font-family="Helvetica,Arial,sans-serif" font-size="6.4" letter-spacing="1.0" '
+                      f'fill="{b["badge_fill"]}">{b["badge_text"]}</text>')
     # Recipient (e.g. a coach's name) is a PRIVATE, per-gift detail supplied at build time
     # via COACH_NAME -- never hard-coded, so nothing personal ships in the public repo.
     recipient = ""
@@ -1425,7 +1527,7 @@ def coach_cover_panel(coach_name):
   <text x="175" y="{addr_y:.1f}" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" letter-spacing="1" fill="#9fb4a3">{esc(ADDR).upper()}</text>
   {recipient}
   <rect x="60" y="446" width="230" height="18" rx="9" fill="none" stroke="#b9973f" stroke-width="0.8"/>
-  <text x="175" y="458" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.6" letter-spacing="1.0" fill="#dcc27f">ENLARGED PRACTICE EDITION</text>
+  <text x="175" y="458" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.6" letter-spacing="1.0" fill="#dcc27f">ENLARGED PRACTICE EDITION</text>{share_mark}
 </svg></div>'''
 
 def coach_map_card(hole):
@@ -1441,7 +1543,7 @@ def coach_map_card(hole):
       <span class="yalt">{row[FRONT_I]} {esc(FRONT_NAME)}</span></div>
   </div>
   <div class="cmap"><div class="minilab">HOLE &middot; tee &rarr; green</div>{lsvg}</div>
-  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_tree_markers(hole) or not _course_has_trees()) else ' &middot; <b>no tree data</b>'}</span><span>course layout</span></div>
+  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_drew_trees(hole) or not _book_draws_trees()) else ' &middot; <b>no tree data</b>'}</span><span>course layout</span></div>
   {playline}
 </div>'''
 
@@ -1492,7 +1594,7 @@ def coach_about_card():
       Produced Work from <b>OpenStreetMap</b> data (&copy;&nbsp;OpenStreetMap contributors, <b>ODbL&nbsp;1.0</b>, osm.org/copyright);
       slope, contours, arrows &amp; <b>elevation change</b> are computed by the maker from
       <b>public-domain USGS&nbsp;3DEP</b> elevation (a U.S. Government work); par,
-      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. Every map is <b>independently created</b>: <b>no proprietary data, image, symbol
+      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard.''' + _naip_line() + ''' Every map is <b>independently created</b>: <b>no proprietary data, image, symbol
       set, layout or trade dress of any commercial green-reading product was used, copied, referenced or reverse-engineered</b>, and this book is no substitute for any product. Built <b>entirely from remote public data, without entering any club or course</b>.
       Not affiliated with, endorsed or sponsored by any course, club, association or product; names &amp;
       trademarks belong to their owners and identify the course only &mdash; contact the maker for removal.
@@ -1560,10 +1662,9 @@ def build_coach(coach_name=""):
     cards += [scorecard_panel(), coach_dedic_card(coach_name)]
 
     # ---- identical imposition to main()'s build_pages ----
-    if len(cards) % 2:
-        cards = cards + ['<div class="panel"></div>']
+    cards = pad_to_leaves(cards)      # blank goes BEFORE the dedication -- see the helper
     nleaves = len(cards) // 2
-    lps = config.PER
+    lps = config.PER                                       # leaves per sheet
     gx0 = (config.PAGE_W_IN - (config.COLS*config.CARD_W_IN + (config.COLS-1)*config.GUTTER_IN)) / 2
     gy0 = (config.PAGE_H_IN - (config.ROWS*config.CARD_H_IN + (config.ROWS-1)*config.GUTTER_IN)) / 2
     def slot(j):
@@ -1584,10 +1685,13 @@ def build_coach(coach_name=""):
                 continue
             x, y, r, c = slot(j)
             fronts.append(card_div(x, y, 2*L+1, cards[2*L], False))
-            xb, yb, _, _ = slot(r*config.COLS + (config.COLS-1-c))
+            xb, yb, _, _ = slot(r*config.COLS + (config.COLS-1-c))   # mirror columns
             # the SAME rule the pocket book uses, not a second copy of it: green_honesty, the footer
-            # and the playline each drifted between these two code paths before being shared, and this
-            # was the last rule still written twice.
+            # and the playline each drifted between these two code paths before being shared. So did
+            # the LEAF PADDING above, which was the last rule still written twice -- the inline copy
+            # APPENDED the blank, which pad_to_leaves()' docstring says lands the dedication a leaf
+            # early and ends the book on a blank page. Dead only because this deck's card count is
+            # always even; the comment claiming one rule sat directly under the second copy of it.
             is_last = is_upright_back(2*L+1, len(cards))
             backs.append(card_div(xb, yb, 2*L+2, cards[2*L+1], not is_last))
         pages.append(f'<div class="sheet"><div class="sheetnote">Sheet {s+1} &middot; FRONT &middot; PRINT AT 100% &mdash; do not scale or fit to page</div>{"".join(fronts)}</div>')
