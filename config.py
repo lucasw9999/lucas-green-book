@@ -144,6 +144,29 @@ SI = 2 + TEES.index(SECONDARY)                    # secondary yardage index
 OTHERS = [(t, 2 + i) for i, t in enumerate(TEES) if t not in (FEATURED, SECONDARY)]
 TEE_TABLE = COURSE.get("tees", [])
 
+# "tees" IS A LIST OF OBJECTS, CHECKED HERE, because the guard below is the first thing in the engine
+# that reaches INSIDE each entry. Nothing did before it: `tees` was only ever iterated by
+# generate.tees_panel, so a malformed one used to import cleanly and go wrong later, in the book. Now a
+# bare string in the list, or `tees` written as a dict or a string, dies in a list comprehension in this
+# file with `AttributeError: 'str' object has no attribute 'get'` -- naming neither the file nor the key,
+# against the convention every other refusal in this module keeps. courses/ is gitignored and hand-typed,
+# so the reader has to be sent to the line they mistyped, not to a frame in the engine.
+_TEE_SHAPE = ('  Every entry must be an object:\n'
+              '    "tees": [{"name": "Blue", "yards": 6565, "rating": 72.3, "slope": 126}, ...]\n'
+              '  Use null -- not a missing entry -- for a rating or slope the club does not publish.\n'
+              "  Compare against examples/course.json, which documents every field.")
+if not isinstance(TEE_TABLE, list):
+    raise SystemExit(
+        f'courses/{SLUG}/course.json: "tees" is a {type(TEE_TABLE).__name__}, not a list.\n'
+        f"  It holds one entry per row of the printed Tees panel, in the order they print.\n"
+        + _TEE_SHAPE)
+_BAD_TEES = [(i, t) for i, t in enumerate(TEE_TABLE) if not isinstance(t, dict)]
+if _BAD_TEES:
+    raise SystemExit(
+        f'courses/{SLUG}/course.json: {len(_BAD_TEES)} entry(ies) of "tees" are not tee objects.\n'
+        + "".join(f"  tees[{i}] is a {type(t).__name__}: {t!r}\n" for i, t in _BAD_TEES)
+        + _TEE_SHAPE)
+
 
 # A COURSE RATING AND A SLOPE ARE ONE MEASUREMENT, SO A REFUSAL TO PRINT ONE IS A REFUSAL TO PRINT BOTH.
 # The USGA Course Rating System evaluates one tee for one gender and produces the pair together: the
@@ -172,6 +195,36 @@ TEE_TABLE = COURSE.get("tees", [])
 # somewhere, record where: "slope_source": "NCGA course-rating DB, men's Red 5286 -> 112". A bare
 # boolean would let the next person silence this by asserting the thing the check is asking them to
 # evidence. Same shape as `rating_is_womens` on the rating side, one level stricter.
+#
+# ...and that argument was made and then not enforced. The first version read
+# `not str(t.get("slope_source") or "").strip()`, and `str(True)` is "True": non-empty, therefore a
+# "source". Measured, every one of `True`, `1`, `"x"`, `"true"`, `["NCGA"]`, `{"db": "NCGA"}` and `3.14`
+# silenced the check -- so the hatch WAS the bare boolean this comment says it must not be, and the test
+# named test_the_escape_hatch_demands_a_source_and_not_a_flag graded only "", "   ", "\n" and None.
+_SLOPE_SOURCE_MIN_CHARS = 8
+
+
+def _is_a_recorded_source(value):
+    """Whether `value` has the SHAPE of a record of where a number came from.
+
+    Two bars, and both of them are about shape -- no check here can tell a true citation from a typed
+    one, and it is not trying to. What it can refuse is the two ways this hatch stops being evidence:
+
+      * NOT A STRING. `True`, `1`, `["NCGA"]` and `{"db": "NCGA"}` are assertions that a source exists,
+        which is precisely the claim the hatch asks the author to replace with the source itself. A
+        non-string cannot be read by the human auditing legal/03, so it cannot be a source.
+      * TOO SHORT TO BE ONE. config.py's own refusal asks for "<publication, tee and value>"; the bar is
+        deliberately low, and set below anything real rather than above anything imaginable. It admits
+        a bare URL ("https://ncga.org/..." -- one token, no prose, and a perfectly good answer) and
+        rejects the placeholders a hurried edit leaves instead: "x", "?", "-", "n/a", "TBD", "ok",
+        "yes", "true", "unknown".
+
+    A LONG string that names nothing still passes, and a human reading legal/03 is the only check on
+    that. This exists so the hatch cannot be opened WITHOUT WRITING ANYTHING, which is what it was.
+    """
+    return isinstance(value, str) and len(value.strip()) >= _SLOPE_SOURCE_MIN_CHARS
+
+
 def slopes_without_a_rating(tees):
     """The tees printing a slope while their rating is withheld, with no men's slope source recorded.
 
@@ -181,13 +234,12 @@ def slopes_without_a_rating(tees):
     `rating_is_womens`, which appears in tests/test_phase1_regressions.py and on no tee in any
     course.json. tests/test_r14_tees.py grades this one THROUGH a real build for that reason.
 
-    A `slope_source` of "", "   " or None does not count as recorded: an empty string is what a
-    half-finished edit leaves behind, and reading it as evidence would make the hatch wider than a
-    bare flag.
+    What does and does not count as a recorded `slope_source` is _is_a_recorded_source above: a string,
+    long enough to name a publication. A bare `True` does not count, and used to.
     """
     return [t for t in (tees or [])
             if t.get("rating") is None and t.get("slope") is not None
-            and not str(t.get("slope_source") or "").strip()]
+            and not _is_a_recorded_source(t.get("slope_source"))]
 
 
 _HALF_PAIRS = slopes_without_a_rating(TEE_TABLE)
@@ -205,7 +257,9 @@ if _HALF_PAIRS:
           "  left in a men's column is a wrong number on a printed card.\n"
           '  If a MEN\'S slope for that tee genuinely is published, record where it came from:\n'
           '    "slope_source": "<publication, tee and value>"\n'
-          "  and this build will proceed. Do not add the key without the source -- legal/03 has to be\n"
+          "  and this build will proceed. It has to be READABLE TEXT: a bare true, or a placeholder\n"
+          '  like "n/a" or "TBD", is an assertion that a source exists and is refused as one.\n'
+          "  Do not add the key without the source -- legal/03 has to be\n"
           "  able to answer for every number in the book.")
 
 # WHICH TEE THIS BOOK IS BUILT ON -- one answer, here, because it was being decided in two places.

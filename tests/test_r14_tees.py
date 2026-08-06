@@ -145,14 +145,36 @@ def test_the_escape_hatch_demands_a_source_and_not_a_flag():
     ended up being real vocabulary set on no tee in the entire corpus. And an EMPTY or whitespace
     string is what a half-finished edit leaves behind; reading it as evidence would make the hatch
     wider than the flag it replaced.
+
+    THE DEFECT THIS TEST'S OWN NAME ASSERTED AND DID NOT GRADE. The guard shipped as
+    `not str(t.get("slope_source") or "").strip()`, and `str(True)` is "True" -- four non-characters
+    long, non-empty, and therefore a "source". Measured on the unfixed guard, every one of these
+    SILENCED it: True, 1, "x", "true", ["NCGA"], {"db": "NCGA"}, 3.14. The test asserted in its title
+    that a flag would not do and then graded only "", "   ", "\\n" and None -- the four values a bare
+    `or ""` already handled. So the hatch it was written to keep narrow was, in fact, exactly the bare
+    boolean its own docstring says is how `rating_is_womens` came to exist.
     """
     half = _predicate()
     sourced = {"name": "Red", "yards": 5286, "rating": None, "slope": 112,
                "slope_source": "NCGA course-rating DB, men's Red 5286"}
     assert half([sourced]) == [], "a recorded men's slope source must let the number print"
-    for empty in ("", "   ", "\n", None):
-        assert [t["name"] for t in half([dict(sourced, slope_source=empty)])] == ["Red"], (
-            f"slope_source={empty!r} is not a source, and must not silence the check")
+    # A bare URL is one token and no prose, and is a perfectly good answer to "where did this come
+    # from?" -- so whatever the bar is, it must not be "must read like a sentence".
+    assert half([dict(sourced, slope_source="https://ncga.org/course-rating?id=1234")]) == [], \
+        "a URL is a recorded source"
+    refused = [
+        # a half-finished edit
+        "", "   ", "\n", None,
+        # ASSERTION IN PLACE OF EVIDENCE -- the shape this hatch exists to refuse
+        True, 1, "true", "TRUE", "yes",
+        # not a string at all: a container or a number cannot say where a number came from
+        ["NCGA"], {"db": "NCGA"}, 3.14, 0, False, [],
+        # a string, but too short to name a publication, a tee and a value
+        "x", "?", "-", "n/a", "TBD", "ok", "unknown",
+    ]
+    for v in refused:
+        assert [t["name"] for t in half([dict(sourced, slope_source=v)])] == ["Red"], (
+            f"slope_source={v!r} is not a source, and must not silence the check")
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +276,70 @@ def test_the_engine_refuses_to_build_a_book_from_a_half_pair(tmp_path):
                        "slope_source": "NCGA course-rating DB, men's Red 600"}])
         rc, out = _import_config_for(slug)
         assert rc == 0, f"a recorded men's slope source must be allowed to print:\n{out}"
+    finally:
+        shutil.rmtree(d)
+
+
+def test_a_malformed_tees_value_is_refused_by_name_and_not_by_traceback():
+    """A hand-typed `"tees"` of the wrong SHAPE must refuse like every other bad course.json here.
+
+    The half-pair guard above is the first thing in the engine that reaches INSIDE each tee object, and
+    it made three shapes reachable that used to import cleanly (`tees` was only ever iterated by
+    generate.tees_panel, which no `import config` runs). Measured on the unfixed guard, all three died
+    inside a list comprehension in config.py with
+
+        AttributeError: 'str' object has no attribute 'get'
+
+    naming neither the file nor the key -- against this file's own convention, which is the one config.py
+    states four times over: a missing course.json, a missing required key, a short scorecard row and a
+    half-refused rating pair all name `courses/<slug>/course.json`, say what is wrong, and point at
+    examples/course.json. courses/ is gitignored and hand-edited, so the file that is wrong is the file
+    the reader has to be sent to.
+
+    Not a false positive against anything real: no course on disk and not the shipped template carries
+    these shapes (test_no_course_record_prints_a_slope_whose_rating_was_withheld reads every one).
+    """
+    slug = "_r14_tees_malformed"
+    d = os.path.join(ROOT, "courses", slug)
+    assert not os.path.exists(d), f"{d} already exists -- refusing to overwrite it"
+    os.makedirs(d)
+    try:
+        cj = os.path.join(d, "course.json")
+        shapes = {
+            "a bare string inside the tees list": ["Blue"],
+            "tees as a dict of name -> yardage": {"Blue": 6565},
+            "tees as a string": "Blue",
+            "a null inside the tees list": [None],
+            "a number inside the tees list": [{"name": "Blue", "slope": 126, "rating": 72.3}, 126],
+        }
+        for what, tees in shapes.items():
+            with open(cj, "w", encoding="utf-8") as f:
+                json.dump(_fixture_course(tees), f)
+            rc, out = _import_config_for(slug)
+            assert rc != 0, f"{what}: the engine imported a malformed \"tees\" without complaint:\n{out}"
+            assert "Traceback" not in out and "AttributeError" not in out, (
+                f"{what}: a hand-edit error came back as an interpreter traceback rather than a named "
+                f"refusal:\n{out}")
+            assert f"courses/{slug}/course.json" in out, (
+                f"{what}: the refusal does not name the file that is wrong:\n{out}")
+            assert "tees" in out, f"{what}: the refusal does not name the key that is wrong:\n{out}"
+            assert "examples/course.json" in out, (
+                f"{what}: the refusal does not point at the template, as config.py's other four "
+                f"refusals do:\n{out}")
+        # ...and the well-formed shape those five are contrasted with still builds, so this is a check
+        # on the SHAPE and not a new obstacle in front of a valid record.
+        with open(cj, "w", encoding="utf-8") as f:
+            json.dump(_fixture_course([{"name": "Blue", "yards": 800, "rating": 70.0, "slope": 126},
+                                       {"name": "Red", "yards": 600, "rating": None, "slope": None}]), f)
+        rc, out = _import_config_for(slug)
+        assert rc == 0, f"a well-formed tees list must import:\n{out}"
+        # An ABSENT "tees" is legitimate -- config.py defaults it to [] and the panel prints no card.
+        j = _fixture_course([])
+        j.pop("tees")
+        with open(cj, "w", encoding="utf-8") as f:
+            json.dump(j, f)
+        rc, out = _import_config_for(slug)
+        assert rc == 0, f"a course record with no \"tees\" at all must still import:\n{out}"
     finally:
         shutil.rmtree(d)
 
