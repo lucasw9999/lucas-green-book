@@ -22,13 +22,14 @@ days older than its HTML passed. That span was published as "96 commits", a figu
 tree measured and one that reached a commit message too; it is derived from git now, by
 test_the_export_tools_account_of_its_own_history_is_the_one_git_records.)
 
-WHAT --check PROVES, exactly, because two records overstated it once each: beside every book it
-records the digest of the HTML and the digest of the exported PDF, and at check time it re-derives
-BOTH from the files on disk. So it proves the PDF beside a book is byte-for-byte the file this tool
-exported, and that the export was recorded against the HTML now sitting beside it. It does not
-re-render anything, so it cannot prove the bytes were PRODUCED from that HTML -- a stamp is a record,
-not a re-derivation of the rendering, and a hand-written stamp naming both current digests passes.
-A PDF with no stamp is reported as provenance UNKNOWN rather than as stale; a file with no trailer is
+WHAT --check PROVES, exactly, because two records overstated it once each: beside every book THE EXPORT
+records the digest of the HTML and the digest of the exported PDF, and --check records nothing at all --
+it re-derives BOTH from the files on disk and compares. So it proves the PDF beside a book is
+byte-for-byte the file this tool exported, and that the export was recorded against the HTML now sitting
+beside it. It does not re-render anything, so it cannot prove the bytes were PRODUCED from that HTML --
+a stamp is a record, not a re-derivation of the rendering, and a hand-written stamp naming both current
+digests passes. A PDF with no stamp is reported as provenance UNKNOWN rather than as stale, as is one
+whose stamp names the HTML alone -- nothing there pins the bytes -- and a file with no trailer is
 refused whatever its stamp says.
 
 Run:  python3 tools/export_pdf.py                 # every built course (and coach edition)
@@ -51,7 +52,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # SKIP instead, under a skip message that was itself false. A proven-stale printed book became a
 # green run because a message had been edited. The tag is the fact; the sentence is a courtesy.
 NOT_EXPORTED = "not-exported"     # no PDF beside the html: nothing to judge
-UNSTAMPED = "no-source-hash"      # a PDF with no record of where it came from: provenance unknown
+UNSTAMPED = "unverifiable"        # the note beside the PDF cannot verify it: either no note at all,
+                                  # or one recording the html alone and never the PDF's own digest.
+                                  # Provenance unknown either way. The SYMBOL keeps its older, narrower
+                                  # name because the gate's partition and this suite key on it; the tag
+                                  # a reader sees has to be true of both shapes, and "no-source-hash"
+                                  # was false of the second -- that stamp does record a source hash.
 WRONG_SOURCE = "wrong-source"     # the recorded source digest is not this html: PROVEN stale
 TRUNCATED = "truncated"           # the file on disk is not a whole PDF: PROVEN unprintable
 WRONG_BYTES = "wrong-bytes"       # the recorded PDF digest is not this file: PROVEN not the export
@@ -159,8 +165,13 @@ def is_whole_pdf(pdf, tail=4096):
     and PyMuPDF's is_repaired set, and --check called it fresh and exited 0.
 
     export() stages and renames now, so it cannot produce one of these itself. This still has to exist
-    because the stamps already on disk record the HTML alone: for those books a trailer is the only
-    evidence the file is whole, and it costs a 4 KiB read.
+    because a stamp only checks a book when it recorded the book: a PDF with no note beside it, or a note
+    that names the html alone, is reported unverifiable and its bytes are never compared -- there a
+    trailer is the only evidence the file is whole, and it costs a 4 KiB read. Every one of the stamps
+    now on disk does record the PDF's own digest (asserted over the corpus by
+    test_every_shipped_stamp_records_both_digests_because_legal_06_rests_on_it), so a tear in one of
+    THOSE books would disagree with it too; this runs first so the verdict names the tear rather than
+    reporting a byte mismatch, which would tell the reader the file was edited.
     """
     try:
         size = os.path.getsize(pdf)
@@ -182,33 +193,34 @@ def read_stamp(pdf):
     unknown, whereas a note that yields no html digest is a note that does not agree with the html,
     which is a proven defect and was one before this function existed.
 
-    A NOTE THAT NAMES TWO DIFFERENT HTML DIGESTS NAMES NEITHER. `setdefault` resolved that to whichever
-    line came first and said nothing, so appending a second, contradicting digest to a legacy stamp read
-    as a clean match -- and the reader whose html matched the OTHER line would have been told the same.
-    A self-contradictory note is not evidence, so the field is dropped: that is the "does not agree with
-    the html" answer, a PROVEN defect, and not the "no note at all" answer.
+    A NOTE THAT NAMES TWO DIFFERENT DIGESTS FOR ONE FIELD NAMES NEITHER, and that is per FIELD, in
+    every spelling. `setdefault` resolved the bare form to whichever line came FIRST; a later fix
+    refused two bare lines and left the KEYED form resolving to whichever came LAST, so
+    `html <other>` / `html <real>` read as a clean match while the same two lines the other way round
+    were caught -- which line an author appended second is not evidence about the book. The pdf key had
+    the same last-line-wins reading, and it decides whether the bytes on disk are checked at all. So
+    every value offered for a field is collected and the field survives only if they agree: a
+    contradicted field is DROPPED, which is the "does not agree with the html" answer, a PROVEN defect,
+    and not the "no note at all" answer.
     """
     sp = stamp_path(pdf)
     if not os.path.exists(sp):
         return None
-    out = {}
+    seen = {}
     try:
         with open(sp, encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
-        return out
-    bare = []
+        return {}
     for line in text.splitlines():
         parts = line.split()
         if len(parts) == 1:
-            bare.append(parts[0])                 # legacy: one bare line IS the html digest
+            seen.setdefault("html", set()).add(parts[0])   # legacy: one bare line IS the html digest
         elif len(parts) == 2:
-            out[parts[0]] = parts[1]
-    for digest in bare:
-        out.setdefault("html", digest)
-    if len({d for d in bare} | ({out["html"]} if "html" in out else set())) > 1:
-        out.pop("html", None)
-    return out
+            seen.setdefault(parts[0], set()).add(parts[1])
+    # A field stated twice with ONE value is one statement -- every shipped stamp was a single bare
+    # line once, and refusing a repeated line would fail 15 real books.
+    return {field: next(iter(vals)) for field, vals in seen.items() if len(vals) == 1}
 
 
 def write_stamp(pdf, html):
@@ -242,20 +254,32 @@ def stale(only=None):
                         "not a whole PDF -- no trailer, so this is the wreck of an interrupted write"))
             continue
         rec = read_stamp(p)
-        if rec is None:
-            # No note: this PDF was produced by something other than this tool, or by this tool
-            # interrupted between writing the book and writing the note. Its provenance is UNKNOWN,
-            # not proven stale. Falling back to mtime looked rigorous but false-positived on any
-            # copied or checked-out tree, and a gate that cries wolf is a gate people switch off.
-            # It said "exported by hand" until this line, which asserts a cause the tool cannot know
-            # and is FALSE in the one case the tool causes itself -- one Ctrl-C during a 15-book run,
-            # and --check told the user to do the thing they were doing.
-            bad.append((h, p, UNSTAMPED,
-                        "unverifiable: no source hash recorded beside it, so it was either printed by "
-                        "hand or left by a run interrupted before its stamp was written"))
-        elif rec.get("html") != src_hash(h):
+        if rec is not None and rec.get("html") != src_hash(h):
             bad.append((h, p, WRONG_SOURCE, "exported from a DIFFERENT html"))
-        elif "pdf" in rec and rec["pdf"] != file_hash(p):
+        elif rec is None or "pdf" not in rec:
+            # NOTHING ON DISK PINS THESE BYTES, in either of two shapes, so the gate says so rather
+            # than reporting nothing.
+            #   * no note at all: this PDF was produced by something other than this tool, or by this
+            #     tool interrupted between writing the book and writing the note. Falling back to mtime
+            #     looked rigorous but false-positived on any copied or checked-out tree, and a gate that
+            #     cries wolf is a gate people switch off. It said "exported by hand" until the sentence
+            #     below, which asserts a cause the tool cannot know and is FALSE in the one case the tool
+            #     causes itself -- one Ctrl-C during a 15-book run, and --check told the user to do the
+            #     thing they were doing.
+            #   * a note recording the html alone (the legacy one-line form, or a `pdf` line that
+            #     contradicted itself and was dropped). This branch SKIPPED the pdf comparison and fell
+            #     through to a clean pass, so a book whose bytes had been replaced outright -- trailer
+            #     intact -- was reported as matching. legal/06's "byte-for-byte" claim then held only
+            #     because every stamp on disk happens to carry both fields; restoring one older pair made
+            #     the record overclaim again in silence.
+            # Both are provenance UNKNOWN, never a proven defect: the tool cannot tell the two causes of
+            # the first apart, and cannot check what was never recorded in the second.
+            why = ("no source hash recorded beside it, so it was either printed by hand or left by a "
+                   "run interrupted before its stamp was written") if rec is None else (
+                   "its note records the html digest alone -- no digest of the PDF itself -- so nothing "
+                   "here can say these bytes are the ones that were exported")
+            bad.append((h, p, UNSTAMPED, f"unverifiable: {why}"))
+        elif rec["pdf"] != file_hash(p):
             bad.append((h, p, WRONG_BYTES,
                         "not the PDF that was exported -- the file has changed since"))
     return bad
