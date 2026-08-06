@@ -1221,6 +1221,60 @@ def _deck_thirds(nums):
     return out
 
 
+def write_book(out, html):
+    """Write a finished book into courses/<slug>/ the way everything else there writes: stage, rename, sweep.
+
+    THE TWO BOOKS WERE THE ONLY ARTIFACTS THIS PROJECT WROTE UNDER courses/<slug>/ IN PLACE. Both
+    writers were
+
+        with open(out, "w", encoding="utf-8") as _f: _f.write(doc(sheets_html, config.BRAND))
+
+    and Python evaluates open() FIRST, so the previous good book was truncated to 0 bytes before doc()
+    had been called at all -- and then stayed incomplete for the whole 4.24-6.80 MB write, which is many
+    buffer flushes. ENOSPC, SIGKILL, a closed lid or a power loss anywhere in that window leaves a
+    truncated or empty greenbook.html and the last good one is gone. courses/ is gitignored: no copy in
+    history, none on a remote, none anywhere.
+
+    THE REMEDY LOOP THEN CERTIFIES THE WRECK, which is what makes this worse than lost work.
+    tools/export_pdf.py --check reports WRONG_SOURCE and prints "Re-run: python3 tools/export_pdf.py";
+    Chromium parses truncated HTML happily and prints whatever sheets it got; write_stamp records the
+    wreck's html digest beside the short PDF's; the next --check prints "all N PDF(s) match the HTML
+    they were exported from". The sheets a torn write loses are the LAST ones, and the last card is the
+    back cover -- where the copyright, trademark and licence block lives. So a book missing its licence
+    passes every gate in the pipeline.
+
+    export_pdf.py makes this exact argument for the PDF it prints FROM this file -- "Playwright's writer
+    opens its destination `wb` ... writing in place truncates a good book first: interrupt it and the
+    printable artifact is gone" -- and stages for it. The writer feeding it did not. Same three lines as
+    fetch_trees.write_layer, with the stage removed in a `finally` either way.
+
+    DOT-PREFIXED, like export_pdf.staged_pdf and surface_io.staged_names, for the reason export_pdf
+    states: the suite's `courses/*/*` read-only snapshot exempts a leading dot as OS litter or a stage,
+    and glob (which is how every tool here enumerates books) does not match one either. A leftover
+    `greenbook.html.part` would read as course data nothing has ever seen; `.greenbook.html.part` reads
+    as what it is.
+
+    `html` is a finished string, not a callable, so the document is rendered BEFORE anything is opened:
+    a failure while building it cannot touch the destination at all.
+
+    encoding="utf-8" explicitly. Without it Python uses the platform default, while the document it is
+    writing declares <meta charset="utf-8"> -- and every book contains 18 en-dashes (U+2013) from the
+    thumb-index tabs, generated unconditionally by _deck_thirds. On a cp1252 machine those become byte
+    0x96, which utf-8 cannot decode, so all 18 tabs render as replacement characters; under an ASCII
+    locale the build dies with UnicodeEncodeError. Declaring one encoding and writing another is a bug
+    that cannot reproduce on the author's machine.
+    """
+    tmp = os.path.join(os.path.dirname(out), f".{os.path.basename(out)}.part")
+    try:
+        with open(tmp, "w", encoding="utf-8") as _f:
+            _f.write(html)
+        os.replace(tmp, out)
+    finally:
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
+    return out
+
+
 def build_deck():
     """(panels, n_leading, n_holes) -- the flat, ordered card deck for this course.
 
@@ -1436,14 +1490,9 @@ def main():
 
     sheets_html = build_pages(panels)
     out = os.path.join(COURSE_DIR, "greenbook.html")
-    # encoding="utf-8" explicitly. Without it Python uses the platform default, while the document
-    # it is writing declares <meta charset="utf-8"> -- and every book contains 18 U+2013 en-dashes
-    # from the thumb-index tabs (generated unconditionally, "1\u201333" and friends). On a cp1252
-    # machine those become byte 0x96, which utf-8 cannot decode, so all 18 tabs render as
-    # replacement characters; under an ASCII locale the build dies with UnicodeEncodeError. Declaring
-    # one encoding and writing another is a bug that cannot reproduce on the author's machine.
-    with open(out, "w", encoding="utf-8") as _f:
-        _f.write(doc(sheets_html, config.BRAND))
+    # Staged and renamed -- see write_book(), which carries the encoding note that used to live here
+    # and the reason a book may not be written over itself.
+    write_book(out, doc(sheets_html, config.BRAND))
     print(f"Wrote {out} (single conforming build) "
           f"-> cards {config.CARD_W_IN}x{config.CARD_H_IN}in, {config.PER}/sheet duplex")
 
@@ -1780,8 +1829,7 @@ def build_coach(coach_name=""):
             f'<title>Enlarged Edition &mdash; {esc(COURSE)}</title><style>{css}</style>'
             f'</head><body>{"".join(pages)}</body></html>')
     out = os.path.join(COURSE_DIR, "greenbook_coach.html")
-    with open(out, "w", encoding="utf-8") as _f:   # see the note in the pocket writer
-        _f.write(html)
+    write_book(out, html)      # staged and renamed, exactly like the pocket book -- see write_book()
     print(f"Wrote {out} (ENLARGED edition for {coach_name}) "
           f"-> {len(cards)} cards, {len(pages)} PDF pages, {config.PER}/sheet duplex "
           f"(same layout as pocket book; each hole = 2 cards: map front / green back)")
