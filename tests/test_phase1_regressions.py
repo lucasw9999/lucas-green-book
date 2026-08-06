@@ -17976,9 +17976,12 @@ def test_the_independent_checker_says_which_region_each_side_of_it_samples():
     +0.63 ft, castlewood-hill 4 +0.16, merion 3 -1.05, merion 9 +0.43, merion 15 -0.45 -- worst MERION 3
     at 1.05 ft, under 1.1 ft on 5 of 171 holes, no verdict flipped, and NOT one-signed, so the "a wider
     region only inflates it" reading that holds on the pad branch never held here. It also took region
-    difference OUT of the hole the tool's own worst-observed figure named: bay-view 16 reported 1.24 ft
-    against the box and 0.58 ft against the disc. Not to be confused with the box-vs-disc difference in
-    the POINT CLOUD (+1.886 ft on bay-view 16, -1.116 on merion 9), which is the producer's figure.
+    difference OUT of the hole the tool's own worst-observed figure named: bay-view 16 reported 1.21 ft
+    against the box and 0.58 ft against the disc -- one basis, the rounded `change_ft` the tool reports
+    against, because a pair taking one figure from `change_ft` and the other from `change_ft_exact`
+    derives a region cost 0.03 ft from the shift above and stood here for a commit doing exactly that.
+    Not to be confused with the box-vs-disc difference in the
+    POINT CLOUD (+1.886 ft on bay-view 16, -1.116 on merion 9), which is the producer's figure.
 
     So the four records now say what each side reads, and this grades that against the CODE (the
     reference still takes the unclipped ring, and takes its fallback radius FROM the producer rather
@@ -18085,6 +18088,200 @@ def test_the_independent_checker_says_which_region_each_side_of_it_samples():
         "the independent elevation checker misdescribes what it samples, or the records of it "
         "disagree. Four copies of one premise with no cross-check is how this survived 9cc3bce:\n  "
         + "\n  ".join(problems))
+
+
+def _fallback_tee_region_shifts():
+    """[(short slug, hole, shift ft, |diff| box, |diff| disc, |diff| box exact, |diff| disc exact)].
+
+    What moving the checker's fallback tee region cost, measured in the DEM at every anchor no mapped
+    ring holds. `shift` is the change in the tee-to-green figure this tool REPORTS when the region moves
+    from the superseded 15 m box to the producer's disc; the four |diff| columns are that hole's
+    disagreement with the recorded height, on each region and on each of the two recorded heights.
+
+    BOTH BASES are returned because publishing one figure from each is the defect this measurement
+    exists to grade. hole_elev.json records `change_ft` (rounded to 0.1) and `change_ft_exact`, the tool
+    reports against `change_ft`, and on bay-view 16 the two differ by 0.033 ft -- enough that a pair
+    taking one figure from each derives a region cost 0.03 ft away from the shift the same paragraph
+    publishes three lines earlier, which is how 0.66 ft came to stand where 0.63 belongs.
+
+    THE 15 m BOX IS REPRODUCED HERE, verbatim from ba34e52's `dem_median_m` -- a square bbox at 48 px
+    with no margin, median over every finite cell of whatever extent the service returns. It is a copy
+    of retired code, deliberately: the figure being graded is what the tool's answer MOVED BY, so the
+    superseded sampler is half the measurement and there is nowhere else left in the repo that runs it.
+    Reproducing it any other way would grade a different experiment.
+    """
+    import numpy as np
+    import geo
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_elevation as ve
+    FT = 3.28084
+
+    def box_median_m(lat, lon, half_m=15.0, px=48):
+        dlat, dlon = half_m / _mlat(lat), half_m / _mlon(lat)
+        got = ve._fetch_patch(lon - dlon, lat - dlat, lon + dlon, lat + dlat, px)
+        if got is None:
+            return None
+        a, _bbox = got
+        return float(np.median(a[np.isfinite(a)]))
+
+    # Bound per course through _elev_bind rather than by dropping modules, which is the whole reason
+    # that helper exists: a new sys.modules.pop site would move the count README publishes about this
+    # suite, and README is not this round's to edit.
+    _engine(a_course())
+    import fetch_hole_elev as fhe
+    out = []
+    for slug in CORPUS:
+        cfg = _elev_bind(fhe, slug)
+        p = os.path.join(fhe.DIR, "hole_elev.json")
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            rec = json.load(fh)["holes"]
+        with open(os.path.join(fhe.DIR, "osm_geom.json"), encoding="utf-8") as fh:
+            els = json.load(fh)["elements"]
+        greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        loc = cfg.COURSE.get("location") or {}
+        holes = geo.hole_lines(els, loc.get("lat"), loc.get("lon"))
+        rings = fhe.tee_rings_latlon()
+        for hn in sorted(int(k) for k in rec):
+            if hn not in holes or rec[str(hn)].get("change_ft") is None:
+                continue
+            la, lo, _basis = fhe.tee_anchor(hn, holes[hn]["geometry"], greens)
+            if la is None or fhe.ring_containing(la, lo, rings) is not None:
+                continue                        # a mapped ring holds it: not the fallback branch
+            mp = os.path.join(fhe.DIR, "dem_hd", f"hole{hn:02d}.json")
+            if not os.path.isfile(mp):
+                continue
+            with open(mp, encoding="utf-8") as fh:
+                meta = json.load(fh)
+            gp = np.asarray(meta["polygon"], float)
+            d_grn = ve.dem_median_over_ring((gp[:, 0], gp[:, 1]))
+            d_disc, d_box = ve.dem_median_m(la, lo), box_median_m(la, lo)
+            assert None not in (d_grn, d_disc, d_box), (
+                f"the elevation service did not answer for {slug} {hn}, so this cannot be measured. An "
+                f"unreachable service must read as 'could not check', never as agreement -- re-run it.")
+            ib, idisc = (d_grn - d_box) * FT, (d_grn - d_disc) * FT
+            row = rec[str(hn)]
+            cf, cfe = float(row["change_ft"]), row.get("change_ft_exact")
+            out.append((_short(slug), hn, idisc - ib, abs(ib - cf), abs(idisc - cf),
+                        None if cfe is None else abs(ib - float(cfe)),
+                        None if cfe is None else abs(idisc - float(cfe))))
+    _elev_bind(fhe, a_course())
+    return out
+
+
+@pytest.mark.network
+@pytest.mark.skipif(not os.environ.get("VERIFY_ELEV"),
+                    reason="set VERIFY_ELEV=1 to run: needs the 3DEP elevation service, three patch "
+                           "fetches per fallback anchor")
+@needs_corpus
+def test_the_cost_of_aligning_the_fallback_tee_region_is_the_cost_the_dem_gives():
+    """The paragraph that justifies aligning the checker's fallback region derived one figure from two
+    different baselines, and nothing in this repo could see it.
+
+    ba34e52 left the checker sampling a 15 m box at any tee anchor no mapped ring holds -- a stale copy
+    of the producer's own superseded fallback region -- and this round moved it onto the producer's disc.
+    What that alignment COST is the whole argument for making it, and it was published in two records
+    (the region note above TOL_FT, and the docstring of the region test above) with no producer at all:
+    five per-hole shifts, a worst, and a pair of |diff| figures for the hole the tool's own worst-observed
+    figure used to name.
+
+    ONE FIGURE IN THAT PAIR WAS OFF, and not by a transcription slip. bay-view 16 was published as
+    "1.24 ft against the 15 m box and 0.58 ft against the producer's disc, so 0.66 ft" of region
+    difference -- but 1.24 is measured against `change_ft_exact` and 0.58 against the ROUNDED
+    `change_ft`. Both are real numbers; they are answers to different questions, and their difference is
+    neither hole's region cost. The consistent pairs are 1.21/0.58 (the basis this tool actually
+    reports on, `check_course` reads `change_ft`) and 1.24/0.61, and both give 0.63 ft -- which is the
+    figure the SAME paragraph publishes three lines earlier as bay-view 16's shift. The paragraph
+    contained the right number and then derived a different one beside it.
+
+    So every figure in it is graded against a live measurement, on BOTH bases, and the pair must sit on
+    ONE of them. A mixed pair fails here by name even when both halves are individually right, which is
+    the only shape of grader that could have caught this.
+
+    Needs the wire, and there is no honest way around it: stubbing 3DEP would be this project inventing
+    the independent reference it checks itself against. Skipped otherwise, and a skip is visibly not a
+    pass -- the arithmetic that made the defect visible (box minus disc equals the shift) is graded
+    here too, so the run that measures also checks the paragraph's own internal consistency.
+    """
+    rows = _fallback_tee_region_shifts()
+    assert rows, ("no tee anchor in this corpus falls back off the mapped rings, so the region this "
+                  "paragraph is about is never sampled -- re-derive the paragraph before deleting it")
+    by = {(r[0], r[1]): r[2:] for r in rows}
+    live = "; ".join(f"{s} {h} shift {sh:+.4f} ft, |diff| box {b:.4f}/disc {d:.4f} vs change_ft, "
+                     f"{be:.4f}/{de:.4f} vs change_ft_exact"
+                     for s, h, sh, b, d, be, de in sorted(rows))
+    worst = max(rows, key=lambda r: abs(r[2]))
+    bad = []
+
+    # 1. THE FIVE PER-HOLE SHIFTS, in both records that publish them, against the DEM.
+    five = re.compile(r"bay-view 16 ([-+][\d.]+) ft,? +castlewood-hill 4 ([-+][\d.]+),? +"
+                      r"merion 3 ([-+][\d.]+),? +merion 9 ([-+][\d.]+),? +merion 15 ([-+][\d.]+)")
+    ve_src = _flow(open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8").read())
+    here = _flow(open(__file__, encoding="utf-8").read())
+    for where, text in (("tools/verify_elevation.py's THE TEE REGION note", ve_src),
+                        ("the region test's docstring in this file", here)):
+        m = five.search(text)
+        assert m, (f"{where} no longer publishes the five per-hole costs of the alignment in a form this "
+                   f"test can read, so nothing grades them: measured {live}")
+        for said, (s, h) in zip(m.groups(), (("bay-view", 16), ("castlewood-hill", 4),
+                                             ("merion", 3), ("merion", 9), ("merion", 15))):
+            if (s, h) not in by:
+                bad.append(f"{where} names {s} {h} as a fallback anchor; the anchors that fall back "
+                           f"today are {sorted(by)}")
+            elif abs(float(said) - by[(s, h)][0]) > 0.005:
+                bad.append(f"{where} publishes {s} {h}'s region cost as {said} ft; measured "
+                           f"{by[(s, h)][0]:+.4f}")
+        n = len(re.findall(r"(?:Worst is|worst) MERION 3 at ([\d.]+) ft", text)) + \
+            len(re.findall(r"under 1\.1 ft on (\d+) of \d+ holes", text))
+        assert n, (f"{where} no longer names the worst shift or how many holes moved, so the two "
+                   f"summary figures of this measurement are ungraded: measured {live}")
+        for said in re.findall(r"(?:Worst is|worst) MERION 3 at ([\d.]+) ft", text):
+            if abs(float(said) - abs(worst[2])) > 0.005 or (worst[0], worst[1]) != ("merion", 3):
+                bad.append(f"{where} names merion 3 at {said} ft as the worst shift; measured "
+                           f"{worst[0]} {worst[1]} at {abs(worst[2]):.4f}")
+        for said in re.findall(r"under 1\.1 ft on (\d+) of \d+ holes", text):
+            if int(said) != len(rows):
+                bad.append(f"{where} says the alignment moved {said} holes; measured {len(rows)}")
+        if abs(worst[2]) >= 1.1:
+            bad.append(f"both records say every shift is under 1.1 ft; measured {abs(worst[2]):.4f} on "
+                       f"{worst[0]} {worst[1]}")
+
+    # 2. THE PAIR, in both records, and the figure derived from it. The two halves must be measured
+    #    against the SAME recorded height -- that is the defect -- and the difference must be the shift.
+    bv = by[("bay-view", 16)]
+    bases = {"change_ft (what check_course reports against)": (bv[1], bv[2]),
+             "change_ft_exact": (bv[3], bv[4])}
+    for where, text in (("tools/verify_elevation.py's THE TEE REGION note", ve_src),
+                        ("the region test's docstring in this file", here)):
+        pair = re.search(r"bay-view 16 reported ([\d.]+) ft against the (?:15 m )?box and ([\d.]+) ft "
+                         r"against the (?:producer's )?disc", text)
+        assert pair, (f"{where} no longer publishes what bay-view 16 disagreed by on each region, so the "
+                      f"sentence that justifies the alignment is ungraded: measured {live}")
+        said_b, said_d = float(pair.group(1)), float(pair.group(2))
+        fits = [name for name, (b, d) in bases.items()
+                if abs(said_b - b) <= 0.005 and abs(said_d - d) <= 0.005]
+        if not fits:
+            halves = [f"{name}: box {b:.4f}, disc {d:.4f}" for name, (b, d) in bases.items()]
+            bad.append(f"{where} publishes bay-view 16 as {said_b} ft against the box and {said_d} "
+                       f"against the disc, which is not what either recorded height gives. MIXING THE "
+                       f"TWO is what this grader exists for -- a figure from each is individually right "
+                       f"and their difference is nobody's region cost: " + "; ".join(halves))
+        if abs((said_b - said_d) - abs(bv[0])) > 0.005:
+            bad.append(f"{where}'s pair differs by {said_b - said_d:.2f} ft while the measured shift is "
+                       f"{abs(bv[0]):.4f} -- the two |diff| figures are not on one basis")
+    derived = re.search(r"against the producer's disc, so ([\d.]+) ft of what was published", ve_src)
+    assert derived, ("tools/verify_elevation.py no longer says how much of bay-view 16's published "
+                     f"disagreement was region difference: measured {live}")
+    if abs(float(derived.group(1)) - abs(bv[0])) > 0.005:
+        bad.append(f"that sentence derives {derived.group(1)} ft of region difference on bay-view 16; "
+                   f"the DEM puts the shift between the two regions at {abs(bv[0]):.4f} ft. The two are "
+                   f"the same quantity and this paragraph publishes both.")
+
+    assert not bad, (
+        "the recorded cost of aligning the checker's fallback tee region is not the cost the 3DEP "
+        "service gives. This paragraph is the entire argument for having moved that region, and one of "
+        "its figures was derived from two different baselines:\n  " + "\n  ".join(bad))
 
 
 @needs_corpus
@@ -21386,9 +21583,9 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
                                   + re.escape(", ".join(str(h) for h in bare)), prov):
             problems.append(
                 f"{ref}: the book marks treeless holes {bare} but legal/03 does not record it. That "
-                f"table documents every other per-hole data limitation -- 1 m green fallbacks, how many "
-                f"holes carry a measured height -- so omitting this makes it read complete when it is "
-                f"not. Re-run tools/gen_provenance.py.")
+                f"table documents every other per-hole data limitation -- seamless-mosaic green "
+                f"fallbacks, how many holes carry a measured height -- so omitting this makes it read "
+                f"complete when it is not. Re-run tools/gen_provenance.py.")
     assert checked >= 10, f"only {checked} books with a tree layer were checked"
     assert_no_course_skipped(seen, "test_a_hole_the_survey_missed_does_not_print_as_open_ground")
     assert bare_total >= 3, (
@@ -23367,6 +23564,16 @@ def test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today():
 
     Tolerance is taken from the PRECISION the document chose for each figure, so quoting fewer digits
     is allowed and quoting a digit the service does not support is not.
+
+    ONE FIGURE IS GRADED DIFFERENTLY, and the difference is the point: a RANGE endpoint. Rounding to
+    the nearest is right for a point figure quoted to fewer digits and wrong for the end of a range --
+    0.62 is the correct two-digit rounding of a worst per-course median of 0.6243 and it still EXCLUDES
+    it, so a range published as 0.03-0.62 ft does not contain the corpus it describes. This file's own
+    `grade_bound` refuses exactly that shape elsewhere, and `verify_elevation.py`'s docstring carried
+    it. So the tool's range is graded here by CONTAINMENT plus one rounding step, against the same run.
+    legal/09's copy of that range still reads "from 0.03 to 0.62 ft" and needs the same repair; that
+    record is being confirmed elsewhere this round and is not corrected here, which is why the two
+    records currently differ in the last digit.
     """
     import subprocess
     fig = _elev_bound_published()
@@ -23404,8 +23611,8 @@ def test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today():
 
     c_n = one(r"CORPUS over (\d+) hole\(s\) in (\d+) course\(s\)", "the corpus counts")
     c_d = one(r"median ([\d.]+) ft, mean ([\d.]+), worst ([\d.]+) \((\S+) (\d+)\)", "the |diff| line")
-    c_p = one(r"per-COURSE medians\s*: worst ([\d.]+) ft \((\S+)\), median of the \d+ course medians "
-              r"([\d.]+)", "the per-course line")
+    c_p = one(r"per-COURSE medians\s*: worst ([\d.]+) ft \((\S+)\), best ([\d.]+) \((\S+)\), median of "
+              r"the \d+ course medians ([\d.]+)", "the per-course line")
     c_2 = one(r"holes over 2 ft\s*: (\d+)", "the count over 2 ft")
     c_3 = one(r"holes over 3 ft\s*: (\d+)", "the count over 3 ft")
     c_a = one(r"absolute green vs DEM: worst per-course median ([\d.]+) m, worst single green ([\d.]+) m",
@@ -23415,9 +23622,13 @@ def test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today():
         "abs_pc_worst": float(c_a.group(1)), "abs_worst": float(c_a.group(2)),
         "chg_worst": float(c_d.group(3)), "chg_med": float(c_d.group(1)),
         "chg_mean": float(c_d.group(2)), "chg_pc_hi": float(c_p.group(1)),
-        "chg_pc_med": float(c_p.group(3)), "chg_pc_lo": min(v["med"] for v in per.values()),
+        "chg_pc_med": float(c_p.group(5)), "chg_pc_lo": float(c_p.group(3)),
         "over2": int(c_2.group(1)), "over3": int(c_3.group(1)),
     }
+    assert abs(live["chg_pc_lo"] - min(v["med"] for v in per.values())) <= 0.005, (
+        f"the corpus block's best per-course median ({live['chg_pc_lo']}) is not the smallest the "
+        f"per-course lines print ({min(v['med'] for v in per.values())}). One of the two is measuring "
+        f"a different set of courses than the other.")
     off = []
     for key, _pat, label in _ELEV_BOUND_FIGS:
         raw = fig[key].group(1)
@@ -23434,6 +23645,33 @@ def test_legal_09s_elevation_bound_is_what_the_elevation_service_gives_today():
         if said_where != [w.lower() for w in want]:
             off.append(f"item 1 puts {labels[key]} on {' '.join(said_where)}; the run puts it on "
                        f"{' '.join(want)}")
+
+    # THE TOOL'S OWN RANGE, graded by CONTAINMENT rather than by rounding -- see the docstring. Both
+    # ends, because a range has two and the low one had no producer at all until this run printed the
+    # best per-course median beside the worst.
+    ve_doc = _flow(open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8").read())
+    m = re.search(r"per-course median of ([\d.]+)-([\d.]+) ft", ve_doc)
+    assert m, ("tools/verify_elevation.py's docstring no longer publishes the per-course range this run "
+               f"measures, so nothing grades it: measured {live['chg_pc_lo']:.4f}-"
+               f"{live['chg_pc_hi']:.4f} ft")
+    for grp, want, side, label in ((1, live["chg_pc_lo"], "lo", "the best per-course median"),
+                                   (2, live["chg_pc_hi"], "hi", "the worst per-course median")):
+        got = float(m.group(grp))
+        contains = got <= want + 1e-12 if side == "lo" else got >= want - 1e-12
+        if not contains:
+            off.append(f"verify_elevation.py's docstring publishes {label} as {got:g}, which EXCLUDES "
+                       f"the measured {want:.4g} -- a published range must contain its own corpus, and "
+                       f"rounding an endpoint toward the middle is how it stops doing that")
+        elif abs(got - want) > 0.1:
+            off.append(f"verify_elevation.py's docstring publishes {label} as {got:g}; measured "
+                       f"{want:.4g}, which is more than one rounding step away")
+    m = re.search(r"the worst per-course median measures ([\d.]+) ft", ve_doc)
+    assert m, ("tools/verify_elevation.py's docstring no longer says what the worst per-course median "
+               "measures, which is the figure its rounded-outward endpoint is rounded FROM -- without it "
+               f"a reader cannot tell 0.63 from a typo: measured {live['chg_pc_hi']:.4f} ft")
+    if abs(float(m.group(1)) - live["chg_pc_hi"]) > 0.00005:
+        off.append(f"verify_elevation.py's docstring says the worst per-course median measures "
+                   f"{m.group(1)} ft; this run measured {live['chg_pc_hi']:.4f}")
     assert not off, (
         "legal/09 item 1 publishes elevation figures the 3DEP service does not give today. Both copies "
         "of this run's output have gone stale independently before -- re-run\n"
@@ -31106,27 +31344,69 @@ def test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording()
         + "\n  ".join(f"{k}: {_HISTORICAL_LABEL_CLAUSES[k]}" for k in inert))
 
 
-# A resolution bound DIRECTLY to the seamless product, in either order: "1 m seamless DEM",
-# "seamless 1 m", "1 m fallback", "1 m mosaic", "1 m national model", "1 m DEM", "1 m fill".
-# Deliberately an ADJACENCY rule rather than "a number anywhere in a clause that mentions the mosaic" --
-# the clauses that legitimately put 0.4 m LiDAR beside the seamless fallback in one sentence are
-# everywhere in this repo (MEASURED: a co-occurrence rule flags 121 figures in 56 places, 61 of them the
-# 0.4 m point cloud named beside the fallback it exists to replace), and a grader that flagged them
-# would be switched off within a day.
+# A resolution bound to the seamless product with at most TWO words between the figure and the product
+# word: "1 m seamless DEM", "seamless 1 m", "1 m fallback", "1 m green fallback", "1 m from the seamless
+# DEM".
 #
-# AND THE LIST IS INCOMPLETE, which is measured rather than conceded. "fill" is on it because it was
-# not: fetch_dem_hd.py:269 called the product "the coarse 1 m fill" for as long as that docstring has
-# existed, one word outside the set, in the same paragraph as a site 7d8d131 corrected using this very
-# pattern. Worse for the vocabulary idea, the binding does not have to be adjacent at all --
-# `surface_io.py`'s module docstring says "fetch_dem.py at 1 m from the seamless DEM", live and
-# present-tense, and no adjacency vocabulary of any size reaches it. That is recorded by file so the
-# next widening has a target rather than a rediscovery, the way 7d8d131 recorded the one before it.
+# THE AXIS THAT WORKS IS THE GAP, NOT THE WORD LIST, and that took three failed widenings to find. Every
+# earlier round added a word -- "fill" went on because fetch_dem_hd.py:269 called the product "the coarse
+# 1 m fill", one word outside the set -- and each time another live site turned up just outside the new
+# set. MEASURED HERE, by sweeping the number of filler words the pattern tolerates and counting what each
+# width flags over the prose in this tree. Every row is re-derived by _widening_costs on every run, off
+# the SHIPPED pattern (see _gap_widths), and graded:
+#     | gap | reaches a figure bound by a preposition | clauses flagged | of those, legitimate 0.4 m |
+#     |  0  |  no  |  18  |  0  |
+#     |  1  |  no  |  20  |  0  |
+#     |  2  |  yes |  20  |  0  |
+#     |  3  |  yes |  22  |  2  |
+#     |  4  |  yes |  32  |  11 |
+# Gap 2 is the last free width: it reaches the preposition shape that defeats every word list, and the
+# first false positive appears only at gap 3 -- true sentences that put the OTHER stage's real 0.4 m
+# figure a few words from the fallback it exists to replace. So the pattern is gap 2 and the limit is
+# asserted at gap 3, both probed below on a figure this file builds rather than types. The clause counts
+# are LOWER bounds and the false-positive counts are exact at the free widths; see _widening_costs.
+#
+# WHAT THAT WIDENING FOUND, on the surfaces this rule already graded: a seventh live site. A failure
+# message in this file called legal/03's seamless-mosaic fallbacks "1 m green fallbacks" -- present
+# tense, one filler word ("green") outside the shipped gap, in a string literal the sweep had been
+# reading all along.
+#
+# CO-OCCURRENCE -- any figure anywhere in a clause that mentions the product -- is still refused, and
+# still on measurement: _widening_costs puts it at a LOWER BOUND of 113 figures in 91 places, 47 of them
+# the 0.4 m LiDAR figure the arrays DO measure, named beside the fallback it exists to replace. Bounds
+# rather than an exact triple on purpose (see that helper); the triple this note carried before this
+# round -- 121 figures in 56 places, 61 at 0.4 m -- reproduces under no definition of the rule it
+# described, which is what an ungraded measurement eventually reads like.
 _SEAMLESS_RES = re.compile(
-    r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b\s+"
+    r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b(?:\s+\w+){0,2}\s+"
     r"(?:seamless|mosaic|national\s+model|fallback|fill|DEM\b)"
     r"|(?:seamless|mosaic|fallback|fill)\s+(?:DEM\s+|service\s+)?(?<![\d.])(\d[\d.]*)\s*"
     r"(?:m|metres?|meters?)\b",
     re.I)
+
+# THE SECOND MECHANISM: a resolution ATTRIBUTED TO A PRODUCER BY NAME -- the shape `<module>.py at N m`,
+# which is how surface_io.py's module docstring states the contract for both stages. The anchor is the
+# FILENAME rather than the product, and that buys two things the gap-2 rule above cannot have:
+#   * IT READS COMMENTS AND DOCSTRINGS WITH NO ALLOWLIST. The rule above is confined to string literals
+#     and published documents because pointing it at comments would flag two dozen clauses that RECORD
+#     the retired claim, each needing a content-keyed exemption (measured by _widening_costs). A
+#     filename cannot be quoted the way a product name can: prose about this defect quotes the label,
+#     not an attribution, so this rule crosses that surface for free -- which is how it reached
+#     surface_io.py's module docstring, where the live site was.
+#   * IT GRADES WHICH STAGE A FIGURE IS CLAIMED FOR. 0.5 m is true of one producer and false of the
+#     other, and every product rule in this file would pass both. This one measures each stage's own
+#     greens (_producer_grid_figures) and grades the attribution against them.
+# Every shape named in this block is BUILT in the probes below rather than typed here, because this rule
+# reads comments -- a literal example would be swept by it and fail as a finding against itself, which is
+# exactly what it did on the first run of this note.
+#
+# Bound by "at" alone, and that narrowness is measured rather than timid. Widened to any short run of
+# words between the producer and the figure it reaches 10 clauses in this tree, and 3 of those attribute
+# a figure to a producer that does not produce it while being perfectly true English -- a sentence about
+# one stage REPLACING the other's 0.4 m surface, or REFUSING its own attempt at one. An attribution rule
+# cannot grade a sentence like that, so it does not try to read one.
+_PRODUCER_RES = re.compile(
+    r"(fetch_dem(?:_hd)?\.py)`?\s+at\s+(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b", re.I)
 
 
 def _seamless_grid_figures():
@@ -31156,6 +31436,125 @@ def _seamless_grid_figures():
     return figs
 
 
+def _producer_grid_figures():
+    """{producer module: {metre figure: how it was measured}} for the two stages that write dem_hd/.
+
+    The measurement _PRODUCER_RES is graded against. Read off the arrays and their own metas, never off
+    a `source` string, because the claim being graded is exactly the one a string cannot settle: "1 m"
+    was typed into `source` and stood for the life of the project.
+
+    A green belongs to fetch_dem.py when its meta's `source` names the seamless product and to
+    fetch_dem_hd.py otherwise -- the same test every consumer in this repo makes. Per PRODUCER rather
+    than one pooled set, because pooling would let a claim survive by naming the OTHER stage's true
+    figure: on this corpus the seamless stage's greens sample at 0.50 m and the LiDAR stage's at 0.40 m,
+    so a claim attributing 0.50 m to the LiDAR stage is as false as one attributing 1 m to either, and
+    has to fail the same way.
+    """
+    cells = _measured_cells()
+    out = {"fetch_dem.py": {}, "fetch_dem_hd.py": {}}
+    for (s, h), v in sorted(cells.items()):
+        figs = out["fetch_dem.py" if v[3] else "fetch_dem_hd.py"]
+        if v[3]:
+            figs.setdefault(round(v[0], 2), "a measured E-W source cell")
+            figs.setdefault(round(v[1], 2), "a measured N-S source cell")
+        mp = os.path.join(ROOT, "courses", s, "dem_hd", f"hole{h:02d}.json")
+        with open(mp, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        xmin, ymin, xmax, ymax = meta["bbox"]
+        clat = meta["green_center"][0]
+        figs.setdefault(round((xmax - xmin) * _mlon(clat) / meta["W"], 2), "the output sampling")
+        figs.setdefault(round((ymax - ymin) * _mlat(clat) / meta["H"], 2), "the output sampling")
+    return out
+
+
+def _gap_widths(pattern=None):
+    """{filler words tolerated: compiled pattern} for the gap sweep, DERIVED from the shipped rule.
+
+    Rebuilt by substituting the filler quantifier inside `_SEAMLESS_RES.pattern` rather than by writing
+    the pattern out again at each width. A sweep measured on a re-implementation of the scan proves
+    nothing about the scan that ships -- the same reason the label grader's mutation test drives the
+    shipped collector -- and it is how a note about a rule's reach goes stale while the rule moves.
+    """
+    src = (pattern or _SEAMLESS_RES).pattern
+    marker = r"(?:\s+\w+){0,2}"
+    assert marker in src, (
+        f"_SEAMLESS_RES no longer carries the filler quantifier {marker!r} this sweep varies, so the gap "
+        f"table in the note above it would be measured on a pattern the repo does not ship:\n  {src}")
+    return {n: re.compile(src.replace(marker, r"(?:\s+\w+){0,%d}" % n), re.I) for n in range(0, 5)}
+
+
+def _widening_costs():
+    """What each way of widening _SEAMLESS_RES would cost, measured over the prose in this tree.
+
+    The note above that pattern chose its width and refused two other roads on these numbers, and an
+    argument made from figures nothing re-derives is how "1 m" survived six cards: the co-occurrence
+    triple that note carried before this round (121 figures in 56 places, 61 of them 0.4 m) reproduces
+    under no definition of the rule this file can construct.
+
+    Published and graded as BOUNDS, deliberately, each in the direction that could mislead. An exact
+    count over the repo's OWN PROSE fails on the next unrelated sentence anybody writes about the
+    fallback, which turns a measurement into a tripwire.
+
+      gap[n]  the GAP road, and the one taken: (does width n reach a figure bound to the product by a
+              preposition, clauses it flags, how many of those carry the OTHER stage's legitimate 0.4 m
+              figure). Width 2 is the last one that costs nothing.
+      co_*    the CO-OCCURRENCE road: any metre figure in a clause that mentions the product, over every
+              prose surface. `co_lidar` is the part that kills it.
+      surf_*  the SURFACE road: the shipped pattern pointed at comments and docstrings, which it does not
+              grade today. `surf_denied` is the content-keyed history allowlist that road must buy first.
+      quoted / unquoted
+              the same denied matches split on whether the figure sits inside a quotation or a backtick.
+              A structural "a quotation is a record, not a claim" exemption would cost `unquoted` keys
+              instead of `surf_denied` ones -- so `quoted` is published as a lower bound and `unquoted`
+              as an UPPER one, because that is the number whose growth would make the cheap road dear.
+    """
+    allowed, tol = _seamless_grid_figures(), 0.06
+    docs = set(_prose_docs())
+    unmeasured = lambda v: not any(abs(v - a) <= tol for a in allowed)      # noqa: E731
+    near = re.compile(r"seamless|mosaic|national\s+model|fallback|fill|\bDEM\b", re.I)
+    anym = re.compile(r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b")
+    widths = _gap_widths()
+    co_figs = co_lidar = quoted = unquoted = 0
+    co_places, surf_clauses, surf_denied = set(), set(), set()
+    gap = {n: [set(), set()] for n in widths}                # clauses flagged, of those at 0.4 m
+    for where, text in _prose_of_repo():
+        unread = where not in docs and not where.endswith("string literal")
+        for clause in _clauses(text):
+            flat = " ".join(clause.split())
+            key = (where, flat[:200])
+            if near.search(clause):
+                said = [v for v in (float(m.group(1)) for m in anym.finditer(clause)) if unmeasured(v)]
+                if said:
+                    co_figs += len(said)
+                    co_places.add(key)
+                    co_lidar += sum(1 for v in said if abs(v - 0.4) <= tol)
+            for n, pat in widths.items():
+                for m in pat.finditer(clause):
+                    v = float(m.group(1) or m.group(2))
+                    if not unmeasured(v):
+                        continue
+                    gap[n][0].add(key)
+                    if abs(v - 0.4) <= tol:
+                        gap[n][1].add(key)
+            if unread:
+                for m in _SEAMLESS_RES.finditer(clause):
+                    v = float(m.group(1) or m.group(2))
+                    surf_clauses.add(key)
+                    if not unmeasured(v):
+                        continue
+                    surf_denied.add(key)
+                    span = " ".join(m.group(0).split())
+                    before = flat[:flat.find(span)] if span in flat else ""
+                    if before.count('"') % 2 or before.count("`") % 2:
+                        quoted += 1
+                    else:
+                        unquoted += 1
+    return {"co_figures": co_figs, "co_places": len(co_places), "co_lidar": co_lidar,
+            "surf_clauses": len(surf_clauses), "surf_denied": len(surf_denied),
+            "quoted": quoted, "unquoted": unquoted, "denied_matches": quoted + unquoted,
+            "gap": {n: (len(c), len(l)) for n, (c, l) in gap.items()}}
+
+
 @needs_corpus
 def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_one_metre_product():
     """Six live sites went on calling the seamless fallback "the 1 m seamless DEM" after 9f37857.
@@ -31176,22 +31575,33 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
     cell `render_green.source_lattice` measures and the sampling the patch was delivered at, both from
     `_seamless_grid_figures()`; any other figure bound to the product fails here by name and by file.
 
-    SCOPE, stated positively so it cannot be read as more than it is: this grades every STRING LITERAL
-    in the repo's .py files -- the runtime messages a user reads while the pipeline runs, and the
-    fixtures that stand in for recorded artifacts -- plus README.md, PIPELINE.md and every legal
-    record. It does NOT grade comments or docstrings, and what stops it is MEASURED, because both
-    reasons given before this round have expired: 7d8d131 corrected the two pipeline modules it named,
-    and 730c9a7 corrected the tools/gen_provenance.py comment 7d8d131 named as the next blocker.
-    Pointed at comments and docstrings today, this pattern flags nothing live and a couple of dozen
-    clauses that QUOTE the retired string as the claim they replaced -- across five modules, two tools
-    and this file. So widening the surface set is not blocked any more; it costs a content-keyed history
-    allowlist of that size, keyed to clauses in four files a later round is still confirming, and it
-    would buy less than it looks: the one live stale claim left in the repo's prose is
-    `surface_io.py`'s module docstring, "fetch_dem.py at 1 m from the seamless DEM" -- in the parallel
-    position where the other producer's true 0.4 m sits, for a stage that samples at 0.5 m/px off a
-    mosaic measured at 2.72 x 3.43 m -- and the note above the pattern says why no adjacency rule
-    reaches it. Correcting that docstring, then paying for the allowlist, is the order; the
-    measurement below needs no change for either.
+    SCOPE, stated positively so it cannot be read as more than it is. TWO rules run here, over two
+    surfaces, because one anchor cannot reach the whole claim:
+
+      * THE PRODUCT rule (`_SEAMLESS_RES`) over every STRING LITERAL in the repo's .py files -- the
+        runtime messages a user reads while the pipeline runs, and the fixtures that stand in for
+        recorded artifacts -- plus README.md, PIPELINE.md and every legal record. It tolerates up to two
+        words between the figure and the product word; the note above the pattern has the sweep that
+        chose 2 and the false positives that start at 3. Widening the gap to 2 is what found the SEVENTH
+        live site, in this very file: a failure message calling legal/03's seamless-mosaic fallbacks
+        "1 m green fallbacks", present tense, one filler word outside the shipped width.
+      * THE PRODUCER rule (`_PRODUCER_RES`) over EVERY prose surface, comments and docstrings included,
+        because its anchor is a filename and no history allowlist is needed to read one. This is the rule
+        that caught the sixth: `surface_io.py`'s module docstring attributed 1 m to `fetch_dem.py` in the
+        present tense, live, in the parallel position where the other producer's true 0.4 m sits -- so
+        the sentence read as a matched pair and the wrong half looked right.
+
+    WHAT IS STILL NOT GRADED, named so the next round has a target rather than a rediscovery. The
+    product rule does NOT read comments or docstrings, so `fetch_dem_hd.py`'s `keeps_existing_surface`
+    docstring -- the site the word "fill" was added to the vocabulary FOR -- is graded by nothing:
+    putting the retired wording back there leaves every gate in this file green. Pointing the rule at
+    those surfaces costs the content-keyed history allowlist `_widening_costs` counts, keyed to clauses
+    in files a later round is still confirming. MEASURED alternative, for whoever takes it: 24 of the 25
+    denied matches on that surface sit inside quotation marks or backticks -- the remainder is 1 clause
+    today -- so a structural "a figure inside a quotation is a record, not a claim" exemption would cost
+    one key instead of twenty. But it is the exemption a previous round measured as a REGRESSION for
+    the label grader above, because the live sites THAT grader exists for were quoted too. Different
+    graders, different answer, and the difference has to be measured before it is believed.
     """
     allowed = _seamless_grid_figures()
     # THE VOCABULARY, probed on the shipped pattern itself rather than described. "fill" is on the
@@ -31205,19 +31615,38 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
     dead = f"{9.9:.1f} m"
     for shape in (f"built from a {dead} fill", f"the fill {dead} answered with",
                   f"{dead} seamless DEM", f"seamless {dead}", f"a {dead} mosaic",
-                  f"the coarser {dead} national model"):
+                  f"the coarser {dead} national model",
+                  f"at {dead} from the seamless DEM", f"a {dead} green fallback",
+                  f"{dead} of national model under it"):
         assert _SEAMLESS_RES.search(shape), (
             f"the shipped adjacency pattern no longer binds a figure to the product in {shape!r}, so a "
             f"live claim in that shape would pass unseen")
-    # And the shape NO vocabulary can reach, asserted as a LIMIT rather than as a property worth
-    # keeping: a figure bound to the product by a preposition sits arbitrarily far from any product
-    # word. If a future rule does catch it, this is what must be changed deliberately -- together with
-    # the SCOPE note above, which counts what a widening would flag.
-    assert not _SEAMLESS_RES.search(f"fetch_dem.py at {dead} from the seamless DEM"), (
-        "the adjacency pattern now reaches a figure bound to the product by a PREPOSITION. That is a "
-        "wider class than this grader has ever claimed, and the scope note in the docstring above is "
-        "measured against the narrow one -- re-measure it and rewrite both, rather than letting the "
-        "grader and its own description of itself drift apart.")
+    # THE GAP IS TWO WORDS, and the limit is asserted at THREE. This REPLACES an assertion that the
+    # pattern must not reach a figure bound to the product by a preposition at all. That limit was
+    # recorded when the axis under discussion was the word LIST, where it holds, and it is false of the
+    # GAP: widening the gap to two reached both shapes three word-list widenings had missed, and it was
+    # the change that found the seventh live site. It is measured, not assumed -- gap 3 is where the
+    # first LEGITIMATE clause is flagged (3 of them in this tree, each a true sentence putting the other
+    # stage's real 0.4 m figure two or three words from a product word), so the line sits between the
+    # last free widening and the first one that costs something.
+    assert not _SEAMLESS_RES.search(f"a green built at {dead} by the coarse seamless stage"), (
+        "the adjacency pattern now tolerates THREE filler words between the figure and the product. "
+        "Measured in this tree, that is where it starts flagging true sentences -- prose that names the "
+        "0.4 m LiDAR figure a few words from the fallback it exists to replace -- so a grader at that "
+        "width gets switched off within a day. Re-measure the gap sweep in the note above _SEAMLESS_RES "
+        "before moving this line.")
+    # THE PRODUCER RULE, probed on the same built figure: it binds a figure ATTRIBUTED to a stage, which
+    # is a different question from binding one to the product, and it must not read a sentence that
+    # merely mentions a stage near a figure.
+    for who in ("fetch_dem.py", "fetch_dem_hd.py"):
+        assert _PRODUCER_RES.search(f"{who} at {dead} from the point cloud"), (
+            f"_PRODUCER_RES no longer binds a figure attributed to {who} by name, so nothing grades "
+            f"which STAGE a figure is claimed for -- and a figure that is true of one stage and false "
+            f"of the other is invisible to every product rule in this file.")
+    assert not _PRODUCER_RES.search(f"fetch_dem.py replaces a good {dead} LiDAR surface"), (
+        "_PRODUCER_RES has widened past attribution: it now reads a figure out of a sentence that only "
+        "MENTIONS a producer near one. Three clauses in this tree say exactly that and are true, so a "
+        "rule that grades them cannot be kept -- see the note above the pattern.")
     if not allowed:
         pytest.skip("per-course green surfaces are gitignored; nothing to measure")
     tol = 0.06                          # the same cell tolerance the card and legal/03 graders use
@@ -31244,6 +31673,80 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
                     continue
                 bad.append(f"{where}: calls it {m.group(0)!r}; measured {measured} "
                            f"-- clause: {' '.join(clause.split())[:130]}")
+
+    # THE PRODUCER RULE, over EVERY prose surface. Its anchor is a filename, so it needs no history
+    # allowlist to read a comment: a clause QUOTING the retired claim quotes it as a string, not as an
+    # attribution, and this rule cannot see a string. That is the whole reason it can go where the
+    # vocabulary cannot -- and it is graded against each producer's OWN surfaces, so naming the other
+    # stage's true figure fails too.
+    prod = _producer_grid_figures()
+    for where, text in _prose_of_repo():
+        for clause in _clauses(text):
+            for m in _PRODUCER_RES.finditer(clause):
+                who, said = m.group(1), float(m.group(2))
+                figs = prod.get(who) or {}
+                if any(abs(said - a) <= tol for a in figs):
+                    continue
+                bad.append(
+                    f"{where}: attributes {m.group(0)!r} to {who}; the surfaces {who} actually writes "
+                    f"measure "
+                    + (", ".join(f"{a:g} m ({why})" for a, why in sorted(figs.items())) or "nothing")
+                    + f" -- clause: {' '.join(clause.split())[:130]}")
+
+    # THE COST OF EACH WIDTH AND OF EACH ROAD NOT TAKEN, re-derived here rather than quoted from the note
+    # that chose between them. The figures that note carried before this round did not reproduce under any
+    # reading of the rule they described, which is what an ungraded measurement eventually reads like --
+    # and this grader's own history is seven live sites that a note had already described accurately.
+    costs = _widening_costs()
+    here = _flow(open(__file__, encoding="utf-8").read())
+    widths = _gap_widths()
+    prep = f"at {dead} from the seamless DEM"
+    table = re.findall(r"\|\s*([0-4])\s*\|\s*(no|yes|YES)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|", here)
+    assert len(table) == len(widths), (
+        f"the gap sweep in the note above _SEAMLESS_RES no longer has one row per width this test can "
+        f"read ({len(table)} of {len(widths)}), so the width the shipped pattern uses was chosen on "
+        f"nothing: measured {costs['gap']}, reach "
+        f"{ {n: bool(p.search(prep)) for n, p in widths.items()} }")
+    for raw_n, raw_reach, raw_clauses, raw_fp in table:
+        n = int(raw_n)
+        flagged, at_lidar = costs["gap"][n]
+        said_reach = raw_reach.lower() == "yes"
+        if bool(widths[n].search(prep)) != said_reach:
+            bad.append(f"the gap table says width {n} does{'' if said_reach else ' not'} reach a figure "
+                       f"bound to the product by a preposition; probing the shipped pattern at that "
+                       f"width says the opposite")
+        if int(raw_clauses) > flagged:
+            bad.append(f"the gap table says width {n} flags {raw_clauses} clauses; measured {flagged}, "
+                       f"so that bound does not hold")
+        if int(raw_fp) == 0 and at_lidar:
+            bad.append(f"the gap table says width {n} flags no legitimate 0.4 m figure; measured "
+                       f"{at_lidar}. If the width the pattern SHIPS at now has false positives in it, "
+                       f"that is the finding -- re-measure the sweep before widening anything")
+        elif int(raw_fp) > at_lidar:
+            bad.append(f"the gap table says width {n} flags {raw_fp} legitimate 0.4 m figures; measured "
+                       f"{at_lidar}, so the cost of that width is overstated")
+    for pat, keys, what, side in (
+            (r"LOWER BOUND of (\d+) figures in (\d+) places, (\d+) of them the 0\.4 m LiDAR figure",
+             ("co_figures", "co_places", "co_lidar"), "the co-occurrence road", "lo"),
+            (r"(\d+) of the (\d+) denied matches on that surface sit inside quotation marks",
+             ("quoted", "denied_matches"), "the quotation split", "lo"),
+            (r"the remainder is (\d+) clauses? today", ("unquoted",), "the unquoted remainder", "hi")):
+        m = re.search(pat, here)
+        assert m, (f"the record of what {what} would cost is no longer in a form this test can read, so "
+                   f"the decision rests on nothing: measured {costs}")
+        for i, key in enumerate(keys, start=1):
+            said = int(m.group(i))
+            if side == "lo" and said > costs[key]:
+                bad.append(f"{what} publishes {key} as at least {said}; measured {costs[key]} in this "
+                           f"tree, so the bound does not hold")
+            if side == "hi" and said < costs[key]:
+                bad.append(f"{what} publishes {key} as at most {said}; measured {costs[key]}, so the "
+                           f"cheap road is dearer than the record says")
+    if not costs["co_lidar"]:
+        bad.append(
+            "the co-occurrence road no longer flags a single figure the arrays DO measure, which is the "
+            "whole reason it was refused. Re-measure it and re-decide, rather than leaving a refusal "
+            f"standing on a fact that has expired: measured {costs}")
 
     # The other half of the same claim, and the half that replaces the figures just removed: a document
     # that names the source cell PER AXIS is graded against the axis it names. legal/01 now carries such

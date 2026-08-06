@@ -9,8 +9,9 @@ The one rule for putting a green surface on disk.
 A green surface is TWO files -- dem_hd/holeNN.npy and dem_hd/holeNN.json -- and they only mean
 anything together: the array carries no georeference of its own, so the meta's bbox, polygon and
 green_center are what place every pixel. Both producers (fetch_dem_hd.py at 0.4 m from the point
-cloud, fetch_dem.py at 1 m from the seamless DEM) write into the same directory, so the rule lives
-here once rather than in each of them.
+cloud, fetch_dem.py at 0.5 m from the seamless mosaic, whose tier over this corpus's greens measures
+2.72 m E-W x 3.43 m N-S -- so 0.5 m is that stage's sampling and not its resolution) write into the
+same directory, so the rule lives here once rather than in each of them.
 """
 import glob
 import hashlib

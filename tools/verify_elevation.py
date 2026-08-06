@@ -16,9 +16,11 @@ coverage, density and refusal -- none compares the answer with a second source.
 
 The 3DEP seamless DEM is that second source: a different product, delivered in metres, reached over
 the network rather than read off disk. It agrees with the corrected figures to a per-course median of
-0.03-0.62 ft (measured 2026-08-05, all 11 courses, all 171 holes; it was quoted as 0.6-2.2 ft from before
+0.03-0.63 ft (measured 2026-08-05, all 11 courses, all 171 holes; it was quoted as 0.6-2.2 ft from before
 both ends of the comparison moved onto the feature polygons), and it disagreed with the buggy ones by
-hundreds of feet. So it separates the two cases decisively.
+hundreds of feet. So it separates the two cases decisively. Both ends are BOUNDS and are rounded
+OUTWARD: the worst per-course median measures 0.6243 ft, and 0.62 -- its correct two-digit rounding --
+would exclude the course it is there to cover.
 
 The residual disagreement was reported as ONE-SIDED, and it is not. The note at TOL_FT said so from the
 time the unit fault was fixed -- a 1 m raster smooths a raised tee pad down, measured -1.6 ft at
@@ -140,8 +142,13 @@ from geo import mlat, mlon      # noqa: E402 -- ROOT must be on sys.path first
 # every |diff| is an upper bound" rationale that holds on the pad branch above never held on this branch,
 # and keeping the box could not honestly have been written down as an upper bound at all. Second, the
 # alignment REMOVED region difference from the hole this tool's own worst-observed figure used to name:
-# bay-view 16 reported 1.24 ft against the 15 m box and 0.58 ft against the producer's disc, so 0.66 ft
-# of what was published as a data disagreement was the two sides standing in different places.
+# bay-view 16 reported 1.21 ft against the 15 m box and 0.58 ft against the producer's disc, so 0.63 ft
+# of what was published as a data disagreement was the two sides standing in different places -- the
+# same +0.63 the row above names, because it is the same quantity. BOTH |diff| FIGURES ARE ON ONE BASIS,
+# the rounded `change_ft` this tool reports against (check_course reads that field). The pair was
+# published as 1.24/0.58 for a commit, which mixes it: 1.24 is measured against `change_ft_exact` and
+# 0.58 against `change_ft`, the two differ by 0.033 ft on this hole, and the 0.66 ft their difference
+# gives is neither region's cost. 1.24/0.61 would have been the other honest pair.
 # NOT to be confused with the box-vs-disc difference in the POINT CLOUD, which is the producer's own
 # figure and larger: +1.886 ft on bay-view 16 and -1.116 on merion 9 (fd39647). Those are LiDAR medians
 # over the two regions; the five above are what the 3DEP raster does over the same two regions, and they
@@ -462,6 +469,11 @@ def _print_corpus(results):
 
     A CORPUS MEDIAN AND A MEDIAN OF PER-COURSE MEDIANS ARE DIFFERENT NUMBERS and the docstring labelled
     one as the other, so both are printed here, named. On this corpus they differ by a third.
+
+    THE BEST per-course median is printed beside the worst because the figure published about this run
+    is a RANGE and only one of its two ends had a producer. The low end had to be read off eleven
+    per-course lines that print to 0.01 ft, so nothing could grade it at the precision a range endpoint
+    needs -- and an endpoint rounded the wrong way excludes the very course it is supposed to cover.
     """
     per = {s: r[4] for s, r in results.items() if r[4]}
     if not per:
@@ -473,6 +485,7 @@ def _print_corpus(results):
     meds = {s: d["median_ft"] for s, d in per.items()}
     worst = max(alld)
     wc = max(meds, key=lambda s: meds[s])
+    bc = min(meds, key=lambda s: meds[s])
     sgn = [v for d in per.values() for v in d["signed_ft"]]
     ab = [v for d in per.values() for v in d["absolute_m"]]
     unreach = sum(d["unreachable"] for d in per.values())
@@ -480,8 +493,9 @@ def _print_corpus(results):
           f"{f', {unreach} unreachable' if unreach else ''}:")
     print(f"  |diff| vs the DEM   : median {float(np.median(vals)):.4f} ft, mean "
           f"{float(np.mean(vals)):.4f}, worst {worst[0]:.4f} ({worst[1]} {worst[2]})")
-    print(f"  per-COURSE medians  : worst {meds[wc]:.4f} ft ({wc}), median of the "
-          f"{len(meds)} course medians {float(np.median(list(meds.values()))):.4f} "
+    print(f"  per-COURSE medians  : worst {meds[wc]:.4f} ft ({wc}), best {meds[bc]:.4f} ({bc}), "
+          f"median of the {len(meds)} course medians "
+          f"{float(np.median(list(meds.values()))):.4f} "
           f"-- NOT the same figure as the corpus median above")
     for t in (2.0, 3.0):
         n = sum(1 for v in vals if v > t)
