@@ -27,6 +27,7 @@ mutation applied (assert the old string was present) AND that the module you imp
 import collections.abc
 import glob
 import importlib
+import importlib.metadata
 import json
 import math
 import os
@@ -5093,6 +5094,15 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
         f"with nothing checking it -- which is why it drifted unnoticed for two rounds.")
 
 
+# WHAT "NOT INSTALLED HERE" RAISES. `importlib.metadata.PackageNotFoundError` does NOT subclass
+# LookupError -- its MRO is ModuleNotFoundError -> ImportError -> Exception -- and the licence graders
+# below caught LookupError alone with a comment asserting the subclassing. So the not-installed arm was
+# unreachable and both graders died with an uncaught PackageNotFoundError on the install README
+# documents, because requirements.txt marks the AGPL row `# OPTIONAL:` and pip leaves it out. Both are
+# named rather than the ImportError parent, so an import error from somewhere else is still a failure.
+_NOT_INSTALLED = (LookupError, importlib.metadata.PackageNotFoundError)
+
+
 # LICENCE FAMILIES, longest name first, so "AGPL" is never read as "GPL" and "0BSD" never as "BSD".
 # A FAMILY and not an exact string, because the two places a licence can be read from do not spell it
 # the same: `scipy` and `rasterio` publish the legacy Trove classifier "BSD License" while legal/10
@@ -5137,27 +5147,50 @@ def _licence_families(text):
 
 
 def _installed_licence(dist):
-    """What the INSTALLED metadata says `dist` is licensed under, or None when it publishes nothing.
+    """(what the INSTALLED metadata says `dist` is licensed under, is-it-an-SPDX-expression), or (None, ..).
 
-    The three places a wheel can put it, in the order PEP 639 supersedes them: `License-Expression`,
+    The four places a wheel can put it, in the order PEP 639 supersedes them: `License-Expression`,
     then the Trove `License ::` classifiers, then the free-text `License` field -- which is where
-    PyMuPDF puts its dual-licence sentence. Raises LookupError when the package is not installed, which
-    is a DIFFERENT answer from "installed and silent" and is reported as such: reading an absent parent
-    as a refutation is the defect d7446ad fixed one record over.
+    PyMuPDF puts its dual-licence sentence -- and finally the TITLE of the licence file the wheel
+    ships under `License-File`, which is the only place `lazrs` publishes its licence at all. The
+    second flag is True only for `License-Expression`, because that field is the only one of the four
+    that states a licence in SPDX and can therefore be graded to the CLAUSE rather than to the family.
+
+    Raises `importlib.metadata.PackageNotFoundError` when the package is not installed, which is a
+    DIFFERENT answer from "installed and silent" and is reported as such by the caller: reading an
+    absent parent as a refutation is the defect d7446ad fixed one record over. That exception is NOT a
+    LookupError -- its MRO is ModuleNotFoundError -> ImportError -- and a comment here used to assert
+    that it was, which made the caller's not-installed arm dead code and killed both graders outright
+    on the install README documents (PyMuPDF is marked `# OPTIONAL:` and pip leaves it out).
     """
     import importlib.metadata as md
-    meta = md.metadata(dist)                      # PackageNotFoundError subclasses LookupError
+    d = md.distribution(dist)                     # raises md.PackageNotFoundError, see _NOT_INSTALLED
+    meta = d.metadata
     expr = (meta.get("License-Expression") or "").strip()
     if expr:
-        return expr
+        return expr, True
     trove = [c.split("::")[-1].strip() for c in (meta.get_all("Classifier") or [])
              if "License ::" in c]
     if trove:
-        return " AND ".join(trove)
+        return " AND ".join(trove), False
     free = (meta.get("License") or "").strip()
     # A wheel that dumps the whole licence TEXT into that field is publishing the licence, but the first
     # line is the only part that names it; PyMuPDF's is a one-line sentence, scipy's is a BSD copy.
-    return free.split("\n")[0].strip() or None
+    if free.split("\n")[0].strip():
+        return free.split("\n")[0].strip(), False
+    # THE SHIPPED LICENCE FILE, and only its title. A row whose three FIELDS are silent was uncheckable,
+    # so both its cells could say anything -- `lazrs | MIT | no` -> `AGPL-3.0 | yes` passed, which is the
+    # exact shape the AGPL argument turns on. Its wheel does publish the licence: `License-File:
+    # LICENSE.txt`, whose first line reads "MIT License". Only the FIRST declared file and only its first
+    # non-empty line, because a licence body matches several families at once (numpy ships seventeen of
+    # them) and a title that names no family leaves the row uncheckable, which is the safe answer.
+    for name in (meta.get_all("License-File") or [])[:1]:
+        for cand in (f"licenses/{name}", name):
+            text = d.read_text(cand)
+            if text:
+                title = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+                return title or None, False
+    return None, False
 
 
 def _legal10_licence_rows(doc):
@@ -5180,14 +5213,16 @@ def _legal10_licence_rows(doc):
 def _grade_legal10_licence_columns(doc, licence_of, own_licence):
     """Every check legal/10's Licence column, Copyleft column and PolyForm sentence have to pass.
 
-    `licence_of(dist)` returns the installed licence string, None when the package publishes none, and
-    raises LookupError when it is not installed. `own_licence` is this project's licence as the LICENSE
-    file itself names it. Raises AssertionError naming the defect; returns the (confirmed, uncheckable)
-    package lists so the caller can refuse a vacuous run.
+    `licence_of(dist)` returns `(installed licence string or None, is-it-SPDX)` and raises one of
+    `_NOT_INSTALLED` when the package is not installed. `own_licence` is this project's licence as the
+    LICENSE file itself names it. Raises AssertionError naming the defect; returns the
+    (confirmed, uncheckable) package lists so the caller can refuse a vacuous run.
 
     A CALLABLE for the same reason the tick-table grader is one: the only way to know whether a check on
     a legal record closes anything is to drive DOCTORED copies of that record through it. See
-    test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored.
+    test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored, and
+    test_legal_10s_licence_grader_runs_where_the_OPTIONAL_dependency_is_absent for the absence arm --
+    which was dead code until 2026-08-06 because PackageNotFoundError is not a LookupError.
     """
     rows = _legal10_licence_rows(doc)
     assert len(rows) >= 9, (
@@ -5199,8 +5234,8 @@ def _grade_legal10_licence_columns(doc, licence_of, own_licence):
     for name, _version, said_lic, said_copy in rows:
         dist = _norm_dist(name)
         try:
-            measured = licence_of(dist)
-        except LookupError:
+            measured, is_spdx = licence_of(dist)
+        except _NOT_INSTALLED:
             uncheckable.append(f"{name}: not installed here")
             continue
         if not measured:
@@ -5219,6 +5254,17 @@ def _grade_legal10_licence_columns(doc, licence_of, own_licence):
             wrong.append(f"{name}: legal/10 publishes {said_lic!r} ({'+'.join(sorted(said_fams))}); the "
                          f"installed metadata publishes {measured!r} "
                          f"({'+'.join(sorted(got_fams))})")
+            continue
+        # ...AND TO THE CLAUSE, for every row whose wheel publishes an SPDX `License-Expression`. Family
+        # normalisation collapses BSD-2-Clause and BSD-3-Clause, which is load-bearing for a wheel that
+        # publishes only the legacy Trove "BSD License" -- that classifier does not say which BSD, so
+        # demanding the clause there would false-positive on the SPDX identifier legal/10 rightly prints.
+        # Where the metadata DOES state it in SPDX there is nothing to forgive, and forgiving it anyway
+        # let `laspy | BSD-2-Clause` -> `BSD-3-Clause` pass while the docstring above claimed that row
+        # was graded to the clause.
+        if is_spdx and " ".join(said_lic.split()).lower() != " ".join(measured.split()).lower():
+            wrong.append(f"{name}: legal/10 publishes {said_lic!r}; the installed metadata publishes the "
+                         f"SPDX expression {measured!r}, which states the clause exactly")
             continue
         confirmed.append(name)
         # THE COPYLEFT COLUMN, derived from the licence just confirmed rather than from a list here. It
@@ -5252,8 +5298,8 @@ def _grade_legal10_licence_columns(doc, licence_of, own_licence):
         offenders = []
         for name, _v, _lic, _cp in _legal10_licence_rows(default):
             try:
-                measured = licence_of(_norm_dist(name))
-            except LookupError:
+                measured, _spdx = licence_of(_norm_dist(name))
+            except _NOT_INSTALLED:
                 continue
             if measured and _licence_families(measured)[1]:
                 offenders.append(f"{name} is {measured!r}")
@@ -5316,36 +5362,70 @@ def test_legal_10s_licence_and_copyleft_columns_are_the_ones_the_installed_metad
 
     Graded against the same source the document names as its own: installed metadata, read here through
     `importlib.metadata` exactly as the "How to re-verify this file" snippet does. Three-valued, the
-    shape this project already uses elsewhere -- CONFIRMED, REFUTED, or UNCHECKABLE when the metadata
-    publishes no licence. `lazrs` is the one genuinely uncheckable row: it ships no
-    `License-Expression`, no Trove classifier and no `License` field, so this file records that rather
-    than inventing a verdict for it.
+    shape this project already uses elsewhere -- CONFIRMED, REFUTED, or UNCHECKABLE, and a row may be
+    uncheckable only where THIS MACHINE proves it cannot be read: the package is absent, or every place
+    a wheel can publish a licence is silent, or what it publishes names no family this file knows. That
+    is asserted per row against a second reading of the raw metadata, so the floor is a live measurement
+    and not a number. It used to be `len(confirmed) >= 5` against an actual 8 -- three rows could have
+    gone silent, taking their Licence and Copyleft cells out of the check, before anything fired.
+
+    `lazrs` was the row that showed why a hard floor is not enough. It publishes no `License-Expression`,
+    no Trove classifier and no `License` field, so it came back uncheckable and BOTH its cells could say
+    anything: `MIT | no` -> `AGPL-3.0 | yes` passed. Its wheel does publish the licence, in the fourth
+    place PEP 639 allows -- `License-File: LICENSE.txt`, whose title line reads "MIT License" -- so that
+    file's title is now the last source `_installed_licence` tries, and all nine rows are graded. NOTE
+    for whoever owns legal/10: its re-verify snippet enumerates the first three sources only, so it
+    prints nothing for that row; the fourth is within the record's stated method ("installed metadata")
+    but not within its one-liner.
 
     NO VERSION IS ASSERTED HERE and no licence is hard-coded here. A licence is a property of the
     installed distribution, so a reader on a newer numpy is graded against his numpy -- which is the
     machine-pinned-calibration defect this suite has fixed five times.
 
-    WHAT FAMILY MATCHING COSTS, named rather than left to be discovered: `scipy` and `rasterio` publish
-    only the legacy Trove classifier "BSD License", which does not say WHICH BSD. So for those two rows
-    "BSD-3-Clause" and "BSD-2-Clause" are indistinguishable to this check and swapping one for the other
-    passes. Without the normalisation both rows FALSE-POSITIVE instead, because legal/10 rightly
-    publishes the SPDX identifier. The clause count on a package whose metadata does not state it is a
-    coverage gap in the metadata, not one this file can close by tightening; `laspy` publishes
-    `License-Expression: BSD-2-Clause` and IS graded to the clause.
+    WHAT FAMILY MATCHING COSTS, named rather than left to be discovered: a wheel that publishes only the
+    legacy Trove classifier "BSD License" does not say WHICH BSD, so for those rows "BSD-3-Clause" and
+    "BSD-2-Clause" are indistinguishable to this check and swapping one for the other passes -- `scipy`
+    and `rasterio` are in that state today. Without the normalisation both rows FALSE-POSITIVE instead,
+    because legal/10 rightly publishes the SPDX identifier. That is a coverage gap in the metadata, not
+    one this file can close by tightening. WHERE THE METADATA DOES STATE THE CLAUSE, in an SPDX
+    `License-Expression`, the record's cell is now compared to it EXACTLY -- there is nothing to forgive
+    there, and forgiving it anyway is what made this docstring's old claim that `laspy` "IS graded to the
+    clause" false: `BSD-2-Clause` -> `BSD-3-Clause` passed.
     """
     with open(os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md"), encoding="utf-8") as fh:
         doc = fh.read()
+    rows = _legal10_licence_rows(doc)
     confirmed, uncheckable = _grade_legal10_licence_columns(doc, _installed_licence,
                                                             _project_own_licence())
-    # A floor, so this cannot go green by finding nothing to check. Measured today: 8 of the 9 rows are
-    # confirmed from installed metadata and `lazrs` is the only one that publishes no licence at all.
-    # Five leaves room for three more packages to stop publishing metadata without a false failure, and
-    # refuses the vacuous run where an empty environment makes every row uncheckable.
-    assert len(confirmed) >= 5, (
-        f"only {len(confirmed)} of {len(_legal10_licence_rows(doc))} rows in legal/10 could be checked "
-        f"against installed metadata ({sorted(confirmed)}), so this test is mostly measuring nothing. "
-        f"Uncheckable:\n  " + "\n  ".join(uncheckable or ["none"])
-        + "\n  Install the dependency set (`pip install -r requirements.txt`) before trusting a pass.")
+    # THE FLOOR, MEASURED RATHER THAN CHOSEN. Every row is either confirmed or proved unreadable on this
+    # machine, and the proof is a SECOND reading -- the raw metadata fields, not `_installed_licence`'s
+    # answer restated. A hard floor cannot say this: `>= 5` against an actual 8 left room for three rows
+    # to fall out of the check silently, and a row that falls out takes both of its published cells with
+    # it. Vacuity is refused by the same assertion: an empty environment makes every row not-installed,
+    # and every one of them is then named here with the reason this machine gives.
+    silent = []
+    for name, _v, _lic, _cp in rows:
+        if name in confirmed:
+            continue
+        try:
+            meta = importlib.metadata.metadata(_norm_dist(name))
+        except _NOT_INSTALLED:
+            continue                              # absent: unreadable, and proved so
+        published = [(meta.get("License-Expression") or "").strip(),
+                     " ".join(c.split("::")[-1].strip() for c in (meta.get_all("Classifier") or [])
+                              if "License ::" in c),
+                     (meta.get("License") or "").strip(),
+                     " ".join(meta.get_all("License-File") or [])]
+        if any(published) and _licence_families(" ".join(published))[0]:
+            silent.append(f"{name}: publishes {[p for p in published if p]} and was not confirmed")
+    assert not silent, (
+        f"a row in legal/10 fell out of this check while its own installed metadata does publish a "
+        f"licence, so its Licence and Copyleft cells are graded by nothing:\n  " + "\n  ".join(silent)
+        + f"\n  Confirmed {sorted(confirmed)} of {len(rows)} rows; uncheckable:\n  "
+        + "\n  ".join(uncheckable or ["none"]))
+    assert len(confirmed) + len(uncheckable) == len(rows), (
+        f"legal/10 has {len(rows)} rows and this graded {len(confirmed)} + {len(uncheckable)} of them. "
+        f"A row that is neither confirmed nor reported uncheckable is a row nothing read.")
 
 
 def test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored():
@@ -5385,6 +5465,19 @@ def test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored():
         ("a BSD dependency published as MIT -- the family normalisation must not wave a real change "
          "through while it forgives BSD-3-Clause vs 'BSD License'",
          [("| scipy | 1.17.1 | BSD-3-Clause | no |", "| scipy | 1.17.1 | MIT | no |")]),
+        # THE CLAUSE COUNT, where the metadata states it. Family normalisation collapses every BSD
+        # variant, for every row -- which is load-bearing for the two rows whose wheels publish only the
+        # legacy Trove "BSD License", and was a hole for the rows that publish an SPDX
+        # `License-Expression`. The docstring above claimed laspy "IS graded to the clause" and it was
+        # not: BSD-2-Clause -> BSD-3-Clause passed.
+        ("a dependency whose metadata publishes an SPDX expression, published under the wrong CLAUSE "
+         "of the same family (laspy)",
+         [("| laspy | 2.7.0 | BSD-2-Clause | no |", "| laspy | 2.7.0 | BSD-3-Clause | no |")]),
+        # THE ROW WHOSE METADATA FIELDS ARE ALL SILENT. It was UNCHECKABLE, so both its cells could say
+        # anything: MIT/no -> AGPL-3.0/yes passed, in the one column the whole "deliberately excluded
+        # from the default install" argument is about.
+        ("the row whose three metadata FIELDS publish nothing, published as copyleft AGPL (lazrs)",
+         [("| lazrs | 0.8.1 | MIT | no |", "| lazrs | 0.8.1 | AGPL-3.0 | yes |")]),
         ("this project's own licence published as MIT, which is what the AGPL argument rests on NOT "
          "being",
          [("This project's code is **PolyForm\nNoncommercial 1.0.0**", "This project's code is **MIT**")]),
@@ -5411,6 +5504,50 @@ def test_legal_10s_licence_and_copyleft_columns_are_refused_when_doctored():
         "document and passed:\n  " + "\n  ".join(waved)
         + "\n  This is a published legal record in a public repository, and the columns below the "
           "version column are the ones a reader relies on.")
+
+
+def test_legal_10s_licence_grader_runs_where_the_OPTIONAL_dependency_is_absent():
+    """The graders above ERRORED OUT in this project's own documented default install.
+
+    `importlib.metadata.PackageNotFoundError` does NOT subclass `LookupError` -- its MRO is
+    ModuleNotFoundError -> ImportError -> Exception -- and both graders caught `LookupError`, with a
+    comment beside the raise asserting the subclassing and a docstring promising the absent package "is
+    reported as such". So the `uncheckable.append(f"{name}: not installed here")` arm was UNREACHABLE
+    dead code, and requirements.txt marks PyMuPDF `# OPTIONAL:` so `pip install -r requirements.txt`
+    never installs it: on the install README documents, both tests died with an uncaught
+    PackageNotFoundError, and the AGPL row the whole check exists for is the one that killed them.
+
+    Loud rather than silent -- but a grader that cannot run where it is documented to run grades nothing,
+    and the docstring's own remedy ("install the dependency set before trusting a pass") is the state
+    that triggered it, because that install is precisely the one that leaves PyMuPDF out.
+
+    SIMULATED, never uninstalled: the grader takes `licence_of` as a callable for exactly this reason, so
+    the absence is injected by raising what `importlib.metadata` really raises. The package whose absence
+    is simulated is READ OUT of legal/10's optional table rather than named here, so this follows the
+    record if the optional row ever changes.
+    """
+    import importlib.metadata as md
+    with open(os.path.join(ROOT, "legal", "10_SOFTWARE_DEPENDENCIES.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    optional = [r[0] for r in _legal10_licence_rows(doc.split("## Optional", 1)[1])]
+    assert len(optional) == 1, (
+        f"legal/10's optional table reads as {optional}; this test simulates the absence of the one "
+        f"package the record holds OUT of the default install, which is the AGPL row the whole licence "
+        f"check exists for. Re-read the record and re-anchor it.")
+    absent = _norm_dist(optional[0])
+
+    def licence_of(dist):
+        if dist == absent:
+            raise md.PackageNotFoundError(dist)     # what an uninstalled package really raises
+        return _installed_licence(dist)
+
+    confirmed, uncheckable = _grade_legal10_licence_columns(doc, licence_of,
+                                                           _project_own_licence())
+    assert optional[0] not in confirmed and any(u.startswith(optional[0] + ":") for u in uncheckable), (
+        f"with {optional[0]} absent the grader neither confirmed nor reported it: confirmed "
+        f"{sorted(confirmed)}, uncheckable {uncheckable}. An absent package is a THIRD answer -- reading "
+        f"it as a refutation is the defect d7446ad fixed one record over, and reading it as a pass is "
+        f"the one this file exists to stop.")
 
 
 def _norm_dist(name):
@@ -29427,11 +29564,21 @@ def _grade_tick_error_table(rec, note, measured):
         "(%s), each row reading `| <R> yd tick | <retired worst> yd | <live worst> yd |`. Found rows "
         "for %s. That table is what a reader is told his yardage ticks were worth."
         % (radii, sorted(published) or "none"))
-    far = re.search(r"\|\s*any centreline vertex[^|]*?\|\s*([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|", rec)
+    # ONE reading of the closing row, reach included. The reach is the DENOMINATOR of both ceilings
+    # below, and it used to be read by a second, unanchored `re.search` over the whole collapsed
+    # document -- which takes the FIRST match, while the uniqueness guard under this counts rows that
+    # begin with a `|`. So one PROSE sentence naming a larger reach bought a larger denominator and
+    # waved the closing row's own figures through; a table row updated while a prose restatement lagged
+    # did the same thing by accident. Captured here, so there is nothing else to keep in step.
+    far = re.search(r"\|\s*any centreline vertex, out to ([\d.]+) yd\s*\|\s*([\d.]+) yd\s*\|"
+                    r"\s*([\d.]+) yd\s*\|", rec)
     assert far, (
         "legal/11_HORIZONTAL_EARTH_MODEL.md no longer closes the tick table with the worst over ALL "
-        "centreline vertices. Its row must read `| any centreline vertex, out to <R> yd | <retired> yd "
-        "| <live> yd |` -- the ticks stop at %d yd and the map draws the whole line." % max(radii))
+        "centreline vertices, stated with the distance it reaches. Its row must read `| any centreline "
+        "vertex, out to <R> yd | <retired> yd | <live> yd |` -- the ticks stop at %d yd and the map draws "
+        "the whole line, and that reach is what both of this row's figures are weighed against, so "
+        "without it the last row of the table is bounded by nothing on a clone with no courses/."
+        % max(radii))
     assert len(re.findall(r"\|\s*any centreline vertex", rec)) == 1, (
         "legal/11 carries more than one `| any centreline vertex ... |` row. This grader reads the first; "
         "the rest are reader-facing figures nothing checks.")
@@ -29508,16 +29655,11 @@ def _grade_tick_error_table(rec, note, measured):
     # rows -- so the closing `| any centreline vertex, out to <R> yd |` row, the one that judges the whole
     # drawn line, was exempt from the only argument the record makes about its own retired column. 9.9999
     # yd passed there, 1.6784% of the 595.8 yd reach the row itself states and 5.6x the ceiling published
-    # two paragraphs below it. The reach comes from the row, so this needed no new input.
-    far_reach = re.search(r"any centreline vertex, out to ([\d.]+) yd", rec)
-    assert far_reach, (
-        "legal/11's closing tick-table row no longer says how far the drawn centrelines reach -- 'any "
-        "centreline vertex, out to <R> yd'. That reach is what the row's own figures are weighed against, "
-        "so without it the last row of the table is bounded by nothing on a clone with no courses/.")
+    # two paragraphs below it. The reach comes from the row's own match above, so this needed no new input.
     ceiling_rows = [(f"{R} yd tick", float(R), published[R][0], published[R][1])
                     for R in sorted(published)]
-    ceiling_rows.append((f"any centreline vertex, out to {far_reach.group(1)} yd",
-                         float(far_reach.group(1)), far.group(1), far.group(2)))
+    ceiling_rows.append((f"any centreline vertex, out to {far.group(1)} yd",
+                         float(far.group(1)), far.group(2), far.group(3)))
     impossible = [f"{label}: {said} yd is {float(said) / R * 100:.4f}% of the "
                   f"{'radius' if label.endswith('tick') else 'reach'}, over the "
                   f"{100 * ceiling:.4f}% the retired pair can be wrong by"
@@ -29558,18 +29700,18 @@ def _grade_tick_error_table(rec, note, measured):
     # northward. That is a bound to within about one order of magnitude. LAST-DIGIT GRADING OF THE LIVE
     # COLUMN ON A CLONE IS IRREDUCIBLE: the failure mode is a both-sided edit, the two records are already
     # compared digit for digit above, and this tree holds no third witness to the measurement.
-    reach_deg = float(far_reach.group(1)) * 0.9144 / _geo_live.mlat(_TICK_LIVE_BOUND_LAT)
+    reach_deg = float(far.group(1)) * 0.9144 / _geo_live.mlat(_TICK_LIVE_BOUND_LAT)
     live_ceiling = max(abs(scale(_TICK_LIVE_BOUND_LAT) / scale(_TICK_LIVE_BOUND_LAT + d) - 1.0)
                        for scale in (_geo_live.mlat, _geo_live.mlon)
                        for d in (-reach_deg, reach_deg))
     unbounded = [f"{label}: {said} yd is {float(said) / R * 100:.4f}% of the "
                  f"{'radius' if label.endswith('tick') else 'reach'}, over the "
                  f"{100 * live_ceiling:.4f}% one pair of WGS84 scales can be wrong by over "
-                 f"{far_reach.group(1)} yd"
+                 f"{far.group(1)} yd"
                  for label, R, _retired, said in ceiling_rows if float(said) > live_ceiling * R]
     assert not unbounded, (
         "a live-model figure in legal/11's tick table cannot happen either. The live pair is exact at the "
-        f"latitude it is taken at, so over the {far_reach.group(1)} yd this table's own last row reaches "
+        f"latitude it is taken at, so over the {far.group(1)} yd this table's own last row reaches "
         f"it can be wrong by at most {100 * live_ceiling:.4f}% per unit length (evaluated at "
         f"{_TICK_LIVE_BOUND_LAT}N, north of this corpus, because that drift grows with latitude):\n  "
         + "\n  ".join(unbounded)
@@ -29618,8 +29760,8 @@ def _grade_tick_error_table(rec, note, measured):
                            f"{got:.6f} yd (worst {slug} h{hn})")
     for col, model in ((0, "retired"), (1, "live")):
         got, slug, hn, at_yd = vertex[model]
-        if not _agrees_to_last_digit(far.group(col + 1), got):
-            bad.append(f"any centreline vertex, {model} model: published {far.group(col + 1)} yd, "
+        if not _agrees_to_last_digit(far.group(col + 2), got):
+            bad.append(f"any centreline vertex, {model} model: published {far.group(col + 2)} yd, "
                        f"measured {got:.6f} yd (worst {slug} h{hn} at {at_yd:.1f} yd)")
     assert not bad, (
         "legal/11's tick-error table does not match the corpus to its own last published digit. Each "
@@ -29633,12 +29775,13 @@ def _grade_tick_error_table(rec, note, measured):
     # ...and the furthest-vertex row has to say how far that is, and the population has to be one the
     # code can justify. "the same 391 vertices" named a set nothing in this tree produces -- and that
     # same class of defect then sat unread in legal/11's own crossing, centreline and vertex counts,
-    # which nothing graded at all. BOTH records state them, so both are graded.
-    reach = re.search(r"any centreline vertex, out to ([\d.]+) yd", rec)
-    assert reach and abs(float(reach.group(1)) - counts["furthest_vertex_yd"]) <= 0.1, (
+    # which nothing graded at all. BOTH records state them, so both are graded. The reach graded here is
+    # the ROW'S, `far.group(1)` -- the same one the two ceilings divide by, so the corpus cannot confirm
+    # one reading of it while the bounds use another.
+    assert abs(float(far.group(1)) - counts["furthest_vertex_yd"]) <= 0.1, (
         "legal/11's last table row must say how far the drawn centrelines reach from their green -- "
         "'any centreline vertex, out to <R> yd' -- and the figure is %.1f yd, not %s."
-        % (counts["furthest_vertex_yd"], reach.group(1) if reach else "absent"))
+        % (counts["furthest_vertex_yd"], far.group(1)))
     for label, text, pats in (("legal/11", rec, (r"(\d+) radius crossings the (\d+) drawn centrelines",
                                                  r"over all (\d+) centreline vertices")),
                               ("geo.py's note", note, (r"(\d+) radius crossings the (\d+) drawn "
@@ -30189,6 +30332,16 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
     mode is a both-sided edit, the two records are already compared digit for digit, and there is no
     third witness to the measurement anywhere in this tree.
 
+    AND THE REACH BOTH CEILINGS DIVIDE BY WAS TAKEN FROM THE WHOLE DOCUMENT, not from the row it judges.
+    Both bounds above are `figure / reach`, so the reach is the denominator of the only argument the
+    closing row has -- and it was read by a second, UNANCHORED `re.search` over the collapsed document
+    that takes the FIRST match, while the uniqueness guard beside it counts TABLE rows only. One inserted
+    PROSE sentence naming a 5000.0 yd reach therefore bought a denominator 8.4x too large and both new
+    checks accepted 9.9999 yd retired and 0.9999 yd live -- the exact figures they were written to
+    refuse. Reachable by honest drift too: a table row updated while a prose restatement lags bounds the
+    row against the stale reach, silently. The reach now comes from the ROW'S OWN match, so there is one
+    reading of it and the uniqueness guard covers it.
+
     Driven through `_grade_tick_error_table` on doctored copies, with `measured=None` so every case is
     proved on a clone specifically. The files on disk are never written."""
     with open(os.path.join(ROOT, "legal", "11_HORIZONTAL_EARTH_MODEL.md"), encoding="utf-8") as fh:
@@ -30203,6 +30356,9 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
     assert far, ("legal/11's closing tick-table row is no longer readable as `| any centreline vertex, "
                  "out to <R> yd | <retired> yd | <live> yd |`, so the cases below measure nothing.")
     reach, retired_far, live_far = far.group(1), far.group(2), far.group(3)
+    # A reach far enough above the row's own that 9.9999 yd falls back under the ceiling: the bypass
+    # only needs the DENOMINATOR to grow, so it is derived from the real reach rather than picked.
+    prose_reach = round(float(reach) * 10, 1)
 
     cases = [
         (f"the closing row's RETIRED figure at {9.9999 / float(reach) * 100:.4f}% of its own "
@@ -30223,6 +30379,22 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
         ("the 300 yd tick's LIVE figure at 0.9999 yd, in both records at once",
          [("| 300 yd tick | 0.8891 yd | 0.0019 yd |", "| 300 yd tick | 0.8891 yd | 0.9999 yd |")],
          [("0.0022 and 0.0019 yd", "0.0022 and 0.9999 yd")]),
+        # THE BYPASS. One PROSE sentence above the table, naming a reach 8.4x the row's own, and the
+        # same closing-row figures the two cases above are refused for. The denominator of both
+        # ceilings has to come from the row being judged; an unanchored document-wide search for it
+        # takes whichever restatement comes first, and the uniqueness guard next to it counts only rows
+        # that begin with a `|`, so prose is invisible to it.
+        (f"a PROSE restatement of the reach at {prose_reach} yd inserted above the table, with the "
+         f"closing row doctored to 9.9999 yd retired and 0.9999 yd live -- accepted at "
+         f"{9.9999 / prose_reach * 100:.4f}% of the prose reach where the row's own "
+         f"{reach} yd makes it {9.9999 / float(reach) * 100:.4f}%",
+         [("centreline vertices for the last row:",
+           "centreline vertices for the last row: The drawn centrelines carry a tick at any centreline "
+           f"vertex, out to {prose_reach} yd from the green."),
+          (f"out to {reach} yd | {retired_far} yd | {live_far} yd",
+           f"out to {reach} yd | 9.9999 yd | 0.9999 yd")],
+         [(f"was {retired_far} yd against", "was 9.9999 yd against"),
+          (f"against {live_far} yd now", "against 0.9999 yd now")]),
     ]
     waved = []
     for what, rec_edits, note_edits in cases:
@@ -31211,6 +31383,16 @@ def distribution_is_corpus(slug):
 _SOURCE_NOUN = (r"(?:imagery|orthoimagery|orthophotos?|aerials?|photography|photos?|basemaps?|tiles?|"
                 r"rasters?|satellite|maps?|data|datasets?|LiDAR|DEMs?|elevation|point clouds?)")
 
+# The two token patterns `_security_claimed_sources` reads a document with, at module level because the
+# test that grades that function's allowlist has to use THE SAME ONES. It duplicated both as literals in
+# its own body, so its guards could drift from the extraction they exist to protect while both still
+# looked right.
+#   _SOURCE_SHAPE -- dataset-shaped: CamelCase (OpenStreetMap), acronyms with or without a leading digit
+#                    (USGS, 3DEP, ODbL), Name-digit datasets (Sentinel-2, Landsat-8).
+#   _CAPITALISED_WORD -- any capitalised word, which is what catches an ordinary brand name.
+_SOURCE_SHAPE = r"(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)"
+_CAPITALISED_WORD = r"\b[A-Z][A-Za-z0-9]*(?:[-‑]\d+)?\b"
+
 # The ordinary PROSE words SECURITY.md's graded sections open sentences with, and the only capitalised
 # openers `_security_claimed_sources` exempts. It used to exempt EVERY sentence opener and add back the
 # ones followed by a data-source noun, which left the hole open in the commonest shape English has:
@@ -31250,8 +31432,8 @@ def _security_claimed_sources(doc):
     Tokens naming something in THIS repository are dropped, mechanically off the filesystem, so that
     cannot become a place to park a source name. A callable, not a block inside the test, because the
     only way to know whether a pattern closes a class is to drive doctored copies through it."""
-    shape = r"\b(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)\b"
-    word = r"\b[A-Z][A-Za-z0-9]*(?:[-‑]\d+)?\b"
+    shape = r"\b%s\b" % _SOURCE_SHAPE
+    word = _CAPITALISED_WORD
     claimed = set()
     for heading in ("A note on data", "Scope"):
         sec = re.search(r"##\s*%s\s*(.+?)(?=\n##|\Z)" % re.escape(heading), doc, re.S)
@@ -31408,11 +31590,25 @@ def test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sent
     The exemption is now the other way round: an opener is exempt only if it is one of the ordinary
     prose words this document really opens with, and only if a data-source noun does not follow it. That
     allowlist is graded here too, because an allowlist is the obvious next place to park a brand:
-      * MINIMAL -- every entry must actually open a sentence in the two graded sections, so no word can
-        be parked for later use;
       * DISJOINT FROM THE DATASET SHAPES -- no CamelCase, acronym or Name-digit token can be exempted,
         so OpenStreetMap, USGS, 3DEP, ODbL and Sentinel-2 are unreachable through it;
+      * MINIMAL -- every entry must actually open a sentence in the two graded sections, so no word can
+        be parked for later use;
       * OVERRIDDEN BY THE NOUN -- an allowlisted word followed by a data-source noun is still claimed.
+
+    THE THIRD PROPERTY WAS IN THIS LIST AND NOTHING GRADED IT: deleting the second half of the exemption
+    (`and not re.match(...)`), which is the whole override, left the suite green. It is the half that
+    stops the allowlist from exempting "See imagery is used for two greens." -- so it is checked now,
+    over every entry crossed with every noun `_SOURCE_NOUN` names, both derived rather than restated.
+
+    AND THE ORDER OF THE FIRST TWO MATTERS. Minimality fired first, and it fires for every dataset-shaped
+    token as well -- no acronym opens a sentence in those sections -- so the disjointness check was inert:
+    it could never be the assertion that reported the defect it names. Disjointness runs first now, so
+    each of the two grades the case it was written for.
+
+    THE TWO TOKEN PATTERNS ARE THE EXTRACTION'S OWN, imported rather than copied. They were duplicated
+    here as literals, which is how a guard drifts away from the thing it guards while both still look
+    right.
 
     WHAT THIS DOES NOT CLOSE, stated rather than implied: a brand whose name is an ordinary English word
     can still be exempted by adding BOTH a sentence that opens with it AND its own allowlist entry. That
@@ -31434,7 +31630,17 @@ def test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sent
         f"anything. Either an ordinary prose opener is missing from _PROSE_OPENERS, or legal/01 stopped "
         f"documenting a source the summary credits.")
 
-    # (a) THE ALLOWLIST IS MINIMAL. Measured off the live document rather than asserted: every exempt
+    # (a) THE ALLOWLIST CANNOT REACH A DATASET-SHAPED NAME. The first pass claims those unconditionally,
+    #     so this asserts the two halves stay disjoint -- an exemption for "Sentinel-2" or "USGS" would
+    #     otherwise be one word away. FIRST, because the minimality check below also fires on every one
+    #     of those tokens and firing first made this one unreachable.
+    shaped = sorted(w for w in _PROSE_OPENERS if re.fullmatch(_SOURCE_SHAPE, w))
+    assert not shaped, (
+        f"_PROSE_OPENERS contains the dataset-shaped token(s) {shaped}. Those are what the first pass "
+        f"exists to claim -- CamelCase, acronyms and Name-digit datasets -- and exempting one there is "
+        f"how 'Sentinel-2 imagery' or an acronym would walk straight back through.")
+
+    # (b) THE ALLOWLIST IS MINIMAL. Measured off the live document rather than asserted: every exempt
     #     word must really open a sentence in the graded sections, so the list cannot hold a name that
     #     is there for a future edit to lean on.
     openers = set()
@@ -31443,7 +31649,7 @@ def test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sent
         assert sec, f"SECURITY.md no longer has a '## {heading}' section"
         for line in re.sub(r"[*_`]", "", sec.group(1)).split("\n"):
             first = True
-            for m in re.finditer(r"\b[A-Z][A-Za-z0-9]*(?:[-‑]\d+)?\b", line):
+            for m in re.finditer(_CAPITALISED_WORD, line):
                 before = line[:m.start()].rstrip()
                 if first or (before and before[-1] in ".!?:"):
                     openers.add(m.group(0))
@@ -31455,17 +31661,37 @@ def test_the_public_source_summary_refuses_a_source_named_at_the_START_of_a_sent
         f"entry waiting for a source name to be written behind it. The openers in play are "
         f"{sorted(openers)}.")
 
-    # (b) THE ALLOWLIST CANNOT REACH A DATASET-SHAPED NAME. The first pass claims those unconditionally,
-    #     so this asserts the two halves stay disjoint -- an exemption for "Sentinel-2" or "USGS" would
-    #     otherwise be one word away.
-    shape = re.compile(r"^(?:[A-Z][a-z]+(?:[A-Z][a-z]+)+|[0-9]?[A-Z]{2,}[A-Za-z0-9]*|[A-Z][A-Za-z]+-\d+)$")
-    shaped = sorted(w for w in _PROSE_OPENERS if shape.match(w))
-    assert not shaped, (
-        f"_PROSE_OPENERS contains the dataset-shaped token(s) {shaped}. Those are what the first pass "
-        f"exists to claim -- CamelCase, acronyms and Name-digit datasets -- and exempting one there is "
-        f"how 'Sentinel-2 imagery' or an acronym would walk straight back through.")
+    # (c) THE NOUN OVERRIDES THE ALLOWLIST. The third property this test's docstring has always claimed
+    #     to grade, and the one nothing read: deleting the `and not re.match(...)` half of the exemption
+    #     left the suite green. Every entry crossed with every noun `_SOURCE_NOUN` names, and the nouns
+    #     are derived from that pattern rather than restated, so a noun added there is exercised here.
+    #     Graded on the extraction directly: what must not happen is the token going UNCLAIMED, and
+    #     routing an ordinary prose word through `_legal01_documents_source` would answer a different
+    #     question (legal/01 uses those words, so it "documents" them).
+    nouns = sorted({re.sub(r"\?", "", a) for a in
+                    re.sub(r"\(\?:|\)", "", _SOURCE_NOUN).split("|") if a})
+    assert len(nouns) >= 12 and "imagery" in nouns and "point clouds" in nouns, (
+        f"the data-source nouns could not be read back out of _SOURCE_NOUN ({nouns}); this case would "
+        f"then be crossing the allowlist with nothing.")
+    exempted = []
+    for opener in _PROSE_OPENERS:
+        for noun in nouns:
+            insert = f"{opener} {noun} were used for one green."
+            anchor = "No commercial"
+            assert anchor in doc, (
+                f"the doctoring anchor {anchor!r} is no longer in SECURITY.md, so this case measures "
+                f"nothing. Re-read the data note and re-anchor it.")
+            if opener not in _security_claimed_sources(doc.replace(anchor, insert + " " + anchor, 1)):
+                exempted.append(insert)
+    assert not exempted, (
+        f"an allowlisted opener followed by a data-source noun is still exempt, so the second half of "
+        f"the exemption grades nothing. {len(exempted)} of {len(_PROSE_OPENERS) * len(nouns)} "
+        f"opener x noun pairs were let through:\n  " + "\n  ".join(exempted[:12])
+        + ("\n  ..." if len(exempted) > 12 else "")
+        + "\n  That half is what stops the allowlist itself from becoming the parking place -- the list "
+          "holds prose words, and a prose word in front of a source noun is naming a source.")
 
-    # (c) EVERY INSERTION SHAPE THAT USED TO PASS. Brand x predicate, at the start of a sentence and at
+    # (d) EVERY INSERTION SHAPE THAT USED TO PASS. Brand x predicate, at the start of a sentence and at
     #     the start of a line, plus the possessive that defeated the noun rule. The brands are the ones
     #     legal/01 either disclaims or never mentions, so every one of these is a public claim this
     #     project cannot support.
