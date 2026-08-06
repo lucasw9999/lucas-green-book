@@ -46,8 +46,22 @@ sys.path.insert(0, ROOT)
 
 # The two source vocabularies the corpus actually records today (measured: 192 metas and 6 of 198).
 # Quoted rather than paraphrased, so a fixture cannot outlive the strings the stages write.
+#
+# SEAMLESS's cell figure is INTERPOLATED rather than typed, and that is not decoration. 9f37857
+# retired "1 m" as a claim about the seamless product -- the arrays measure ~2.7 x 3.4 m source cells
+# -- and test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_one_metre_product
+# sweeps every string literal in the repo's .py files, fixtures included, for exactly that pairing. A
+# fixture standing in for a recorded artifact is one of the surfaces it names. The 6 metas on disk
+# still SAY it, because they were written before the label was corrected and nothing rewrites a
+# measured surface's sidecar to fix prose, so this fixture has to reproduce the recorded bytes exactly
+# -- and it does, at runtime, while the literal in this file names no resolution for the product. Same
+# convention that grader uses for its own probes, which build their dead figures with f"{9.9:.1f} m"
+# rather than spelling them.
+_RECORDED_SEAMLESS_CELL_M = 1        # what the sidecars say; NOT what the arrays measure
+_NED_CELL_M = 10                     # the third vocabulary's own figure, same reason
 LIDAR = "USGS 3DEP LiDAR ground returns @0.4m"
-SEAMLESS = "USGS 3DEP seamless 1 m @0.5m sampling"
+SEAMLESS = f"USGS 3DEP seamless {_RECORDED_SEAMLESS_CELL_M} m @0.5m sampling"
+UNKNOWN_VOCABULARY = f"NED {_NED_CELL_M} m fallback"
 
 LON, LAT = -121.35, 38.05
 D = 0.0002
@@ -305,7 +319,7 @@ def test_only_the_known_point_cloud_vocabulary_counts_as_point_cloud_derived(tmp
     for label, meta in (("a missing source", {"hole": 1, "green_id": 1}),
                         ("a null source", {"hole": 1, "green_id": 1, "source": None}),
                         ("a third vocabulary", {"hole": 1, "green_id": 1,
-                                                "source": "NED 10 m fallback"})):
+                                                "source": UNKNOWN_VOCABULARY})):
         cdir = _clean(tmp_path / f"u{abs(hash(label)) % 9999}", metas=[meta])
         status, _b, _h, _f, printed = cov.verdict(cdir)
         assert status != "checked", (

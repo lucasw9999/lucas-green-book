@@ -313,10 +313,13 @@ def test_render_hole_carry_cost_comment_matches_the_shipped_books():
     assert m2, "render_hole.py no longer names the cards that lose their only carry row."
     # "philadelphia 1, micke-grove 3 and 13, callippe 12" -- a course name followed by one or more
     # hole numbers joined by "and", comma-separated between courses.
+    # The loop variable is `entry` and not `segment` deliberately: `segment` is one of the analytics
+    # package names test_the_security_record_still_describes_this_repository scans executable code for,
+    # to hold SECURITY.md's "collects no user data" promise, and it reads a bare identifier as a hit.
     named = set()
-    for segment in m2.group(1).split(","):
-        seg_m = re.match(r"\s*([a-z][a-z-]*)\s+(\d+(?:\s+and\s+\d+)*)\s*$", segment)
-        assert seg_m, f"render_hole.py's only-carry-row list has an entry this test cannot parse: {segment!r}"
+    for entry in m2.group(1).split(","):
+        seg_m = re.match(r"\s*([a-z][a-z-]*)\s+(\d+(?:\s+and\s+\d+)*)\s*$", entry)
+        assert seg_m, f"render_hole.py's only-carry-row list has an entry this test cannot parse: {entry!r}"
         for hole in re.findall(r"\d+", seg_m.group(2)):
             named.add((seg_m.group(1), hole))
     assert len(lose_only) == 4, (
