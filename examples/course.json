@@ -54,7 +54,14 @@
   "_tees": [
     "REQUIRED for the Tees panel. yards/rating/slope come from the card; use null for anything the",
     "club does not publish (9-hole courses often have no rating). Ratings must FALL as yardage",
-    "falls -- if they don't, you have mixed a women's rating into a men's column."
+    "falls -- if they don't, you have mixed a women's rating into a men's column.",
+    "",
+    "RATING AND SLOPE ARE ONE MEASUREMENT of one tee for one gender, so null them TOGETHER. A card",
+    "that publishes 70.0/116 under Red where the row beneath is 'Ladies' Handicap' is publishing a",
+    "WOMEN'S pair: dropping the 70.0 and keeping the 116 leaves half a refused pair in a column the",
+    "book labels men's, and the build now REFUSES it (see config.slopes_without_a_rating). If a men's",
+    "slope for that tee genuinely is published elsewhere, say where with",
+    "\"slope_source\": \"<publication, tee and value>\" on that tee and it will print."
   ],
   "tees": [
     {
@@ -79,7 +86,7 @@
       "name": "Red",
       "yards": 5445,
       "rating": null,
-      "slope": 115
+      "slope": null
     }
   ],
   "_featured_tee": "REQUIRED: the big number on each hole card. secondary_tee is the small one.",

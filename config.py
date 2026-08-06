@@ -144,6 +144,70 @@ SI = 2 + TEES.index(SECONDARY)                    # secondary yardage index
 OTHERS = [(t, 2 + i) for i, t in enumerate(TEES) if t not in (FEATURED, SECONDARY)]
 TEE_TABLE = COURSE.get("tees", [])
 
+
+# A COURSE RATING AND A SLOPE ARE ONE MEASUREMENT, SO A REFUSAL TO PRINT ONE IS A REFUSAL TO PRINT BOTH.
+# The USGA Course Rating System evaluates one tee for one gender and produces the pair together: the
+# Slope Rating IS the spread between that evaluation's bogey and scratch ratings, scaled by a
+# GENDER-SPECIFIC constant (5.381 for men, 4.24 for women). So a slope is not an independent fact that
+# happens to sit beside a rating -- it is that rating's other half, and it carries the same tee and the
+# same gender. "We would not print that rating" and "we will print its slope" cannot both be true of
+# one published pair: half a refused pair is still the refused source, only unlabelled.
+#
+# THE DEFECT THIS EXISTS FOR, measured: micke-grove's card publishes 70.0/116 under Red, and that pair
+# is the WOMEN'S rating (the row beneath it on the printed card is 'Ladies' Handicap'; a 5286-yd tee
+# cannot rate 70.0 where 6026 rates 68.5). legal/03 records the 70.0 as deliberately withheld for
+# exactly that reason -- and course.json kept the 116 from the same pair. The book therefore printed
+#     Red | 5286 | -- | 116
+# in a column whose other two rows are men's slopes (126, 122) with nothing marking the difference,
+# beside a guide card whose only gender statement is "HCP = the men's stroke index". A junior computing
+# a course handicap off that row (index x slope / 113) used a women's slope. It read as plausible
+# because 116 sits almost exactly on the men's extrapolation (126 @ 6565, 122 @ 6026 -> ~116.5 @ 5286),
+# which is the whole reason nothing caught it: the wrong number and the right one look alike.
+#
+# CHECKED HERE, beside the transcription, because this is the only place every build reads a course
+# record -- and refusing the BUILD is the point. The suite's only tee check was rating monotonicity;
+# nothing inspected the slope column, so the class was invisible to the tests AND to the reader.
+#
+# THE ESCAPE HATCH IS A SOURCE, NOT A FLAG. If a men's slope for that tee really is published
+# somewhere, record where: "slope_source": "NCGA course-rating DB, men's Red 5286 -> 112". A bare
+# boolean would let the next person silence this by asserting the thing the check is asking them to
+# evidence. Same shape as `rating_is_womens` on the rating side, one level stricter.
+def slopes_without_a_rating(tees):
+    """The tees printing a slope while their rating is withheld, with no men's slope source recorded.
+
+    Pure and list-in/list-out so a test can pose the question without a course on disk: the wiring
+    below is one call, and a predicate nothing exercises is the "one declaration, zero uses" shape this
+    repo has already found inert twice -- tools/check_scale.py's cap, which a test now re-derives, and
+    `rating_is_womens`, which appears in tests/test_phase1_regressions.py and on no tee in any
+    course.json. tests/test_r14_tees.py grades this one THROUGH a real build for that reason.
+
+    A `slope_source` of "", "   " or None does not count as recorded: an empty string is what a
+    half-finished edit leaves behind, and reading it as evidence would make the hatch wider than a
+    bare flag.
+    """
+    return [t for t in (tees or [])
+            if t.get("rating") is None and t.get("slope") is not None
+            and not str(t.get("slope_source") or "").strip()]
+
+
+_HALF_PAIRS = slopes_without_a_rating(TEE_TABLE)
+if _HALF_PAIRS:
+    raise SystemExit(
+        f"courses/{SLUG}/course.json: {len(_HALF_PAIRS)} tee(s) withhold a course rating but still\n"
+        f"publish a slope. A rating and a slope are ONE USGA measurement of ONE tee for ONE gender, so\n"
+        f"whatever made the rating unprintable makes the slope beside it unprintable too:\n"
+        + "".join(f'  "{t.get("name")}" ({t.get("yards")} yd): rating null, slope {t.get("slope")}\n'
+                  for t in _HALF_PAIRS)
+        + '  The card prints an em-dash for null, so the fix is usually one edit -- set "slope": null\n'
+          "  and the row refuses both halves, which is what the provenance record already says about\n"
+          "  the rating. A junior reads that column as men's (the guide card says \"HCP = the men's\n"
+          "  stroke index\") and computes index x slope / 113 from it, so a women's or unsourced slope\n"
+          "  left in a men's column is a wrong number on a printed card.\n"
+          '  If a MEN\'S slope for that tee genuinely is published, record where it came from:\n'
+          '    "slope_source": "<publication, tee and value>"\n'
+          "  and this build will proceed. Do not add the key without the source -- legal/03 has to be\n"
+          "  able to answer for every number in the book.")
+
 # WHICH TEE THIS BOOK IS BUILT ON -- one answer, here, because it was being decided in two places.
 # generate.py picked the longer of FEATURED/SECONDARY for the card headline; render_hole.py and
 # fetch_hole_elev.py independently used TEES[0] (the first scorecard column) for the tee marker, the
