@@ -7411,11 +7411,12 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
     """The green's height must come from the GREEN, not from the patch the green sits in.
 
     green_elevation() took the median of the whole dem_hd .npy, and that array is the green's bounding
-    box padded by fetch_dem_hd.MARGIN_M = 12 m on every side -- a region 5.5x the green's area, of which
-    a corpus-median 82% is not green. Because a green is usually a raised pad surrounded by fairway and
-    bunker, the figure read LOW: the interior median is higher on all but a few holes, and by how much
-    is measured at the end of this test rather than restated here -- this docstring's own "mean
-    +0.458 ft" was one of the four disagreeing copies that pin now grades. It moved 102 printed integers.
+    box padded by fetch_dem_hd.MARGIN_M = 12 m on every side -- a region a corpus-median 5.5x the
+    green's area, of which a corpus-median 82% is not green. Because a green is usually a raised pad
+    surrounded by fairway and bunker, the figure read LOW: the interior median is higher on all but a
+    few holes, and by how much is measured at the end of this test rather than restated here -- this
+    docstring's own "mean +0.458 ft" was one of the four disagreeing copies that pin now grades. It
+    moved 102 printed integers.
 
     The polygon was in the SAME meta file the whole time, and render_green.py rasterises it to measure
     every slope figure the card prints. So the test is a comparison between the two readers of one file:
@@ -7430,6 +7431,7 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
     import numpy as np
     checked = agreed_with_patch = 0
     problems, shift_ft = [], []
+    region_x, not_green, region_geom, not_green_geom, collar_m = [], [], [], [], []
     for slug in CORPUS:
         cdir = os.path.join(ROOT, "courses", slug)
         rp = os.path.join(cdir, "hole_elev.json")
@@ -7463,6 +7465,28 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
             inside = float(np.nanmedian(a[mask]))
             whole = float(np.nanmedian(a))
             shift_ft.append((inside - whole) * 3.28084)
+            # The SIZE of that region, for the three records that publish it -- graded at the end. Two
+            # measures of one thing: the pixels this mask keeps (the population the whole-patch median
+            # actually averaged) and the polygon's own area in metres (what the records call "the
+            # green's area"). And the collar itself, read back off the patch rather than off the
+            # constant: half the difference between the patch and the green's own bounding box.
+            region_x.append(mask.size / float(mask.sum()))
+            not_green.append(100.0 * (1.0 - mask.sum() / mask.size))
+            xmin, ymin, xmax, ymax = meta["bbox"]
+            sx, sy = _mlon(meta["green_center"][0]), _mlat(meta["green_center"][0])
+            ring = [((lo - xmin) * sx, (la - ymin) * sy) for la, lo in meta["polygon"]]
+            area = abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2)
+                           in zip(ring, ring[1:] + ring[:1]))) / 2.0
+            box = (xmax - xmin) * sx * (ymax - ymin) * sy
+            if area > 0:
+                region_geom.append(box / area)
+                not_green_geom.append(100.0 * (1.0 - area / box))
+            collar_m.append((((xmax - xmin) - (max(p[1] for p in meta["polygon"])
+                                               - min(p[1] for p in meta["polygon"]))) * sx / 2.0,
+                             slug, hn))
+            collar_m.append((((ymax - ymin) - (max(p[0] for p in meta["polygon"])
+                                               - min(p[0] for p in meta["polygon"]))) * sy / 2.0,
+                             slug, hn))
             if abs(gz - inside) > 0.02:
                 problems.append(f"{slug} hole {hn}: recorded green_z_m {gz:.2f} m is not the median over "
                                 f"the green polygon ({inside:.2f} m). Whole-patch median is {whole:.2f} m "
@@ -7533,6 +7557,82 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
     assert abs(float(m.group(2)) - exact) <= 0.05 * exact, (
         f"fetch_hole_elev publishes p = {m.group(2)} for {m.group(1)} of {len(shift_ft)} holes higher; "
         f"an exact one-sided binomial tail on {pos} of {len(shift_ft)} is {exact:.2g}")
+
+    # HOW BIG THE REGION WAS -- the sentence one clause earlier, and the same defect one step earlier.
+    # "a 12 m collar, 5.5x the green's area, 82% of it not green" is one measurement of one region
+    # published by green_elevation, by this docstring and by legal/09 item 1, and until now compared
+    # with the corpus by nothing. Every copy agrees today, which is precisely when it is worth pinning:
+    # the ungraded copy is the one left behind when MARGIN_M, a green polygon or the corpus moves, and
+    # then a reader has three numbers and no arbiter. That is how the shift figure beside it reached
+    # four values for one quantity.
+    # WHICH STATISTIC has to be in the sentence, not just the value. These are corpus MEDIANS, and the
+    # failure message reports the corpus means beside them, so a re-deriver who reached for the other
+    # statistic can see which figure he computed rather than filing the difference as a defect. An
+    # unlabelled ratio is the median-quoted-as-something-else shape this file has already corrected
+    # twice at the tee end.
+    # These are POINT figures, not range endpoints, so the grader is nearest-rounding at the precision
+    # each sentence chose; grade_bound's round-outward rule is for bounds, and at their own stated
+    # precision all three copies do contain the measurement, so no published digit moves with this pin.
+    import fetch_dem_hd
+    assert region_x and region_geom and collar_m, "no green patch measured; nothing to grade"
+    worst = max(collar_m, key=lambda t: abs(t[0] - fetch_dem_hd.MARGIN_M))
+    assert abs(worst[0] - fetch_dem_hd.MARGIN_M) <= 0.1, (
+        f"the dem_hd patches on disk are not the green's bounding box padded by fetch_dem_hd.MARGIN_M "
+        f"= {fetch_dem_hd.MARGIN_M:g} m: {worst[1]} hole {worst[2]} has {worst[0]:.3f} m between the "
+        f"two on one axis. The three records that call this region a {fetch_dem_hd.MARGIN_M:g} m "
+        f"collar would then be describing the constant and not the arrays every figure here is "
+        f"measured over.")
+    x_med, ng_med = float(np.median(region_x)), float(np.median(not_green))
+    xg_med, ngg_med = float(np.median(region_geom)), float(np.median(not_green_geom))
+    live = (f"measured over {len(region_x)} greens: a corpus-median {x_med:.4f}x the green's area "
+            f"({xg_med:.4f}x by the polygon's own area in metres), of which a corpus-median "
+            f"{ng_med:.4f}% is not green ({ngg_med:.4f}% the same way); collar "
+            f"{float(np.median([c[0] for c in collar_m])):.3f} m. The corpus MEANS, which no record "
+            f"here publishes, are {float(np.mean(region_x)):.4f}x and {float(np.mean(not_green)):.4f}%")
+    measured = {"collar": (("fetch_dem_hd.MARGIN_M", fetch_dem_hd.MARGIN_M),),
+                "x": (("over the .npy pixels the mask keeps", x_med),
+                      ("over the polygon's own area in metres", xg_med)),
+                "ng": (("over the .npy pixels the mask keeps", ng_med),
+                       ("over the polygon's own area in metres", ngg_med))}
+    unit = {"collar": " m", "x": "x", "ng": "%"}
+    what = {"collar": "the collar padded onto the green's bounding box",
+            "x": "the region as a multiple of the green's area",
+            "ng": "the share of that region that is not green"}
+    mine = re.sub(r"\s+", " ",
+                  test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings.__doc__
+                  or "")
+    region = []
+    for where, text, pat, keys in (
+            ("fetch_hole_elev.green_elevation", _fhe_prose(),
+             r"padded by fetch_dem_hd\.MARGIN_M = ([\d.]+) m on all four sides", ("collar",)),
+            ("fetch_hole_elev.green_elevation", _fhe_prose(),
+             r"a median over a region a corpus-median ([\d.]+)x the green's area, of which a "
+             r"corpus-median ([\d.]+)% is not green", ("x", "ng")),
+            ("this test's docstring", mine,
+             r"padded by fetch_dem_hd\.MARGIN_M = ([\d.]+) m on every side -- a region a corpus-median "
+             r"([\d.]+)x the green's area, of which a corpus-median ([\d.]+)% is not green",
+             ("collar", "x", "ng")),
+            ("legal/09 item 1", rec09,
+             r"a median over the green plus a ([\d.]+) m collar, a corpus-median ([\d.]+)% of which is "
+             r"not green", ("collar", "ng"))):
+        mm = re.search(pat, text)
+        if not mm:
+            region.append(f"{where} no longer publishes {' and '.join(what[k] for k in keys)} in a "
+                          f"form this test can read ({pat!r}). {live}")
+            continue
+        for said_s, key in zip(mm.groups(), keys):
+            said = float(said_s)
+            digits = len(said_s.split(".")[1]) if "." in said_s else 0
+            for how, want in measured[key]:
+                if abs(said - want) > 0.5 * 10 ** -digits + 1e-9:
+                    region.append(
+                        f"{where} publishes {said_s}{unit[key]} for {what[key]}; {want:.4f}"
+                        f"{unit[key]} {how} does not round to it at the {digits}-decimal precision "
+                        f"that sentence chose. {live}")
+    assert not region, (
+        "the region the OLD green height was a median over is described by three records and measured "
+        "by none of them -- one figure, three unchecked copies, which is the state every drifted "
+        "number in this area was in before it drifted:\n  " + "\n  ".join(region))
 
 
 @needs_corpus

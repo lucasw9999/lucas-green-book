@@ -200,13 +200,13 @@ had to hold, and it holds with two orders of magnitude of margin.
 1. **This is precision, not accuracy** — with one part of that now bounded separately, and with the
    caveat that both figures below were measured *after* the tee-to-green height was moved onto the
    feature polygons. Before that, the printed height was a median over the green plus a 12 m collar,
-   82% of which is not green, against a median over an axis-aligned box at the tee that a mapped tee
-   covers about 13% of. Those two region errors pointed opposite ways and largely cancelled in the
-   printed *change*, which is why neither was visible in it: correcting only the green end would have
-   shifted every height in the book by +0.45 ft. Corrected together they moved 102 of the then-177 printed
-   integers, made 6 heights appear and 2 disappear at the 3 ft floor, flipped no above/below word on
-   any card that prints one, and took this tool's agreement with the independent DEM from a median
-   0.80 ft to 0.09 ft (a matched pair of `verify_elevation.py` figures from the era *before* its
+   a corpus-median 82% of which is not green, against a median over an axis-aligned box at the tee that
+   a mapped tee covers about 13% of. Those two region errors pointed opposite ways and largely cancelled
+   in the printed *change*, which is why neither was visible in it: correcting only the green end would
+   have shifted every height in the book by +0.45 ft. Corrected together they moved 102 of the then-177
+   printed integers, made 6 heights appear and 2 disappear at the 3 ft floor, flipped no above/below
+   word on any card that prints one, and took this tool's agreement with the independent DEM from a
+   median 0.80 ft to 0.09 ft (a matched pair of `verify_elevation.py` figures from the era *before* its
    georeference fix, so neither is comparable with the corrected figures below — see the note in the
    first bullet). Both passes come
    from the same USGS program, sensor class and processing chain, so a *systematic* bias would be
