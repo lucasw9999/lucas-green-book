@@ -114,8 +114,15 @@ media and measures the drawn green there, rather than trusting the SVG's own att
 stylesheet can override those, which is exactly how 15 greens once printed over the legal scale
 while every attribute looked correct. It exits non‑zero if any green exceeds 3/8 in : 5 yd. (It also
 measures the printed 5‑yd bar in the PDF, and **that figure gates too** &mdash; the Rule 4.3 claim is
-about the artifact a player carries, not the HTML it came from.) `tools/export_pdf.py --check` is the companion: it proves the PDF you would actually print
-came from the HTML on disk.
+about the artifact a player carries, not the HTML it came from.) `tools/export_pdf.py --check` is the
+companion: beside each book it records a digest of the HTML **and** a digest of the exported PDF, then
+re‑derives both from the files on disk, so a stale export, a book printed by hand and a half‑written
+one are each named rather than assumed. It used to say it "proves the PDF you would actually print
+came from the HTML on disk" while recording the HTML's digest alone — which proved that a *note* beside
+the PDF named the current HTML. Interrupting an export made the point: the writer truncates the book in
+place, so the printable artifact came back with zero pages while its stamp still agreed, and `--check`
+exited 0. The export stages and renames now, and a file with no trailer is refused whatever its stamp
+says.
 
 **After adding a course, regenerate the two derived legal docs** — the test suite fails until you do,
 and the failure names staleness rather than telling you which command fixes it:
