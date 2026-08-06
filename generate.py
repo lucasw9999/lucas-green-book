@@ -247,7 +247,11 @@ def green_honesty(hole, s):
     # the whole putting surface (render_green.green_summary). Measured over all 198 greens by parsing
     # the shipped SVGs, it prints below every black number on the same card on 134 of them, median
     # 0.5 pp over all 198 and worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black
-    # numbers 6,7,8,8,10,10,10 whose own median local slope is 4.8%. On 106 of the 170 greens that carry
+    # numbers 6,7,8,8,10,10,10, on a green whose median local slope is 4.8% over the whole surface
+    # (those seven labelled points median 8). The 4.8% belongs to the SURFACE, not to those labels: this
+    # sentence hung it off "black numbers ... whose own", which reads as though the labels themselves
+    # average 4.8 and so understates the very gap the example exists to show.
+    # On 106 of the 170 greens that carry
     # no (faint) and no no-clear-fall qualifier, so nothing on the card warns the reader either. A
     # junior applying the card's only definition reads copper-valley 6 as dead flat. One word
     # distinguishes the two and adds no legend row -- card space is the binding constraint here, with
@@ -324,11 +328,26 @@ def elev_phrase(hole):
     region difference too, on 55 of 177 pads. That inflates the spread rather than hiding it, which
     makes every figure below an upper bound and this floor conservative -- the reason for trusting the
     spread, not a reason to lower the floor.
-    Across 171 holes the two disagree by a median 0.09 ft, a mean 0.27 ft and a worst 3.14 ft;
-    the worst any single course medians is 0.57 ft. Five holes exceed 2 ft and one exceeds 3. So a
+
+    MEASURED by `python3 tools/verify_elevation.py --all` on 2026-08-05, all 171 holes reached, 11
+    courses, printed by that tool's own `_print_corpus`: across 171 holes the two disagree by a corpus
+    median 0.067 ft, a corpus mean 0.201 ft and a worst 2.46 ft (philadelphia 5). The worst any single
+    course medians is 0.62 ft (philadelphia), and the median of the 11 per-course medians is 0.069 ft --
+    quoted to three decimals because at two they both read 0.07 and the whole point of naming both is
+    that they are not one figure. Two holes exceed 2 ft and none exceeds 3. So a
     printed "green 2 ft above" would still sit inside the spread between two honest sources on those
     holes, and 22 of the 171 fall in the 2-4 ft band where that spread decides whether anything prints
     at all -- which is why the floor is not lowered to look more precise.
+
+    A CORPUS MEDIAN AND A MEDIAN OF PER-COURSE MEDIANS ARE DIFFERENT FIGURES, and this paragraph
+    presented one as the other: its "median 0.09 ft" was described as a median across 171 holes and was
+    in fact the median of eleven per-course medians. Both are named above now, and both are printed by
+    the tool. So was every other figure here re-derived, because the set that stood here reproduced
+    nowhere: "mean 0.27 ft" was produced by NO CODE PATH in this project -- a grep found this sentence
+    and nothing else -- and the worst hole, the worst per-course median and the counts over 2 and 3 ft
+    were all measured before fd39647 moved five tee heights. `_print_corpus` exists so that a figure in
+    this paragraph can never again be one nothing computes; graded by
+    test_the_print_floors_justification_quotes_only_figures_this_project_can_produce.
 
     (Those figures were a median 0.80 ft and a worst 4.92 ft until both ends of the measurement were
     moved onto the feature polygons. The docstring quoted "worst 1.77 ft", which was the largest

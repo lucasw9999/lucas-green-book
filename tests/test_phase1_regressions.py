@@ -3310,6 +3310,31 @@ def _cards_of(path):
     return out
 
 
+def _median_local_slope_pct(slug, hole):
+    """render_green.green_summary's `med_slope` for one green, in percent, off the array on disk.
+
+    The quantity the black numbers are drawn from -- a PER-CELL slope, median over the putting surface --
+    as opposed to `tilt_pct`, the whole-surface plane fit the footer prints. The worked example in
+    green_honesty quotes both, and attached the wrong one to the wrong noun, so both are measured.
+    """
+    import numpy as np
+    config, _rh = _engine(slug)                     # ONE module-drop site, shared -- see README's count
+    import geo                                      # noqa: E402
+    import render_green as rg                       # noqa: E402
+    p = os.path.join(config.COURSE_DIR, "dem_hd", f"hole{hole:02d}.json")
+    with open(p, encoding="utf-8") as fh:
+        meta = json.load(fh)
+    arr = np.load(p[:-5] + ".npy").astype(float)
+    H, W = arr.shape
+    poly = rg.poly_to_px(meta["polygon"], meta["bbox"], W, H)
+    mask = np.array([[rg.point_in_poly(c + 0.5, r + 0.5, poly) for c in range(W)] for r in range(H)])
+    clat = meta["green_center"][0]
+    xmin, ymin, xmax, ymax = meta["bbox"]
+    _surf, _core, S = rg.green_summary(arr, mask, (xmax - xmin) * geo.mlon(clat) / W,
+                                       (ymax - ymin) * geo.mlat(clat) / H)
+    return float(S["med_slope"])
+
+
 def _footer_and_slope_labels():
     """{(book, hole): (footer pct, [black slope numbers], footer text)} off the SHIPPED books.
 
@@ -3352,7 +3377,11 @@ def test_the_footer_percentage_is_not_read_as_the_legend_s_slope_number():
     They disagree in the direction that reads as flatter. Measured over all 198 greens by parsing the
     shipped SVGs: the footer sits BELOW every black number on the same card on 134 of them, median
     0.5 pp, worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black numbers of
-    6,7,8,8,10,10,10 whose own median local slope is 4.8%. On 106 of the 170 greens carrying no (faint)
+    6,7,8,8,10,10,10, on a green whose median local slope is 4.8% over the whole surface (those seven
+    labelled points median 8). The 4.8% is the SURFACE's, not the labels': this sentence used to read
+    "black numbers ... whose own median local slope is 4.8%", which attaches a whole-surface median to
+    seven labelled points that themselves median 8, and so understates the gap it exists to show.
+    On 106 of the 170 greens carrying no (faint)
     and no no-clear-fall qualifier, so nothing on the card warns the reader either. A junior applying
     the card's only definition reads copper-valley 6 as dead flat.
 
@@ -3408,6 +3437,44 @@ def test_the_footer_percentage_is_not_read_as_the_legend_s_slope_number():
         said = _published_figures(src, pat, "green_honesty's comment")
         if abs(said[0] - got) > 0.06:
             problems.append(f"green_honesty publishes {label} as {said[0]:g}; measured {got:.4g}")
+
+    # THE WORKED EXAMPLE, in both records. It was ungraded, and its ANTECEDENT was wrong: it read
+    # "black numbers 6,7,8,8,10,10,10 whose own median local slope is 4.8%", and 4.8126% is
+    # green_summary's `med_slope` over the WHOLE SURFACE -- the median of those seven labelled points is
+    # 8. The figure was right and the thing it was attached to was not, which reads as though the labels
+    # themselves average 4.8 and so understates the very gap the sentence exists to demonstrate. Both
+    # quantities are now named and both are measured here, off the shipped card and off the array.
+    ex = [(k, v) for k, v in pocket.items() if k[0].startswith("copper-valley") and k[1] == 6]
+    if ex:
+        import numpy as np
+        (_k, v), = ex
+        nums = sorted(v[1])
+        surf_med = _median_local_slope_pct("copper-valley-golf-club", 6)
+        pt_med = float(np.median(nums))
+        for where, text in (("green_honesty's comment", src),
+                            ("this test's own docstring",
+                             test_the_footer_percentage_is_not_read_as_the_legend_s_slope_number.__doc__)):
+            said = _published_figures(text, r"footer of ([\d.]+)% beside black numbers", where)
+            if abs(said[0] - v[0]) > 0.06:
+                problems.append(f"{where} says copper-valley 6 prints a footer of {said[0]:g}%; the "
+                                f"shipped card prints {v[0]:g}%")
+            m = re.search(r"black numbers (?:of )?([\d, ]*\d)", _flow(text))
+            assert m, (f"{where} no longer lists copper-valley 6's black numbers, so the worked "
+                       f"example has nothing to compare against; the card shows {nums}")
+            listed = sorted(int(x) for x in re.findall(r"\d+", m.group(1)))
+            if listed != nums:
+                problems.append(f"{where} lists copper-valley 6's black numbers as {listed}; the "
+                                f"shipped card shows {nums}")
+            said = _published_figures(text, r"median local slope is ([\d.]+)% over the whole surface",
+                                      where)
+            if abs(said[0] - surf_med) > 0.06:
+                problems.append(f"{where} puts copper-valley 6's median local slope over the surface "
+                                f"at {said[0]:g}%; measured {surf_med:.4f}%")
+            said = _published_figures(text, r"those seven labelled points median ([\d.]+)", where)
+            if abs(said[0] - pt_med) > 0.06:
+                problems.append(f"{where} says the labelled points themselves median {said[0]:g}; "
+                                f"measured {pt_med:g} over {nums}. This is the antecedent that was "
+                                f"wrong: the 4.8% belongs to the surface, not to these numbers.")
     assert not problems, ("the figures that justify labelling the footer percentage are not the ones "
                           "the shipped cards give:\n  " + "\n  ".join(problems))
 
@@ -17651,11 +17718,20 @@ def _fallback_disc(fhe, dx, dy):
 def _tee_samples():
     """Every tee's ground returns measured five ways, in ONE pass over each course's LAZ.
 
-    Per (slug, hole): the SAMPLE the shipped code takes (the mapped pad inside the TEE_R_M window, or
-    the whole window in the box fallback), the WHOLE mapped ring, the whole BOX, the pad median at
+    Per (slug, hole): the SAMPLE the shipped code takes (the mapped pad inside the TEE_R_M window, or a
+    TEE_FALLBACK_R_M DISC at the anchor where no ring holds it -- this said "the whole window in the box
+    fallback", the region the producer stopped sampling at fd39647, inside the helper whose whole purpose
+    is to stop this suite measuring a region nothing samples), the WHOLE mapped ring, the whole BOX, the
+    pad median at
     smaller radii, and how far the pad median moves when the anchor is displaced 10 m in each of four
     directions. Feet throughout -- the CRS vertical scale is applied here, as tee_median_is_trustworthy
     applies it, so no figure below is a raw ftUS number read as metres.
+
+    The fallback region comes FROM the module (`_fallback_disc` reads TEE_FALLBACK_R_M), never from a
+    constant typed here. That is necessary and it is not sufficient: a producer can sample the box while
+    that constant stays 6.0, so the disc is additionally checked against what the producer WROTE -- see
+    step 2 of test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_around_it, whose
+    predecessor compared this helper's disc against this helper's own distances and proved nothing.
 
     One pass, ~45 s over the corpus's 11.6 GiB, because every LiDAR-derived figure fetch_hole_elev
     publishes is graded off it and re-reading the tiles per figure would not be affordable."""
@@ -17820,7 +17896,7 @@ def test_the_independent_checker_says_which_region_each_side_of_it_samples():
     resulting median shift at up to 1.87 ft. TOL_FT is 10 ft, so this tool can never flag it.
 
     FOUR records said the regions matched and none of them was graded:
-      * SAMPLE_HALF_M's note                  "Both sides now sample the same REGIONS"
+      * the fallback region's note            "Both sides now sample the same REGIONS"
       * dem_median_m's docstring              "both sides ... measure the same region"
       * the comment at the sampling call      "the SAME regions the pipeline does"
       * generate.elev_phrase's docstring      "now sampled over the SAME regions this pipeline samples"
@@ -17831,25 +17907,64 @@ def test_the_independent_checker_says_which_region_each_side_of_it_samples():
     disagreement, so the spread those figures quote is an upper bound and the floor is conservative --
     but the reason given for trusting the spread was not the reason that held.
 
-    The sampling is deliberately NOT changed: which region an independent reference should read is a
-    real design question with a measured cost, and a checker quietly re-pointed at the producer's own
-    choice is a weaker check, not a stronger one. So the four records now say what each side reads, and
-    this grades that against the CODE (the reference still takes the unclipped ring), against the
-    ARTIFACT (the producer's rows record a window), and against the GEOMETRY (how many pads differ).
+    THE MAPPED-PAD sampling is deliberately NOT changed: which region an independent reference should
+    read is a real design question with a measured cost, the ring is what OSM actually maps, and a
+    checker quietly re-pointed at the producer's own choice is a weaker check, not a stronger one.
+
+    THE FALLBACK branch went the other way, and the two are not the same question. There is no OSM ring
+    to be independent ABOUT where no ring holds the anchor: the region is chosen on both sides, and the
+    checker's `SAMPLE_HALF_M = 15.0` was a copy of `fetch_hole_elev.TEE_R_M`, the producer's OWN fallback
+    box. fd39647 measured that box wrong -- bay-view 16's spanned 31.9 ft of hillside -- and moved the
+    producer to a TEE_FALLBACK_R_M disc. Holding 15.0 afterwards would not have been independence; it
+    would have been a stale copy of an abandoned region, 900 m^2 against 113 m^2, which TOL_FT at 10 ft
+    cannot flag. Measured cost of aligning it, in the DEM, over all five fallback anchors: bay-view 16
+    +0.63 ft, castlewood-hill 4 +0.16, merion 3 -1.05, merion 9 +0.43, merion 15 -0.45 -- worst MERION 3
+    at 1.05 ft, under 1.1 ft on 5 of 171 holes, no verdict flipped, and NOT one-signed, so the "a wider
+    region only inflates it" reading that holds on the pad branch never held here. It also took region
+    difference OUT of the hole the tool's own worst-observed figure named: bay-view 16 reported 1.24 ft
+    against the box and 0.58 ft against the disc. Not to be confused with the box-vs-disc difference in
+    the POINT CLOUD (+1.886 ft on bay-view 16, -1.116 on merion 9), which is the producer's figure.
+
+    So the four records now say what each side reads, and this grades that against the CODE (the
+    reference still takes the unclipped ring, and takes its fallback radius FROM the producer rather
+    than re-declaring it), against the ARTIFACT (the producer's rows record a window), and against the
+    GEOMETRY (how many pads differ).
     """
     geom = _tee_geometry()
     assert geom, "no green-mode course with LiDAR on disk; nothing to measure"
     ve = open(os.path.join(ROOT, "tools", "verify_elevation.py"), encoding="utf-8").read()
     gen = open(os.path.join(ROOT, "generate.py"), encoding="utf-8").read()
 
-    # 1. THE CODE. The reference's tee sample is the ring `ring_containing` returns, unclipped -- if
-    #    that ever changes, the prose below is what has to change with it, and this is the tripwire.
+    # 1. THE CODE, on BOTH branches, because the right answer differs between them.
+    #    (a) the MAPPED-PAD branch: the reference's tee sample is the ring `ring_containing` returns,
+    #        unclipped -- if that ever changes, the prose below is what has to change with it.
     assert re.search(r"_ring\s*=\s*fhe\.ring_containing\(", ve) and \
         re.search(r"dem_median_over_ring\(_ring\)", ve), (
         "tools/verify_elevation.py no longer feeds the whole mapped ring straight into its tee "
         "reference. If it now clips to the producer's window, every record below saying it reads the "
         "WHOLE ring is stale -- and if it clips, it is no longer independent of the producer's choice "
         "of region, which is the reason it was left alone.")
+    #    (b) the FALLBACK branch, where there is no OSM ring to be independent ABOUT: the region is
+    #        chosen on both sides, so the checker READS THE PRODUCER'S and never re-declares it. It held
+    #        `SAMPLE_HALF_M = 15.0` -- a copy of the producer's own superseded fallback box -- for a
+    #        commit after fd39647 moved the producer to a TEE_FALLBACK_R_M disc, which is not
+    #        independence but a stale copy: 900 m^2 of hillside against 113 m^2 of teeing ground, with
+    #        TOL_FT at 10 ft and unable to say so.
+    assert re.search(r"fhe\.TEE_FALLBACK_R_M", ve), (
+        "tools/verify_elevation.py no longer takes its fallback tee radius FROM fetch_hole_elev. A "
+        "checker holding its own copy of the producer's region cannot tell 'the region moved' from "
+        "'the ground disagrees' -- which is exactly what SAMPLE_HALF_M = 15.0 did after fd39647.")
+    assert not re.search(r"(?m)^\s*SAMPLE_HALF_M\s*=", ve), (
+        "tools/verify_elevation.py has re-declared a fallback tee region of its own. That figure "
+        "belongs to the producer (fetch_hole_elev.TEE_FALLBACK_R_M); a second copy here is the defect "
+        "this file's own note at the geo import describes.")
+    import fetch_hole_elev as _fhe_for_radius
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_elevation as _ve_mod
+    assert _ve_mod.tee_fallback_radius_m() == float(_fhe_for_radius.TEE_FALLBACK_R_M), (
+        f"the checker's fallback radius ({_ve_mod.tee_fallback_radius_m()}) is not the producer's "
+        f"({_fhe_for_radius.TEE_FALLBACK_R_M}); the two sides are sampling different tee regions on the "
+        f"branch where they are supposed to be sampling the same one")
 
     # 2. THE ARTIFACT. The producer records the region it actually sampled, per row.
     regions = set()
@@ -17902,7 +18017,9 @@ def test_the_independent_checker_says_which_region_each_side_of_it_samples():
                 problems.append(f"{where} still claims both sides sample the same region: "
                                 f"{s.strip()[:150]}")
     for where, text, want in (
-            ("tools/verify_elevation.py's dem_median_m docstring", ve, r"see SAMPLE_HALF_M"),
+            ("tools/verify_elevation.py's dem_median_m docstring", ve,
+             r"whole mapped ring where the pipeline reads the pad inside a 15 m window"),
+            ("tools/verify_elevation.py's region note", ve, r"see the region note above TOL_FT"),
             ("the comment at the sampling call", ve, r"WHOLE mapped tee ring"),
             ("generate.elev_phrase's docstring", gen, r"whole mapped tee ring")):
         if not re.search(want, _flow(text), re.I):
@@ -18703,20 +18820,57 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
         f"the derivation publishes {m.group(1)} m^2 over {m.group(2)} pads; measured "
         f"{median(areas):.1f} m^2 over {len(areas)}")
 
-    # 2. THE SHIPPED SAMPLER really takes that disc, not the box it used to. Measured off the LAZ: the
-    #    fallback rows' sample size must be the disc's and must differ from the 15 m box's, or this
-    #    whole test is grading a region nothing samples.
+    # 2. THE PRODUCER really samples that disc, and this reads the PRODUCER -- not this file's own
+    #    helper. It used to be:
+    #        n_disc = int((r["scan"]["d_m"] < R).sum())
+    #        assert r["sample"]["n"] == n_disc and r["sample"]["n"] < r["box"]["n"]
+    #    and both sides of that came from `_tee_samples`: `sample` IS `stat(_fallback_disc(...))`, which
+    #    is `hypot(dx, dy) < R`, and `scan["d_m"]` IS `hypot(dx, dy)`. So clause A was a tautology and
+    #    clause B is geometrically necessary for any R below the window. It claimed to prove the shipped
+    #    sampler takes the disc and could not see the sampler at all. PROVEN vacuous by mutating the
+    #    producer's fallback mask to a 6 m axis box, and then to a TRUE 15 m box -- the exact defect
+    #    fd39647 exists to fix -- with the constant still 6.0 and the region string still naming a disc:
+    #    both mutations PASSED.
+    #
+    #    So the comparison is now the ARTIFACT the producer WROTE against the LAZ measured here. Every
+    #    fallback row records `tee_points` and `tee_z_m`, and those are the producer's own outputs: a
+    #    producer sampling the box would record the box's count and the box's median, and both are
+    #    measured below and required to be the disc's. The count is the decisive discriminator -- the
+    #    disc holds 984-2211 returns against the box's 8384-17567, a 7-9x separation on all five -- while
+    #    the medians agree to 0.01 m on three of the five, so a z-only check would not have separated
+    #    them. What this states is exactly what it checks: the region the producer SAMPLED, as recorded,
+    #    is the disc. It does not reach inside the sampler, and it no longer says it does.
     box_rows = sorted(k for k, r in S.items() if not r["on_pad"])
     assert len(box_rows) == 5, (
         f"{len(box_rows)} anchors take the fallback, not the five this derivation was measured on "
         f"({[(_short(s), h) for s, h in box_rows]}); re-measure before trusting the figures below")
+    sep = []
     for k in box_rows:
         r = S[k]
+        with open(os.path.join(ROOT, "courses", k[0], "hole_elev.json"), encoding="utf-8") as fh:
+            row = json.load(fh)["holes"][str(k[1])]
         n_disc = int((r["scan"]["d_m"] < R).sum())
-        assert r["sample"]["n"] == n_disc and r["sample"]["n"] < r["box"]["n"], (
-            f"{_short(k[0])} {k[1]}: the sampled fallback holds {r['sample']['n']} returns; the "
-            f"{R} m disc holds {n_disc} and the {fhe.TEE_R_M:g} m box {r['box']['n']}. The sampler is "
-            f"not reading the disc.")
+        n_box = r["box"]["n"]
+        assert row.get("tee_points") == n_disc, (
+            f"{_short(k[0])} {k[1]}: the artifact records a tee sample of {row.get('tee_points')} "
+            f"returns; the {R} m disc measured off the LAZ holds {n_disc} and the "
+            f"{fhe.TEE_R_M:g} m box holds {n_box}. The PRODUCER is not sampling the disc -- and the "
+            f"constant and the region string can both still be right while it does, which is why this "
+            f"reads the recorded sample rather than the constant.")
+        assert row["tee_points"] != n_box, (
+            f"{_short(k[0])} {k[1]}: the disc and the box hold the same {n_box} returns, so the count "
+            f"cannot tell the two regions apart here and this assertion has stopped discriminating")
+        z_disc = r["sample"]["med_ft"] / 3.28084
+        z_box = r["box"]["med_ft"] / 3.28084
+        assert abs(row["tee_z_m"] - z_disc) <= 0.01, (
+            f"{_short(k[0])} {k[1]}: the artifact records a tee height of {row['tee_z_m']:.3f} m; the "
+            f"disc gives {z_disc:.3f} m and the box {z_box:.3f} m")
+        sep.append((abs(z_disc - z_box), _short(k[0]), k[1], z_disc, z_box))
+    worst_sep = max(sep)
+    assert worst_sep[0] > 0.1, (
+        f"the disc and the box now give tee heights within {worst_sep[0]:.3f} m of each other on every "
+        f"one of the five fallback holes, so the recorded height cannot distinguish the two regions at "
+        f"all and only the count above is doing any work. Re-derive before relying on this.")
 
     # 3. THE FIVE PRINTED INTEGERS, both regions, from the point cloud. Nothing here is copied: the
     #    "before" is the median over the 15 m box and the "after" the median over the disc, each
@@ -22778,6 +22932,140 @@ def _verify_with_absolute_offset(slug, inject_m):
 
 ABS_OFFSET_LINE = re.compile(r"absolute green elevation vs the DEM: median ([-+][\d.]+) m, "
                              r"worst ([-+][\d.]+) m")
+
+
+@needs_corpus
+def test_the_print_floors_justification_quotes_only_figures_this_project_can_produce():
+    """The 3 ft print floor's recorded justification quoted a figure NOTHING in this project computes.
+
+    `generate.elev_phrase`'s docstring is the derivation of the gate that decides whether ANY elevation
+    number reaches a card. It published, of the corpus-wide disagreement against the 3DEP seamless DEM,
+    "a median 0.09 ft, a mean 0.27 ft and a worst 3.14 ft; the worst any single course medians is
+    0.57 ft. Five holes exceed 2 ft and one exceeds 3."
+
+    Three separate faults in one paragraph:
+
+      * NO PRODUCER. tools/verify_elevation.py printed PER-COURSE lines and nothing else -- there was no
+        corpus median, corpus mean, worst-hole or count anywhere in its output. A grep for "mean 0.27"
+        found that sentence and nothing else in the repo. A published figure with no producer cannot go
+        stale visibly, cannot be re-derived, and cannot be graded; it is the state every drifted number
+        in this project has been in.
+      * MISLABELLED. Its "median 0.09 ft" was described as a median across 171 holes and is the median
+        of ELEVEN PER-COURSE MEDIANS -- a different statistic, which on this corpus differs from the
+        corpus median by about a third. Both are printed and both are named now.
+      * STALE. fd39647 then moved five tee heights (bay-view 16 46 -> 48, merion 9 34 -> 33 among them),
+        so even the figures that did have a derivation described a corpus that no longer existed.
+
+    So `_print_corpus` exists, and this grades the paragraph three ways WITHOUT the network:
+
+      (a) THE PRODUCER. `_print_corpus` is driven over a synthetic corpus whose answers are computed
+          here independently, and every quantity the paragraph quotes must come back out of it with the
+          right value. That is what makes "a figure nothing computes" impossible rather than merely
+          discouraged.
+      (b) THE OFFLINE FIGURES. The hole count and the 2-4 ft band are properties of the corpus on disk,
+          so they are re-derived from hole_elev.json and compared.
+      (c) THE LABELLING. The paragraph must name the corpus median and the per-course median as
+          different figures. A single "median" cannot be checked against either.
+    """
+    import contextlib
+    import io as _io
+
+    import numpy as np
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_elevation as ve
+
+    # elev_phrase's docstring is static text, so it is read off the SOURCE rather than by importing
+    # a course-bound module -- which also avoids adding a sys.modules drop site (README counts them).
+    doc = _flow(_func_prose(os.path.join(ROOT, "generate.py"), "elev_phrase"))
+
+    # (a) THE PRODUCER. A synthetic corpus with answers computed here, not by the thing under test.
+    fake = {
+        "aaa": ("ok", 3, 0.0, None, {"abs_diff_ft": [(0.10, 1), (0.30, 2), (2.50, 3)],
+                                     "median_ft": 0.30, "signed_ft": [0.10, -0.30, 2.50],
+                                     "absolute_m": [0.01, -0.20, 0.05], "unreachable": 0}),
+        "bbb": ("ok", 2, 0.0, None, {"abs_diff_ft": [(1.00, 4), (4.00, 5)],
+                                     "median_ft": 2.50, "signed_ft": [1.00, -4.00],
+                                     "absolute_m": [0.40, -0.10], "unreachable": 1}),
+    }
+    allv = sorted(v for _s, d in fake.items() for v, _h in d[4]["abs_diff_ft"])
+    want = {"median": float(np.median(allv)), "mean": float(np.mean(allv)), "worst": max(allv),
+            "pc_worst": 2.50, "pc_median": float(np.median([0.30, 2.50])),
+            "over2": sum(1 for v in allv if v > 2), "over3": sum(1 for v in allv if v > 3),
+            "n": len(allv)}
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ve._print_corpus(fake)
+    out = " ".join(buf.getvalue().split())
+    assert out, ("verify_elevation._print_corpus printed nothing for a corpus with five holes in it. It "
+                 "is the only producer of every corpus figure elev_phrase quotes; with it silent, those "
+                 "figures are back to having no derivation at all.")
+    produced = []
+    for pat, key, label in (
+            (r"CORPUS over (\d+) hole", "n", "the hole count"),
+            (r"median ([\d.]+) ft, mean", "median", "the corpus median |diff|"),
+            (r"mean ([\d.]+), worst", "mean", "the corpus mean |diff|"),
+            (r"worst ([\d.]+) \(", "worst", "the worst hole"),
+            (r"per-COURSE medians\s*: worst ([\d.]+) ft", "pc_worst", "the worst per-course median"),
+            (r"median of the \d+ course medians ([\d.]+)", "pc_median",
+             "the median of the per-course medians"),
+            (r"holes over 2 ft\s*: (\d+)", "over2", "the count over 2 ft"),
+            (r"holes over 3 ft\s*: (\d+)", "over3", "the count over 3 ft")):
+        m = re.search(pat, out)
+        if not m:
+            produced.append(f"_print_corpus does not print {label} ({pat!r}); elev_phrase quotes it")
+        elif abs(float(m.group(1)) - want[key]) > 0.005:
+            produced.append(f"_print_corpus prints {label} as {m.group(1)}; computed {want[key]:.4f} "
+                            f"over the same synthetic corpus")
+    assert not produced, (
+        "the tool does not produce a corpus figure the print floor's justification publishes. That is "
+        "the fault, not a symptom of it: 'mean 0.27 ft' stood in that paragraph for the life of the "
+        "project because nothing in this repo could have contradicted it:\n  " + "\n  ".join(produced))
+
+    # (b) THE OFFLINE FIGURES, re-derived from the corpus rather than quoted.
+    rows = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "hole_elev.json"))):
+        with open(p, encoding="utf-8") as fh:
+            for v in (json.load(fh).get("holes") or {}).values():
+                if v.get("change_ft") is None:
+                    continue
+                ex = v.get("change_ft_exact")
+                rows.append(abs(float(ex if ex is not None else v["change_ft"])))
+    assert rows, "no hole_elev.json row carries a height change; nothing here would be measured"
+    band = sum(1 for v in rows if 2.0 <= v <= 4.0)
+    problems = []
+    for pat, got, label in ((r"[Aa]cross (\d+) holes the two disagree", len(rows), "the hole count"),
+                            (r"(\d+) of the \d+ fall in the 2-4 ft band", band,
+                             "the count in the 2-4 ft band"),
+                            (r"\d+ of the (\d+) fall in the 2-4 ft band", len(rows),
+                             "the hole count beside that band")):
+        m = re.search(pat, doc)
+        assert m, (f"elev_phrase's docstring no longer states {label} ({pat!r}). That paragraph is the "
+                   f"only recorded derivation of the 3 ft print floor.")
+        if int(m.group(1)) != got:
+            problems.append(f"elev_phrase publishes {label} as {m.group(1)}; measured {got}")
+
+    # (c) THE LABELLING. Both statistics must be named, as different things.
+    for pat, label in ((r"corpus median ([\d.]+) ft", "the corpus median"),
+                       (r"corpus mean ([\d.]+) ft", "the corpus mean"),
+                       (r"median of the \d+ per-course medians is ([\d.]+) ft",
+                        "the median of the per-course medians"),
+                       (r"worst any single course medians is ([\d.]+) ft",
+                        "the worst per-course median")):
+        if not re.search(pat, doc):
+            problems.append(f"elev_phrase's docstring does not name {label} in a form this can read "
+                            f"({pat!r}). Its 'median 0.09 ft' was the median of eleven per-course "
+                            f"medians presented as a median over every hole; naming both is the fix.")
+    cm = re.search(r"corpus median ([\d.]+) ft", doc)
+    pm = re.search(r"median of the \d+ per-course medians is ([\d.]+) ft", doc)
+    if cm and pm and cm.group(1) == pm.group(1):
+        problems.append(
+            f"elev_phrase quotes the same value ({cm.group(1)}) for the corpus median and for the "
+            f"median of the per-course medians. They are different statistics and on this corpus they "
+            f"measure differently; one of the two is a copy of the other.")
+    assert not problems, (
+        "the 3 ft print floor's recorded justification does not match the corpus it describes. This is "
+        "the gate deciding whether any elevation number reaches a card, so a stale figure here is the "
+        "derivation, not a comment:\n  " + "\n  ".join(problems))
 
 
 @needs_corpus
@@ -29429,34 +29717,82 @@ def test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_
     said = _published_figures(doc, r"INSIDE it.*?([\d.]+e-[\d]+) on that green", "_flat_fraction's docstring")
     grade("_flat_fraction's docstring", said[0], tol_used, 0.01e-6, "the tolerance it uses")
 
-    # (d) the verdict-stability claim, by re-running the whole detector at each multiplier
+    # (d) the verdict-stability claim, SWEPT rather than SAMPLED. The figure this replaces was measured
+    #     at {0.5, 1, 2, 4, 8, 16, 32, 64, 128} and reported the break at 128 and the headroom at 16x.
+    #     The break is at 80.8514. The whole answer lies inside the 64-to-128 interval that set steps
+    #     over, so the grader that certified it could not see it -- the same defect class as the six
+    #     figures this test was written for, one order smaller, and a sampled grid is how it hid.
+    #
+    #     A BISECTION and not a denser grid, because `resampled` is MONOTONE in the multiplier: a larger
+    #     tolerance can only move a green from "not flat enough" to "flat enough" (the comb term does not
+    #     depend on the multiplier at all), so there is exactly one crossing and bisection finds it
+    #     exactly rather than bounding it. 0.1-grid checked once over the whole stable range: no dirty
+    #     multiplier anywhere below the crossing. The bracket is [0.5, 1024] and is NOT taken from the
+    #     docstring -- a bisection seeded with the claim it is grading would confirm any claim inside it.
     said = _published_figures(doc, r"from ([\d.]+) to ([\d.]+) times eps", "_flat_fraction's docstring")
-    breaks = _published_figures(doc, r"only breaks at ([\d.]+), which is ([\d.]+)x the ([\d.]+) used here",
+    breaks = _published_figures(doc, r"first breaks at ([\d.]+), which is ([\d.]+)x the ([\d.]+) used here",
                         "_flat_fraction's docstring")
+    culprit = re.search(r"where ([a-z][a-z-]+) (\d+) becomes the first LiDAR green called resampled",
+                        _flow(doc))
+    assert culprit, ("_flat_fraction's docstring no longer names the green whose verdict the break "
+                     "actually turns on. A multiplier with no hole attached cannot be checked against "
+                     "the corpus, and this paragraph is the derivation of the shipped constant.")
     orig = rg._flat_fraction
-    verdicts = {}
+
+    def _verdict(mult):
+        """(false positives, missed seamless) and the LiDAR greens called resampled, at `mult` * eps."""
+        def ff(dd, sc, _m=mult):
+            f = dd[np.isfinite(dd)]
+            return float((f <= _m * np.finfo(np.float32).eps * max(sc, 1.0)).mean()) if f.size else 0.0
+        rg._flat_fraction = ff
+        fp, fn, who = 0, 0, []
+        for _s, _h, seam, a, px, py in rows:
+            r = rg.source_lattice(a, px, py)
+            if r["resampled"] and not seam:
+                fp += 1
+                who.append((_short(_s), _h))
+            fn += bool(seam and not r["resampled"])
+        return (fp, fn), sorted(who)
+
     try:
-        for mult in (said[0], 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, said[1], breaks[0]):
-            def ff(dd, sc, _m=mult):
-                f = dd[np.isfinite(dd)]
-                return float((f <= _m * np.finfo(np.float32).eps * max(sc, 1.0)).mean()) if f.size else 0.0
-            rg._flat_fraction = ff
-            fp = fn = 0
-            for _s, _h, seam, a, px, py in rows:
-                r = rg.source_lattice(a, px, py)
-                fp += bool(r["resampled"] and not seam)
-                fn += bool(seam and not r["resampled"])
-            verdicts[mult] = (fp, fn)
+        lo, hi = 0.5, 1024.0
+        v_lo, _w = _verdict(lo)
+        v_hi, _w = _verdict(hi)
+        assert v_lo == (0, 0), (
+            f"the corpus verdict is already wrong at {lo} times eps ({v_lo}), so there is no clean end "
+            f"to bisect from and every figure below would be measured against a broken bracket")
+        assert v_hi != (0, 0), (
+            f"the corpus verdict is still clean at {hi} times eps, so the detector has no breaking "
+            f"multiplier inside the bracket this sweeps and the headroom is unbounded -- re-derive the "
+            f"paragraph before trusting it")
+        for _ in range(24):                      # 1024 -> ~6e-5 absolute, well inside the 0.001 graded
+            mid = (lo + hi) / 2
+            if _verdict(mid)[0] == (0, 0):
+                lo = mid
+            else:
+                hi = mid
+        first_fp = _verdict(hi)[1]
+        stable = {k: _verdict(k)[0] for k in (said[0], said[1])}
+        broke = _verdict(breaks[0])[0]
     finally:
         rg._flat_fraction = orig
-    stable = {k: v for k, v in verdicts.items() if said[0] <= k <= said[1]}
     if set(stable.values()) != {(0, 0)}:
         problems.append(f"_flat_fraction's docstring says the verdict is unchanged from {said[0]} to "
                         f"{said[1]} times eps; measured {sorted(stable.items())} "
                         f"(false positives, missed seamless)")
-    if verdicts[breaks[0]] == (0, 0):
-        problems.append(f"_flat_fraction's docstring says the verdict breaks at {breaks[0]:g} times "
-                        f"eps; at that multiplier it is still clean")
+    elif lo - said[1] > 0.2:
+        problems.append(f"_flat_fraction's docstring stops its stable range at {said[1]:g} times eps "
+                        f"while the corpus stays clean to {lo:.4f}; a range that stops well short of "
+                        f"the crossing understates the headroom the constant actually has")
+    if broke == (0, 0):
+        problems.append(f"_flat_fraction's docstring says the verdict first breaks at {breaks[0]:g} "
+                        f"times eps; at that multiplier it is still clean, and it breaks at {hi:.4f}")
+    grade("_flat_fraction's docstring", breaks[0], hi, 0.001,
+          "the multiplier at which the corpus verdict first breaks")
+    if (culprit.group(1), int(culprit.group(2))) not in first_fp:
+        problems.append(f"_flat_fraction's docstring says {culprit.group(1)} {culprit.group(2)} is the "
+                        f"first LiDAR green called resampled; at the measured crossing {hi:.4f} it is "
+                        f"{first_fp}")
     grade("_flat_fraction's docstring", breaks[1], breaks[0] / breaks[2], 0.01,
           "how far the breaking multiplier stands above the one used")
     said = _published_figures(doc, r"([\d.]+) of ([\d.]+) LiDAR greens called resampled, ([\d.]+) of ([\d.]+) "
@@ -29755,12 +30091,75 @@ def test_the_legal_record_publishes_the_measured_source_cell_and_the_right_hole_
 # as the resolution a card prints.
 _CELL_LABEL_CLAIM = re.compile(
     r"(?<![\d.])(\d[\d.]*(?:\s*(?:&times;|&#215;|×|x)\s*\d[\d.]*)?)\s*m\b[^\w<]{0,4}data\b", re.I)
-# The same clause rule the one-metre gate above uses: the unit is a CLAUSE, and a refutation inside it
-# clears the mention -- a record has to be able to say what it used to publish.
-_DEAD_LABEL_REFUTED = re.compile(
-    r"\bnot\b|\bno\b|never|nowhere|instead of|rather than|until|used to|overstat|wrong|false|"
-    r"both called|claimed|shipped|typed|\bwas\b|\bwere\b|\bsaid\b|for the life of the project|"
-    r"\bhad\b|absent|gone|replace", re.I)
+
+
+# THE HISTORY EXEMPTION, and it is an ALLOWLIST KEYED TO CONTENT, not a vocabulary. A record has to be
+# able to say what it used to publish; the question is how a grader tells that from a live claim.
+#
+# WHAT IT REPLACES. It was a keyword rule -- any clause containing no / not / was / were / said / had /
+# claimed / shipped / typed / replace cleared the mention -- and the project's OWN house phrasing for
+# this caveat contains "no": the shipped guide row reads "greens with NO usable point cloud". So the
+# plainest live-stale sentences walked straight through it. MEASURED, all three missed (writing <L> for
+# the retired label, which is never typed in this file -- see the fixture note below):
+#     "Six greens have no usable point cloud, so each is <L>."
+#     "These greens were built from <L>."
+#     "Those holes had no LiDAR return, so they are <L>."
+# and the same sentence with no keyword in it failed. An exemption a live defect earns by coincidence of
+# wording is worse than no exemption: it certifies the absence of the thing it let through.
+#
+# WHY NOT A QUOTATION RULE, which is the obvious structural replacement and looks right -- 10 of the
+# 12 historical mentions in this repo do sit inside quotes or backticks. Because the LIVE sites this grader
+# family exists for were quoted TOO: the defect IS a stale copy of a quoted label. At 9f37857^,
+# PIPELINE.md said <Those cards print `L`.> and fetch_lidar.py's SystemExit said <their cards are
+# labelled 'L'.> Both are quotations; both were false. Measured: the keyword rule catches both of those,
+# and a quotation rule exempts both. That is a regression on the exact class, so quotation is refused and
+# the measurement is kept in
+# test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording, which drives both
+# directions.
+#
+# Nor tense, nor proximity to the corrected value: 8 of the 12 historical clauses carry no corrected
+# figure and no commit sha, so neither discriminator is complete. What is left that is both safe and
+# complete is to name them. A clause not on this list fails HOWEVER it is worded, so no phrasing earns an
+# exemption by accident; the key is the content, so a mention that MOVES keeps its exemption while a
+# mention that is REWORDED loses it -- which is the right way round, because rewording a record about a
+# retired figure is exactly when someone should have to say again that it is still history. Every entry
+# is proved to be load-bearing by the same test: an unused key fails, so a stale exemption cannot sit
+# here waiting to match something else.
+def _clause_key(clause):
+    """A content identity for one clause of prose: whitespace collapsed, lowercased, sha256, 16 hex."""
+    import hashlib
+    return hashlib.sha256(" ".join(clause.split()).lower().encode("utf-8")).hexdigest()[:16]
+
+
+_HISTORICAL_LABEL_CLAUSES = {
+    # Each value says WHERE the clause lives and WHAT it is doing, by owner rather than by line number,
+    # because line numbers move and the key does not. None of them spells the retired label: a value that
+    # did would itself become a mention needing an exemption.
+    "7a0b2febb71152e9": "generate.green_honesty's docstring -- names the label 9f37857 replaced, beside "
+                        "the measured cell that replaced it",
+    "94b98623ad858363": "render_green's source-lattice note -- why the seamless six carried the retired "
+                        "label for the life of the project",
+    "19f5d1883c1d4b04": "tools/gen_provenance -- 'the claim this replaces', quoting the two copies of "
+                        "one typed string that legal/03 and the cards shared",
+    "33bee944e2c0201d": "this file, the card-label pin -- the literal a test used to assert, named as "
+                        "the defect so nobody re-pins it",
+    "0a8c1ebe5d540826": "this file, the minilab grader -- what the label said for six greens whose own "
+                        "arrays measure otherwise",
+    "d5b5c2446846762e": "this file, the _ONE_METRE note -- states what must NOT survive, which requires "
+                        "naming it",
+    "d2772b07d160f9c3": "this file, the enlarged-card grader's docstring -- the assertion that pinned "
+                        "the defect as its expected value",
+    "0634140fe3ebb7bd": "this file, the both-editions grader -- the warnings a revert silently dropped "
+                        "from Monarch Bay's enlarged book",
+    "bccb1d84ae0d334a": "this file, the legal/03 cell grader -- 'the claim ... was never measurable', "
+                        "which is why it survived",
+    "25f83af454facd82": "this file, the card-caveat grader -- what six cards said against a source grid "
+                        "that measures 2.72 x 3.43 m",
+    "5a94d6465a02b108": "this file, _string_literals_of's docstring -- the print() example that was "
+                        "invisible to 108a894's collector",
+    "9d78c40961f73639": "this file, the label grader's docstring -- the sites that went on quoting the "
+                        "retired label in the present tense",
+}
 
 
 def _norm_label(s):
@@ -29779,16 +30178,22 @@ def _py_sources(root=None):
 
 
 def _prose_docs(root=None):
-    """The repo's user-facing documents: the two READMEs a reader starts from, and every legal record.
+    """The repo's user-facing documents: the READMEs and SECURITY.md a reader starts from, and every
+    legal record.
 
     legal/*.md is in here because two of those records carried a stale resolution and NOTHING graded
     them -- they are the most public prose the project has, and they were the last prose any grader
     could see. Globbed rather than listed so a new record cannot be added ungraded, and that includes
     the two GENERATED ones (legal/03, legal/05): if a generator prints a stale figure into them, the
     document is still wrong on disk, and the repair is to fix the generator and regenerate.
+
+    SECURITY.md is in here because it was the one root user-facing document this set omitted while some
+    27 other references in this suite grade it for other things. It is where a reader is invited to
+    compare the public summary against the compliance record, so a stale figure in it is as public as
+    one in a legal record.
     """
     root = root or ROOT
-    return ["README.md", "PIPELINE.md"] + sorted(
+    return ["README.md", "PIPELINE.md", "SECURITY.md"] + sorted(
         os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "legal", "*.md")))
 
 
@@ -29802,9 +30207,15 @@ def _string_literals_of(path):
     baseline. A runtime message is the most user-facing prose a pipeline module has: it is read while
     the pipeline runs, by the person deciding whether to trust the output.
 
-    f-strings included: `ast.walk` reaches the Constant parts inside a JoinedStr, which is how the
-    SystemExit text in fetch_lidar.py is written. Docstrings are excluded by identity (the Constant
-    that IS a docstring), never by content, so a literal that merely looks like prose is still graded.
+    THREE shapes are collected, because the first was a hole and the other two were ways past it.
+      * a plain `str` Constant. Docstrings are excluded by identity (the Constant that IS a docstring),
+        never by content, so a literal that merely looks like prose is still graded.
+      * a `bytes` Constant, decoded with errors="replace". `isinstance(node.value, str)` skipped these
+        outright, and a record is prose whatever type it happens to be stored as.
+      * a JoinedStr with its own Constant parts CONCATENATED, so a claim SPLIT across an interpolation
+        -- f"...{a}9.9{b} m data..." -- is one string here. The parts are still emitted individually as
+        well, so nothing that was graded stops being graded. The mutation fixture below forbids this
+        dodge for its own probes; the grader was open to it until now, which is the wrong way round.
     """
     import ast
     with open(path, encoding="utf-8") as fh:
@@ -29814,9 +30225,19 @@ def _string_literals_of(path):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if ast.get_docstring(node):
                 docs.add(id(node.body[0].value))
-    return [(node.lineno, node.value) for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and id(node) not in docs]
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and id(node) not in docs:
+            if isinstance(node.value, str):
+                out.append((node.lineno, node.value))
+            elif isinstance(node.value, bytes):
+                out.append((node.lineno, node.value.decode("utf-8", "replace")))
+        elif isinstance(node, ast.JoinedStr):
+            joined = "".join(p.value for p in node.values
+                             if isinstance(p, ast.Constant) and isinstance(p.value, str))
+            if joined:
+                out.append((node.lineno, joined))
+    return out
 
 
 def _prose_of_repo(root=None):
@@ -29840,6 +30261,8 @@ def _prose_of_repo(root=None):
     out = []
     for p in _py_sources(root):
         rel = os.path.relpath(p, root)
+        with open(p, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
         block, first = [], None
         with open(p, "rb") as fh:
             prev = None
@@ -29847,8 +30270,14 @@ def _prose_of_repo(root=None):
                 if tok.type != tokenize.COMMENT:
                     continue
                 if prev is not None and tok.start[0] != prev + 1:
-                    out.append((f"{rel}:{first}", " ".join(block)))
-                    block, first = [], None
+                    # A gap of BLANK lines does not end a comment region: a claim written as
+                    # "# every green here is 9.9" / (blank) / "# m data." dodged the whole sweep,
+                    # measured, while the same claim across a blank COMMENT line ("#") did not,
+                    # because that stays a consecutive token. Only a gap holding real CODE ends the
+                    # region -- prose separated by whitespace is still one piece of prose.
+                    if any(lines[ln].strip() for ln in range(prev, tok.start[0] - 1)):
+                        out.append((f"{rel}:{first}", " ".join(block)))
+                        block, first = [], None
                 if first is None:
                     first = tok.start[0]
                 block.append(tok.string.lstrip("#").strip())
@@ -29882,7 +30311,8 @@ def _stale_label_mentions(live, root=None):
     for where, text in _prose_of_repo(root):
         for clause in _clauses(text):
             for m in _CELL_LABEL_CLAIM.finditer(clause):
-                if _norm_label(m.group(0)) in live or _DEAD_LABEL_REFUTED.search(clause):
+                if _norm_label(m.group(0)) in live or \
+                        _clause_key(clause) in _HISTORICAL_LABEL_CLAUSES:
                     continue
                 out.append((where, m.group(0), " ".join(clause.split())[:140]))
     return out
@@ -29914,8 +30344,14 @@ def test_no_record_names_a_green_label_the_engine_does_not_print():
     may name a resolution label outside it. The next relabel cannot strand these again: it moves this
     set, and every record that still quotes the old figure fails here by name.
 
-    A clause carrying a REFUTATION is cleared, the same way the one-metre gate above clears one: the
-    records that describe `1 m data` as the defect that was fixed have to be able to say so.
+    A HISTORICAL mention is cleared by being NAMED, in `_HISTORICAL_LABEL_CLAUSES`, keyed to the content
+    of its clause -- not by carrying a keyword. The keyword rule this replaces cleared any clause holding
+    "no", and this project's house phrasing for the very caveat in question is "greens with NO usable
+    point cloud", so the plainest live-stale sentence in the shape the repo actually writes went straight
+    through it. See the note at that dict for the measurement, in both directions, including why the
+    obvious structural replacement -- exempt a figure inside a quotation -- is a REGRESSION here: the
+    live sites this grader exists for were quoted too, because the defect is a stale copy of a quoted
+    label.
     """
     cells = _measured_cells()
     if not cells:
@@ -29958,19 +30394,29 @@ def test_no_record_names_a_green_label_the_engine_does_not_print():
     assert not stale, (
         f"a record names a green label the engine does not print. The label is the one mark whose job "
         f"is to tell a junior to trust that green LESS, so a stale copy of it is not cosmetic. Say what "
-        f"the engine says, or mark the mention as history (a clause that refutes it is cleared):\n  "
+        f"the engine says, or mark the mention as history -- which means adding its clause key to "
+        f"_HISTORICAL_LABEL_CLAUSES on purpose, not finding a word that clears it:\n  "
         + "\n  ".join(stale))
 
 
-# The eight surfaces a resolution label can hide in, each with the shape of injection that reaches it.
-# A comment, a docstring and a runtime string live in code; the other five are documents. 108a894's
-# grader saw three of the eight and its message claimed all of them.
+# The TWELVE surfaces a resolution label can hide in, each with the shape of injection that reaches it.
+# 108a894's grader saw three of them and its message claimed all of them; a60fcae widened it to eight.
+# The four added after that were each measured as a live dodge past the eight:
+#   * an f-string whose claim is SPLIT ACROSS Constant parts. `ast.walk` reached each part separately, so
+#     the claim existed in no single collected string.
+#   * a `bytes` literal, which `isinstance(node.value, str)` skipped outright.
+#   * a comment claim split across a TRULY BLANK line, which ended the block mid-claim. Note the variant
+#     that does NOT dodge: a blank COMMENT line ("#") keeps the tokens consecutive, so the block survives
+#     and the claim is caught. Both are probed, because the difference is not obvious from the code.
+#   * SECURITY.md, the one root user-facing document `_prose_docs()` omitted.
 #
 # The label to inject is PASSED IN, never typed here. A mutation test for a grader that reads this file
 # would otherwise trip its own grader on its own fixtures -- and the way out of that must not be to
 # split the phrase across two literals to hide it, because a repo where prose can dodge the sweep by
-# spelling is a repo where the next stale label dodges it too.
+# spelling is a repo where the next stale label dodges it too. The split-f-string probe therefore takes
+# the label APART at a digit boundary it is given, rather than spelling either half.
 def _label_injections(dead):
+    head, tail = dead[:2], dead[2:]          # split BY POSITION, so neither half is spelled here
     return (
         ("a comment", "lidar_coverage.py",
          lambda s: s + f"\n# every green here is {dead}.\n"),
@@ -29980,8 +30426,17 @@ def _label_injections(dead):
          lambda s: s + f'\n\ndef _probe():\n    print("hole 9: {dead}")\n'),
         ("a SystemExit message", "fetch_lidar.py",
          lambda s: s + f'\n\ndef _probe(n):\n    raise SystemExit(f"{{n}} greens are {dead}")\n'),
+        ("an f-string SPLIT across Constant parts", "lidar_coverage.py",
+         lambda s: s + f'\n\ndef _probe2(a, b):\n    print(f"{{a}}{head}{{b}}{tail} on that green")\n'),
+        ("a bytes literal", "lidar_coverage.py",
+         lambda s: s + f'\n\ndef _probe3():\n    return b"hole 9: {dead}"\n'),
+        ("a comment claim split across a TRULY BLANK line", "lidar_coverage.py",
+         lambda s: s + f"\n# every green here is {head}\n\n# {tail}.\n"),
+        ("a comment claim split across a blank COMMENT line", "lidar_coverage.py",
+         lambda s: s + f"\n# every green here is {head}\n#\n# {tail}.\n"),
         ("README.md", "README.md", lambda s: s + f"\nEvery coarse green is {dead}.\n"),
         ("PIPELINE.md", "PIPELINE.md", lambda s: s + f"\nEvery coarse green is {dead}.\n"),
+        ("SECURITY.md", "SECURITY.md", lambda s: s + f"\nEvery coarse green is {dead}.\n"),
         ("legal/01_DATA_SOURCES_AND_LICENSES.md", "legal/01_DATA_SOURCES_AND_LICENSES.md",
          lambda s: s + f"\nEvery coarse green is {dead}.\n"),
         ("legal/11_HORIZONTAL_EARTH_MODEL.md", "legal/11_HORIZONTAL_EARTH_MODEL.md",
@@ -30007,6 +30462,13 @@ def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_i
     real file, one surface at a time, and the grader must come back with that surface named. The
     unmutated copy must come back clean first, so every failure below is attributable to its injection
     and not to something the copy already carried.
+
+    a60fcae widened it to eight surfaces; four more dodges were measured past those eight and are probed
+    here too -- a claim SPLIT across the Constant parts of one f-string, a `bytes` literal, a comment
+    claim split across a truly blank line, and SECURITY.md. Each was verified to walk through the
+    eight-surface collector before the collector was widened, and the blank-COMMENT-line variant that
+    does NOT dodge is probed beside the one that does, so the difference stays measured rather than
+    assumed.
 
     Fast and hermetic: the copy holds only the files the injections touch, so the collector's globs
     (`*.py`, `legal/*.md`) find exactly those and the whole sweep runs in well under a second.
@@ -30048,6 +30510,108 @@ def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_i
         assert not missed, (
             "the stale-label grader cannot see one of the surfaces a stale label has actually hidden "
             "in, so it certifies prose it never read:\n  " + "\n  ".join(missed))
+
+
+# The LIVE-STALE sentences the history exemption must refuse, written in the shapes this repo actually
+# uses. `{L}` is filled in with the probe label so it is never typed here (see the fixture note above).
+#
+# The first three are the shapes the keyword rule cleared: the project's own house phrasing for this very
+# caveat is "greens with NO usable point cloud", so "no" is a word this repo writes while making a LIVE
+# claim, and "was"/"were"/"had" are ordinary English inside one. The last two are not hypotheses -- they
+# are the wordings two REAL live sites carried, quoted off the tree at 9f37857^ (PIPELINE.md's card
+# sentence and fetch_lidar.py's coverage SystemExit) -- and they are here because they are what refutes a
+# quotation-based exemption: both put the figure inside quotes while asserting it of the current build.
+_LIVE_STALE_SHAPES = (
+    ("the house phrasing, with 'no' in it", "Six greens have no usable point cloud, so each is {L}."),
+    ("past-tense passive", "These greens were built from {L}."),
+    ("'had' plus 'no'", "Those holes had no LiDAR return, so they are {L}."),
+    ("a REAL live site: PIPELINE.md at 9f37857^", "Those cards print `{L}`."),
+    ("a REAL live site: fetch_lidar's SystemExit", "their cards are labelled '{L}'."),
+)
+
+
+def test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording():
+    """MUTATION TEST, BOTH DIRECTIONS. The exemption that let a record say what it used to publish was a
+    KEYWORD rule, and the keyword it turned on is a word this project writes inside live claims.
+
+    `_DEAD_LABEL_REFUTED` cleared any clause holding no / not / was / were / said / had / claimed /
+    shipped / typed / replace. The shipped guide row reads "greens with NO usable point cloud", so the
+    plainest live-stale sentence in the house style was exempt. MEASURED against the retired rule, all
+    three of the first shapes below were MISSED and the same sentence with no keyword in it FAILED --
+    the exemption was decided by vocabulary, not by whether the claim was true.
+
+    The obvious structural replacement -- clear a figure that sits inside a QUOTATION -- was measured and
+    REFUSED. 10 of the 12 historical mentions in this repo are quoted, so it looks right; but the defect
+    this grader family exists for IS a stale copy of a quoted label, and the last two shapes below are
+    the exact wordings of two live sites at 9f37857^. A quotation rule exempts both. Swapping a rule that
+    catches them for one that does not, in the name of being structural, would be the campaign's own
+    failure mode.
+
+    So the exemption is an explicit content-keyed allowlist, and this grades it in both directions:
+
+      FORWARD  every live-stale shape, injected into a real file, must FAIL -- and must fail from a
+               clause that does NOT appear in the allowlist, so it cannot be passing by accident.
+      REVERSE  every clause already on the allowlist must still be found in the repo and still be
+               cleared. A key that matches nothing is a STALE exemption sitting ready to clear a future
+               clause nobody looked at, and a historical record that has quietly stopped being cleared
+               means the sweep is about to be waived rather than fixed.
+    """
+    import shutil
+    import tempfile
+    live = {"2.7x3.4mdata"}
+    dead = f"{9.9:.1f} m data"
+    assert _norm_label(dead) not in live and _CELL_LABEL_CLAIM.search(dead), (
+        f"the probe label {dead!r} is not a resolution claim outside the vocabulary, so nothing below "
+        f"would prove anything about the exemption")
+
+    # FORWARD. Each live-stale shape must be reported, in a real copy, one at a time.
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "legal"))
+        for rel in sorted(set(_prose_docs()) | {"lidar_coverage.py"}):
+            shutil.copyfile(os.path.join(ROOT, rel), os.path.join(td, rel))
+        pristine = open(os.path.join(td, "lidar_coverage.py"), encoding="utf-8").read()
+        assert not _stale_label_mentions(live, root=td), (
+            "the unmutated copy already names a label outside the vocabulary, so no injection below "
+            "would be attributable")
+        waved = []
+        for name, shape in _LIVE_STALE_SHAPES:
+            sentence = shape.replace("{L}", dead)
+            path = os.path.join(td, "lidar_coverage.py")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(pristine + f"\n# {sentence}\n")
+            try:
+                found = _stale_label_mentions(live, root=td)
+            finally:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(pristine)
+            if not any(w.split(":")[0] == "lidar_coverage.py" for w, _s, _c in found):
+                waved.append(f"{name}: {sentence!r} was cleared by the history exemption")
+        assert not waved, (
+            "the history exemption clears a LIVE claim that the engine's own label denies. An exemption "
+            "a live defect earns by how it happens to be worded certifies the absence of the defect it "
+            "let through -- which is what the keyword rule did:\n  " + "\n  ".join(waved))
+
+    # REVERSE. Every allowlisted clause must still exist and still be cleared, and none may be dead.
+    assert _HISTORICAL_LABEL_CLAUSES, (
+        "the history allowlist is empty. Either every historical mention of a retired label has been "
+        "removed from the repo -- check, because this suite documents several deliberately -- or the "
+        "exemption has been switched off and the records that describe the old label are now failing.")
+    present = {_clause_key(c) for _w, text in _prose_of_repo() for c in _clauses(text)}
+    dead_keys = sorted(k for k in _HISTORICAL_LABEL_CLAUSES if k not in present)
+    assert not dead_keys, (
+        "the history allowlist holds a key that matches no clause in the repo. A stale exemption is a "
+        "pre-approved hole waiting for a clause nobody has looked at: if the record was reworded, "
+        "re-key it deliberately; if it was deleted, delete the key.\n  "
+        + "\n  ".join(f"{k}: {_HISTORICAL_LABEL_CLAUSES[k]}" for k in dead_keys))
+    cells = _measured_cells()
+    if cells:
+        keyed = {k for _w, text in _prose_of_repo() for c in _clauses(text)
+                 if _CELL_LABEL_CLAIM.search(c) for k in [_clause_key(c)]}
+        unused = sorted(k for k in _HISTORICAL_LABEL_CLAUSES if k not in keyed)
+        assert not unused, (
+            "the history allowlist holds a key for a clause that no longer names a resolution label at "
+            "all, so it is exempting nothing and grades nothing:\n  "
+            + "\n  ".join(f"{k}: {_HISTORICAL_LABEL_CLAUSES[k]}" for k in unused))
 
 
 # A resolution bound DIRECTLY to the seamless product, in either order: "1 m seamless DEM",

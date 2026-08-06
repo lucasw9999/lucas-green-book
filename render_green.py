@@ -118,10 +118,17 @@ def _flat_fraction(d2, scale):
     docstring offered the second reading -- "nothing at all between 5e-7 and 1e-4 ... a gap two orders
     of magnitude wide" -- and 0.6% of the values lie in that band, with the tolerance this actually
     uses INSIDE it, 4.79e-6 on that green. The insensitivity is real, and it is what was worth writing
-    down: the corpus verdict is unchanged for every multiplier from 0.5 to 64.0 times eps -- 0 of 192
-    LiDAR greens called resampled, 6 of 6 seamless found -- and only breaks at 128.0, which is 16x the
-    8.0 used here. Every figure in this paragraph is re-derived per run by
-    test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_measures.
+    down: the corpus verdict is unchanged for every multiplier from 0.5 to 80.8 times eps -- 0 of 192
+    LiDAR greens called resampled, 6 of 6 seamless found -- and first breaks at 80.8514, which is 10.11x
+    the 8.0 used here, where copper-valley 4 becomes the first LiDAR green called resampled.
+
+    SWEPT CONTINUOUSLY, because this paragraph published 128.0 and 16x and the break is at 80.85. Both
+    figures came out of probing the powers of two {0.5, 1, 2, 4, 8, 16, 32, 64, 128}, and the whole
+    answer lies inside the 64-to-128 interval that set steps over -- so the headroom was overstated by
+    1.58x by a grader structurally unable to see it. That is the same defect class as the six figures
+    this paragraph's own corrections were about, one order smaller. Every figure here is re-derived per
+    run by test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_measures, which
+    bisects for the crossing rather than sampling for it.
     """
     fin = d2[np.isfinite(d2)]
     if not fin.size:

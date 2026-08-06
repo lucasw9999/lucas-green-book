@@ -408,7 +408,9 @@ def _row(slug, seam_cells=None):
     if dig:
         notes.append("hand-added greens were traced from public-domain USDA NAIP because OSM had none")
     # The TREE layer's coverage gap belongs here too. This table already records where the green
-    # surfaces fall back to the 1 m DEM and how many holes carry a measured height change, so the one
+    # surfaces come from the seamless mosaic instead of the point cloud -- with the source cell MEASURED
+    # off those arrays, which is what `_seamless_clause` writes and why no figure is named here -- and how
+    # many holes carry a measured height change, so the one
     # remaining per-hole data limitation it did not report was trees: they are found by height above
     # ground in the point cloud, so a hole the survey does not reach draws none -- and on the card that
     # is indistinguishable from a hole that genuinely has none. Monarch Bay 1, 17 and 18 are the case,
