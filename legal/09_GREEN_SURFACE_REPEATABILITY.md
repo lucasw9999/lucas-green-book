@@ -201,7 +201,7 @@ had to hold, and it holds with two orders of magnitude of margin.
    caveat that both figures below were measured *after* the tee-to-green height was moved onto the
    feature polygons. Before that, the printed height was a median over the green plus a 12 m collar,
    a corpus-median 82% of which is not green, against a median over an axis-aligned box at the tee that
-   a mapped tee covers about 13% of. Those two region errors pointed opposite ways and largely cancelled
+   a mapped tee covers a corpus-median 12.6% of. Those two region errors pointed opposite ways and largely cancelled
    in the printed *change*, which is why neither was visible in it: correcting only the green end would
    have shifted every height in the book by +0.45 ft. Corrected together they moved 102 of the then-177
    printed integers, made 6 heights appear and 2 disappear at the 3 ft floor, flipped no above/below
@@ -220,7 +220,9 @@ had to hold, and it holds with two orders of magnitude of margin.
      2026‑08‑05, which reached every one of them — the two agree to a **worst per‑course median of
      0.045 m** and a **worst single green of 0.312 m** (Merion); the printed tee‑to‑green *change*
      agrees to a **worst single hole of 2.46 ft** (Philadelphia 5), with per‑course medians from 0.03
-     to 0.62 ft. At a *mapped* tee this tool reads the whole OSM tee pad where the pipeline reads the
+     to 0.63 ft — both ends are BOUNDS and are rounded OUTWARD, because the worst per‑course median
+     measures 0.6243 ft and 0.62, its correct two‑digit rounding, would EXCLUDE the course it is there
+     to cover. At a *mapped* tee this tool reads the whole OSM tee pad where the pipeline reads the
      pad inside a 15 m window, so at those tees the change figures include a region difference that
      inflates them — they are upper bounds there, and the tool records why it is not re‑pointed at the
      pipeline's own choice. A corpus median and a median of per‑course medians are different statistics,
