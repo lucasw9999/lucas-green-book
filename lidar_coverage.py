@@ -64,6 +64,15 @@ def _env_on(name):
     Parsed this way, NOT for truthiness: bool(os.environ.get(..)) makes ALLOW_COVERAGE_GAPS=0 and
     =false mean YES, and these two waive the only check standing between a green the tiles do not
     reach and a fetch that reports success.
+
+    This is the SEVENTH site in the repo spelling that off-vocabulary (fetch_dem and fetch_dem_hd hold
+    it in a module constant, fetch_hole_elev and fetch_trees in an `_env_on` of their own, and
+    fetch_trees twice more inline) and it is deliberately not imported from any of them: this module
+    must keep importing where laspy and numpy are absent, which is the one case ALLOW_UNCHECKED_COVERAGE
+    exists for. What makes six of the seven safe is not a shared home, it is that ONE table drives
+    them -- test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage, which now
+    DISCOVERS every module defining `_env_on` rather than listing them, so a copy cannot arrive
+    unpinned. The two fetch_trees reads spelled inside function bodies are still unreachable by it.
     """
     return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
 

@@ -15360,12 +15360,17 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
     records that its previous grep-based version was satisfied merely by this module-scope line
     existing. So pin the PARSE, not the string.
 
-    The SAME off-vocabulary is hand-copied into three more places -- fetch_hole_elev._env_on and
-    fetch_trees._env_on, which covers two flags -- and none of them was pinned. Their flags are driven
-    in this suite only with "0" and "1", so narrowing either tuple to ("", "0"), which makes
-    ALLOW_ELEV_LOSS=false / ALLOW_NO_TREES=no WAIVE the guard, left the whole suite at its baseline
-    (303 passed, 1 skipped, unchanged). Five copies of a vocabulary are only safe while something says
-    they are the same vocabulary, so all five are driven over one table here."""
+    The SAME off-vocabulary is hand-copied all over this repo -- fetch_hole_elev._env_on,
+    fetch_trees._env_on (two flags), lidar_coverage._env_on (two flags) and two reads spelled inline
+    inside fetch_trees function bodies -- and none of them was pinned when this test was written. Their
+    flags are driven in this suite only with "0" and "1", so narrowing either tuple to ("", "0"), which
+    makes ALLOW_ELEV_LOSS=false / ALLOW_NO_TREES=no WAIVE the guard, left the whole suite at its
+    baseline (303 passed, 1 skipped, unchanged). Copies of a vocabulary are only safe while something
+    says they are the same vocabulary, so every module that defines `_env_on` is DISCOVERED at the end
+    and required to be in the table here -- lidar_coverage's copy arrived unpinned under a list, which
+    is why the list is no longer the pin. The two inline reads (ALLOW_NO_BUILDINGS, ALLOW_NO_RELATIONS)
+    are still unreachable: nothing can import a function's local, so pinning them needs the read routed
+    through fetch_trees._env_on first."""
     os.environ["COURSE"] = a_course()
     TABLE = (("", False), ("0", False), ("false", False), ("FALSE", False),
              ("no", False), ("No", False), ("1", True), ("true", True), ("yes", True))
@@ -15380,13 +15385,23 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
                 assert mod.OVERWRITE is want, (
                     f"{name}: OVERWRITE={raw!r} parsed to {mod.OVERWRITE}, expected {want} -- an "
                     f"explicit 'off' must not arm a stage that overwrites a working green surface")
-        # ...and the three _env_on copies, whose flags waive guards rather than arm a rewrite: an
-        # empty tree layer (every card drawn as open ground), a hole that has lost the canopy the
-        # survey recorded, and a hole that has lost the elevation it used to print.
+        # ...and the _env_on copies, whose flags waive guards rather than arm a rewrite: an empty tree
+        # layer (every card drawn as open ground), a hole that has lost the canopy the survey recorded,
+        # a hole that has lost the elevation it used to print, and the two that let a fetch proceed
+        # past a coverage verdict it cannot vouch for.
+        driven = []
         for name, flags in (("fetch_hole_elev", ("ALLOW_ELEV_LOSS",)),
-                            ("fetch_trees", ("ALLOW_NO_TREES", "ALLOW_TREE_LOSS"))):
+                            ("fetch_trees", ("ALLOW_NO_TREES", "ALLOW_TREE_LOSS")),
+                            ("lidar_coverage", ("ALLOW_COVERAGE_GAPS", "ALLOW_UNCHECKED_COVERAGE"))):
             mod = _import_first_party(name)
             assert hasattr(mod, "_env_on"), f"{name} no longer has the _env_on this pins"
+            # The key names are LITERAL here so a rename cannot silently drop a hatch out of the
+            # table; where the module publishes them as constants, they must agree with these.
+            published = {v for k, v in vars(mod).items()
+                         if k.isupper() and isinstance(v, str) and v.startswith("ALLOW_")}
+            assert not (published - set(flags)), (
+                f"{name} publishes hatch key(s) {sorted(published - set(flags))} that this table does "
+                f"not drive, so their parse is graded by nothing")
             for flag in flags:
                 held = os.environ.get(flag)
                 try:
@@ -15403,6 +15418,7 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
                         os.environ.pop(flag, None)
                     else:
                         os.environ[flag] = held
+                driven.append(f"{name}.{flag}")
     finally:
         if saved is None:
             os.environ.pop("OVERWRITE", None)
@@ -15410,6 +15426,23 @@ def test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage()
             os.environ["OVERWRITE"] = saved
         for m in ("config", "fetch_dem", "fetch_dem_hd"):
             sys.modules.pop(m, None)
+
+    # EVERY MODULE THAT DEFINES `_env_on` MUST BE IN THE TABLE ABOVE -- discovered, not listed, so a
+    # fourth copy of the helper cannot arrive unpinned the way lidar_coverage's did. Measured rather
+    # than stated because a bare figure in the note above is exactly what rots when a hatch is added.
+    defines = sorted(os.path.basename(p)[:-3] for p in _py_sources()
+                     if not os.path.relpath(p, ROOT).startswith("tests" + os.sep)
+                     and _in_code("def _env_on(", open(p, encoding="utf-8").read()))
+    graded = {d.split(".")[0] for d in driven}
+    assert not (set(defines) - graded), (
+        f"these modules define their own _env_on and no flag of theirs is driven over the table above, "
+        f"so the off-vocabulary they copied is graded by nothing: {sorted(set(defines) - graded)}. Add "
+        f"them to the table -- narrowing one copy's tuple to (\"\", \"0\") turns an explicit 'off' into "
+        f"a waiver and left this whole suite green when it was tried.")
+    assert len(driven) > len(defines), (
+        f"{len(driven)} flag(s) driven across {len(defines)} _env_on copy(ies) ({defines}) -- at least "
+        f"one of these modules has more than one hatch, so a table with one flag each has stopped "
+        f"covering them: {driven}")
 
 
 def test_a_malformed_only_is_refused_rather_than_silently_meaning_every_hole():
