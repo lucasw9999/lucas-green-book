@@ -34733,11 +34733,23 @@ _SEAMLESS_RES = re.compile(
 # reads comments -- a literal example would be swept by it and fail as a finding against itself, which is
 # exactly what it did on the first run of this note.
 #
-# Bound by "at" alone, and that narrowness is measured rather than timid. Widened to any short run of
-# words between the producer and the figure it reaches 10 clauses in this tree, and 3 of those attribute
-# a figure to a producer that does not produce it while being perfectly true English -- a sentence about
-# one stage REPLACING the other's 0.4 m surface, or REFUSING its own attempt at one. An attribution rule
-# cannot grade a sentence like that, so it does not try to read one.
+# Bound by "at" alone, and that narrowness is MEASURED rather than timid -- `_producer_widening_costs`
+# re-derives both readings below on every run, off the SHIPPED pattern, the same move `_gap_widths` makes
+# for the rule above. It has to be re-derived because the figures this note used to carry did not
+# reproduce: it said the wider reading "reaches 10 clauses in this tree, and 3 of those" are wrong
+# attributions, and that pair lands at no width of words at all -- only at a roughly 30-character window,
+# which is not a rule anybody would write. Measured, as bounds:
+#   * ANCHOR WIDENED to a run of up to four filler words between the producer and the figure: at least
+#     3 clauses, at least 1 of them a WRONG attribution that is perfectly true English -- a sentence
+#     about one stage REPLACING what the other built, or REFUSING its own attempt at it.
+#   * READ AS CO-OCCURRENCE, any metre figure in a clause that names a producer at all: at least
+#     20 clauses, at least 12 wrong attributions. That is PIPELINE.md's tree listing, every docstring
+#     that contrasts the two stages, and every note about one overwriting the other.
+# An attribution rule cannot grade a sentence like that, so it does not try to read one. Published as
+# LOWER bounds and graded as such: overstating what a wider reading would cost is how a refusal keeps its
+# conclusion and loses its premise, which is the defect the gap sweep above was rewritten for. Set BELOW
+# the live measurement on purpose, for the reason `_widening_costs` gives -- an exact count over this
+# repo's own prose is a tripwire on the next unrelated sentence anybody writes about the two stages.
 _PRODUCER_RES = re.compile(
     r"(fetch_dem(?:_hd)?\.py)`?\s+at\s+(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b", re.I)
 
@@ -34888,6 +34900,61 @@ def _widening_costs():
             "gap": {n: (len(c), len(l)) for n, (c, l) in gap.items()}}
 
 
+def _producer_widening_costs():
+    """What the two wider readings of `_PRODUCER_RES` would cost, measured over the prose in this tree.
+
+    -> {"gap": {n: (clauses flagged, of those a WRONG attribution)}, "co_clauses": n, "co_wrong": n}
+
+    The note above that pattern refuses both readings, and the figures it refused them on did not
+    reproduce at any width this file can construct -- it claimed 10 clauses and 3 wrong attributions,
+    which lands only at a roughly 30-character window between the filename and the figure, and a
+    character window is not a rule anybody would write. A refusal resting on a figure nothing
+    re-derives is the shape "1 m" survived six cards inside, so it is re-derived here, off the SHIPPED
+    pattern rather than off a second copy of it -- the same move `_gap_widths` makes for the rule above.
+
+      gap[n]  the `at` anchor widened to a run of up to n filler words between producer and figure.
+      co_*    the CO-OCCURRENCE reading: any metre figure in a clause that NAMES a producer, which is
+              what "any short run of words" collapses to once the run can cross a clause.
+
+    A WRONG attribution is one whose figure is not among those that producer's OWN surfaces measure
+    (`_producer_grid_figures`), which is the judgement the shipped rule makes -- so what is counted is
+    what a wider rule would REPORT, not what a reader would call a mistake.
+    """
+    prod = _producer_grid_figures()
+    tol = 0.06
+    marker = r"\s+at\s+"
+    src = _PRODUCER_RES.pattern
+    assert marker in src, (
+        f"_PRODUCER_RES no longer carries the {marker!r} anchor this sweep widens, so the note above it "
+        f"would be measured on a pattern the repo does not ship:\n  {src}")
+    widths = {n: re.compile(src.replace(marker, r"(?:\s+\w+){0,%d}\s+" % n), re.I) for n in range(0, 5)}
+    names = re.compile(r"fetch_dem(?:_hd)?\.py", re.I)
+    anym = re.compile(r"(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b")
+    gap = {n: [set(), set()] for n in widths}
+    co_clauses, co_wrong = set(), set()
+
+    def misattributed(who, said):
+        figs = prod.get(who.lower()) or {}
+        return not any(abs(said - a) <= tol for a in figs)
+
+    for where, text in _prose_of_repo():
+        for clause in _clauses(text):
+            key = (where, " ".join(clause.split())[:200])
+            for n, pat in widths.items():
+                for m in pat.finditer(clause):
+                    gap[n][0].add(key)
+                    if misattributed(m.group(1), float(m.group(2))):
+                        gap[n][1].add(key)
+            mentioned = {m.group(0) for m in names.finditer(clause)}
+            figures = [float(m.group(1)) for m in anym.finditer(clause)]
+            if mentioned and figures:
+                co_clauses.add(key)
+                if any(misattributed(who, v) for who in mentioned for v in figures):
+                    co_wrong.add(key)
+    return {"gap": {n: (len(c), len(w)) for n, (c, w) in gap.items()},
+            "co_clauses": len(co_clauses), "co_wrong": len(co_wrong)}
+
+
 @needs_corpus
 def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_one_metre_product():
     """Six live sites went on calling the seamless fallback "the 1 m seamless DEM" after 9f37857.
@@ -34959,9 +35026,13 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
     # recorded when the axis under discussion was the word LIST, where it holds, and it is false of the
     # GAP: widening the gap to two reached both shapes three word-list widenings had missed, and it was
     # the change that found the seventh live site. It is measured, not assumed -- gap 3 is where the
-    # first LEGITIMATE clause is flagged (3 of them in this tree, each a true sentence putting the other
-    # stage's real 0.4 m figure two or three words from a product word), so the line sits between the
-    # last free widening and the first one that costs something.
+    # first LEGITIMATE clause is flagged -- each a true sentence putting the other stage's real 0.4 m
+    # figure two or three words from a product word -- so the line sits between the last free widening
+    # and the first one that costs something. HOW MANY of them there are is the gap table's own fourth
+    # column, graded above against `_widening_costs` on every run, and is deliberately not restated
+    # here: this comment said 3 while the table two lines up said 2, which is the two-copies-of-one-
+    # figure defect that table was built to end. (It read 3 because the pattern was taking "a good
+    # NON-seamless 0.4 m surface" for a claim about the product; see the note beside _SEAMLESS_RES.)
     assert not _SEAMLESS_RES.search(f"a green built at {dead} by the coarse seamless stage"), (
         "the adjacency pattern now tolerates THREE filler words between the figure and the product. "
         "Measured in this tree, that is where it starts flagging true sentences -- prose that names the "
@@ -34978,8 +35049,9 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
             f"of the other is invisible to every product rule in this file.")
     assert not _PRODUCER_RES.search(f"fetch_dem.py replaces a good {dead} LiDAR surface"), (
         "_PRODUCER_RES has widened past attribution: it now reads a figure out of a sentence that only "
-        "MENTIONS a producer near one. Three clauses in this tree say exactly that and are true, so a "
-        "rule that grades them cannot be kept -- see the note above the pattern.")
+        "MENTIONS a producer near one. Clauses in this tree say exactly that and are true, so a rule "
+        "that grades them cannot be kept -- see the note above the pattern, whose count of them "
+        "_producer_widening_costs re-derives.")
     if not allowed:
         pytest.skip("per-course green surfaces are gitignored; nothing to measure")
     tol = 0.06                          # the same cell tolerance the card and legal/03 graders use
@@ -35032,6 +35104,35 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
     # and this grader's own history is seven live sites that a note had already described accurately.
     costs = _widening_costs()
     here = _flow(open(__file__, encoding="utf-8").read())
+    # WHAT THE TWO WIDER READINGS OF THE PRODUCER RULE COST, re-derived rather than quoted. The note above
+    # `_PRODUCER_RES` refuses both on these numbers, and the pair it used to publish -- 10 clauses, 3 of
+    # them wrong attributions -- reproduces at no width of words: only at a roughly 30-character window,
+    # which makes the demonstration accidental rather than the reason. Graded as LOWER bounds, because
+    # overstating what a wider rule would cost is how a refusal keeps its conclusion and loses its
+    # premise.
+    pcosts = _producer_widening_costs()
+    for pat, keys, what in (
+            (r"run of up to four filler words[^.]*?at least\s+(\d+) clauses, at least (\d+) of them",
+             ("gap4_clauses", "gap4_wrong"), "the widened anchor"),
+            (r"names a producer at all: at least\s+(\d+) clauses, at least (\d+) wrong attributions",
+             ("co_clauses", "co_wrong"), "the co-occurrence reading")):
+        m = re.search(pat, here)
+        assert m, (
+            f"the record of what {what} would cost is no longer in a form this test can read, so the "
+            f"note above _PRODUCER_RES refuses it on nothing: measured {pcosts}")
+        live = {"gap4_clauses": pcosts["gap"][4][0], "gap4_wrong": pcosts["gap"][4][1],
+                "co_clauses": pcosts["co_clauses"], "co_wrong": pcosts["co_wrong"]}
+        for i, key in enumerate(keys, start=1):
+            said = int(m.group(i))
+            if said > live[key]:
+                bad.append(f"{what} publishes {key} as at least {said}; measured {live[key]} in this "
+                           f"tree, so that bound does not hold and the refusal is stated on a figure "
+                           f"the tree does not support")
+    if not pcosts["gap"][4][1]:
+        bad.append(
+            "widening _PRODUCER_RES's anchor to four filler words no longer flags a single TRUE sentence, "
+            "which is the whole reason the wider reading is refused. Re-measure and re-decide rather than "
+            f"leaving a refusal standing on a fact that has expired: measured {pcosts}")
     widths = _gap_widths()
     prep = f"at {dead} from the seamless DEM"
     table = re.findall(r"\|\s*([0-4])\s*\|\s*(no|yes|YES)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|", here)
