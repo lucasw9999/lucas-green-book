@@ -394,8 +394,10 @@ def test_the_yardage_card_claims_a_rebuild_only_where_the_course_record_states_o
             "its guide card:\n  " + " ".join(
                 s for s in re.split(r"(?<=[.)])\s+", re.sub(r"<[^>]+>", "", bare))
                 if "rebuil" in s.lower()))
-        assert not re.search(r"\b(19|20)\d{2}\b", re.sub(r"<[^>]+>", "", bare)), \
-            "a year is printed on a card whose course record states no rebuild year"
+        # Everything before the copyright notice: the card's own claims, not the (c) year in the licence.
+        claims = re.sub(r"<[^>]+>", "", bare).split("&copy;")[0]
+        assert not re.search(r"\b(19|20)\d{2}\b", claims), \
+            f"a year is printed on a card whose course record states no rebuild year: {claims[-300:]}"
         # ...and the reason the greens are blank, which IS what build_mode: yardage means, survives
         for supported in ("post-construction green-surface data", "blank\n      to mark your own read"):
             assert supported in bare, (

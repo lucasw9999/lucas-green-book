@@ -17,6 +17,7 @@ Not affiliated with, and not derived from, any commercial green-book product.
 import math
 import json
 import os
+import re
 import base64
 import render_green
 import render_hole
@@ -146,23 +147,90 @@ def yardage_hole_panel(hole, sheet_label):
   <div class="ynote">{lines}</div>
 </div>'''
 
+# A rebuild this course's OWN record states, in the PAST tense, with a year: "Course rebuilt 2025",
+# "fully rebuilt (Jay Blasi, reopened May 2025)". Past participles only, and the year has to sit inside
+# the same clause (no sentence or semicolon between them), because the sentence printed from this is
+# past tense too -- "this course WAS rebuilt in YYYY". "the rebuild is expected 2027" and "2021 LiDAR is
+# pre-rebuild" must not become a claim that it happened, and neither matches.
+_REBUILT_RE = re.compile(r"\b(?:rebuilt|renovated|reconstructed|reopened)\b[^.;]{0,60}?"
+                         r"\b((?:19|20)\d{2})\b", re.I)
+# The fields of a course record that carry this fact today, in the order they are read. "rebuilt" is the
+# explicit one to set on a NEW course; the other two are where the corpus states it in prose.
+_REBUILT_FIELDS = ("rebuilt", "_status", "dem_source")
+
+
+def _rebuild_year():
+    """The year THIS course's own record says it was rebuilt, or None if it does not say.
+
+    yardage_guide_panel() hardcoded "(this course was rebuilt in 2025)" and "This course was <b>rebuilt
+    in 2025 with new greens</b>". Both print in the shipped book and PDF of the one course built in
+    yardage mode, where they are true -- and both would have printed unchanged on the SECOND such
+    course, asserting a rebuild, in a year, about a course nothing in this project says was rebuilt at
+    all. Latent only because 11 of the 12 records carry no build_mode; the claim was keyed on the build
+    MODE, which says "no trustworthy post-construction elevation exists" and says nothing about why.
+
+    So the year comes from a per-course fact, and a record that does not state one prints no claim --
+    the card still gives the reason every yardage-mode book supports (no trustworthy post-construction
+    green-surface data), which is what build_mode actually means.
+
+    WHY PROSE FIELDS AND NOT ONLY AN EXPLICIT KEY. courses/ is gitignored and hand-edited -- it is the
+    only copy of the transcribed scorecards -- and the printed sentence is quoted verbatim in
+    legal/05_DISCLAIMER_TEXT.md, which is generated FROM the books. Requiring a new key would mean
+    editing a course record and reprinting a book and its PDF to say exactly what they already say. The
+    fact is already recorded per course, in that course's own record, in the two fields the corpus uses
+    for it ("Course rebuilt 2025 (Jay Blasi)" / "fully rebuilt (Jay Blasi, reopened May 2025) with new
+    greens"), so it is read from there. `"rebuilt": 2025` is read first and is the clean way to state it
+    on a new course.
+
+    Refuses rather than guesses, twice over: nothing is claimed when no field states a rebuild, and
+    nothing is claimed when two fields state DIFFERENT years, because then the record disagrees with
+    itself and a printed year would be a choice this code is not entitled to make.
+    """
+    course = config.COURSE or {}
+    years = set()
+    for key in _REBUILT_FIELDS:
+        val = str(course.get(key) or "")
+        if key == "rebuilt" and re.fullmatch(r"\s*(?:19|20)\d{2}\s*", val):
+            years.add(val.strip())        # the explicit field may state the bare year
+            continue
+        years.update(m.group(1) for m in _REBUILT_RE.finditer(val))
+    return years.pop() if len(years) == 1 else None
+
+
 def yardage_guide_panel():
+    """The yardage-mode legend card. Its rebuild sentence is gated on _rebuild_year() -- see there.
+
+    Both halves of the claim are assembled rather than written out so the two cannot disagree with each
+    other: one card cannot say a rebuild explains the missing arrows while the About text below it says
+    nothing about a rebuild. Plain-string concatenation, like the _naip_line() and sharing_line() splices
+    already here -- NOT an f-string, because splicing a segment out of an f-string is what once printed
+    a literal "{qr}" into 12 books.
+    """
+    year = _rebuild_year()
+    if year:
+        no_arrows = " (this course was\n    rebuilt in " + year + ")"
+        blank_why = ("This course was <b>rebuilt in\n      " + year + " with new greens</b>, and "
+                     "accurate post-construction green-surface data is not yet publicly\n"
+                     "      available")
+        elev_why = "that data does not yet reflect this rebuilt course"
+    else:
+        no_arrows = ""
+        blank_why = ("Accurate post-construction green-surface data for this course is not publicly\n"
+                     "      available")
+        elev_why = "that data does not describe this course&rsquo;s greens as they are now"
     return '''<div class="panel guide">
   <div class="gtitle">How to use this book</div>
   <div class="legrow"><span><b>Yardages</b> to the green for every tee are on each hole card &mdash;
     from the official scorecard. The big number is the <b>back tee</b>.</span></div>
   <div class="legrow"><span>Use the <b>Read &amp; notes</b> lines to jot the pin, the slope you see, and how the
     ball rolls. Pair this with the printed <b>course aerial</b> to see fairways, bunkers, trees, greens &amp; tees.</span></div>
-  <div class="legrow"><span>Green break arrows aren&rsquo;t printed &mdash; see &ldquo;About&rdquo; below for why (this course was
-    rebuilt in 2025).</span></div>
+  <div class="legrow"><span>Green break arrows aren&rsquo;t printed &mdash; see &ldquo;About&rdquo; below for why''' + no_arrows + '''.</span></div>
   <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> yardage book for junior golfers, <b>not for sale</b>. Par,
-      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. This course was <b>rebuilt in
-      2025 with new greens</b>, and accurate post-construction green-surface data is not yet publicly
-      available &mdash; so rather than print slope maps that could be wrong, the greens are left <b>blank
+      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. ''' + blank_why + ''' &mdash; so rather than print slope maps that could be wrong, the greens are left <b>blank
       to mark your own read</b>. (Our other books compute slope from public-domain USGS 3DEP elevation;
-      that data does not yet reflect this rebuilt course, so we do not use it here.)''' + _naip_line() + ''' <b>No proprietary
+      ''' + elev_why + ''', so we do not use it here.)''' + _naip_line() + ''' <b>No proprietary
       data, images, artwork, layout or trade dress from any commercial green-reading product was used,
       copied or referenced.</b> Not affiliated with, endorsed or sponsored by any course, club, association
       or product; course names &amp; trademarks belong to their owners and are used only to identify the
