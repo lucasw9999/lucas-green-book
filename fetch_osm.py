@@ -15,6 +15,13 @@ import urllib.parse, urllib.request, json, time, os, math
 from collections import Counter
 import config
 import geo
+# ONE definition of "a watercourse a card draws", and it lives with the renderer that draws it. The
+# census below counts water so the shrink guard can tell a lost hazard from churn; if it counted a
+# WIDER set than the map draws, a reply could lose a real stream and gain a culvert without moving the
+# number. Importing render_hole for a predicate is this project's existing pattern -- fetch_hole_elev
+# does it for par3_exact_from_tee ("one definition of 'straight par 3'") and tools/check_osm_bbox.py
+# for DRAW_CORRIDOR_M -- and the module is import-safe: constants and functions only.
+from render_hole import is_visible_watercourse
 
 S, W, N, E = config.COURSE["osm_bbox"]   # [south, west, north, east]
 BB = f"{S},{W},{N},{E}"
@@ -130,6 +137,22 @@ def census(elements):
     adding two streams was accepted in silence -- those two ponds are drawn inside the 45 m water
     corridor of holes 7, 10 and 18 (22.7 m, 10.0 m and 1.5 m off the played line), all three of which
     print a non-zero W in their footer.
+
+    ...and `waterway` was STILL wider than the drawn class, one level down. It counted every way
+    carrying the key, while render_hole's `creeks` takes only `is_visible_watercourse`: not a dam or a
+    weir (a structure beside water sits exactly where the water is NOT), and not a culverted, covered
+    or underground reach (merion 13 once printed "1W" whose only blue mark was a 14.7 m culvert). So
+    the same swap survived inside the surviving bucket -- lose a real stream, gain a culvert, count
+    unmoved, guard silent. Not hypothetical: 29 of this corpus's 179 waterways are undrawn today (24
+    culverts, 4 tunnel=yes, 1 tunnel=covered, 1 dam) on 9 of 12 courses, merion 8 of 20 and bay-view 4
+    of 14 among them.
+
+    The undrawn ones are counted in `waterway_undrawn` rather than dropped. Two reasons: the fetch
+    asked for them, and silence about a class the query requested is exactly what put every building
+    in `other` (1,529 of the-reserve's 1,530); and letting them fall through to `other` would make a
+    filled-in culvert a STRUCTURAL abort, which is the wrong severity for something no card draws. It
+    is listed as volatile and not as a hazard for the same reason: it churns like the drawn lines do,
+    and nothing is drawn or measured from it.
     """
     c = Counter()
     for e in elements:
@@ -141,7 +164,7 @@ def census(elements):
         elif t.get('natural') == 'water':
             c['water'] += 1
         elif t.get('waterway'):
-            c['waterway'] += 1
+            c['waterway' if is_visible_watercourse(e) else 'waterway_undrawn'] += 1
         elif t.get('natural') or t.get('landuse'):
             c[t.get('natural') or t.get('landuse')] += 1
         else:
@@ -160,7 +183,7 @@ VOLATILE_KINDS = frozenset({
     # observed in this corpus' caches: tree, tree_row, wood, waterway, building, rock
     # ...plus the other landcover kinds main()'s own queries ask for
     'tree', 'tree_row', 'wood', 'forest', 'scrub', 'wetland',
-    'waterway', 'building', 'bare_rock', 'rock', 'stone',
+    'waterway', 'waterway_undrawn', 'building', 'bare_rock', 'rock', 'stone',
 })
 
 # Kinds whose loss removes drawn HAZARD ink from a card: sand and water, the tan and the blue, the two
@@ -168,9 +191,17 @@ VOLATILE_KINDS = frozenset({
 # because rare is exactly when one loss matters most -- see the block in _check_response.
 #
 # `waterway` is in BOTH sets, and that is the point. It churns (a creek is re-segmented at a road
-# crossing, so the-reserve's 53-way network legitimately becomes 52) and it is also drawn, in the same
-# blue as a pond, by render_hole's `creeks`. So it keeps the PROPORTIONAL part of the churn tolerance
-# and loses the floor of 1: 2% of 53 is still one way, 2% of 3 is zero.
+# crossing) and it is also drawn, in the same blue as a pond, by render_hole's `creeks`. So it keeps
+# the PROPORTIONAL part of the churn tolerance and loses the floor of 1: 2% of 53 is one way, 2% of 3
+# is zero. Since the bucket became the DRAWN lines only (see census), the-reserve's network is 49 of
+# them and 2% of 49 is also zero -- so no course in this corpus is currently handed a free
+# re-segmentation, and the proportional part is what a 50+ line course would get. That direction is
+# the safe one for a hazard kind, and the free loss it withdraws is the one this pair of sets exists
+# to withdraw.
+#
+# `waterway_undrawn` -- the culverts, the tunnels and the dams -- is volatile and NOT a hazard kind,
+# because no card draws it and nothing measures from it. A mapper marking a reach culverted is an OSM
+# improvement, and it must not read as a lost hazard.
 #
 # `water` -- the natural=water AREAS -- is a hazard kind and NOT a volatile one, which is where it
 # differs from the merged bucket these two were split out of. The re-segmentation that earns waterway
@@ -182,7 +213,7 @@ VOLATILE_KINDS = frozenset({
 HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water', 'waterway'})
 
 # 2%, floor 1. Chosen from what these counts actually are on this corpus (the-reserve 2,462 trees and
-# 1,530 buildings, micke-grove 532 trees, the-reserve 53 waterway ways, merion 8 wood) against what the
+# 1,530 buildings, micke-grove 532 trees, the-reserve 49 waterway ways, merion 8 wood) against what the
 # guard has to keep catching: every documented truncation lost 89-100% of a kind (fairway 18 -> 0,
 # 37 -> 1, 23 -> 4, and the remark replies that return nothing at all). So 2% sits an order of
 # magnitude below the smallest real failure while covering ordinary editing -- 49 trees at the-reserve,
@@ -190,7 +221,8 @@ HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'wat
 # of 2,462 hard-aborted the whole fetch, and without a floor a 4 -> 3 tree shrink still would.
 # (Every count here is the FETCHABLE one, i.e. the baseline the guard really compares. the-reserve's
 # waterways were once published as "60 water ways"; 60 is the raw merged figure, of which 7 were pond
-# areas -- one of those carrying _from_relation -- leaving the 53 lines and 6 areas the guard sees.)
+# areas -- one of those carrying _from_relation -- leaving 53 lines and 6 areas, and of those 53 lines
+# four are culverts the map does not draw, so the drawn bucket the guard compares is 49.)
 CHURN_TOLERANCE = 0.02
 
 
@@ -201,7 +233,8 @@ def _churn_tolerance(old_count, kind=None):
     whole fetch) and it is wrong for a HAZARD kind, where it would hand a three-watercourse course a
     free watercourse. Hazard kinds therefore get the proportional part only, which is zero below 50
     features. (Only `waterway` is in both sets, so only `waterway` ever reads this branch; the other
-    hazard kinds are not volatile and _check_response gives them no tolerance at all.)
+    hazard kinds are not volatile and _check_response gives them no tolerance at all, and
+    `waterway_undrawn` is volatile but not a hazard so it takes the floor like the landcover kinds.)
     """
     if kind in HAZARD_KINDS:
         return int(old_count * CHURN_TOLERANCE)

@@ -139,7 +139,15 @@ if not isinstance(_LOC, dict) or _LOC.get("lon") is None:
     raise SystemExit('course.json needs "location": {"lat": .., "lon": ..} -- it selects the UTM '
                      'zone every green surface is built in. Refusing to guess one.')
 _LON = _LOC["lon"]
-UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)
+# geo.utm_epsg's formula, not a copy of it. This line and fetch_trees.py's spelled
+# `"EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)` byte for byte while geo.utm_epsg -- added by
+# d2b0d10 (2026-07-29) to be the one home for exactly this fact -- had no callers at all. That commit's
+# message describes geo.py as the shared home for "the same two facts ... previously derived
+# independently in fetch_dem_hd.py and fetch_trees.py": the vertical unit and the UTM zone. It wired
+# both files to geo.vertical_scale and left the zone inline, so the migration was never finished.
+# geo.py's own docstring says this duplication-drift hazard has already cost this project two audits
+# (the nine-module R_LAT saga), and the zone decides which projection every green surface is built in.
+UTM = geo.utm_epsg(_LON)
 TR = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM metres
 
 def laz_to_utm():
