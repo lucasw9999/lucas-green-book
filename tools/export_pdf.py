@@ -16,8 +16,20 @@ HTML and violated on the paper, which is the only version that reaches a golf co
 A generated artifact that no tool generates will always drift. So: one command, and a test that
 fails when a PDF was not exported from the HTML beside it. (It says CONTENT, not mtime, and it always
 did -- see stale(). The promise here read "a test that fails when a PDF is older than its HTML" for
-96 commits, and the test was named for that comparison too, while no age comparison existed anywhere:
-a PDF thirty days older than its HTML passed.)
+the 338 commits between `2b5e4e3`, which introduced this tool, and `2b0e248`, which corrected it, and
+the test was named for that comparison too, while no age comparison existed anywhere: a PDF thirty
+days older than its HTML passed. That span was published as "96 commits", a figure nothing in this
+tree measured and one that reached a commit message too; it is derived from git now, by
+test_the_export_tools_account_of_its_own_history_is_the_one_git_records.)
+
+WHAT --check PROVES, exactly, because two records overstated it once each: beside every book it
+records the digest of the HTML and the digest of the exported PDF, and at check time it re-derives
+BOTH from the files on disk. So it proves the PDF beside a book is byte-for-byte the file this tool
+exported, and that the export was recorded against the HTML now sitting beside it. It does not
+re-render anything, so it cannot prove the bytes were PRODUCED from that HTML -- a stamp is a record,
+not a re-derivation of the rendering, and a hand-written stamp naming both current digests passes.
+A PDF with no stamp is reported as provenance UNKNOWN rather than as stale; a file with no trailer is
+refused whatever its stamp says.
 
 Run:  python3 tools/export_pdf.py                 # every built course (and coach edition)
       python3 tools/export_pdf.py merion-golf-club
@@ -169,6 +181,12 @@ def read_stamp(pdf):
     travels beside it. None and {} are different answers on purpose: no note means provenance is
     unknown, whereas a note that yields no html digest is a note that does not agree with the html,
     which is a proven defect and was one before this function existed.
+
+    A NOTE THAT NAMES TWO DIFFERENT HTML DIGESTS NAMES NEITHER. `setdefault` resolved that to whichever
+    line came first and said nothing, so appending a second, contradicting digest to a legacy stamp read
+    as a clean match -- and the reader whose html matched the OTHER line would have been told the same.
+    A self-contradictory note is not evidence, so the field is dropped: that is the "does not agree with
+    the html" answer, a PROVEN defect, and not the "no note at all" answer.
     """
     sp = stamp_path(pdf)
     if not os.path.exists(sp):
@@ -179,12 +197,17 @@ def read_stamp(pdf):
             text = fh.read()
     except OSError:
         return out
+    bare = []
     for line in text.splitlines():
         parts = line.split()
         if len(parts) == 1:
-            out.setdefault("html", parts[0])      # legacy: one bare line IS the html digest
+            bare.append(parts[0])                 # legacy: one bare line IS the html digest
         elif len(parts) == 2:
             out[parts[0]] = parts[1]
+    for digest in bare:
+        out.setdefault("html", digest)
+    if len({d for d in bare} | ({out["html"]} if "html" in out else set())) > 1:
+        out.pop("html", None)
     return out
 
 
@@ -238,10 +261,34 @@ def stale(only=None):
     return bad
 
 
+def sweep_staged(items):
+    """Remove any `.greenbook*.pdf.part` left beside the books in `items`. -> [paths removed]
+
+    The convention this repo states five times for exactly this class, and the one place that had the
+    stage without the sweep: fetch_lidar.py sweeps laz/, fetch_dem.py and fetch_dem_hd.py call
+    surface_io.sweep_staged, lidar_dates.py sweeps its own course.json.part. export()'s `finally`
+    covers every failure short of a KILL -- SIGKILL, a closed lid, power -- and a run killed there
+    leaves a staged book in courses/<slug>/, which is the one directory nothing else sweeps.
+
+    Harmless to lose: a `.part` is only renamed into place after `pg.pdf()` returns, so it is never a
+    whole book and never the only copy of anything. Swept before exporting rather than in `--check`,
+    because `--check` exports nothing and a read-only gate must not write.
+    """
+    gone = []
+    for _h, p in items:
+        tmp = staged_pdf(p)
+        if os.path.exists(tmp):
+            os.remove(tmp)
+            gone.append(tmp)
+    return gone
+
+
 def export(items):
     from playwright.sync_api import sync_playwright
     exe = _headless_shell()
     done = []
+    for tmp in sweep_staged(items):
+        print(f"  swept a staged book left by an interrupted run: {os.path.relpath(tmp, ROOT)}")
     with sync_playwright() as pw:
         try:
             b = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
@@ -299,9 +346,17 @@ def main():
     if not items:
         # The message above is right for an empty tree and WRONG here: books are built and only the
         # slug matched nothing (`--check merion` for merion-golf-club). It sent the reader off to
-        # rebuild a corpus that was already on disk, at ~300 MB of LiDAR a course.
-        print(f"no book matches {' '.join(sorted(slugs))} -- {len(built)} book(s) are built here:\n  "
-              + "\n  ".join(sorted({os.path.basename(os.path.dirname(h)) for h, _p in built})))
+        # rebuild a corpus that was already on disk, at up to 4.1 GB of LiDAR a course -- the worst of
+        # the twelve here is callippe-preserve-golf-course. It quoted "~300 MB", which is the SMALLEST
+        # non-zero course in this corpus offered as the typical one, the same median-quoted-as-worst
+        # shape 8869583 fixed at the tee-pad end. Both figures are derived by
+        # test_the_export_tools_account_of_what_a_rebuild_costs_is_the_corpus_on_disk.
+        #
+        # And it counted BOOKS while listing COURSES: `len(built)` is 15, the deduplicated list under it
+        # is 12, and the two read as a mismatch. Each number now names what it counts.
+        courses = sorted({os.path.basename(os.path.dirname(h)) for h, _p in built})
+        print(f"no book matches {' '.join(sorted(slugs))} -- {len(courses)} course(s) are built here, "
+              f"{len(built)} book(s) counting enlarged editions:\n  " + "\n  ".join(courses))
         return 1
     if check:
         bad = stale(set(slugs) or None)

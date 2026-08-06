@@ -13396,9 +13396,16 @@ def test_the_printed_pdf_was_exported_from_the_html_beside_it():
       * a book present with no geometry -- poppy-ridge's yardage-mode shape, which _books() exists to
         cover -- it SKIPPED with "per-course data is gitignored; nothing to measure" on the very tree
         where the CLI exited 1 and named the book as exported from a DIFFERENT html.
-    End to end on that tree: with one book's recorded source hash genuinely disagreeing the suite
-    reported 5 failed / 97 passed / 236 skipped, and after making it fresh again the SAME five, to the
-    test. So the domain is DERIVED FROM WHAT IS PRESENT, and cross-checked against a second
+    End to end on that tree: with one book's recorded source hash genuinely disagreeing the suite failed
+    on this test and on three others, and after making the book fresh again the SAME four failed, to the
+    test -- which is the half of that observation the argument rests on, because it shows the four are
+    independent of the staleness and this one is not. THE PASS/FAIL/SKIP COUNTS THAT USED TO BE QUOTED
+    HERE ("5 failed / 97 passed / 236 skipped") DO NOT REPRODUCE and are gone: a later reading of the
+    same tree and tree-shape gave 4 failed / 99 passed / 235 skipped, 338 collected both ways. They
+    cannot be re-derived from this checkout either, because reproducing them means corrupting a stamp
+    inside courses/, which is gitignored, shared, and the only copy of the built corpus. A count nothing
+    can re-derive is not evidence, so the claim is stated as the four names it was really about.
+    So the domain is DERIVED FROM WHAT IS PRESENT, and cross-checked against a second
     enumeration that does not share pairs()' glob -- BOOKS is keyed on course.json.
 
     AND IT CLASSIFIED ON PROSE: `why.startswith("exported from")` against free text. Proven by a
@@ -13440,9 +13447,11 @@ def test_the_printed_pdf_was_exported_from_the_html_beside_it():
     unknown = [p for _h, p, tag, _why in bad if tag in unknowable]
     # A test must not assert what it cannot know: a book nobody has exported, and one carrying no
     # recorded source at all, are both unjudgeable. A PROVEN defect alongside them is still a failure.
+    # The reason NAMES EACH VERDICT rather than describing one of them for both: this skip read "N of M
+    # book(s) carry no recorded source hash", which is false of a book that has no PDF at all -- there
+    # is nothing to stamp -- and it is the same classify-on-the-sentence shape the tag exists to stop.
     if unknown and not outdated:
-        pytest.skip(f"{len(unknown)} of {len(present)} book(s) carry no recorded source hash (export "
-                    f"with tools/export_pdf.py to make staleness checkable)")
+        pytest.skip(_unjudgeable_pdf_books(bad, unknowable, len(present)))
     assert not outdated, ("the PRINTED book does not match the engine:\n   " +
                           "\n   ".join(f"{os.path.relpath(p, ROOT)} ({w})" for p, w in outdated) +
                           "\n  Re-export with: python3 tools/export_pdf.py")
@@ -13762,8 +13771,11 @@ def test_a_slug_that_matches_no_book_is_not_reported_as_an_empty_corpus(tmp_path
     books ARE built and only the slug argument matched nothing -- `--check merion` rather than
     `--check merion-golf-club`. Reproduced.
 
-    It sends the reader to rebuild a corpus that is already there, and the corpus is ~300 MB of LiDAR
-    per course. The empty-tree message is right where it is right, so both directions are checked."""
+    It sends the reader to rebuild a corpus that is already there, and rebuilding one costs up to
+    4.1 GB of LiDAR a course -- see
+    test_the_export_tools_account_of_what_a_rebuild_costs_is_the_corpus_on_disk, which derives that from
+    the laz/ dirs on disk. The empty-tree message is right where it is right, so both directions are
+    checked."""
     whole = _a_shipped_book_pdf() or _MINIMAL_PDF
     root, _books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
     mod = _export_pdf_bound_to(root, tmp_path)
@@ -13788,6 +13800,381 @@ def test_a_slug_that_matches_no_book_is_not_reported_as_an_empty_corpus(tmp_path
     said = capsys.readouterr().out
     assert rc != 0 and "build one first" in said, (
         f"an empty tree no longer tells the reader to build a book: rc={rc}, said {said.strip()!r}")
+
+
+def test_the_export_tools_account_of_its_own_history_is_the_one_git_records():
+    """tools/export_pdf.py published "for 96 commits" and NOTHING IN THIS TREE MEASURED 96.
+
+    The figure is the span over which the module's own promise -- "a test that fails when a PDF is older
+    than its HTML" -- stood while no age comparison existed anywhere. It is a fact about this
+    repository's history, so it is derived from that history: git names the commit that introduced the
+    phrase and the commit that removed it, and the count is the distance between them. The same wrong
+    figure reached a commit message, where it cannot be corrected; here it can.
+
+    IMMUTABLE ONCE RIGHT, which is why the span is published as an interval and not as a distance from
+    HEAD. `git rev-list --count A..B` between two fixed commits is the same number forever, whereas
+    "N commits ago" is wrong again on the next commit -- and that is the shape of defect this file has
+    corrected in a published figure more than ninety times."""
+    import subprocess
+
+    def git(*args):
+        r = subprocess.run(("git",) + args, cwd=ROOT, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            pytest.skip(f"git {' '.join(args)} failed: {r.stderr.strip()[:120]}")
+        return r.stdout
+
+    rel = os.path.join("tools", "export_pdf.py")
+    with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+        src = fh.read()
+    flowed = " ".join(src.split())
+    m = re.search(r'The promise here read "([^"]+)" for the (\d+) commits between `([0-9a-f]{7,40})`, '
+                  r'which introduced this tool, and `([0-9a-f]{7,40})`, which corrected it', flowed)
+    assert m, (
+        "tools/export_pdf.py no longer records how long its own promise stood, in a form git can check "
+        "-- 'The promise here read \"<phrase>\" for the <N> commits between `<sha>`, which introduced "
+        "this tool, and `<sha>`, which corrected it'. It published a bare '96 commits' that nothing "
+        "measured, so the shape is fixed and derived rather than left as prose.")
+    phrase, said, born, fixed = m.group(1), int(m.group(2)), m.group(3), m.group(4)
+
+    if not git("rev-parse", "--is-inside-work-tree").strip().startswith("true"):
+        pytest.skip("not a git checkout")
+    full = {}
+    for label, rev in (("born", born), ("fixed", fixed)):
+        got = git("rev-parse", rev).strip()
+        assert len(got) == 40, f"the {label} commit {rev} does not resolve in this checkout"
+        full[label] = got
+    # BOTH ENDS OF THE INTERVAL, read out of the blobs rather than off `git log -S` -- the phrase is
+    # quoted in the corrected text too, so an occurrence count cannot separate the two ends.
+    added_in = git("log", "--diff-filter=A", "--format=%H", full["born"], "--", rel).split()
+    assert added_in and added_in[-1] == full["born"], (
+        f"{rel} was not introduced at {born} but at {[c[:7] for c in added_in[-1:]] or 'nowhere'}, so "
+        f"the interval this figure counts does not start where the module says it does.")
+    then = " ".join(git("show", f"{full['born']}:{rel}").split())
+    now = " ".join(git("show", f"{full['fixed']}:{rel}").split())
+    assert phrase in then and "The promise here read" not in then, (
+        f"at {born} this module's promise does not read {phrase!r} as its own claim, so the span below "
+        f"is counting from the wrong end.")
+    assert "The promise here read" in now, (
+        f"at {fixed} this module does not yet record the promise as a past one, so that commit is not "
+        f"where the claim was corrected.")
+    measured = int(git("rev-list", "--count", f"{full['born']}..{full['fixed']}").strip())
+    assert said == measured, (
+        f"tools/export_pdf.py says its promise stood for {said} commits; `git rev-list --count "
+        f"{born}..{fixed}` is {measured}. A published count of this repository's own history is "
+        f"checkable against the history, and the figure it replaced -- 96 -- matched nothing in it: "
+        f"{born}..HEAD is {int(git('rev-list', '--count', full['born'] + '..HEAD').strip())} commits and "
+        f"the whole repo is {int(git('rev-list', '--count', 'HEAD').strip())}.")
+
+
+def test_the_export_tools_account_of_what_a_rebuild_costs_is_the_corpus_on_disk():
+    """"~300 MB of LiDAR a course" is the SMALLEST non-zero course in this corpus, offered as the typical
+    one -- the median-quoted-as-worst-case shape 8869583 fixed at the tee-pad end.
+
+    That figure is the reason the message it sits in exists: `--check merion` used to send the reader off
+    to rebuild a corpus already on disk, and how bad that advice is IS the size of the download. Measured
+    over the `laz/` dirs: 12 courses, 12.4 GB in total, worst 4.1 GB, median 0.6 GB, smallest non-zero
+    0.3 GB. 300 MB was the floor.
+
+    So the module publishes the WORST and the course it is on, the form this project settled on for a
+    bound -- every term of the set is known, so the largest is quoted as the largest -- and both are
+    re-derived here. Decimal MB/GB, the same unit `export()` prints its own book sizes in
+    (`getsize(p)/1e6`), because two units in one tool is how 987 MiB and 1035 MB become an argument.
+
+    Corpus-gated: `laz/` is gitignored, so on a clone there is nothing to measure and the figure is
+    the one thing in that message a clone cannot check."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+    with open(os.path.join(ROOT, "tools", "export_pdf.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    # `#` markers stripped before flowing: the claim lives in a comment, and a wrapped comment puts a
+    # hash in the middle of the sentence.
+    flowed = " ".join(re.sub(r"(?m)^\s*#\s?", "", src).split())
+    m = re.search(r"at up to ([\d.]+) GB of LiDAR a course -- the worst of the (\w+) here is "
+                  r"([a-z0-9-]+)\.", flowed)
+    assert m, (
+        "tools/export_pdf.py no longer says what rebuilding a course costs, in a form this can check -- "
+        "'at up to <N> GB of LiDAR a course -- the worst of the <count> here is <slug>.'. It published "
+        "'~300 MB', the smallest non-zero course in the corpus quoted as the typical one.")
+    said_gb, said_count, said_worst = float(m.group(1)), m.group(2), m.group(3)
+
+    sizes = {}
+    for d in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "laz"))):
+        slug = os.path.basename(os.path.dirname(d))
+        if slug.startswith("_"):
+            continue
+        total = 0
+        for base, _dirs, files in os.walk(d):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(base, f))
+                except OSError:
+                    pass
+        sizes[slug] = total
+    if not sizes:
+        pytest.skip("no laz/ dir here; the LiDAR corpus is gitignored, so there is nothing to measure")
+    worst, worst_bytes = max(sizes.items(), key=lambda kv: kv[1])
+    assert said_worst == worst, (
+        f"tools/export_pdf.py names {said_worst} as the largest LiDAR corpus of the "
+        f"{len(sizes)} courses built here; it is {worst} at {worst_bytes / 1e9:.1f} GB. "
+        f"All of them: " + ", ".join(f"{s} {b / 1e9:.2f}" for s, b in
+                                     sorted(sizes.items(), key=lambda kv: -kv[1])))
+    assert abs(said_gb - worst_bytes / 1e9) <= 0.05, (
+        f"tools/export_pdf.py bounds a course's LiDAR at {said_gb} GB; {worst} holds "
+        f"{worst_bytes / 1e9:.4f} GB. A bound quoted below the worst is the defect this replaced, and "
+        f"one quoted above it is a figure the corpus does not support.")
+    counted = {"twelve": 12, "eleven": 11, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+               "ten": 10, "nine": 9}.get(said_count)
+    assert counted == len(sizes), (
+        f"tools/export_pdf.py says the worst is the worst of the {said_count} courses here and "
+        f"{len(sizes)} have a laz/ dir. A bound is only a bound over a stated set.")
+    assert export_pdf.pairs(), "no book is built here, so that message's own preconditions do not hold"
+
+
+def test_a_pdf_stamp_naming_two_different_html_digests_is_refused_rather_than_resolved(tmp_path):
+    """`read_stamp`'s `setdefault` resolved a self-contradictory note to whichever line came FIRST.
+
+    The stamps already on disk carry a legacy one-line form, so a bare line is read as the html digest.
+    Append a second bare line naming a different html and the note now says two incompatible things --
+    and it was silently resolved to the first, so the book passed for the reader whose html matched that
+    line and would have passed for the other reader had the lines been the other way round. A note that
+    names two htmls names neither.
+
+    Refused by dropping the field, which is the "does not agree with the html" answer the docstring
+    already distinguishes from "no note at all": a PROVEN defect (WRONG_SOURCE), not unknown
+    provenance. Both orderings are driven, because an order-dependent resolution is the defect."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    real = _sha256(b"<html><body>probe-golf-club</body></html>")
+    other = _sha256(b"<html><body>a DIFFERENT book</body></html>")
+    assert real != other
+    for label, stamp in (("real digest first", f"{real}\n{other}\n"),
+                         ("other digest first", f"{other}\n{real}\n"),
+                         ("keyed and bare disagreeing", f"html {real}\n{other}\n")):
+        root, books = _probe_tree(tmp_path / label.replace(" ", "-"),
+                                  {"probe-golf-club": (whole, stamp)})
+        mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_two_digests_"
+                                                        + label.replace(" ", "_"))
+        rec = mod.read_stamp(books["probe-golf-club"][1])
+        assert rec is not None and "html" not in rec, (
+            f"with the stamp reading {stamp!r} ({label}), read_stamp returns {rec} -- a note naming two "
+            f"different html digests is not evidence for either of them.")
+        tags = [t for _h, _p, t, _w in mod.stale()]
+        assert tags == [mod.WRONG_SOURCE], (
+            f"a book whose stamp contradicts itself comes back {tags} ({label}); it is a PROVEN defect, "
+            f"because whatever produced the note recorded two answers and the tool cannot pick one.")
+
+    # ...and the legacy one-line stamp, and a repeated identical line, still read as the html digest --
+    # every shipped stamp was one bare line once, and refusing those would fail 15 real books.
+    root, books = _probe_tree(tmp_path / "legacy", {"probe-golf-club": (whole, f"{real}\n{real}\n")})
+    mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_repeated_digest")
+    assert mod.read_stamp(books["probe-golf-club"][1]).get("html") == real, (
+        "a note that states the SAME digest twice states one digest, and it has to keep reading as the "
+        "legacy html stamp -- every PDF in this corpus carried one bare line before write_stamp gained "
+        "the second field.")
+
+
+def test_a_staged_book_left_by_a_kill_is_swept_before_the_next_export(tmp_path, monkeypatch, capsys):
+    """Nothing swept `.greenbook.pdf.part`, and courses/ is the one directory nothing else sweeps.
+
+    export() stages and renames, and its `finally` removes the stage on every failure short of a KILL --
+    SIGKILL, a closed lid, power. laz/ has a sweep (fetch_lidar.sweep_partials), dem_hd has one
+    (surface_io.sweep_staged), lidar_dates.py sweeps its own course.json.part; this path had the stage
+    without the sweep, so a killed run left a partial book sitting beside the real one indefinitely.
+
+    Harmless as data -- a `.part` is only renamed into place after the writer returns, so it is never a
+    whole book -- but it is litter in the one directory that holds the only copy of everything, and it
+    reads to the next person like a book something has seen.
+
+    Driven on a probe tree with a stubbed exporter, so no browser is launched and nothing in courses/ is
+    touched. The sweep is asserted to run BEFORE the export and to leave the real books alone."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_sweep")
+    html, pdf = books["probe-golf-club"]
+    litter = mod.staged_pdf(pdf)
+    with open(litter, "wb") as fh:
+        fh.write(whole[:len(whole) // 3])         # what a kill mid-write leaves
+    assert os.path.exists(litter)
+
+    seen = {}
+
+    def fake_export(items):
+        seen["staged_when_export_ran"] = os.path.exists(litter)
+        return list(items)
+
+    monkeypatch.setattr(mod, "export", lambda items: (mod.sweep_staged(items), fake_export(items))[1])
+    monkeypatch.setattr(sys, "argv", ["export_pdf.py"])
+    rc = mod.main()
+    said = capsys.readouterr().out
+    assert rc == 0, f"the stubbed export failed: rc={rc}, said {said!r}"
+    assert not os.path.exists(litter), (
+        f"a staged book left by a killed run survives the next export: {litter} is still there. "
+        f"courses/<slug>/ is the one directory in this tree nothing sweeps.")
+    assert seen.get("staged_when_export_ran") is False, (
+        "the sweep did not run before the export, so a run killed twice in the same place still "
+        "accumulates stages")
+    assert os.path.exists(pdf) and open(pdf, "rb").read() == whole, (
+        "the sweep removed or damaged the real book beside the stage")
+
+    # ...and the real export() calls it, rather than this test's own arrangement being the only caller.
+    src = open(os.path.join(ROOT, "tools", "export_pdf.py"), encoding="utf-8").read()
+    body = src.split("def export(", 1)[1].split("\ndef ", 1)[0]
+    assert "sweep_staged(" in body, (
+        "export() no longer sweeps the stages before it writes, so the sweep exists and nothing on the "
+        "path a user takes calls it")
+
+
+def test_legal_06s_account_of_the_pdf_export_gate_is_the_one_the_gate_earns(tmp_path):
+    """legal/06 published the overclaim README had already withdrawn, INSIDE the paragraph that says why.
+
+    Its own preamble reads "Two precise statements about what that gate does and does not do, because an
+    earlier revision of this file overstated it" -- and the second of the two then said
+    `tools/export_pdf.py --check` "proves each PDF was produced from the HTML currently on disk (by
+    recorded content hash)". Nothing graded that sentence. The gate does not produce anything and cannot
+    prove what produced a file: it compares digests, and a stamp is a record.
+
+    What it does prove is measured here rather than asserted, on a probe tree:
+      (1) every field write_stamp records is RE-DERIVED at check time -- corrupt the file that field
+          names and the gate names the book. So "re-derives both from the files on disk" is earned.
+      (2) it does NOT prove production. The probe's PDF is a real shipped book and its html is four
+          words of markup; the PDF was never rendered from it. Stamp them together and the gate passes.
+          That is the exact claim the record used to make, refuted by the tool itself.
+    Then legal/06 has to name one digest per field the tool actually records, and must not claim
+    production. The field list is the LIVE one, so a third stamp field fails here until the record and
+    this test both account for it.
+
+    README's wording was checked against the same standard and holds: it says the tool "records a digest
+    of the HTML and a digest of the exported PDF, then re-derives both from the files on disk", which is
+    (1), and names no production."""
+    whole = _a_shipped_book_pdf() or _MINIMAL_PDF
+    root, books = _probe_tree(tmp_path, {"probe-golf-club": (whole, None)})
+    mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_legal06")
+    html, pdf = books["probe-golf-club"]
+    mod.write_stamp(pdf, html)
+    with open(mod.stamp_path(pdf), encoding="utf-8") as fh:
+        fields = {ln.split()[0] for ln in fh.read().splitlines() if len(ln.split()) == 2}
+    assert fields, f"write_stamp no longer records a `<field> <digest>` note: {mod.stamp_path(pdf)}"
+
+    # (2) FIRST, because it is the state everything below is measured from: a pair the tool never
+    #     produced, stamped, passes. The record may not claim more than this.
+    assert mod.stale() == [], (
+        f"the probe's stamped pair is already reported stale ({mod.stale()}), so nothing below measures "
+        f"anything")
+    assert b"probe-golf-club" not in whole, (
+        "the probe's PDF happens to contain its html's text, so it cannot stand for a book that was "
+        "never rendered from that html")
+
+    # (1) each recorded field is re-derived from the file on disk
+    assert fields == {"html", "pdf"}, (
+        f"write_stamp records {sorted(fields)} and this test knows how to disturb "
+        f"{sorted({'html', 'pdf'})}. A field nothing here disturbs is a field the gate may have stopped "
+        f"re-deriving while the record still tells a reader it does.")
+    for field in sorted(fields):
+        root2, books2 = _probe_tree(tmp_path / f"redrive-{field}", {"probe-golf-club": (whole, None)})
+        m2 = _export_pdf_bound_to(root2, tmp_path, name=f"export_pdf_legal06_{field}")
+        h2, p2 = books2["probe-golf-club"]
+        m2.write_stamp(p2, h2)
+        assert m2.stale() == []
+        if field == "html":
+            with open(h2, "w", encoding="utf-8") as fh:
+                fh.write("<html>moved on</html>")
+        else:
+            with open(p2, "wb") as fh:
+                fh.write(whole[:-20] + b"%%EOF\n")
+        tags = [t for _h, _p, t, _w in m2.stale()]
+        assert tags and tags != [m2.NOT_EXPORTED], (
+            f"the recorded `{field}` digest is not re-derived from the file on disk: changing that file "
+            f"leaves the gate reporting {tags}. legal/06 tells a reader both digests are re-derived.")
+
+    with open(os.path.join(ROOT, "legal", "06_RULE_4.3_CONFORMANCE.md"), encoding="utf-8") as fh:
+        doc = fh.read()
+    flowed = " ".join(doc.replace("*", "").replace("`", "").replace("‑", "-").split())
+    para = re.search(r"The exported PDF is checked separately:(.+?)(?=- |\Z)", flowed)
+    assert para, (
+        "legal/06 no longer carries its 'The exported PDF is checked separately:' statement, which is "
+        "where it tells a reader what tools/export_pdf.py --check is worth.")
+    said = para.group(1)
+    NAMED = {"html": r"digest of the HTML", "pdf": r"digest of the exported PDF"}
+    assert set(NAMED) == fields, (
+        f"write_stamp records {sorted(fields)}; legal/06's account is graded here for {sorted(NAMED)}. "
+        f"A stamp field the record does not name is one a reader is not told is checked -- add it to "
+        f"the record and to this map together.")
+    missing = [f for f, pat in NAMED.items() if not re.search(pat, said, re.I)]
+    assert not missing, (
+        f"legal/06's account of the export gate does not name the {missing} digest(s) the tool records "
+        f"and re-derives. It reads:\n  {said.strip()}")
+    # A PRODUCTION CLAIM, and the negation matters -- the corrected record has to be able to SAY that
+    # the gate cannot prove production, so the test is per clause: a clause that reaches a production
+    # phrase through a "prove" with no negation in front of it is the overclaim. This check caught its
+    # own author's first replacement wording, which is why it is written this way and not as a
+    # phrase ban.
+    overclaims = []
+    for m in re.finditer(r"produced from|came from|rendered from", said, re.I):
+        clause = said[said.rfind(".", 0, m.start()) + 1: m.end()]
+        verb = re.search(r"\bprov\w*", clause, re.I)
+        if verb and not re.search(r"\b(?:cannot|can ?not|does not|doesn't|never|not|no)\b",
+                                  clause[:verb.start()], re.I):
+            overclaims.append(clause.strip())
+    assert not overclaims, (
+        f"legal/06 claims the export gate proves what PRODUCED a PDF:\n  " + "\n  ".join(overclaims)
+        + "\n  Measured above on a probe tree: a real book stamped against html it was never rendered "
+          "from passes. The gate compares recorded digests to the files on disk; a stamp is a record, "
+          "not a re-derivation of the rendering.")
+
+
+def _unjudgeable_pdf_books(bad, unjudgeable, total):
+    """The skip reason for books whose PDF cannot be judged, counted BY VERDICT. None when there are none.
+
+    `NOT_EXPORTED` and `UNSTAMPED` were both reported as "N of M book(s) carry no recorded source hash",
+    and a book with no PDF AT ALL carries no stamp because there is nothing to stamp: the reader was told
+    to export to make staleness checkable when the thing that was missing was the book. Counted off the
+    TAGS, so a verdict added to the unjudgeable half is reported under its own name rather than under
+    another verdict's sentence -- which is the defect the tag exists to prevent, one level up.
+    """
+    kinds = collections.Counter(tag for _h, _p, tag, _w in bad if tag in unjudgeable)
+    if not kinds:
+        return None
+    return (f"{sum(kinds.values())} of {total} book(s) cannot be judged: "
+            + ", ".join(f"{n} [{tag}]" for tag, n in sorted(kinds.items()))
+            + " -- export with tools/export_pdf.py to make staleness checkable")
+
+
+def test_the_unjudgeable_pdf_verdicts_are_counted_under_their_own_names(tmp_path):
+    """The gate said "carry no recorded source hash" for a book with NO PDF AT ALL.
+
+    `unknowable = {NOT_EXPORTED, UNSTAMPED}` is the right partition -- neither is a proven defect -- but
+    the sentence beside it described only the second, so a book nobody has exported was reported as a
+    book whose provenance was unrecorded. Unreachable on today's corpus (all 15 PDFs exist), which is
+    exactly why it needs a probe rather than a run.
+
+    Driven over the real tags, from the tree that provokes one book per verdict, so the reason is graded
+    against what the tool actually returns and every verdict in the unjudgeable half must appear under
+    its own name."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import export_pdf
+    root, books = _one_book_per_verdict(tmp_path)
+    mod = _export_pdf_bound_to(root, tmp_path, name="export_pdf_unjudgeable")
+    bad = mod.stale()
+    unjudgeable = {mod.NOT_EXPORTED, mod.UNSTAMPED}
+    assert unjudgeable <= set(t for _h, _p, t, _w in bad), (
+        f"the probe tree no longer provokes both unjudgeable verdicts: {sorted(t for _h,_p,t,_w in bad)}")
+
+    said = _unjudgeable_pdf_books(bad, unjudgeable, len(books))
+    assert said, "the probe tree provokes unjudgeable books and the reason came back empty"
+    for tag in sorted(unjudgeable):
+        assert tag in said, (
+            f"a book whose verdict is [{tag}] is reported without its verdict being named:\n  {said}\n"
+            f"  Those two are different facts -- one book has no PDF, the other has no record of where "
+            f"its PDF came from -- and one sentence for both misdirects whichever reader it is not "
+            f"about.")
+    only_absent = [b for b in bad if b[2] == mod.NOT_EXPORTED]
+    alone = _unjudgeable_pdf_books(only_absent, unjudgeable, len(books))
+    assert mod.NOT_EXPORTED in alone and mod.UNSTAMPED not in alone, (
+        f"a tree whose only unjudgeable book has no PDF at all is reported as {alone!r}, which names a "
+        f"verdict no book in it has.")
+    assert _unjudgeable_pdf_books([b for b in bad if b[2] not in unjudgeable], unjudgeable,
+                                  len(books)) is None, (
+        "a tree with no unjudgeable book still produces a reason, so the gate would skip on a corpus "
+        "where every verdict is a PROVEN defect")
 
 
 def test_the_headless_shell_is_the_revision_the_installed_playwright_declares(tmp_path, monkeypatch):
