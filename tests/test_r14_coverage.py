@@ -45,23 +45,29 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 # The two source vocabularies the corpus actually records today (measured: 192 metas and 6 of 198).
-# Quoted rather than paraphrased, so a fixture cannot outlive the strings the stages write.
+# Quoted rather than paraphrased, so a fixture cannot outlive the strings the stages write. Both are
+# graded against the corpus by test_the_source_fixtures_reproduce_what_the_sidecars_record, because
+# "byte-identical to what the stages write" is the whole load-bearing claim of these two literals and
+# nothing else was checking it.
 #
-# SEAMLESS's cell figure is INTERPOLATED rather than typed, and that is not decoration. 9f37857
-# retired "1 m" as a claim about the seamless product -- the arrays measure ~2.7 x 3.4 m source cells
-# -- and test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_one_metre_product
-# sweeps every string literal in the repo's .py files, fixtures included, for exactly that pairing. A
-# fixture standing in for a recorded artifact is one of the surfaces it names. The 6 metas on disk
-# still SAY it, because they were written before the label was corrected and nothing rewrites a
-# measured surface's sidecar to fix prose, so this fixture has to reproduce the recorded bytes exactly
-# -- and it does, at runtime, while the literal in this file names no resolution for the product. Same
-# convention that grader uses for its own probes, which build their dead figures with f"{9.9:.1f} m"
-# rather than spelling them.
-_RECORDED_SEAMLESS_CELL_M = 1        # what the sidecars say; NOT what the arrays measure
-_NED_CELL_M = 10                     # the third vocabulary's own figure, same reason
+# SEAMLESS SPELLS OUT the retired figure, and it has to. 9f37857 retired "1 m" as a claim about the
+# seamless product -- the arrays measure ~2.7 x 3.4 m source cells -- and
+# test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_one_metre_product sweeps
+# every string literal in the repo's .py files, fixtures included, for exactly that pairing. The 6 metas
+# on disk still SAY it, because they were written before the label was corrected and nothing rewrites a
+# measured surface's sidecar to fix prose. So this fixture is a RECORD of what the corpus holds, not a
+# claim about the product, and that grader exempts it on those terms -- it clears a literal that is
+# byte-identical to a `source` value read off courses/*/dem_hd/hole*.json, and nothing else. Hiding the
+# digit behind an interpolation was the earlier answer here and it was the wrong one: it left the claim
+# exactly as visible to a reader and invisible to the grader.
+#
+# UNKNOWN_VOCABULARY is the opposite case: it stands for a source string this repo does NOT recognise,
+# its exact bytes are irrelevant to every assertion that uses it, and it tripped that grader only
+# because the bare word "fallback" sits in the adjacency vocabulary. So it names no product word at all
+# -- there is nothing here for the grader to be blind to.
 LIDAR = "USGS 3DEP LiDAR ground returns @0.4m"
-SEAMLESS = f"USGS 3DEP seamless {_RECORDED_SEAMLESS_CELL_M} m @0.5m sampling"
-UNKNOWN_VOCABULARY = f"NED {_NED_CELL_M} m fallback"
+SEAMLESS = "USGS 3DEP seamless 1 m @0.5m sampling"
+UNKNOWN_VOCABULARY = "SRTM void-filled"
 
 LON, LAT = -121.35, 38.05
 D = 0.0002
@@ -345,6 +351,52 @@ def test_only_the_known_point_cloud_vocabulary_counts_as_point_cloud_derived(tmp
         assert not unknown, (
             f"{os.path.basename(cd)}: the positive check refuses a REAL source vocabulary: {unknown}. "
             f"Widen the vocabulary from the corpus; do not narrow the check.")
+
+
+def test_the_source_fixtures_reproduce_what_the_sidecars_record():
+    """LIDAR and SEAMLESS claim to be BYTE-IDENTICAL to what the two fetch stages write, and nothing
+    graded that claim.
+
+    It is the whole point of those two literals: the test above establishes that both vocabularies keep
+    classifying, and that establishes nothing at all if the strings are a paraphrase of what the stages
+    actually record. A fixture that has drifted from the artifact it stands in for tests the fixture.
+
+    And it is the reason SEAMLESS may spell a figure the arrays deny -- it is quoting a sidecar, not
+    claiming a resolution, and the repo's one-metre guard exempts it on exactly that basis (see the note
+    above these constants). An exemption earned by "this is what the corpus records" has to be checked
+    against the corpus, or it is earned by assertion.
+
+    Read straight off courses/*/dem_hd/hole*.json rather than through lidar_coverage's classifier, which
+    only asks whether a string is recognised, not whether it is this one. NOT VACUOUS: the read has to
+    find sidecars, has to find distinct values, and each fixture has to be one of them -- a corpus test
+    that passes because it enumerated nothing is the failure this campaign keeps meeting. courses/ is
+    gitignored, so a fresh clone skips instead.
+    """
+    recorded, sidecars = {}, 0
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        if os.path.basename(os.path.dirname(os.path.dirname(p))).startswith("_"):
+            continue                                    # a scratch slug, not a real course
+        with open(p, encoding="utf-8") as fh:
+            src = json.load(fh).get("source")
+        sidecars += 1
+        if isinstance(src, str):
+            recorded.setdefault(src, []).append(os.path.relpath(p, ROOT))
+    if not sidecars:
+        pytest.skip("per-course green surfaces are gitignored; no sidecar to read a source off")
+    assert len(recorded) >= 2, (
+        f"{sidecars} sidecar(s) on disk record {len(recorded)} distinct source value(s), so this check "
+        f"cannot tell one vocabulary from another and both fixtures below would pass on one string: "
+        f"{sorted(recorded)}")
+    drifted = [f"{name} = {value!r} is recorded by no sidecar on disk"
+               for name, value in (("LIDAR", LIDAR), ("SEAMLESS", SEAMLESS))
+               if value not in recorded]
+    assert not drifted, (
+        "a source fixture is not what the stages write, so the vocabulary test above is grading this "
+        "file rather than the pipeline -- and SEAMLESS's exemption from the one-metre guard rests on "
+        f"being a verbatim record of a sidecar. The {len(recorded)} value(s) actually recorded across "
+        f"{sidecars} sidecar(s) are:\n  "
+        + "\n  ".join(f"{v!r} in {len(w)} sidecar(s)" for v, w in sorted(recorded.items()))
+        + "\n  " + "\n  ".join(drifted))
 
 
 # --- I-5: no holes to check is not every hole covered -------------------------------------------

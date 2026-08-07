@@ -34905,6 +34905,87 @@ def _prose_docs(root=None):
         os.path.relpath(p, root) for p in glob.glob(os.path.join(root, "legal", "*.md")))
 
 
+def _module_literals(tree):
+    """{name: value} for every module-level name bound EXACTLY ONCE to a value the file itself decides.
+
+    What `{NAME}` puts in an f-string, when reading the file can answer it. Bindings are walked in module
+    order, so a name bound to an f-string built from earlier constants folds too. A name bound MORE THAN
+    ONCE is dropped rather than guessed: which value a reader meets is then a question about execution,
+    and this is a question about text.
+    """
+    import ast
+    seen, consts = set(), {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value:
+            targets = [node.target]
+        else:
+            continue
+        value = _fold_expr(node.value, consts)
+        for t in targets:
+            if t.id in seen:
+                consts.pop(t.id, None)
+            else:
+                seen.add(t.id)
+                if value is not None:
+                    consts[t.id] = value
+    return consts
+
+
+def _fold_expr(node, consts):
+    """The value `node` has when the file decides it, else None.
+
+    A numeric or string `Constant`, a name `consts` binds, or an f-string every interpolation of which
+    folds. Anything the module COMPUTES is None -- see `_string_literals_of` for why that residual is
+    the right answer and what it is not a licence for.
+    """
+    import ast
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes, int, float, complex)):
+        return node.value
+    if isinstance(node, ast.Name):
+        return consts.get(node.id)
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for p in node.values:
+            if isinstance(p, ast.Constant) and isinstance(p.value, str):
+                parts.append(p.value)
+            elif isinstance(p, ast.FormattedValue):
+                one = _fold_formatted(p, consts)
+                if one is None:
+                    return None
+                parts.append(one)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def _fold_formatted(node, consts):
+    """What one `{...}` puts in the string, or None when that is a question about runtime.
+
+    Conversion and format spec are applied, because the point is the text a READER meets: `{9.9:.1f}`
+    reaches the page as one digit, a decimal point and one more, and a grader that folded the value but
+    dropped the spec would be reading a string nobody sees.
+    """
+    value = _fold_expr(node.value, consts)
+    if value is None:
+        return None
+    if node.conversion == ord("r"):
+        value = repr(value)
+    elif node.conversion == ord("s"):
+        value = str(value)
+    elif node.conversion == ord("a"):
+        value = ascii(value)
+    spec = "" if node.format_spec is None else _fold_expr(node.format_spec, consts)
+    if not isinstance(spec, str):
+        return None
+    try:
+        return format(value, spec)
+    except (TypeError, ValueError):
+        return None
+
+
 def _string_literals_of(path):
     """[(lineno, text)] -- every string literal in one .py file that is NOT a docstring.
 
@@ -34924,10 +35005,26 @@ def _string_literals_of(path):
         -- f"...{a}9.9{b} m data..." -- is one string here. The parts are still emitted individually as
         well, so nothing that was graded stops being graded. The mutation fixture below forbids this
         dodge for its own probes; the grader was open to it until now, which is the wrong way round.
+
+    AND THE INTERPOLATIONS ARE FOLDED, which is the half that promise was missing. Joining the Constant
+    parts closes the claim split AROUND a `{...}`; it does nothing about the figure moved INSIDE one, and
+    that was measured as a live dodge on a real user-facing message. `lidar_coverage.py`'s uncovered-green
+    report, injected as a plain literal, failed the seamless guard; the identical sentence with its digit
+    interpolated through a module-level constant passed. So every `{...}` whose value the FILE decides --
+    a numeric or string Constant, or a name `_module_literals` binds -- is folded in, conversion and
+    format spec applied, and the reconstructed string is what a reader would actually see.
+
+    WHAT REMAINS UNDECIDABLE, stated because it is the residual and not an oversight: a value the module
+    COMPUTES cannot be folded by reading the file. A message whose figure comes out of a measurement is
+    therefore not a claim here, and should not be -- that message reports what the run found, and grading
+    it would mean predicting arithmetic. What that residual is NOT is a way to carry a fixed claim past
+    the sweep: a fixture that must reproduce a retired figure carries it in bytes and earns its exemption
+    from the corpus, which is what tests/test_r14_coverage.py's recorded-`source` fixtures do.
     """
     import ast
     with open(path, encoding="utf-8") as fh:
         tree = ast.parse(fh.read())
+    consts = _module_literals(tree)
     docs = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -34941,8 +35038,13 @@ def _string_literals_of(path):
             elif isinstance(node.value, bytes):
                 out.append((node.lineno, node.value.decode("utf-8", "replace")))
         elif isinstance(node, ast.JoinedStr):
-            joined = "".join(p.value for p in node.values
-                             if isinstance(p, ast.Constant) and isinstance(p.value, str))
+            parts = []
+            for p in node.values:
+                if isinstance(p, ast.Constant) and isinstance(p.value, str):
+                    parts.append(p.value)
+                elif isinstance(p, ast.FormattedValue):
+                    parts.append(_fold_formatted(p, consts) or "")
+            joined = "".join(parts)
             if joined:
                 out.append((node.lineno, joined))
     return out
@@ -35490,6 +35592,35 @@ _PRODUCER_RES = re.compile(
     r"(fetch_dem(?:_hd)?\.py)`?\s+at\s+(?<![\d.])(\d[\d.]*)\s*(?:m|metres?|meters?)\b", re.I)
 
 
+def _recorded_source_strings():
+    """Every distinct `source` value the built sidecars under courses/*/dem_hd/ actually record.
+
+    THE ONE EXEMPTION the product rule below grants, and it is earned from the corpus rather than by
+    wording. Six sidecars still record the retired figure -- they were written before the label was
+    corrected and nothing rewrites a measured surface's sidecar to fix prose -- so a test fixture
+    standing in for one of them has to reproduce those bytes or it is testing itself. Such a literal is a
+    RECORD of what is on disk, not a claim about the product's resolution.
+
+    Narrow on purpose: a literal is cleared only when the WHOLE string equals a recorded value, so no
+    runtime message and no sentence in a document can reach it -- a print that calls the fallback a
+    one-metre product is not byte-identical to a sidecar field, and nothing here helps it. And it cannot
+    be earned by rewording, which is the failure the label grader's keyword exemption already had:
+    the only way onto this list is for a stage to have written the string.
+    """
+    out = {}
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        if os.path.basename(os.path.dirname(os.path.dirname(p))).startswith("_"):
+            continue                                   # a scratch slug, not a built course
+        try:
+            with open(p, encoding="utf-8") as fh:
+                src = json.load(fh).get("source")
+        except (OSError, ValueError):
+            continue
+        if isinstance(src, str):
+            out.setdefault(src, []).append(os.path.relpath(p, ROOT))
+    return out
+
+
 def _seamless_grid_figures():
     """(sorted allowed metre figures, how each was measured) for the seamless surfaces.
 
@@ -35727,6 +35858,17 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
         present tense, live, in the parallel position where the other producer's true 0.4 m sits -- so
         the sentence read as a matched pair and the wrong half looked right.
 
+    ONE EXEMPTION, and it is read off the corpus instead of written down: a string literal that is
+    byte-identical to a `source` value some built sidecar actually records (`_recorded_source_strings`).
+    Six sidecars still record the retired figure, because they were written before the label was
+    corrected and nothing rewrites a measured surface's sidecar to fix prose -- so a fixture standing in
+    for one of those artifacts has to reproduce those bytes or it is testing itself. That literal is a
+    RECORD, not a claim, and the exemption cannot be earned by rewording: a stage has to have written the
+    string. It replaces the answer this repo tried first, which was to hide the digit inside an
+    interpolation -- equally legible to a reader, invisible to this sweep, and now folded by
+    `_string_literals_of`. tests/test_r14_coverage.py grades its own fixtures against the same sidecars,
+    so the exemption is checked from both ends.
+
     WHAT IS STILL NOT GRADED, named so the next round has a target rather than a rediscovery. The
     product rule does NOT read comments or docstrings, so `fetch_dem_hd.py`'s `keeps_existing_surface`
     docstring -- the site the word "fill" was added to the vocabulary FOR -- is graded by nothing:
@@ -35806,7 +35948,21 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
             surfaces.append((d, fh.read()))
 
     bad = []
+    # THE ONE EXEMPTION, and it is read off the corpus rather than written down: a literal that is
+    # byte-identical to a `source` value some sidecar on disk actually records. Six of them still record
+    # the retired figure, so a fixture standing in for one of those artifacts has to reproduce it exactly
+    # -- and a fixture that reproduces recorded bytes is a record, not a claim. This is what replaces the
+    # earlier answer, which was to interpolate the digit: that left the claim exactly as legible to a
+    # reader and invisible to this sweep, and it is the shape _string_literals_of now folds. Asserted
+    # non-empty because an exemption derived from an empty read would clear nothing while looking as
+    # though it might, and this sweep only runs when the corpus is here.
+    recorded = _recorded_source_strings()
+    assert recorded, (
+        "no sidecar under courses/*/dem_hd/ records a `source` at all, yet the arrays above measured. "
+        "The exemption below is derived from those strings, so it would be resting on an empty read.")
     for where, text in surfaces:
+        if where.endswith("string literal") and text.strip() in recorded:
+            continue
         for clause in _clauses(text):
             for m in _SEAMLESS_RES.finditer(clause):
                 said = float(m.group(1) or m.group(2))
@@ -35934,6 +36090,72 @@ def test_no_runtime_string_or_published_record_names_the_seamless_fallback_as_a_
         "a runtime message or a published record names a resolution for the seamless fallback that the "
         "surfaces built from it deny. Name the measured figure, or name no figure at all -- "
         "\"the seamless DEM\" is both shorter and true:\n  " + "\n  ".join(bad))
+
+
+def test_the_literal_collector_reads_a_figure_a_reader_sees_through_an_interpolation():
+    """MUTATION TEST on a real user-facing message. The guard above was blind to an interpolated digit,
+    and `_string_literals_of`'s own docstring said that hole was closed.
+
+    That docstring promised its JoinedStr handling exists so a claim SPLIT across an interpolation "is
+    one string here". It joined only the CONSTANT parts, so moving the FIGURE inside the braces walked
+    straight past it. MEASURED on `lidar_coverage.py`'s uncovered-green report -- the message the guard
+    above was written for -- the plain literal was reported and the identical sentence with its digit
+    interpolated through a module-level constant was reported by nothing at all. The person reading the
+    pipeline's output sees one sentence either way, so the two have to grade the same.
+
+    Both halves are probed, and the plain one FIRST: if the plain literal ever stops being reported, the
+    interpolated probe is measuring a broken collector rather than a closed hole. The scratch copy must
+    also come back clean before either injection, so each result is attributable to its own injection.
+
+    WHAT IS STILL UNDECIDABLE, said plainly rather than left to be discovered. A value the module
+    COMPUTES cannot be folded by reading the file, so a message whose figure comes out of a measurement
+    is not read as a claim here, and cannot be: that message is the pipeline reporting what it found,
+    and grading it would mean predicting arithmetic. That is not a licence to hide a FIXED claim behind
+    a computation. A fixture that has to carry a retired figure carries it in bytes and earns its
+    exemption from the corpus -- the recorded-`source` exemption the guard above applies -- which is
+    what the fixtures in tests/test_r14_coverage.py now do.
+    """
+    import shutil
+    import tempfile
+    figure = f"{9.9:.1f}"                      # BUILT, never typed: a literal here would be swept
+    host = "lidar_coverage.py"
+    probes = (
+        ("a plain literal, which the collector already read",
+         '\n\ndef _probe_plain():\n    print("     built from the ' + figure + ' m seamless DEM")\n'),
+        ("the same sentence with its digit interpolated",
+         '\n\n_PROBE_CELL = ' + figure + '\n\n\ndef _probe_interpolated():\n'
+         '    print(f"     built from the {_PROBE_CELL} m seamless DEM")\n'),
+    )
+
+    def said(path):
+        """Every figure `_SEAMLESS_RES` reads off one file's string literals."""
+        return [m.group(1) or m.group(2)
+                for _ln, text in _string_literals_of(path)
+                for clause in _clauses(text)
+                for m in _SEAMLESS_RES.finditer(clause)]
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, host)
+        shutil.copyfile(os.path.join(ROOT, host), path)
+        pristine = open(path, encoding="utf-8").read()
+        assert figure not in said(path), (
+            f"the unmutated copy of {host} already binds {figure} to the product, so neither injection "
+            f"below would be attributable to itself")
+        missed = []
+        for name, inject in probes:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(pristine + inject)
+            try:
+                found = said(path)
+            finally:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(pristine)
+            if figure not in found:
+                missed.append(f"{name}: the collector reported {found or 'nothing at all'}")
+    assert not missed, (
+        "the string-literal collector cannot see a resolution a reader of the running pipeline plainly "
+        "sees, so the guard above certifies a message it never read. Fold what the file itself decides; "
+        "do not let a claim through because its digit sits inside braces:\n  " + "\n  ".join(missed))
 
 
 @needs_corpus
