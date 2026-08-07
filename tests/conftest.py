@@ -72,7 +72,7 @@ def corpus_slugs():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _a_course_exists_to_bind():
+def _a_course_exists_to_bind(_deletion_cannot_reach_a_real_course):
     """On a fresh clone, make ONE course for the engine to import against. Inert where a corpus exists.
 
     courses/ is gitignored, so a stranger who clones this repo has the engine and no data at all.
@@ -103,6 +103,21 @@ def _a_course_exists_to_bind():
 
     A leftover directory from a crashed run is REUSED, never replaced or removed: this fixture only
     deletes a directory it created in this process, and only ever its own slug.
+
+    THE `_deletion_cannot_reach_a_real_course` PARAMETER IS LOAD-BEARING AND IS NOT A TYPO. It is
+    never read; it is there to order the two fixtures. Both are session-scoped and autouse, so pytest
+    used to set them up in definition order and tear them down in reverse -- the guard came DOWN first
+    and restored the real shutil.rmtree, and the rmtree below then ran outside the only guard this repo
+    has. Measured by printing shutil.rmtree.__qualname__ at that line: `rmtree` without this
+    parameter, `guarded_deleter.<locals>.guarded` with it. Moving this fixture to the end of the file
+    does not fix it, because teardown order is the reverse of setup order either way. Declaring the
+    dependency inverts both.
+    What that bought, stated because it is a real refusal and not a theoretical one: if the scratch
+    directory is swapped for a SYMLINK to a real course mid-session, the guard refuses it -- realpath
+    lands on a corpus slug. The real rmtree notices the swap too and raises OSError("Cannot call rmtree
+    on a symbolic link"), which `ignore_errors=True` swallows, leaving the symlink in courses/ and the
+    session green. See test_the_fresh_clone_fixture_deletes_through_the_guard_and_not_around_it, which
+    grades both halves and exists so a future reader cannot delete this parameter as unused.
     """
     template = os.path.join(ROOT, "examples", "course.json")
     d = os.path.join(ROOT, "courses", FRESH_CLONE_SLUG)

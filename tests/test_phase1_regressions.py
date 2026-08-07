@@ -2424,6 +2424,146 @@ def test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be(tm
         "to describe the code that shipped")
 
 
+def _fresh_clone_probe(tmp_path, probe_source, plant=None, name="probe"):
+    """Run a CHILD pytest over a corpus-less mini-repo, and hand back what it printed.
+
+    The fresh-clone fixture in tests/conftest.py only wakes up where corpus_slugs() is empty, which on
+    this machine is nowhere: all twelve courses are built, so the fixture is inert here and cannot be
+    exercised in-process. It also does its work in SESSION setup and teardown, so there is no moment
+    inside a test at which its cleanup can be observed. A child session is therefore not a convenience,
+    it is the only place the behaviour exists.
+
+    The mini-repo is deliberately not the whole repo: conftest.py, config.py, distribution.py and
+    examples/course.json are every file the fixture and an `import config` touch, so the child run is a
+    fifth of a second rather than the eighteen seconds test_a_fresh_clone_gets_a_clean_suite pays for
+    copying every tracked file. That test measures the WHOLE suite on a clean tree; this one measures
+    one fixture on a tree somebody has already crashed on.
+
+    `plant(courses_dir)` runs before the child starts, so a caller can leave the exact wreckage a
+    half-finished run leaves behind. Everything lives under tmp_path -- the real courses/ is never on
+    any path the child can see, because the child's own ROOT comes from its copy of conftest.py.
+    """
+    import shutil
+    import subprocess
+
+    arch = tmp_path / name
+    (arch / "tests").mkdir(parents=True)
+    (arch / "examples").mkdir()
+    shutil.copyfile(os.path.join(ROOT, "examples", "course.json"), arch / "examples" / "course.json")
+    for mod in ("config.py", "distribution.py"):
+        shutil.copyfile(os.path.join(ROOT, mod), arch / mod)
+    shutil.copyfile(os.path.join(ROOT, "tests", "conftest.py"), arch / "tests" / "conftest.py")
+    (arch / "tests" / "fresh_clone_probe_test.py").write_text(probe_source, encoding="utf-8")
+    courses = arch / "courses"
+    if plant is not None:
+        courses.mkdir()
+        plant(courses)
+    env = dict(os.environ)
+    for var in ("COURSE", "COLD_BUILD", "GREENBOOK_FRESH_CLONE_CHILD"):
+        env.pop(var, None)
+    r = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider"],
+                       cwd=str(arch), env=env, capture_output=True, text=True)
+    return r, (r.stdout or "") + (r.stderr or ""), courses
+
+
+def test_the_fresh_clone_fixture_deletes_through_the_guard_and_not_around_it(tmp_path):
+    """The one deletion in this repo aimed at courses/ that BYPASSED this repo's own deletion guard.
+
+    tests/conftest.py installs the guard in `_deletion_cannot_reach_a_real_course` -- a session fixture
+    that wraps shutil.rmtree, os.remove, os.unlink and os.rmdir, and RESTORES them on teardown -- and
+    `_a_course_exists_to_bind` removes the scratch course it made in ITS teardown. Both are
+    session-scoped and autouse, so pytest set them up in definition order and tore them down in
+    reverse: the guard came down FIRST, and the fixture's `shutil.rmtree(d, ignore_errors=True)` then
+    ran against the real primitive. Measured, not reasoned: printing `shutil.rmtree.__qualname__` at
+    that line gave
+
+        TEARDOWN-RMTREE-IS: rmtree                      (unfixed)
+        TEARDOWN-RMTREE-IS: guarded_deleter.<locals>.guarded   (fixed)
+
+    Reordering the file does not move it -- the fixture is torn down last either way -- so the fix is a
+    declared DEPENDENCY on the guard fixture, which inverts setup order and therefore teardown order
+    too. That, rather than a second hand-written call to refuse_unless_deletable() at the deletion site,
+    because a helper the fixtures are asked to remember is the shape conftest.py's own docstring argues
+    against: "a fixture written next month calls shutil.rmtree like the fourteen before it and nothing
+    notices". One choke point, and this deletion now goes through it like every other.
+
+    WHAT THE BYPASS COST, which is the reason this is not decoration. If the scratch directory is
+    replaced mid-session by a SYMLINK to a real course, the guard refuses: realpath lands on a corpus
+    slug, so _classify reads it as course data. Unguarded, CPython's own rmtree notices the swap too --
+    it raises OSError("Cannot call rmtree on a symbolic link") when lstat and fstat disagree -- but
+    `ignore_errors=True` SWALLOWS that, so the symlink is left sitting in courses/ and the session
+    exits 0. Both halves are measured below: the refusal must appear AND the run must go red.
+
+    ignore_errors=True is kept, and this test also pins that it does not defeat the guard: the wrapper
+    raises BEFORE calling the real rmtree, so the refusal propagates whatever the error policy is. What
+    the flag still tolerates is a genuine cleanup hiccup on a scratch directory -- a second suite that
+    removed it first, a file a test left unwritable -- and turning that into a red session over a
+    gitignored scratch slug would be the worse trade.
+    """
+    import conftest
+
+    swap = '''
+import os
+import shutil
+
+import conftest
+
+
+def test_swap_the_scratch_course_for_a_symlink_to_a_real_one():
+    """Mid-session, make courses/<fresh-clone-slug> a symlink into a real course."""
+    scratch = os.path.join(conftest.ROOT, "courses", conftest.FRESH_CLONE_SLUG)
+    real = os.path.join(conftest.ROOT, "courses", "real-golf-club")
+    os.makedirs(real)
+    for fn in ("course.json",) + conftest.CORPUS_NEEDS:
+        with open(os.path.join(real, fn), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+    shutil.rmtree(scratch)
+    os.symlink(real, scratch)
+    assert os.path.islink(scratch)
+'''
+    r, out, courses = _fresh_clone_probe(tmp_path, swap, name="swapped")
+    assert "1 passed" in out, (
+        f"the child run did not even reach the swap, so nothing was measured:\n{out[-1500:]}")
+    assert "REFUSING shutil.rmtree" in out and "that is course data" in out, (
+        "the fresh-clone fixture's own cleanup did NOT go through the deletion guard. It ran the real "
+        "shutil.rmtree, because the guard fixture is torn down before it -- so a scratch directory "
+        "swapped for a symlink into a real course is rmtree'd outside every check this repo has, and "
+        "ignore_errors=True swallows the one complaint CPython itself makes. Declare the guard fixture "
+        "as a parameter of _a_course_exists_to_bind so it is set up first and torn down "
+        f"last:\n{out[-2500:]}")
+    assert conftest.FRESH_CLONE_SLUG in out, (
+        f"the refusal does not name the path it refused, so a reader cannot tell which fixture aimed "
+        f"at course data:\n{out[-1500:]}")
+    assert r.returncode != 0, (
+        f"the refusal was raised and then LOST -- the child session still exited 0. ignore_errors=True "
+        f"must not swallow the guard's AssertionError; the wrapper raises before the real rmtree is "
+        f"called, so it cannot:\n{out[-1500:]}")
+    assert (courses / "real-golf-club" / "course.json").exists(), (
+        "the swapped-in real course lost course.json -- the guard refused the symlink but something "
+        "still walked through it")
+
+    # ANTI-VACUITY: a guard that refused everything would pass the half above and break the fixture
+    # this repo added the guard for. The ordinary case -- no swap -- must still be PERMITTED, the
+    # scratch course must be gone at the end of the session, and the run must be green.
+    plain = '''
+import os
+
+import conftest
+
+
+def test_the_binding_resolves():
+    import config
+    assert config.SLUG == conftest.FRESH_CLONE_SLUG
+'''
+    r2, out2, courses2 = _fresh_clone_probe(tmp_path, plain, name="plain")
+    assert r2.returncode == 0, (
+        f"a corpus-less child run is no longer green: routing the fixture's cleanup through the guard "
+        f"must not make the guard REFUSE its own scratch slug:\n{out2[-2500:]}")
+    assert not (courses2 / conftest.FRESH_CLONE_SLUG).exists(), (
+        f"the fresh-clone fixture did not clean up after itself: courses/{conftest.FRESH_CLONE_SLUG} "
+        f"is still there after the child session ended:\n{out2[-1500:]}")
+
+
 def test_the_course_template_documents_every_key_the_engine_reads():
     """examples/course.json is the ONLY course data this repo ships, and a stranger's whole map of
 
