@@ -177,7 +177,14 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    `hole_elev.json`. Run it AFTER the surfaces exist, since it reads them. Skipping it is silent: the
    cards simply print no height line, which is also what a hole whose tee cannot be located does, so
    there is nothing on the page to tell a missing stage from an honest refusal. `tools/verify_elevation.py`
-   cross-checks the result against the independent 3DEP seamless DEM; run it when adding a course.
+   cross-checks the result against the independent 3DEP seamless DEM; run it when adding a course. It
+   exits 2 if a course RECORDS printed tee-to-green heights but this run verified none of them;
+   `ALLOW_UNVERIFIED_COURSES=1` accepts that by name, for a course that can never be verified here (its
+   greens permanently outside 3DEP coverage). The key cannot silence a run that verified nothing
+   ANYWHERE (still exit 2 regardless), and it cannot silence a torn green-surface pair, which has no key
+   at all -- the fix there is to rebuild the green, not to waive it. A course with no recorded heights at
+   all needs no key: it prints no height line, so there is nothing here for the tool to have failed to
+   verify.
 7. **Build.** `generate.py` renders the combined cards -> `greenbook.html` (add `COACH=1` for the
    optional large-print edition), then `tools/export_pdf.py` -> `greenbook.pdf`. Always export with
    that tool, never by hand: hand-exported PDFs drifted three commits behind the engine once, and
