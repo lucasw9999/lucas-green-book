@@ -140,7 +140,7 @@ def _a_course_exists_to_bind(_deletion_cannot_reach_a_real_course):
     state such a hiccup leaves behind is now repaired by the next run rather than inherited by it.
 
     THE `_deletion_cannot_reach_a_real_course` PARAMETER IS LOAD-BEARING AND IS NOT A TYPO. It is
-    never read; it is there to order the two fixtures. Both are session-scoped and autouse, so pytest
+    never read; it is there to order these two session fixtures. Both are session-scoped and autouse, so
     used to set them up in definition order and tear them down in reverse -- the guard came DOWN first
     and restored the real shutil.rmtree, and the rmtree below then ran outside the only guard this repo
     has. Measured by printing shutil.rmtree.__qualname__ at that line: `rmtree` without this
@@ -417,7 +417,7 @@ def _dir_fd_dir(fd):
 
     None is the honest answer elsewhere (a POSIX platform with neither F_GETPATH nor a mounted procfs)
     and the caller keeps the old waiver for it. Failing closed there would refuse rmtree's own walk
-    and break the nine fixtures the waiver exists for, which trades a bounded, disclosed residual for
+    and break every fixture the waiver exists for, which trades a bounded, disclosed residual for
     a suite that cannot run. See the WHAT IS NOT list.
 
     The buffer is 1024 bytes and not one more: fcntl.fcntl raises ValueError("fcntl string arg too
@@ -520,10 +520,14 @@ def _deletion_cannot_reach_a_real_course():
 
     Wrapping the primitives rather than offering a helper the fixtures are asked to remember: a
     helper is the kind of guard this suite keeps finding inert, because a fixture written next month
-    calls shutil.rmtree like the nine before it and nothing notices.
+    calls shutil.rmtree like every fixture before it and nothing notices.
 
     WHAT IS COVERED, stated exactly, because the claim used to be "every deletion":
-      * shutil.rmtree -- the nine fixtures that build a directory under courses/ and remove it again.
+      * shutil.rmtree -- every fixture that builds a scratch course under courses/ and removes it
+        again. How many of those there are is NOT restated here: one figure, one record, and the
+        record is _courses_are_read_only's docstring in test_phase1_regressions.py, where
+        test_every_published_count_of_the_scratch_slugs_written_under_courses_is_derived re-derives
+        it from the source. Two stale copies of it used to be published side by side.
       * os.remove and os.unlink -- separate function objects on POSIX, both wrapped. This is the one
         that reaches the crown jewel: a single unlink of a real course.json destroys the scorecard
         while leaving the folder looking intact.
@@ -550,7 +554,7 @@ def _deletion_cannot_reach_a_real_course():
         a platform answering neither fcntl(fd, F_GETPATH) (macOS) nor readlink("/proc/self/fd/N")
         (Linux) -- and those are exactly the two platforms where shutil._use_fd_functions is True, so
         on anything that runs the fd walk at all there is nothing left here. Failing closed on an
-        unresolvable descriptor instead would refuse rmtree's own walk and break the nine fixtures
+        unresolvable descriptor instead would refuse rmtree's own walk and break every fixture
         this waiver exists for. Three things bound it further: nothing in this repo passes dir_fd at
         all, outside an approved rmtree it is refused whether it resolves or not, and a callback
         deleting by PATH is checked -- that one WAS open, and closed; see guarded_deleter.

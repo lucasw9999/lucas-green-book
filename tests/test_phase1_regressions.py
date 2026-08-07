@@ -1407,13 +1407,24 @@ def _courses_are_read_only():
     manual cross-check to produce. Rebuilding a green surface is hours; re-verifying a scorecard against
     club sources is worse.
 
-    Nine tests and fixtures DO write there today, and that is fine: _synth_ticks, _synth_gate,
-    _synth_trees, _synth_notrees, _synth_water, _synth_bmode, _synth_rmguard, _testmsg and
-    _cold_<ref> each build a scratch directory under courses/
+    THIS DOCSTRING IS THE SINGLE RECORD OF HOW MANY SCRATCH SLUGS tests/ WRITES UNDER courses/, and
+    test_every_published_count_of_the_scratch_slugs_written_under_courses_is_derived re-derives the
+    figure from the source and fails if this list or this number disagrees with it. Thirteen places used
+    to carry the number and nothing read any of them, so two said eight while nine said nine; the other
+    twelve no longer state a figure at all.
+
+    Fourteen scratch slugs are written there today, and that is fine: _synth_ticks, _synth_gate,
+    _synth_trees, _synth_notrees, _synth_water, _synth_bmode, _synth_rmguard, _synth_rowlen, _testmsg,
+    _cold_<ref>, _no_corpus_fixture, _r14_<name>_<pid>, _r14_tees_halfpair and _r14_tees_malformed each
+    build a scratch course under courses/
     -- necessary, because config.py resolves courses/ from the repo root and a tmp_path cannot stand in
-    -- and remove it again. All nine are excluded BY NAME, via distribution.is_corpus_slug, so this
-    guard watches real courses only. It used to watch the scratch slugs too and reported their cleanup
-    as data loss; see the regression test named in _courses_snapshot.
+    -- and remove it again. Fifteen sites for fourteen slugs: _synth_rmguard is built by two different
+    tests. They are spread over conftest.py and three test modules besides this one, which is why the
+    figure is directory-wide -- the deletion guard in tests/conftest.py is installed for the whole
+    directory, and a count scoped to one file understated it the moment a sibling module wrote one.
+    Every one of them is excluded BY NAME, via distribution.is_corpus_slug, so this guard watches real
+    courses only. It used to watch the scratch slugs too and reported their cleanup as data loss; see
+    the regression test named in _courses_snapshot.
 
     It NOTICES; it does not prevent. For a directory with no copy anywhere that is only half a guard,
     so tests/conftest.py's _deletion_cannot_reach_a_real_course refuses the syscall instead -- see
@@ -1508,9 +1519,10 @@ def a_course():
 def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_real_ones(tmp_path):
     """The courses/ guard snapshotted SCRATCH directories too, and reported phantom deletions.
 
-    Nine tests and fixtures in this file build a real directory under courses/ and remove it again:
-    _synth_ticks, _synth_gate, _synth_trees, _synth_notrees, _synth_water, _synth_bmode,
-    _synth_rmguard, _testmsg and _cold_<ref>. A single clean run
+    Tests and fixtures across tests/ build a real directory under courses/ and remove it again --
+    enumerated once, in _courses_are_read_only's docstring above, which is the record that
+    test_every_published_count_of_the_scratch_slugs_written_under_courses_is_derived grades. A second
+    copy of that list lived here and went stale, which is why there is now only one. A single clean run
     never notices, because the session snapshot is taken BEFORE any of them exists and a path created
     and removed inside one run never enters `before`. It bites when such a directory is already there at
     session start, which happens two ways: a leftover from a hard-killed run -- distribution.py's
@@ -1759,7 +1771,7 @@ def test_rmtree_refuses_a_real_course_before_the_syscall_and_still_allows_scratc
     ok = lambda p: rmtree_target_is_scratch(str(p), root)
 
     assert ok(fake / "courses" / "_synth_ticks"), \
-        "a scratch fixture must still be removable, or eight fixtures here stop working"
+        "a scratch fixture must still be removable, or every scratch fixture here stops working"
     assert ok(fake / "courses" / "_cold_merion-golf-club" / "laz"), \
         "a path INSIDE a scratch course is scratch too"
     assert not ok(fake / "courses" / "merion-golf-club"), "a real course must be refused"
@@ -1851,7 +1863,7 @@ DELETION_GUARD_TRUTH_TABLE = [
     ("a real course through a symlinked ancestor, left unresolved",
      lambda r, t: os.path.join(str(t), "link-to-repo", "courses", "merion-golf-club"), False),
     # ---- permit: scratch space and everything genuinely elsewhere ----------------------------
-    ("a scratch slug -- eight fixtures here depend on this",
+    ("a scratch slug -- every scratch fixture here depends on this",
      lambda r, t: os.path.join(r, "courses", "_synth_ticks"), True),
     ("a path inside a scratch course",
      lambda r, t: os.path.join(r, "courses", "_cold_merion-golf-club", "laz"), True),
@@ -2004,7 +2016,7 @@ def test_the_deletion_guard_covers_the_wrapper_plumbing_not_just_the_predicate(t
         property, and pinning it stops a later `try/except: pass` from turning the guard into a
         formality.
       * the re-entrancy window. shutil.rmtree walks its own tree with os.unlink(name, dir_fd=fd) on
-        this platform, so refusing every dir_fd would break the nine fixtures the guard exists to
+        this platform, so refusing every dir_fd would break every fixture the guard exists to
         keep working. The wrappers stand down inside a rmtree that was already approved -- and must
         NOT stand down otherwise.
     """
@@ -2246,7 +2258,7 @@ def test_an_rmtree_callback_cannot_delete_a_real_course_from_inside_the_stand_do
         outer(scratch)
         assert walked == ["course.json"], (
             "an approved rmtree must still be allowed to walk its own subtree with dir_fd; that is "
-            "how shutil.rmtree is implemented on this platform, and nine fixtures here depend on it")
+            "how shutil.rmtree is implemented on this platform, and the scratch fixtures depend on it")
 
         # ...and a dir_fd deletion with no rmtree in flight is still refused outright, resolvable or
         # not: outside an approved walk there is no reason to accept one at all
@@ -2305,7 +2317,7 @@ def test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be(tm
 
     What remains is a bounded residual and NOT an impossibility: a platform that can answer neither
     F_GETPATH nor /proc/self/fd still gets the old waiver, because failing closed there would break
-    shutil.rmtree itself and with it the nine fixtures the waiver exists for. (7) pins that the
+    shutil.rmtree itself and with it every fixture the waiver exists for. (7) pins that the
     disclosure names it, and pins NEGATIVELY that it no longer claims the waiver "cannot be
     narrower" -- a false impossibility claim in a guard over data with no backup is worse than a
     disclosed hole, because it tells the next reader not to look.
@@ -2368,7 +2380,7 @@ def test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be(tm
                         root, opens_subtree=True)(scratch)
         assert walked == ["hole01.json"], (
             "an approved rmtree must still be allowed to walk its own subtree with dir_fd; that is "
-            "how shutil.rmtree is implemented on macOS and Linux, and nine fixtures need it")
+            "how shutil.rmtree is implemented on macOS and Linux, and the scratch fixtures need it")
     finally:
         os.close(scratch_fd)
         os.close(course_fd)
@@ -2385,7 +2397,7 @@ def test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be(tm
     fake_rmtree = guarded_deleter(shutil.rmtree, "shutil.rmtree", root, opens_subtree=True)
     fake_rmtree(scratch)
     assert not os.path.exists(scratch), (
-        "the narrowed stand-down broke a legitimate deep scratch rmtree -- the nine fixtures that "
+        "the narrowed stand-down broke a legitimate deep scratch rmtree -- every fixture that "
         "build a directory under courses/ and remove it again all take this path")
     assert os.path.exists(victim), "a scratch rmtree reached outside the subtree it was approved for"
     with pytest.raises(AssertionError, match="course data"):
@@ -2484,7 +2496,7 @@ def test_the_fresh_clone_fixture_deletes_through_the_guard_and_not_around_it(tmp
     declared DEPENDENCY on the guard fixture, which inverts setup order and therefore teardown order
     too. That, rather than a second hand-written call to refuse_unless_deletable() at the deletion site,
     because a helper the fixtures are asked to remember is the shape conftest.py's own docstring argues
-    against: "a fixture written next month calls shutil.rmtree like the fourteen before it and nothing
+    against: "a fixture written next month calls shutil.rmtree like every fixture before it and nothing
     notices". One choke point, and this deletion now goes through it like every other.
 
     WHAT THE BYPASS COST, which is the reason this is not decoration. If the scratch directory is
@@ -2646,6 +2658,202 @@ def test_the_binding_resolves_over_a_wedged_leftover():
             f"a PRE-EXISTING courses/{conftest.FRESH_CLONE_SLUG} was removed at teardown. The fixture "
             f"deletes only what it created in this process: it cannot tell its own wreckage from a "
             f"directory a concurrently running suite is bound to")
+
+
+def test_every_published_count_of_the_scratch_slugs_written_under_courses_is_derived():
+    """Thirteen places stated how many fixtures build a scratch course under courses/. Nothing read them.
+
+    So they drifted, in both directions at once: two said EIGHT and nine said NINE, and neither was
+    right. _synth_rowlen was written and never counted; four _r14_* slugs arrived with three sibling test
+    modules and were never counted; and the fresh-clone fixture in tests/conftest.py made one more.
+
+    ONE FIGURE, ONE RECORD -- which is the argument _bind_a_course's docstring already makes about a
+    different count in this same file. In eleven of those thirteen places the number was decoration: the
+    load-bearing claim is "the fixtures that build a scratch course under courses/ depend on this", and
+    the number added nothing but drift surface. Those eleven no longer carry one. The single record is
+    _courses_are_read_only's docstring, which is the guard that watches courses/ and the only place the
+    slugs are enumerated, and this test grades it -- and forbids a second numbered copy appearing in
+    either file, because the last two rounds of this campaign were both a second copy going stale.
+
+    THE FIGURE IS RE-DERIVED FROM THE SOURCE, never restated here. Every tracked tests/*.py is parsed
+    and every os.makedirs / mkdir / copytree DESTINATION that reduces to os.path.join(ROOT, "courses",
+    <slug>) is collected -- the real repo root, so the many fixtures that build the same shape under
+    tmp_path or a tempfile root are correctly not counted. That is the population the deletion guard in
+    tests/conftest.py serves, and the guard is installed for the whole DIRECTORY, so the count is
+    directory-wide rather than per module: a figure scoped to one file understates what the guard keeps
+    working the moment a sibling module writes a scratch slug, which is exactly what happened.
+
+    TRACKED files only, where git can say which those are. The count has to be the same here and inside
+    test_a_fresh_clone_gets_a_clean_suite's child, which is a copy of every TRACKED file -- so counting
+    somebody's uncommitted work in progress would publish a figure that goes red on a fresh clone. Where
+    git cannot answer (that child, an exported tarball) every tests/*.py present is counted, and there
+    the two populations are the same thing.
+
+    Counted by distinct slug, matching the enumeration in the prose: _synth_rmguard is built by two
+    different tests, so there is one more site than there are slugs. A slug composed at runtime is
+    counted under its literal prefix (`_cold_`, `_r14_`), because that is what prose can name.
+    """
+    import ast
+    import inspect
+    import subprocess
+
+    words = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+             "fifteen sixteen seventeen eighteen nineteen twenty").split()
+
+    def courses_slug_expr(node):
+        """The <slug> of os.path.join(ROOT, "courses", <slug>, ...), or None."""
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "join" and len(node.args) >= 3
+                and isinstance(node.args[0], ast.Name) and node.args[0].id == "ROOT"
+                and isinstance(node.args[1], ast.Constant) and node.args[1].value == "courses"):
+            return node.args[2]
+        return None
+
+    def literal_text(node, consts):
+        if isinstance(node, ast.Constant):
+            return node.value if isinstance(node.value, str) else None
+        if isinstance(node, ast.Name):
+            return consts.get(node.id)
+        if isinstance(node, ast.BinOp):                      # "_cold_" + ref, "_r14_%s_%d" % (...)
+            return literal_text(node.left, consts)
+        if isinstance(node, ast.JoinedStr):
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    return v.value
+        return None
+
+    def naming_prefix(text):
+        """What prose can call a slug composed at runtime: `_r14_%s_%d` -> `_r14_`."""
+        for mark in ("%", "{"):
+            cut = text.find(mark)
+            if cut > 0:
+                return text[:cut]
+        return text
+
+    def destinations(call):
+        """Every argument of `call` that a directory would be CREATED at, ignoring sources."""
+        f = call.func
+        name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        if name == "copytree":                  # copytree(src, dst) -- args[0] is read, not written
+            return call.args[1:2]
+        if name == "makedirs":
+            return call.args[:1]
+        if name == "mkdir":                     # os.mkdir(p), and Path(p).mkdir() via the receiver
+            return call.args[:1] + ([f.value] if isinstance(f, ast.Attribute) else [])
+        return []
+
+    modules = sorted(glob.glob(os.path.join(ROOT, "tests", "*.py")))
+    try:
+        tracked = subprocess.run(["git", "ls-files", "-z", "tests"], cwd=ROOT, check=True,
+                                 capture_output=True).stdout.split(b"\0")
+        keep = {os.path.join(ROOT, p.decode()) for p in tracked if p}
+        modules = [m for m in modules if m in keep] or modules
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    found, unresolved = {}, []
+    for path in modules:
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        module_consts = {}
+        for node in tree.body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)):
+                lit = literal_text(node.value, {})
+                if lit is not None:
+                    module_consts[node.targets[0].id] = lit
+        for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            consts, joined = dict(module_consts), {}
+            for node in ast.walk(fn):
+                if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                        and isinstance(node.targets[0], ast.Name)):
+                    lit = literal_text(node.value, consts)
+                    if lit is not None:
+                        consts[node.targets[0].id] = lit
+                    slug_expr = courses_slug_expr(node.value)
+                    if slug_expr is not None:
+                        joined[node.targets[0].id] = slug_expr
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                for target in destinations(node):
+                    slug_expr = courses_slug_expr(target)
+                    if slug_expr is None and isinstance(target, ast.Name):
+                        slug_expr = joined.get(target.id)
+                    if (slug_expr is None and isinstance(target, ast.Call)
+                            and isinstance(target.func, ast.Attribute) and target.func.attr == "join"
+                            and target.args and isinstance(target.args[0], ast.Name)):
+                        slug_expr = joined.get(target.args[0].id)   # os.path.join(<that dir>, "dem_hd")
+                    if slug_expr is None:
+                        continue
+                    where = f"{os.path.basename(path)}:{node.lineno} ({fn.name})"
+                    text = literal_text(slug_expr, consts)
+                    if text is None:
+                        unresolved.append(f"{where} builds courses/{ast.unparse(slug_expr)}")
+                    else:
+                        found.setdefault(naming_prefix(text), set()).add(where)
+                    break
+
+    assert not unresolved, (
+        "a directory is built under the real courses/ from a slug this test cannot reduce to a literal, "
+        "so it cannot be counted and the published figure would silently undercount it:\n  "
+        + "\n  ".join(sorted(unresolved)))
+    seen_in = {w.split(":")[0] for sites in found.values() for w in sites}
+    assert len(found) >= 10 and len(seen_in) >= 3, (
+        f"the derivation found only {len(found)} scratch slug(s) across {len(seen_in)} module(s), which "
+        f"means the AST walk stopped working rather than that the suite stopped writing under courses/. "
+        f"A count graded against nothing is worse than an unread literal:\n  "
+        + "\n  ".join(f"{s}: {sorted(w)}" for s, w in sorted(found.items())))
+    assert len(found) < len(words), (
+        f"{len(found)} slugs is past the end of the number-word list; extend `words`")
+    said = words[len(found)]
+
+    # ---- the ONE record: right count, and every slug named --------------------------------------
+    record = inspect.getdoc(_courses_are_read_only.__wrapped__) or ""
+    pattern = re.compile(r"\b(" + "|".join(words[1:]) + r") (fixtures|tests and fixtures|scratch slugs)\b",
+                         re.I)
+    figures = [m for m in pattern.finditer(record)]
+    assert len(figures) == 1 and figures[0].group(1).lower() == said, (
+        f"_courses_are_read_only is the single record of how many scratch slugs tests/*.py builds under "
+        f"courses/ and removes again. The source says {said} ({len(found)}), over "
+        f"{sum(len(w) for w in found.values())} sites; the docstring "
+        + (f"says {[m.group(0) for m in figures]}" if figures else "no longer states a figure at all")
+        + ".\n  derived:\n    " + "\n    ".join(f"{s}  <- {sorted(w)}" for s, w in sorted(found.items())))
+    missing = sorted(s for s in found if s not in record)
+    assert not missing, (
+        f"_courses_are_read_only enumerates the scratch slugs written under courses/ by name and does "
+        f"not name {missing}. A reader checking that every one of them is excluded from the read-only "
+        f"guard has an incomplete list to check against:\n    "
+        + "\n    ".join(f"{s}  <- {sorted(found[s])}" for s in missing))
+
+    # ---- and NO second copy of the figure anywhere in these two files ---------------------------
+    # Eleven sites used to carry this number as decoration and two of them had gone stale. A number
+    # word directly in front of "fixtures", "tests and fixtures" or "scratch slugs" is RESERVED for
+    # this population in these two files, so a different population has to put something between them
+    # -- "these two session fixtures" rather than the bare pair -- or it reads as a second copy of
+    # this figure.
+    this_file = os.path.join(ROOT, "tests", "test_phase1_regressions.py")
+    with open(this_file, encoding="utf-8") as fh:
+        this_src = fh.read()
+    span = next(((n.body[0].lineno, n.body[0].end_lineno)
+                 for n in ast.walk(ast.parse(this_src))
+                 if isinstance(n, ast.FunctionDef) and n.name == "_courses_are_read_only"), None)
+    assert span is not None, (
+        "_courses_are_read_only, which holds the single record of this count, is gone from this file; "
+        "this test can no longer tell the record apart from a copy of it")
+    copies = []
+    for rel in ("tests/conftest.py", "tests/test_phase1_regressions.py"):
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            text = fh.read()
+        for m in pattern.finditer(text):
+            line = text[:m.start()].count("\n") + 1
+            if rel.endswith("test_phase1_regressions.py") and span[0] <= line <= span[1]:
+                continue                       # the record itself, graded above
+            copies.append(f"{rel}:{line} says {m.group(0)!r}")
+    assert not copies, (
+        "a SECOND copy of the scratch-slug count has appeared. The record is _courses_are_read_only's "
+        "docstring and nowhere else -- these sites restate a figure nothing re-derives, which is how "
+        "eight and nine came to be published side by side:\n  " + "\n  ".join(copies))
 
 
 def test_the_course_template_documents_every_key_the_engine_reads():
