@@ -585,6 +585,14 @@ def test_an_infinite_gps_time_gets_its_refusal_not_an_overflowerror(tmp_path, ca
     A non-finite value sits in no bucket at all: `add()` already drops it before it can be counted,
     so its cluster honestly weighs 0, and that is what cluster_mass now answers. The message also has
     to be able to print the raw endpoint, which gps_to_utc cannot turn into a datetime.
+
+    The fixture is deliberately NOT named with "inf" anywhere in it. A prior version of this test
+    wrote it to `inf.laz`, and the refusal line opens with `os.path.basename(path)` -- so `"inf" in
+    out` passed from the FILENAME alone, whether or not `_stamp` could name the raw +inf value.
+    Reverting just the `_stamp` half of the fix (degrading the message back to "...None") left that
+    assertion passing. The two assertions below instead key on "no representable date", the exact
+    phrase only `_stamp`'s fallback produces, and on "inf" appearing in a message whose file is named
+    something else entirely -- so both can only be satisfied by the message itself, not the filename.
     """
     ld = _lidar_dates()
     import datetime as dt
@@ -606,7 +614,7 @@ def test_an_infinite_gps_time_gets_its_refusal_not_an_overflowerror(tmp_path, ca
     las = laspy.LasData(h)
     las.x = np.zeros(n + 1); las.y = np.zeros(n + 1); las.z = np.zeros(n + 1)
     las.gps_time = np.concatenate([clean + np.arange(n) * 0.01, [np.inf]])
-    p = tmp_path / "inf.laz"
+    p = tmp_path / "corrupt_endpoint.laz"       # NOT "inf.laz" -- see the docstring above
     las.write(str(p))
     with laspy.open(str(p)) as f:
         assert np.isinf(np.asarray(f.read().gps_time)).any(), \
@@ -618,9 +626,13 @@ def test_an_infinite_gps_time_gets_its_refusal_not_an_overflowerror(tmp_path, ca
     assert got is None, f"a tile carrying +inf must be refused, not dated: {got!r}"
     assert "cannot be defended" in out, (
         f"the refusal printed no explanation, which is the whole point of refusing out loud:\n{out}")
+    assert "no representable date" in out, (
+        f"the message does not say the refused endpoint has no representable date -- printing "
+        f"'None' for it would hide which endpoint was junk and why it was refused:\n{out}")
     assert "inf" in out, (
-        f"the message does not name the value it refused. gps_to_utc cannot turn +inf into a "
-        f"datetime, and printing 'None' for it hides which endpoint was junk:\n{out}")
+        f"the message does not name the raw value it refused. The fixture's filename carries no "
+        f"'inf' substring, so this can only be satisfied by _stamp printing the raw endpoint's own "
+        f"repr, not by os.path.basename(path):\n{out}")
 
 
 # ---------------------------------------------------------------------------
