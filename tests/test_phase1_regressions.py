@@ -2660,45 +2660,29 @@ def test_the_binding_resolves_over_a_wedged_leftover():
             f"directory a concurrently running suite is bound to")
 
 
-def test_every_published_count_of_the_scratch_slugs_written_under_courses_is_derived():
-    """Thirteen places stated how many fixtures build a scratch course under courses/. Nothing read them.
+# THE DERIVATION ITSELF, extracted from the test below so it can be POINTED AT SYNTHETIC MODULES. The
+# population it counts is the shipped suite, so no probe written inside that suite can test the rule
+# without also changing the answer -- and the rule has two failure directions, both of which quietly
+# break the count:
+#   * A SOURCE READ AS A DESTINATION. `copytree(<a real course>, <somewhere under tmp_path>)` copies OUT
+#     of the corpus and creates nothing inside it. Counting that pushes the next author to restructure a
+#     safe read-only test, or to raise the published figure to admit a writer that does not exist.
+#   * A DESTINATION IT CANNOT SEE. The same call written `copytree(src, dst=...)` is the same writer, and
+#     a writer missing from a count whose whole job is to enumerate every writer is the worse direction:
+#     the figure reads as complete while a fixture writes into the only copy of the corpus unnamed.
+# Both directions are probed in test_the_scratch_slug_derivation_reads_a_destination_and_not_a_source.
+def _courses_scratch_writers(paths):
+    """({naming prefix: {where}}, [unresolved]) -- every directory built under the REAL courses/.
 
-    So they drifted, in both directions at once: two said EIGHT and nine said NINE, and neither was
-    right. _synth_rowlen was written and never counted; four _r14_* slugs arrived with three sibling test
-    modules and were never counted; and the fresh-clone fixture in tests/conftest.py made one more.
+    One entry per distinct slug, so a slug built by two different tests is one slug over two sites, and
+    a slug composed at runtime is filed under its literal prefix because that is what prose can name.
+    `unresolved` is every site whose slug cannot be reduced to a literal at all: those cannot be counted
+    and must not be silently dropped.
 
-    ONE FIGURE, ONE RECORD -- which is the argument _bind_a_course's docstring already makes about a
-    different count in this same file. In eleven of those thirteen places the number was decoration: the
-    load-bearing claim is "the fixtures that build a scratch course under courses/ depend on this", and
-    the number added nothing but drift surface. Those eleven no longer carry one. The single record is
-    _courses_are_read_only's docstring, which is the guard that watches courses/ and the only place the
-    slugs are enumerated, and this test grades it -- and forbids a second numbered copy appearing in
-    either file, because the last two rounds of this campaign were both a second copy going stale.
-
-    THE FIGURE IS RE-DERIVED FROM THE SOURCE, never restated here. Every tracked tests/*.py is parsed
-    and every os.makedirs / mkdir / copytree DESTINATION that reduces to os.path.join(ROOT, "courses",
-    <slug>) is collected -- the real repo root, so the many fixtures that build the same shape under
-    tmp_path or a tempfile root are correctly not counted. That is the population the deletion guard in
-    tests/conftest.py serves, and the guard is installed for the whole DIRECTORY, so the count is
-    directory-wide rather than per module: a figure scoped to one file understates what the guard keeps
-    working the moment a sibling module writes a scratch slug, which is exactly what happened.
-
-    TRACKED files only, where git can say which those are. The count has to be the same here and inside
-    test_a_fresh_clone_gets_a_clean_suite's child, which is a copy of every TRACKED file -- so counting
-    somebody's uncommitted work in progress would publish a figure that goes red on a fresh clone. Where
-    git cannot answer (that child, an exported tarball) every tests/*.py present is counted, and there
-    the two populations are the same thing.
-
-    Counted by distinct slug, matching the enumeration in the prose: _synth_rmguard is built by two
-    different tests, so there is one more site than there are slugs. A slug composed at runtime is
-    counted under its literal prefix (`_cold_`, `_r14_`), because that is what prose can name.
+    Only os.path.join(ROOT, "courses", ...) counts -- the real repo root -- so the many fixtures that
+    build the same shape under tmp_path or a tempfile root are correctly not here.
     """
     import ast
-    import inspect
-    import subprocess
-
-    words = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
-             "fifteen sixteen seventeen eighteen nineteen twenty").split()
 
     def courses_slug_expr(node):
         """The <slug> of os.path.join(ROOT, "courses", <slug>, ...), or None."""
@@ -2731,28 +2715,31 @@ def test_every_published_count_of_the_scratch_slugs_written_under_courses_is_der
         return text
 
     def destinations(call):
-        """Every argument of `call` that a directory would be CREATED at, ignoring sources."""
+        """Every argument of `call` that a directory would be CREATED at, ignoring sources.
+
+        A two-path call is read for its DESTINATION only, and by keyword as well as by position: the
+        source of a copytree is a path being READ, and `dst=` is the same destination spelled the other
+        way. Both halves of that are load-bearing -- see the note above.
+        """
         f = call.func
         name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        kw = {k.arg: k.value for k in call.keywords if k.arg}
+
+        def positional_or(index, *names):
+            if len(call.args) > index:
+                return [call.args[index]]
+            return [kw[n] for n in names if n in kw][:1]
+
         if name == "copytree":                  # copytree(src, dst) -- args[0] is read, not written
-            return call.args[1:2]
+            return positional_or(1, "dst")
         if name == "makedirs":
-            return call.args[:1]
+            return positional_or(0, "name")
         if name == "mkdir":                     # os.mkdir(p), and Path(p).mkdir() via the receiver
-            return call.args[:1] + ([f.value] if isinstance(f, ast.Attribute) else [])
+            return positional_or(0, "path") + ([f.value] if isinstance(f, ast.Attribute) else [])
         return []
 
-    modules = sorted(glob.glob(os.path.join(ROOT, "tests", "*.py")))
-    try:
-        tracked = subprocess.run(["git", "ls-files", "-z", "tests"], cwd=ROOT, check=True,
-                                 capture_output=True).stdout.split(b"\0")
-        keep = {os.path.join(ROOT, p.decode()) for p in tracked if p}
-        modules = [m for m in modules if m in keep] or modules
-    except (OSError, subprocess.CalledProcessError):
-        pass
-
     found, unresolved = {}, []
-    for path in modules:
+    for path in paths:
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         module_consts = {}
@@ -2793,6 +2780,127 @@ def test_every_published_count_of_the_scratch_slugs_written_under_courses_is_der
                     else:
                         found.setdefault(naming_prefix(text), set()).add(where)
                     break
+    return found, unresolved
+
+
+def test_the_scratch_slug_derivation_reads_a_destination_and_not_a_source(tmp_path):
+    """The count below enumerates everything that WRITES into the only copy of the corpus, so the rule
+    that finds those writers has to be right in both directions -- and it cannot be probed against the
+    suite, because the suite is the population being counted.
+
+    So it is probed on synthetic modules here, one case per direction, both required. A source path read
+    as a destination is a false positive that costs the next author a restructured read-only test or an
+    inflated figure; a destination the rule cannot see is a real writer left out of a record that reads
+    as complete. Neither shows up as a failure anywhere else: the false positive looks like an honest
+    count, and the blind spot looks like a green suite.
+
+    The keyword spellings are here because they were genuinely invisible. `copytree(src, dst=...)` and
+    `makedirs(name=...)` create exactly the directory their positional forms do, and the derivation read
+    neither, so a fixture written that way would have built a scratch course under courses/ with nothing
+    naming it.
+    """
+    cases = (
+        ("copytree OUT of the corpus, positional",
+         'import os, shutil\n'
+         'ROOT = "/nowhere"\n'
+         'def _probe_reads(tmp_path):\n'
+         '    real = os.path.join(ROOT, "courses", "a-real-course")\n'
+         '    shutil.copytree(real, os.path.join(str(tmp_path), "copy"))\n',
+         set()),
+        ("copytree OUT of the corpus, by keyword",
+         'import os, shutil\n'
+         'ROOT = "/nowhere"\n'
+         'def _probe_reads_kw(tmp_path):\n'
+         '    real = os.path.join(ROOT, "courses", "a-real-course")\n'
+         '    shutil.copytree(src=real, dst=os.path.join(str(tmp_path), "copy"))\n',
+         set()),
+        ("copytree INTO a scratch slug, positional",
+         'import os, shutil\n'
+         'ROOT = "/nowhere"\n'
+         'def _probe_writes(tmp_path):\n'
+         '    scratch = os.path.join(ROOT, "courses", "_probe_positional")\n'
+         '    shutil.copytree(str(tmp_path), scratch)\n',
+         {"_probe_positional"}),
+        ("copytree INTO a scratch slug, dst= keyword",
+         'import os, shutil\n'
+         'ROOT = "/nowhere"\n'
+         'def _probe_writes_kw(tmp_path):\n'
+         '    scratch = os.path.join(ROOT, "courses", "_probe_dst_keyword")\n'
+         '    shutil.copytree(str(tmp_path), dst=scratch)\n',
+         {"_probe_dst_keyword"}),
+        ("makedirs INTO a scratch slug, name= keyword",
+         'import os\n'
+         'ROOT = "/nowhere"\n'
+         'def _probe_makedirs_kw():\n'
+         '    os.makedirs(name=os.path.join(ROOT, "courses", "_probe_name_keyword"))\n',
+         {"_probe_name_keyword"}),
+    )
+    wrong = []
+    for i, (label, source, want) in enumerate(cases):
+        probe = tmp_path / f"probe{i}.py"
+        probe.write_text(source)
+        found, unresolved = _courses_scratch_writers([str(probe)])
+        got = set(found)
+        if got != want or unresolved:
+            wrong.append(f"{label}: the derivation reported {sorted(got) or 'nothing'}"
+                         + (f" plus unresolved {unresolved}" if unresolved else "")
+                         + f"; it should report {sorted(want) or 'nothing'}")
+    assert not wrong, (
+        "the derivation of what writes under courses/ does not read a destination from a source. A count "
+        "that enumerates the writers into the only copy of this project's data is worth exactly what "
+        "that rule is worth:\n  " + "\n  ".join(wrong))
+
+
+def test_every_published_count_of_the_scratch_slugs_written_under_courses_is_derived():
+    """Thirteen places stated how many fixtures build a scratch course under courses/. Nothing read them.
+
+    So they drifted, in both directions at once: two said EIGHT and nine said NINE, and neither was
+    right. _synth_rowlen was written and never counted; four _r14_* slugs arrived with three sibling test
+    modules and were never counted; and the fresh-clone fixture in tests/conftest.py made one more.
+
+    ONE FIGURE, ONE RECORD -- which is the argument _bind_a_course's docstring already makes about a
+    different count in this same file. In eleven of those thirteen places the number was decoration: the
+    load-bearing claim is "the fixtures that build a scratch course under courses/ depend on this", and
+    the number added nothing but drift surface. Those eleven no longer carry one. The single record is
+    _courses_are_read_only's docstring, which is the guard that watches courses/ and the only place the
+    slugs are enumerated, and this test grades it -- and forbids a second numbered copy appearing in
+    either file, because the last two rounds of this campaign were both a second copy going stale.
+
+    THE FIGURE IS RE-DERIVED FROM THE SOURCE, never restated here. Every tracked tests/*.py is parsed
+    and every os.makedirs / mkdir / copytree DESTINATION that reduces to os.path.join(ROOT, "courses",
+    <slug>) is collected -- the real repo root, so the many fixtures that build the same shape under
+    tmp_path or a tempfile root are correctly not counted. That is the population the deletion guard in
+    tests/conftest.py serves, and the guard is installed for the whole DIRECTORY, so the count is
+    directory-wide rather than per module: a figure scoped to one file understates what the guard keeps
+    working the moment a sibling module writes a scratch slug, which is exactly what happened.
+
+    TRACKED files only, where git can say which those are. The count has to be the same here and inside
+    test_a_fresh_clone_gets_a_clean_suite's child, which is a copy of every TRACKED file -- so counting
+    somebody's uncommitted work in progress would publish a figure that goes red on a fresh clone. Where
+    git cannot answer (that child, an exported tarball) every tests/*.py present is counted, and there
+    the two populations are the same thing.
+
+    Counted by distinct slug, matching the enumeration in the prose: _synth_rmguard is built by two
+    different tests, so there is one more site than there are slugs. A slug composed at runtime is
+    counted under its literal prefix (`_cold_`, `_r14_`), because that is what prose can name.
+    """
+    import ast
+    import inspect
+    import subprocess
+
+    words = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+             "fifteen sixteen seventeen eighteen nineteen twenty").split()
+
+    modules = sorted(glob.glob(os.path.join(ROOT, "tests", "*.py")))
+    try:
+        tracked = subprocess.run(["git", "ls-files", "-z", "tests"], cwd=ROOT, check=True,
+                                 capture_output=True).stdout.split(b"\0")
+        keep = {os.path.join(ROOT, p.decode()) for p in tracked if p}
+        modules = [m for m in modules if m in keep] or modules
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    found, unresolved = _courses_scratch_writers(modules)
 
     assert not unresolved, (
         "a directory is built under the real courses/ from a slug this test cannot reduce to a literal, "
