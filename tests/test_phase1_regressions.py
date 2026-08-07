@@ -2564,6 +2564,90 @@ def test_the_binding_resolves():
         f"is still there after the child session ended:\n{out2[-1500:]}")
 
 
+def test_a_wedged_leftover_fresh_clone_course_is_repaired_and_not_silently_reused(tmp_path):
+    """The reuse branch REUSED a leftover without checking it was usable, and wedged the fresh clone.
+
+    `_a_course_exists_to_bind` writes courses/<slug>/course.json only `if not os.path.exists(d)`, and
+    its docstring advertises that "a leftover directory from a crashed run is REUSED, never replaced or
+    removed". Reuse is the right policy -- the fixture must not delete a directory it did not create,
+    because a second suite may be running against it -- but the branch never asked whether what it was
+    reusing had a course.json in it. A directory with none is exactly what a half-finished run leaves,
+    and `shutil.rmtree(d, ignore_errors=True)` is precisely what can leave it: one unwritable file, one
+    concurrent removal, and the error that would have said so is swallowed.
+
+    The wedge is total and self-sustaining, because the fixture can never repair what it declines to
+    write. Planting courses/<slug>/stray.tmp with no course.json ahead of a corpus-less run produced
+
+        7 failed, 145 passed, 296 skipped
+        E  SystemExit: no course.json for COURSE='_no_corpus_fixture'
+
+    -- the same seven tests the fixture exists to fix, now failing with a message naming the fixture's
+    own invented slug, on a tree where the user did nothing but kill a run.
+
+    Two shapes are graded, because "exists" is not "usable": a directory with NO course.json, and one
+    whose course.json is truncated JSON, which is what an interrupted copyfile leaves and which config
+    would meet as a JSONDecodeError rather than a SystemExit.
+
+    WHAT IS DELIBERATELY NOT CHANGED: a leftover is still never REMOVED. `made` stays false when the
+    directory was already there, so the repaired course persists after the session -- and that is
+    intended, not an oversight. The fixture cannot distinguish its own wreckage from a directory a
+    concurrent suite is using, and the residue is one gitignored scratch slug that
+    distribution.is_corpus_slug reads as scratch, so every corpus enumerator, gen_provenance,
+    gen_disclaimers and cross_flight_check skip it. Both halves are pinned below: the planted stray file
+    must survive untouched, and the directory must still be there when the child exits.
+    """
+    import conftest
+
+    probe = '''
+import os
+
+import conftest
+
+
+def test_the_binding_resolves_over_a_wedged_leftover():
+    import config
+    assert config.SLUG == conftest.FRESH_CLONE_SLUG
+    assert config.HOLES, "the repaired course.json carries no holes"
+'''
+
+    def wedge_no_json(courses):
+        d = courses / conftest.FRESH_CLONE_SLUG
+        d.mkdir()
+        (d / "stray.tmp").write_text("half a run", encoding="utf-8")
+
+    def wedge_torn_json(courses):
+        d = courses / conftest.FRESH_CLONE_SLUG
+        d.mkdir()
+        (d / "stray.tmp").write_text("half a run", encoding="utf-8")
+        # exactly what an interrupted shutil.copyfile of the template leaves behind
+        head = (pathlib.Path(ROOT) / "examples" / "course.json").read_text(encoding="utf-8")[:60]
+        (d / "course.json").write_text(head, encoding="utf-8")
+
+    for label, plant in (("no course.json at all", wedge_no_json),
+                         ("a truncated course.json", wedge_torn_json)):
+        r, out, courses = _fresh_clone_probe(tmp_path, probe, plant=plant,
+                                            name="wedged-" + label.split()[0] + label.split()[-1])
+        assert r.returncode == 0, (
+            f"a leftover courses/{conftest.FRESH_CLONE_SLUG} with {label} WEDGES a corpus-less run. "
+            f"The reuse branch only skips the copy when the directory exists, so it reuses wreckage it "
+            f"could have repaired -- and every test that reaches an engine module then dies on the "
+            f"fixture's own invented slug. Verify course.json is there and parses; re-copy the template "
+            f"if it is not:\n{out[-2500:]}")
+        assert "1 passed" in out, f"the child run collected nothing, so it proved nothing:\n{out[-1500:]}"
+        # the reuse policy itself: what was already there is repaired, never wiped, never removed
+        assert (courses / conftest.FRESH_CLONE_SLUG / "stray.tmp").exists(), (
+            f"repairing a leftover with {label} destroyed the rest of it. The fixture may only WRITE "
+            f"course.json into a directory it did not create; a directory somebody else may be using "
+            f"is not scratch space to clear out")
+        assert (courses / conftest.FRESH_CLONE_SLUG / "course.json").exists(), (
+            f"the leftover with {label} was left unrepaired even though the run went green -- so the "
+            f"next run is wedged again")
+        assert (courses / conftest.FRESH_CLONE_SLUG).is_dir(), (
+            f"a PRE-EXISTING courses/{conftest.FRESH_CLONE_SLUG} was removed at teardown. The fixture "
+            f"deletes only what it created in this process: it cannot tell its own wreckage from a "
+            f"directory a concurrently running suite is bound to")
+
+
 def test_the_course_template_documents_every_key_the_engine_reads():
     """examples/course.json is the ONLY course data this repo ships, and a stranger's whole map of
 

@@ -30,6 +30,7 @@ published cards and cross-verified against club sources. The directory is gitign
 there is no copy in history, none on a remote, none anywhere. Only laz/ can be fetched again.
 """
 import glob
+import json
 import os
 import shutil
 import sys
@@ -71,6 +72,22 @@ def corpus_slugs():
     return out
 
 
+def _reads_as_a_course_record(path):
+    """Does `path` hold JSON config.py can bind to? A leftover that EXISTS is not one that works.
+
+    The depth is deliberate and is not laziness: nothing but _a_course_exists_to_bind ever writes this
+    slug, and all it ever writes is examples/course.json, so the only shapes reachable here are the two
+    a half-finished run leaves -- no file at all, or a torn one. A missing file is config.py's SystemExit;
+    a torn one is a JSONDecodeError out of json.load. Both are "not usable", which is the whole
+    question, and validating further would duplicate _check_course over a file this fixture owns.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return isinstance(json.load(fh), dict)
+    except (OSError, ValueError):
+        return False
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _a_course_exists_to_bind(_deletion_cannot_reach_a_real_course):
     """On a fresh clone, make ONE course for the engine to import against. Inert where a corpus exists.
@@ -102,7 +119,25 @@ def _a_course_exists_to_bind(_deletion_cannot_reach_a_real_course):
     into the whole tail of the suite. `_bind_a_course` then sees this as the binding it must restore.
 
     A leftover directory from a crashed run is REUSED, never replaced or removed: this fixture only
-    deletes a directory it created in this process, and only ever its own slug.
+    deletes a directory it created in this process, and only ever its own slug. It does REPAIR the one
+    file it owns, and that was the bug: the reuse branch used to skip the copy whenever the directory
+    existed, without asking whether course.json was in it. A directory with none -- exactly what a
+    part-done rmtree leaves, and `ignore_errors=True` is what lets one happen quietly -- wedged the
+    whole point of the fixture, because it can never write what it declines to write. Measured: plant
+    courses/<slug>/stray.tmp with no course.json and a corpus-less run goes `7 failed, 145 passed,
+    296 skipped`, every failure being `SystemExit: no course.json for COURSE='_no_corpus_fixture'` --
+    the same seven tests this fixture exists to fix, named after its own invented slug.
+    The copy is staged and os.replace'd rather than written in place, and only when the existing file is
+    UNUSABLE, so a second suite bound to this same slug never sees a half-written course.json and never
+    has a working one rewritten under it. See
+    test_a_wedged_leftover_fresh_clone_course_is_repaired_and_not_silently_reused.
+
+    `ignore_errors=True` STAYS on the cleanup, and it is not what it looks like. It cannot swallow the
+    guard's refusal -- the wrapper raises before the real rmtree is ever called, measured in that same
+    test -- so what it tolerates is a genuine hiccup removing a scratch directory this process made: a
+    concurrent suite that removed it first, or a file a test left unwritable. Failing an otherwise-green
+    session over the cleanup of one gitignored scratch slug is the worse of the two trades, and the
+    state such a hiccup leaves behind is now repaired by the next run rather than inherited by it.
 
     THE `_deletion_cannot_reach_a_real_course` PARAMETER IS LOAD-BEARING AND IS NOT A TYPO. It is
     never read; it is there to order the two fixtures. Both are session-scoped and autouse, so pytest
@@ -127,8 +162,12 @@ def _a_course_exists_to_bind(_deletion_cannot_reach_a_real_course):
     prev, made = os.environ.get("COURSE"), False
     if not os.path.exists(d):
         os.makedirs(d)
-        shutil.copyfile(template, os.path.join(d, "course.json"))
         made = True
+    cj = os.path.join(d, "course.json")
+    if not _reads_as_a_course_record(cj):
+        staged = f"{cj}.staging.{os.getpid()}"
+        shutil.copyfile(template, staged)
+        os.replace(staged, cj)      # atomic: a concurrent suite reads a whole file or the old one
     os.environ["COURSE"] = FRESH_CLONE_SLUG
     try:
         yield FRESH_CLONE_SLUG
