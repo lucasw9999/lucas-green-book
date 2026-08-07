@@ -803,60 +803,15 @@ def test_the_two_stale_cache_hatches_are_pinned_by_behaviour():
 
 # ---------------------------------------------------------------------------
 # F-6  the UTM zone formula was hand-copied into both fetch stages
+#
+# GRADED IN tests/test_r14_dead.py, by test_the_utm_zone_formula_lives_in_geo_and_nowhere_else, and
+# not here. That file's L-1 finding is the same finding from the other end -- vulture called
+# geo.utm_epsg dead because d2b0d10 added it and never wired the callers up -- and it had grown its
+# own test of this property. Two homes for one claim is a defect this repo grades elsewhere, so the
+# two were consolidated there: it reads what UTM is BOUND to rather than matching the text
+# `geo.utm_epsg(`, and refuses ANY 26900 in executable code rather than the one `26900 + int(` shape
+# this file matched. The corpus-longitude cross-check that WAS unique to this file went with it.
 # ---------------------------------------------------------------------------
-INLINE_ZONE = re.compile(r"26900\s*\+\s*int\(")
-
-
-def test_the_utm_zone_formula_lives_in_geo_and_nowhere_else():
-    """geo.utm_epsg() was an UNFINISHED migration, not dead code.
-
-    `git log -S'utm_epsg'` returns exactly one commit, d2b0d10, which ADDED it; nothing ever removed a
-    caller. That commit's message frames geo.py as the shared home for "the same two facts ...
-    previously derived independently in fetch_dem_hd.py and fetch_trees.py" -- the vertical unit and
-    the UTM zone -- and it did wire both files to geo.vertical_scale(), but left the zone line inline
-    in both. So the helper had zero callers and two byte-identical copies of its body.
-
-    geo.py's own docstring says this exact duplication-drift hazard has already cost this project two
-    audits (the nine-module R_LAT saga). Three copies of one geodetic formula is the setup for a
-    fourth, and the zone decides which projection every tree position and every green surface is
-    computed through.
-
-    Re-derived over the 12 real courses rather than asserted: the helper and the copies agree on every
-    longitude the corpus uses, so this is a de-duplication and not a behaviour change. If that stops
-    being true the copies were the bug.
-    """
-    import geo
-
-    for rel in ("fetch_trees.py", "fetch_dem_hd.py"):
-        src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
-        assert "geo.utm_epsg(" in src, (
-            "%s still derives its own UTM zone; geo.utm_epsg exists to be the one copy" % rel)
-        code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
-        assert not INLINE_ZONE.search(code), (
-            "%s still carries a hand-copied `26900 + int(...)` zone formula beside the call to "
-            "geo.utm_epsg -- two copies is how the R_LAT saga started" % rel)
-
-    lons = []
-    cdir = os.path.join(ROOT, "courses")
-    for slug in sorted(os.listdir(cdir)) if os.path.isdir(cdir) else []:
-        if slug.startswith("_"):
-            continue
-        p = os.path.join(cdir, slug, "course.json")
-        if not os.path.exists(p):
-            continue
-        lon = ((json.load(open(p)).get("location") or {}) or {}).get("lon")
-        if lon is None:
-            continue
-        lons.append((slug, lon))
-        assert geo.utm_epsg(lon) == "EPSG:%d" % (26900 + int((lon + 180) / 6) + 1), (
-            "%s (lon %s): geo.utm_epsg gives %s, the formula the two fetch stages carried gives a "
-            "different zone -- that is a real bug, not a de-duplication"
-            % (slug, lon, geo.utm_epsg(lon)))
-    if not lons:
-        pytest.skip("per-course data is gitignored; no longitude to re-derive")
-    assert len({geo.utm_epsg(l) for _s, l in lons}) >= 2, (
-        "every course in this corpus lands in one UTM zone, so this check could not tell a broken "
-        "formula from a working one: %s" % lons)
 
 
 # ---------------------------------------------------------------------------

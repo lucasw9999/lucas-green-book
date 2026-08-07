@@ -47,6 +47,7 @@ the function now has two real callers, and vulture's original zero-caller readin
 being true.
 """
 import ast
+import json
 import os
 import pathlib
 import sys
@@ -145,11 +146,14 @@ def test_check_scale_pathlib_glob_calls_still_work(tmp_path, monkeypatch):
 # quotations as the duplication they are recording the end of.
 _ZONE_FALSE_NORTHING = 26900
 
+# The two files geo.py's own history names as the intended callers of geo.utm_epsg().
+_INTENDED_CALLERS = ("fetch_dem_hd.py", "fetch_trees.py")
 
-@pytest.mark.parametrize("relpath", ["fetch_dem_hd.py", "fetch_trees.py"])
-def test_both_intended_callers_get_their_utm_zone_from_geo_utm_epsg(relpath):
-    """Both files geo.py's own history names as the intended callers of geo.utm_epsg() call it, and
-    neither derives the zone itself.
+
+def test_the_utm_zone_formula_lives_in_geo_and_nowhere_else():
+    """Both files geo.py's own history names as the intended callers of geo.utm_epsg() call it,
+    neither derives the zone itself, and the helper agrees with the retired arithmetic on every
+    longitude the corpus uses.
 
     This REPLACES a tripwire that pinned the hand-copied line's exact text in both files. That was
     the right guard while the duplication existed -- it would have caught the two copies drifting
@@ -164,30 +168,70 @@ def test_both_intended_callers_get_their_utm_zone_from_geo_utm_epsg(relpath):
     And the call is graded as the value UTM is BOUND to, not merely as a call appearing somewhere:
     UTM is what every Transformer in each file is constructed with, so a call whose result went
     nowhere would leave the zone as unsourced as the copy did.
+
+    CONSOLIDATED, and it keeps this name because the claim is about geo.py rather than about either
+    caller. tests/test_r14_census.py held a second test of the same property (its F-6), and two homes
+    for one claim is a defect this repo grades elsewhere. Its structural half was strictly weaker: a
+    `26900 + int(` substring over non-comment lines, where this reads ANY 26900 in executable code, and
+    a `"geo.utm_epsg(" in src` text match, where this grades what UTM is BOUND to. Its one unique part
+    was a numeric cross-check over the CORPUS's own longitudes -- the third block below -- so nothing
+    it graded stopped being graded when it went.
     """
-    src = (pathlib.Path(ROOT) / relpath).read_text()
-    tree = ast.parse(src)
+    for relpath in _INTENDED_CALLERS:
+        src = (pathlib.Path(ROOT) / relpath).read_text()
+        tree = ast.parse(src)
 
-    bound = [n for n in ast.walk(tree)
-             if isinstance(n, ast.Assign)
-             and any(isinstance(t, ast.Name) and t.id == "UTM" for t in n.targets)
-             and isinstance(n.value, ast.Call)
-             and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == "utm_epsg"
-             and isinstance(n.value.func.value, ast.Name) and n.value.func.value.id == "geo"]
-    assert bound, (
-        f"{relpath} no longer binds UTM to geo.utm_epsg(...). Every Transformer in that file is "
-        f"built from UTM, so the zone every green surface or tree position is computed in would be "
-        f"coming from somewhere other than this project's one home for that fact -- which is the "
-        f"DROPPED_USE finding this file documents, reopened.")
+        bound = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == "UTM" for t in n.targets)
+                 and isinstance(n.value, ast.Call)
+                 and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == "utm_epsg"
+                 and isinstance(n.value.func.value, ast.Name) and n.value.func.value.id == "geo"]
+        assert bound, (
+            f"{relpath} no longer binds UTM to geo.utm_epsg(...). Every Transformer in that file is "
+            f"built from UTM, so the zone every green surface or tree position is computed in would be "
+            f"coming from somewhere other than this project's one home for that fact -- which is the "
+            f"DROPPED_USE finding this file documents, reopened.")
 
-    copied = [n for n in ast.walk(tree)
-              if isinstance(n, ast.Constant) and isinstance(n.value, int)
-              and not isinstance(n.value, bool) and n.value == _ZONE_FALSE_NORTHING]
-    assert not copied, (
-        f"{relpath} spells the UTM zone formula's own {_ZONE_FALSE_NORTHING} in executable code "
-        f"again (line(s) {sorted({n.lineno for n in copied})}). Two copies of the zone arithmetic is "
-        f"exactly the silent-drift hazard geo.utm_epsg was added to end, and the zone decides which "
-        f"projection every green surface is built in.")
+        copied = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.Constant) and isinstance(n.value, int)
+                  and not isinstance(n.value, bool) and n.value == _ZONE_FALSE_NORTHING]
+        assert not copied, (
+            f"{relpath} spells the UTM zone formula's own {_ZONE_FALSE_NORTHING} in executable code "
+            f"again (line(s) {sorted({n.lineno for n in copied})}). Two copies of the zone arithmetic "
+            f"is exactly the silent-drift hazard geo.utm_epsg was added to end, and the zone decides "
+            f"which projection every green surface is built in.")
+
+    # THE CORPUS CROSS-CHECK, inherited from the census test this one absorbed: the helper and the line
+    # the two callers used to spell inline must agree on every longitude the real courses use, so the
+    # de-duplication is a de-duplication and not a behaviour change. It is a NUMERIC check on real
+    # data, which no structural rule above can be.
+    #
+    # NOT VACUOUS, in both directions a corpus check goes quiet. Every real course.json must contribute
+    # a longitude, so it cannot pass by silently enumerating a subset; and the longitudes it finds must
+    # span at least two zones, or the arithmetic could be broken and still agree everywhere it was
+    # asked. courses/ is gitignored, so on a fresh clone there is nothing to re-derive and only the
+    # structural checks above run -- which are exactly the halves that need no data.
+    cards = sorted(p for p in (pathlib.Path(ROOT) / "courses").glob("*/course.json")
+                   if not p.parent.name.startswith("_"))
+    lons = []
+    for card in cards:
+        lon = (json.loads(card.read_text()).get("location") or {}).get("lon")
+        assert lon is not None, (
+            f"{card.parent.name}/course.json records no location.lon, so it drops out of the zone "
+            f"cross-check below with nothing saying so -- which is how a corpus check comes to pass "
+            f"over a population of nothing")
+        lons.append((card.parent.name, lon))
+    for slug, lon in lons:
+        derived = "EPSG:%d" % (_ZONE_FALSE_NORTHING + int((lon + 180) / 6) + 1)
+        assert geo.utm_epsg(lon) == derived, (
+            f"{slug} (lon {lon}): geo.utm_epsg gives {geo.utm_epsg(lon)} and the formula the two fetch "
+            f"stages used to carry inline gives {derived} -- that is a real bug in the zone every green "
+            f"surface and tree position is projected through, not a de-duplication")
+    if lons:
+        assert len({geo.utm_epsg(lon) for _slug, lon in lons}) >= 2, (
+            f"every course in this corpus lands in one UTM zone, so this cross-check could not tell a "
+            f"broken zone formula from a working one: {lons}")
 
 
 @pytest.mark.parametrize("lon", [-179.9, -121.0, -122.4, -71.0, 0.0, 34.5, 179.9])
