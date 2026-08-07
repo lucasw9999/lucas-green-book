@@ -896,3 +896,88 @@ def test_fetch_trees_prose_names_only_functions_that_exist():
     assert not missing, (
         "fetch_trees.py names %s, which no longer exists. A comment that points at a deleted symbol "
         "sends the next reader looking for code that is not there." % ", ".join(missing))
+
+
+# ---------------------------------------------------------------------------
+# F-7  a tile-unit grouping was typed once and left to drift from the corpus
+# ---------------------------------------------------------------------------
+def test_the_ftus_tile_grouping_comment_is_derived_not_typed():
+    """GRID_SPAN_MAX_M's comment says how the corpus's 78 LAZ tiles split by header unit, and -- for
+    the US-survey-foot ones -- how many span each exact tile size. An audit found the ftUS grouping
+    loose: 41 is the count of ftUS tiles, but the old prose read as if every one of them spans
+    2999.99 ftUS exactly, when a mapped delivery tiles its coverage area on a fixed grid and the
+    tiles nearest the edge of that grid come out narrower in at least one axis.
+
+    Re-derive every count here from the tiles' own headers -- header.mins/maxs and
+    header.parse_crs(), never point data -- so the comment cannot drift from the corpus again.
+    """
+    import glob
+    import laspy
+    import geo
+
+    tiles = sorted(glob.glob(os.path.join(ROOT, "courses", "*", "laz", "*.laz")))
+    if not tiles:
+        pytest.skip("per-course LAZ tiles are gitignored; nothing to measure")
+
+    US_FT = 0.3048006096
+    full_2999 = full_2499 = edge = metre_1499 = metre_1000 = 0
+    unclassified = []
+    for t in tiles:
+        with laspy.open(t) as f:
+            h = f.header
+            dx = h.maxs[0] - h.mins[0]
+            dy = h.maxs[1] - h.mins[1]
+            crs = h.parse_crs()
+        factor = None
+        if crs is not None:
+            try:
+                factor = geo.vertical_scale(crs)
+            except SystemExit:
+                factor = None
+        if factor and abs(factor - US_FT) < 1e-6:                  # US survey foot
+            if abs(dx - 2999.99) < 0.02 and abs(dy - 2999.99) < 0.02:
+                full_2999 += 1
+            elif abs(dx - 2499.999) < 0.02 and abs(dy - 2499.999) < 0.02:
+                full_2499 += 1
+            else:
+                edge += 1
+        elif factor and abs(factor - 1.0) < 1e-9:                  # metre
+            span = max(dx, dy)
+            if abs(span - 1499.99) < 0.02:
+                metre_1499 += 1
+            elif abs(span - 1000.0) < 0.02 or abs(span - 999.99) < 0.02:
+                metre_1000 += 1
+            else:
+                unclassified.append((t, dx, dy, factor))
+        else:
+            unclassified.append((t, dx, dy, factor))
+    assert not unclassified, (
+        "this test's own bucketing does not cover every tile in the corpus, so it cannot grade the "
+        "comment honestly: %r" % unclassified)
+
+    ftus_total = full_2999 + full_2499 + edge
+    assert ftus_total + metre_1499 + metre_1000 == len(tiles)
+    widest_ftus_m = round(2999.99 * US_FT, 1)
+
+    src = open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8").read()
+    # The sentence wraps across "#"-prefixed source lines; collapse each line-continuation to a
+    # single space so the sentence is what gets matched, not the column it wraps at.
+    flat = re.sub(r"\n[ \t]*#+[ \t]*", " ", src)
+
+    m = re.search(
+        r"Measured over all (\d+) tiles on disk: (\d+) carry US survey feet in their header "
+        r"\(([\d.]+) m at the widest\), (\d+) carry ([\d.]+) m, and (\d+) carry ([\d.]+) m\. "
+        r"Of the (\d+) ftUS tiles, (\d+) span exactly ([\d.]+) ftUS, (\d+) span exactly ([\d.]+) "
+        r"ftUS, and the remaining (\d+) are edge tiles", flat)
+    assert m, ("fetch_trees.py's GRID_SPAN_MAX_M comment no longer states the tile-unit grouping in "
+               "the expected shape -- update this test's regex to match the new prose, or the prose "
+               "regressed")
+    g = m.groups()
+    got = (int(g[0]), int(g[1]), float(g[2]), int(g[3]), float(g[4]), int(g[5]), float(g[6]),
+           int(g[7]), int(g[8]), float(g[9]), int(g[10]), float(g[11]), int(g[12]))
+    want = (len(tiles), ftus_total, widest_ftus_m, metre_1499, 1499.99, metre_1000, 1000.0,
+            ftus_total, full_2999, 2999.99, full_2499, 2499.999, edge)
+    assert got == want, (
+        "fetch_trees.py's GRID_SPAN_MAX_M comment says (total, ftus, widest_m, m1499_n, m1499_val, "
+        "m1000_n, m1000_val, ftus_again, full2999, 2999.99, full2499, 2499.999, edge)=%s but the "
+        "corpus's own tile headers currently measure %s" % (got, want))

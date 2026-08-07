@@ -72,8 +72,11 @@ GC = 4.0        # ground-grid cell (m) for height-above-ground. At module scope 
 #   * a header that itself claims the junk -- nothing inside the file then contradicts it, so the clip
 #     above bounds the grid by an absurd extent. That is what this constant refuses, BY NAME.
 #
-# 10 km is chosen against what the corpus is. Measured over all 78 tiles on disk, whose headers are in
-# three different units: 2999.99 US survey feet on 41 tiles (914.4 m), 1499.99 m on 4, 1000.0 m on 33.
+# 10 km is chosen against what the corpus is. Measured over all 78 tiles on disk: 41 carry US survey
+# feet in their header (914.4 m at the widest), 4 carry 1499.99 m, and 33 carry 1000.0 m. Of the 41
+# ftUS tiles, 24 span exactly 2999.99 ftUS, 9 span exactly 2499.999 ftUS, and the remaining 8 are edge
+# tiles narrower than that in at least one axis -- a mapped delivery tiles its coverage on a fixed
+# grid, and the courses near the edge of that grid get a shorter tile in whichever axis runs off it.
 # So the widest tile here is 1500 m and the largest bare-earth grid any stored tile can produce is
 # 376 x 376 cells, 1.08 MiB. A 10 km ceiling is 6.7x wider in each axis than that and costs 47.8 MiB if
 # a real delivery ever ships tiles that big, while the unbounded arithmetic it replaces reached 466 GiB
