@@ -24,6 +24,7 @@ Corpus tests SKIP where per-course data is absent (courses/ is gitignored), beca
 visibly not a pass. Nothing here writes inside courses/: the torn-pair fixtures are built under
 tmp_path and the code under test is pointed at them.
 """
+import ast
 import inspect
 import json
 import math
@@ -358,6 +359,37 @@ def test_the_cross_flight_check_reads_the_shipped_surface_through_the_pair_guard
         cfc._shipped_putt(dict(run1, hole=7, _dir=dem_root), grid)
 
 
+def _surface_reads(path):
+    """(calls_read_pair, [bare np.load lines]) for one module, BY AST rather than by substring.
+
+    `read_pair` resolved either as `surface_io.read_pair(...)` or as a bare `read_pair(...)` where the
+    name is genuinely bound to it -- imported `from surface_io`, or defined in this module, which is how
+    surface_io.py's own backfill calls it. Both are real calls and neither is a mention. What is NOT
+    accepted is the token appearing in a comment, a docstring or an import alias -- which is all the
+    substring test this function replaces could ever have established.
+    """
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    bound = any((isinstance(n, ast.ImportFrom) and n.module == "surface_io"
+                 and any(a.name == "read_pair" for a in n.names))
+                or (isinstance(n, ast.FunctionDef) and n.name == "read_pair")
+                for n in ast.walk(tree))
+    calls, loads = False, []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr == "read_pair" \
+                and isinstance(f.value, ast.Name) and f.value.id == "surface_io":
+            calls = True
+        elif isinstance(f, ast.Name) and f.id == "read_pair" and bound:
+            calls = True
+        elif isinstance(f, ast.Attribute) and f.attr == "load" \
+                and isinstance(f.value, ast.Name) and f.value.id in ("np", "numpy"):
+            loads.append(node.lineno)
+    return calls, loads
+
+
 def test_read_pair_is_the_definition_every_surface_reader_uses():
     """The claim surface_io.read_pair's docstring makes about itself, graded.
 
@@ -367,21 +399,41 @@ def test_read_pair_is_the_definition_every_surface_reader_uses():
     readable pair is, so the guard existed and covered nobody. A fifth reader added next month is the
     failure this catches.
 
-    render_green.render is deliberately NOT on this list and is asserted to be stricter instead. It
-    refuses a sidecar carrying NO array_sha256, which read_pair accepts by design -- surface_io's own
-    digest backfill reads unstamped pairs through read_pair, so read_pair cannot hold that bar
-    without stamp_digest being unable to read the pairs it exists to stamp. read_pair is the floor;
-    the renderer holds a ceiling above it.
+    BY AST, IN BOTH DIRECTIONS. The first version of this test asserted `"read_pair(" in src`, which
+    establishes that the token appears SOMEWHERE in the file -- a comment or a docstring will do, and
+    every one of these four modules carries a paragraph explaining why the call is there. So it graded
+    presence, not coverage, and its stated target (a fifth reader) is precisely what it could not see: a
+    second, bare read added beside a module's existing call leaves the token in place. Both halves are
+    now real -- each module must contain an actual Call to surface_io.read_pair, and none of them may
+    call np.load itself, which is the thing routing them through read_pair exists to stop.
+
+    TWO DELIBERATE EXEMPTIONS, and they are not oversights. surface_io.py is read_pair's home and holds
+    the only np.load a surface may be opened with. render_green.render keeps its own INLINE check and is
+    asserted to be stricter instead: it refuses a sidecar carrying NO array_sha256, which read_pair
+    accepts by design -- surface_io's own digest backfill reads unstamped pairs through read_pair, so
+    read_pair cannot hold that bar without stamp_digest being unable to read the pairs it exists to
+    stamp. read_pair is the floor; the renderer holds a ceiling above it.
     """
+    missing = []
     for rel in ("fetch_hole_elev.py", os.path.join("tools", "verify_elevation.py"),
                 os.path.join("tools", "gen_provenance.py"),
                 os.path.join("tools", "cross_flight_check.py")):
-        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
-            src = fh.read()
-        assert "read_pair(" in src, (
-            f"{rel} reads a green surface pair without surface_io.read_pair, so the shape and "
-            f"array_sha256 checks that define a readable pair are absent from it")
+        calls, loads = _surface_reads(os.path.join(ROOT, rel))
+        if not calls:
+            missing.append(f"{rel} contains no CALL to surface_io.read_pair, so the shape and "
+                           f"array_sha256 checks that define a readable pair are absent from it")
+        if loads:
+            missing.append(f"{rel} opens an array itself with np.load at line(s) "
+                           f"{', '.join(str(n) for n in loads)} -- a surface read that bypasses the "
+                           f"pair guard, which is the drift routing it through read_pair removed")
+    assert not missing, "a reader of the green surface pair does not read it as a pair:\n  " + \
+        "\n  ".join(missing)
 
+    # The two exemptions, asserted rather than assumed, so neither can be quietly widened.
+    home_calls, home_loads = _surface_reads(os.path.join(ROOT, "surface_io.py"))
+    assert home_calls and home_loads, (
+        "surface_io.py is read_pair's home and holds the one np.load a surface may be opened with; it "
+        "now has one or the other, which means the definition moved without this test noticing")
     import render_green
     render_src = inspect.getsource(render_green.render)
     assert "DIGEST_KEY) is None" in render_src, (
