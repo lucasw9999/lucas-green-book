@@ -162,7 +162,12 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    `ALLOW_SHRINK=1`, which likewise waives only itself. A fourth, independent check catches a REBIND --
    a hole landing on a different green than the existing cache had, the shape a truncated reply takes
    from the outside -- cleared by `ALLOW_REBIND=1` (OSM genuinely redrew a green under a new id). None
-   of the four grants any of the others.
+   of the four grants any of the others. Spending one is never silent: each prints a `WARNING:` naming
+   itself and the counts it accepted (`bunker 36 -> 35`, `hole 7: green 501 -> green 502`), which is the
+   only record the loss leaves, since `courses/` is gitignored and the reply overwrites the cache it was
+   compared against. And only an affirmative value turns one on -- all four are read through
+   `lidar_coverage._env_on`, so `=0`, `=false`, `=no` and an empty value all mean OFF, the same
+   vocabulary every other `ALLOW_*` key here uses.
 4. **🔎 Best LiDAR.** `fetch_lidar.py` pulls the newest dense USGS 3DEP tiles covering
    the course from The National Map into `laz/` (prefer QL1/QL2). For Alameda County 2021,
    `fetch_lidar_alameda.py` decodes the `w####n####` tile names and grabs **all** sub-project
