@@ -72,11 +72,47 @@ generate.py).
 It is a TOOL, not a unit test, because it needs the network. Run it when a course is added or the
 elevation code changes.
 
-Exit codes:  0 all figures agree within tolerance
+WHAT A HOLE IT CANNOT READ COSTS, and it used to be the whole course. A green surface is a PAIR --
+dem_hd/holeNN.npy and dem_hd/holeNN.json -- read through surface_io.read_pair, and a torn pair breaks
+both halves of this comparison at once. That call landed OUTSIDE the try/except the bare np.load had
+been wrapped in, so one missing array raised out of check_course, main()'s per-course `except` named
+the course, and every other hole's independent evidence on that course went with the one that was
+torn. A tear is per-PAIR by construction -- commit_surface stages two files and renames them, and what
+leaves one behind is a process that does not come back between the two renames, or one green rebuilt --
+so nothing about it says the greens beside it are suspect. It now costs its own hole: named, counted on
+the course's summary line, counted in the corpus block, and carried into the exit status, which is the
+part that makes refusing ONE hole safe rather than quiet.
+
+Exit codes:  0 all figures agree within tolerance -- AND every course with a recorded figure produced
+               a verification. Those are two claims, and only the first used to be checked
              1 at least one figure disagrees -- suspect units, datum, or the wrong tee. EITHER a
                tee-to-green change outside TOL_FT, OR an absolute green elevation outside ABS_FAULT_M;
                the second used to be printed as a "processing fault" and then exit 0 regardless
-             2 could not check (no data, or the elevation service was unreachable)
+             2 could not check: no data, the elevation service was unreachable, a green surface pair is
+               TORN, or a course that HAS recorded heights came out of the run with none of them
+               verified. That last case exited 0 for as long as one OTHER course agreed, so "10 agree,
+               1 not checked" published a clean exit status over a course nothing had checked at all --
+               the default-to-pass shape lidar_coverage.report_or_exit was written to close.
+
+A COURSE THAT VERIFIED NOTHING stops the run until it is acknowledged with ALLOW_UNVERIFIED_COURSES=1.
+Keyed, for lidar_coverage's reason: a course can be permanently unverifiable through nobody's fault --
+one whose greens fall outside 3DEP coverage never will be verifiable here -- and an unconditional
+refusal would wedge that forever, which is why monarch-bay's coverage gaps are waived by name rather
+than fixed. Three things the key cannot do. It cannot silence a run that verified NOTHING ANYWHERE
+(that stays exit 2 whatever is set), it cannot silence a TORN PAIR, and it cannot be spelled off: =0,
+=false and =no waive nothing, the off-vocabulary every hatch in this repo shares, imported here rather
+than copied. A course with no recorded heights at all is a separate line that needs no key -- it prints
+no height on any card, so there is no figure for this tool to have failed to verify (poppy-ridge, which
+was rebuilt in 2025 with no post-rebuild LiDAR, is that case and would otherwise make `--all`
+permanently non-zero). A torn pair has no key at all, deliberately: it is a fault in the data being
+CHECKED rather than a fact about the world, and surface_io.main's stance on one is to refuse and say
+rebuild, because a run that certifies a tear is worse than one that reports it.
+
+WHAT STILL EXITS 0, stated rather than left to be discovered: individual holes whose DEM patch the
+service would not serve. Those are printed, counted per course and counted in the corpus block, and
+they are a fact about the REFERENCE -- a network service, which will always flake -- not about our own
+data. A course where some holes were checked and agreed is verified; a course where none were is not.
+That is the same line lidar_coverage draws between ALLOW_COVERAGE_GAPS and ALLOW_UNCHECKED_COVERAGE.
 
 Run:  COURSE=<slug> python3 tools/verify_elevation.py
       python3 tools/verify_elevation.py --all
@@ -104,6 +140,24 @@ sys.path.insert(0, ROOT)
 # two audits: ten files carried the literal and none imported it. See the note in geo.py.
 from geo import mlat, mlon      # noqa: E402 -- ROOT must be on sys.path first
 import surface_io               # noqa: E402 -- read_pair: the one definition of a readable pair
+from lidar_coverage import _env_on   # noqa: E402 -- one spelling of "off"; see UNVERIFIED_ACK below
+
+# Acknowledgement key for main(), and there is exactly one because there is exactly one question here a
+# reader can honestly answer "yes, I know" to: a course whose recorded heights this run verified NONE
+# of. It is the shape lidar_coverage.report_or_exit, fetch_trees (ALLOW_NO_TREES / ALLOW_TREE_LOSS) and
+# fetch_dem (OVERWRITE) already use, and it is keyed rather than unconditional for lidar_coverage's
+# reason: a permanently unverifiable course would otherwise wedge every `--all` run forever.
+#
+# What this key deliberately does NOT cover is why lidar_coverage carries two of them. A TORN PAIR gets
+# no key -- that is a defect in the data being checked, repairable by rebuilding the green, and
+# surface_io.main refuses to write over one rather than offering a waiver for it. And a run where
+# NOTHING was verified anywhere is decided after this key is read, so setting it can never turn "nothing
+# could be verified" into agreement. See main().
+#
+# _env_on is IMPORTED rather than re-spelled. Seven hand-written copies of this off-vocabulary already
+# exist in this repo and a test discovers every module that defines one, because narrowing a copy to
+# ("", "0") turns ALLOW_X=false into a waiver and left the whole suite green when it was tried.
+UNVERIFIED_ACK = "ALLOW_UNVERIFIED_COURSES"
 
 # THE TEE REGION, and it is not the same question on this tool's two tee branches.
 #
@@ -307,7 +361,7 @@ def dem_median_m(lat, lon, r_m=None, px=64):
 
 
 def check_course(slug):
-    """(status, n_checked, worst_diff_ft, worst_hole, samples). status: 'ok' | 'bad' | 'skip'.
+    """(status, n_checked, worst_diff_ft, worst_hole, samples). status: 'ok' | 'bad' | 'skip' | 'none'.
 
     `samples` carries the per-hole numbers out so main() can publish CORPUS figures. It exists because
     the figures elev_phrase's docstring quotes to justify the card's 3 ft print floor -- a corpus median,
@@ -315,6 +369,13 @@ def check_course(slug):
     project: this tool printed per-course lines only, and a grep for the mean found the sentence and
     nothing else. A published figure with no producer is the defect this repo keeps finding, so the
     producer is here now and main() prints every one of them.
+
+    It also carries `torn` -- the holes whose green surface pair could not be read -- for the same
+    reason: those holes were verified by nothing, and a count that never leaves this function cannot
+    reach the exit status. 'SKIP' AND 'NONE' ARE DIFFERENT ANSWERS, and separating them is what lets
+    main() refuse the first without refusing the second forever: 'skip' is "this course HAS recorded
+    heights and this run verified none of them", 'none' is "this course records no height at all, so
+    nothing here is printed for the tool to check".
     """
     for m in ("config", "render_hole", "render_green", "fetch_hole_elev"):
         sys.modules.pop(m, None)
@@ -325,8 +386,12 @@ def check_course(slug):
 
     p = os.path.join(config.COURSE_DIR, "hole_elev.json")
     if not os.path.isfile(p):
+        # 'none', NOT 'skip'. No hole_elev.json means the cards print no height line at all, so there is
+        # no figure here that went unverified -- and reporting it as an unverified course would make
+        # `--all` permanently non-zero on poppy-ridge, which was rebuilt in 2025 and has no
+        # post-rebuild LiDAR to measure. A waiver for a non-finding is how a waiver becomes routine.
         print(f"{slug}: no hole_elev.json -- nothing to verify")
-        return "skip", 0, 0.0, None, {}
+        return "none", 0, 0.0, None, {}
     rec = json.load(open(p))["holes"]
     els = json.load(open(f"{config.COURSE_DIR}/osm_geom.json"))["elements"]
     greens = [e for e in els if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
@@ -335,7 +400,7 @@ def check_course(slug):
 
     tee_rings = fhe.tee_rings_latlon()
     print(f"{slug}  (independent check against the 3DEP seamless DEM, tolerance {TOL_FT:g} ft)")
-    diffs, signed, absolute, unreachable = [], [], [], 0
+    diffs, signed, absolute, unreachable, torn = [], [], [], 0, []
     for hn in sorted(int(k) for k in rec):
         if hn not in holes:
             continue
@@ -352,11 +417,27 @@ def check_course(slug):
         # reference over comes from the sidecar, and the absolute elevation it holds that reference
         # against comes from the array beside it. The disagreement would then be reported as data, in
         # the one line whose whole job is to bound our own processing.
-        # It raises rather than skipping the hole on purpose: a checker that quietly drops the one green
-        # whose pair is torn still prints a median and a worst case over "the corpus". main()'s per-course
-        # `except Exception` catches it, names the course and the tear, and records the course as NOT
-        # CHECKED -- which can never be read as agreement (see the `if not ok` exit-2 arm).
-        _a_raw, _meta, _digest = surface_io.read_pair(meta_p[:-len(".json")])
+        #
+        # THE TEAR COSTS THIS HOLE, and it used to cost the course. Routing this through read_pair put
+        # the raise outside the try/except that had wrapped the bare np.load, so one unreadable pair
+        # left check_course entirely and main()'s per-course `except` recorded the whole course as not
+        # checked -- every other hole on it verified and then discarded, while the other courses' runs
+        # survived. Loud in the safe direction, and still a loss with nothing gained: a tear is per-PAIR
+        # by construction (commit_surface renames two files; a process that dies between them, or one
+        # green rebuilt, is what leaves one behind), so it is not evidence about the greens beside it.
+        # WHAT MADE THE WHOLE-COURSE REFUSAL LOOK NECESSARY was the alternative it was compared against
+        # -- a hole dropped in SILENCE, leaving a median and a worst case printed "over the corpus" with
+        # a hole missing from them, which is this repo's signature defect. That is not the alternative.
+        # This hole is named here, counted on the course's summary line and in the corpus block, and
+        # carried out in `samples["torn"]` so main() exits non-zero on it with no key that waives it.
+        # Caught as (ValueError, OSError), the same pair surface_io.main catches: a missing array, an
+        # unreadable sidecar, a shape that disagrees, an array that no longer hashes to its digest.
+        try:
+            _a_raw, _meta, _digest = surface_io.read_pair(meta_p[:-len(".json")])
+        except (ValueError, OSError) as e:
+            torn.append((hn, str(e)))
+            print(f"  hole {hn:2d}: its green surface PAIR IS TORN, so this hole is NOT CHECKED -- {e}")
+            continue
         # `green_center` is no longer read here, and its consumer was replaced DELIBERATELY rather than
         # lost: this was `gla, glo = ...["green_center"]` feeding `d_grn = dem_median_m(gla, glo)`, a disc
         # median at the green's centre, until 4b19d2f moved the GREEN-side reference onto the green
@@ -418,17 +499,22 @@ def check_course(slug):
         print(f"  hole {hn:2d}: ours {ours_ft:+7.1f} ft   DEM {indep_ft:+7.1f} ft   "
               f"diff {d:+6.2f}{flag}")
     if not diffs:
-        print(f"  could not check any hole ({unreachable} unreachable)")
-        return "skip", 0, 0.0, None, {}
+        # NOT CHECKED, and the reasons are carried out rather than only printed: main() decides the
+        # exit status from `samples`, and a course that verified none of the heights it records is the
+        # case that used to exit 0 behind the courses that did.
+        print(f"  could not check any hole ({unreachable} unreachable, {len(torn)} torn pair(s))")
+        return "skip", 0, 0.0, None, {"unreachable": unreachable, "torn": list(torn)}
     diffs.sort(reverse=True)
     worst, worst_hn = diffs[0][0], diffs[0][1]
     med = float(np.median([d[0] for d in diffs]))
     bad = [d for d in diffs if d[0] > TOL_FT]
     abs_fault, aw = False, 0.0
     samples = {"abs_diff_ft": [(d[0], d[1]) for d in diffs], "median_ft": med,
-               "signed_ft": list(signed), "absolute_m": list(absolute), "unreachable": unreachable}
+               "signed_ft": list(signed), "absolute_m": list(absolute), "unreachable": unreachable,
+               "torn": list(torn)}
     print(f"  => {len(diffs)} holes checked, median |diff| {med:.2f} ft, worst {worst:.2f} ft "
-          f"(hole {worst_hn}){', ' + str(unreachable) + ' unreachable' if unreachable else ''}")
+          f"(hole {worst_hn}){', ' + str(unreachable) + ' unreachable' if unreachable else ''}"
+          f"{', ' + str(len(torn)) + ' NOT CHECKED (torn pair)' if torn else ''}")
     # Report the SIGNED bias too. "Small" and "unbiased" are different claims, and reporting only
     # |diff| hid a systematic: the DEM reads the green ~0.8 ft higher relative to the tee than we do,
     # on 151 of 177 holes corpus-wide -- until both ends moved onto the feature polygons, after which it
@@ -492,22 +578,33 @@ def _print_corpus(results):
     is a RANGE and only one of its two ends had a producer. The low end had to be read off eleven
     per-course lines that print to 0.01 ft, so nothing could grade it at the precision a range endpoint
     needs -- and an endpoint rounded the wrong way excludes the very course it is supposed to cover.
+
+    HOLES THAT WERE NOT MEASURED ARE NAMED HERE TOO, and read off `.get` rather than indexed. A corpus
+    figure computed over a hole set with holes silently missing from it is the defect this function was
+    written to end; a torn pair is now one of the ways a hole goes missing, so it is stated beside the
+    figures instead of being visible only in the per-course lines above. Courses that measured nothing
+    at all still carry their counts, so a `samples` payload here may hold no figures whatsoever.
     """
     per = {s: r[4] for s, r in results.items() if r[4]}
     if not per:
         return
-    alld = [(v, s, h) for s, d in per.items() for v, h in d["abs_diff_ft"]]
+    alld = [(v, s, h) for s, d in per.items() for v, h in d.get("abs_diff_ft", ())]
+    torn = [(s, h) for s, d in per.items() for h, _why in d.get("torn", ())]
+    unreach = sum(d.get("unreachable", 0) for d in per.values())
     if not alld:
+        if torn:
+            print(f"CORPUS: no hole was measured, and {len(torn)} green surface pair(s) are TORN: "
+                  + ", ".join(f"{s} hole {h}" for s, h in sorted(torn)))
+            print()
         return
     vals = sorted(v for v, _s, _h in alld)
-    meds = {s: d["median_ft"] for s, d in per.items()}
+    meds = {s: d["median_ft"] for s, d in per.items() if "median_ft" in d}
     worst = max(alld)
     wc = max(meds, key=lambda s: meds[s])
     bc = min(meds, key=lambda s: meds[s])
-    sgn = [v for d in per.values() for v in d["signed_ft"]]
-    ab = [v for d in per.values() for v in d["absolute_m"]]
-    unreach = sum(d["unreachable"] for d in per.values())
-    print(f"CORPUS over {len(vals)} hole(s) in {len(per)} course(s)"
+    sgn = [v for d in per.values() for v in d.get("signed_ft", ())]
+    ab = [v for d in per.values() for v in d.get("absolute_m", ())]
+    print(f"CORPUS over {len(vals)} hole(s) in {len(meds)} course(s)"
           f"{f', {unreach} unreachable' if unreach else ''}:")
     print(f"  |diff| vs the DEM   : median {float(np.median(vals)):.4f} ft, mean "
           f"{float(np.mean(vals)):.4f}, worst {worst[0]:.4f} ({worst[1]} {worst[2]})")
@@ -522,10 +619,16 @@ def _print_corpus(results):
         print(f"  signed bias DEM-ours: median {float(np.median(sgn)):+.4f} ft, mean "
               f"{float(np.mean(sgn)):+.4f}, positive on {sum(1 for v in sgn if v > 0)} of {len(sgn)}")
     if ab:
-        pc = [max(abs(v) for v in d["absolute_m"]) for d in per.values() if d["absolute_m"]]
-        pcm = [abs(float(np.median(d["absolute_m"]))) for d in per.values() if d["absolute_m"]]
+        pc = [max(abs(v) for v in d["absolute_m"]) for d in per.values() if d.get("absolute_m")]
+        pcm = [abs(float(np.median(d["absolute_m"]))) for d in per.values() if d.get("absolute_m")]
         print(f"  absolute green vs DEM: worst per-course median {max(pcm):.4f} m, worst single green "
               f"{max(pc):.4f} m over {len(ab)} green(s)")
+    if torn:
+        # These holes are NOT in any figure above, and every figure above is published. Saying so here
+        # is what separates "one hole could not be read" from "the corpus is one hole smaller than it
+        # looks", which is the shape of every drifted figure this project has had to re-derive.
+        print(f"  TORN pair(s), NOT in any figure above: "
+              + ", ".join(f"{s} hole {h}" for s, h in sorted(torn)))
     print()
 
 
@@ -556,18 +659,59 @@ def main():
         try:
             results[s] = check_course(s)
         except Exception as e:
+            # THE LAST-RESORT NET, and it is no longer where a torn pair lands -- check_course refuses
+            # the hole and carries on. What reaches here now is a course this tool could not process at
+            # all (missing osm_geom.json, an unreadable scorecard), which is the loudest form of "not
+            # verified" and is recorded as exactly that, never as agreement.
             print(f"{s}: could not verify ({type(e).__name__}: {e})")
             results[s] = ("skip", 0, 0.0, None, {})
         print()
     _print_corpus(results)
     bad = [s for s, r in results.items() if r[0] == "bad"]
     ok = [s for s, r in results.items() if r[0] == "ok"]
-    skip = [s for s, r in results.items() if r[0] == "skip"]
-    print(f"{len(ok)} course(s) agree, {len(bad)} disagree, {len(skip)} not checked")
+    unverified = [s for s, r in results.items() if r[0] == "skip"]
+    nothing = [s for s, r in results.items() if r[0] == "none"]
+    torn = [(s, h, why) for s, r in results.items() for h, why in (r[4] or {}).get("torn", ())]
+    acked = _env_on(UNVERIFIED_ACK)          # read once: see the note beside the print below
+    print(f"{len(ok)} course(s) agree, {len(bad)} disagree, {len(unverified)} NOT verified, "
+          f"{len(nothing)} with no recorded height to verify")
     if bad:
         print("DISAGREE: " + ", ".join(bad))
-        return 1
+    if torn:
+        # NO WAIVER. A torn pair is our own data disagreeing with itself -- the array and the sidecar
+        # beside it came from different runs -- so the hole's printed height was measured through a
+        # surface nothing can place, and this tool cannot bound it. surface_io.main takes the same line
+        # on the same condition ("Rebuild these rather than stamping them -- a digest written over a
+        # torn pair certifies the tear"), and it offers no key either.
+        print(f"!! {len(torn)} hole(s) were NOT CHECKED because their green surface pair is torn: "
+              + ", ".join(f"{s} hole {h}" for s, h, _why in sorted(torn)))
+        print(f"   Those holes' printed heights are bounded by nothing in this project. Rebuild each\n"
+              f"   green's surface (fetch_dem_hd.py / fetch_dem.py) and re-run; no acknowledgement key\n"
+              f"   waives this, because a run that certifies a tear is worse than one that reports it.")
+    if unverified:
+        # THE VERDICT THIS USED TO DISCARD. One course agreeing was enough to publish exit 0 over
+        # another that verified nothing, and exit 0 is documented as "all figures agree". Keyed rather
+        # than unconditional, and the key is read ONCE, with the repo's own off-vocabulary: two reads
+        # of an escape hatch are two chances for the message and the verdict to disagree about it.
+        if acked:
+            print(f"WARNING: {UNVERIFIED_ACK} set -- {len(unverified)} course(s) accepted with NO "
+                  f"independent verification of the heights they record: " + ", ".join(unverified))
+        else:
+            print(f"NOT VERIFIED: {', '.join(unverified)}\n"
+                  f"   Each of those courses RECORDS tee-to-green heights and this run checked none of\n"
+                  f"   them, so nothing here says the figures their cards print agree with an\n"
+                  f"   independent source. Exiting 0 would read as agreement.\n"
+                  f"   A service outage clears on a re-run and costs nothing (every patch is fetched\n"
+                  f"   fresh anyway). Set {UNVERIFIED_ACK}=1 once you have read why each one came out\n"
+                  f"   empty above and the gap is real -- a course whose greens fall outside 3DEP\n"
+                  f"   coverage can never be verified by this tool.")
+    if bad:
+        return 1                     # a figure that DISAGREES is the more specific finding of the two
+    if torn or (unverified and not acked):
+        return 2
     if not ok:
+        # AFTER the key, so acknowledging one course's permanent gap can never turn a run that verified
+        # NOTHING ANYWHERE into agreement -- the separation lidar_coverage keeps two keys for.
         print("nothing could be verified -- treat as UNKNOWN, not as agreement")
         return 2
     return 0
