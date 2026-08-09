@@ -20,6 +20,11 @@ Everything here is read from the build outputs, never from prose:
 
 Run:  python3 tools/gen_provenance.py            # writes legal/03_PROVENANCE_BY_COURSE.md
       python3 tools/gen_provenance.py --check    # exits 1 if the file is stale (for CI / pre-merge)
+
+Exit codes:  0 the record on disk matches the build artifacts (or it was rewritten)
+             1 STALE -- the record does not match, and `--check` says so without touching it
+             2 nothing could be checked: no course data present, or an argument this tool does not
+               understand. AN UNRECOGNISED ARGUMENT IS EXIT 2 AND NOT A REWRITE -- see unknown_args.
 """
 import glob
 import json
@@ -32,6 +37,28 @@ sys.path.insert(0, ROOT)
 import distribution  # noqa: E402
 import surface_io  # noqa: E402  -- read_pair and DIGEST_KEY; see _seamless_cells and _digest_coverage
 OUT = os.path.join(ROOT, "legal", "03_PROVENANCE_BY_COURSE.md")
+
+# THE ONLY ARGUMENT THIS TOOL UNDERSTANDS. Everything else is refused, and that is not tidiness.
+# main() used to decide its mode with `if "--check" in sys.argv:` and fall through to the branch that
+# OVERWRITES OUT, so every other argument selected the destructive one: `-check`, `--chek`, `--verify`,
+# `-n`, `--check=1` and a bare `check` each rewrote legal/03_PROVENANCE_BY_COURSE.md, printed "wrote
+# legal/03_PROVENANCE_BY_COURSE.md", and exited 0. The generated file itself carries "Verify with:
+# python3 tools/gen_provenance.py --check", so a typo in that very command self-certified: it produced
+# a record that matched the tree because it had just been written from it.
+# 2b0e248 fixed the same one-character defect in tools/export_pdf.py, where it re-exported all 15 PDFs.
+KNOWN_FLAGS = ("--check",)
+
+
+def unknown_args(argv):
+    """The arguments this tool does not understand -- EXACT membership, never a prefix or a substring.
+
+    A separate named function rather than an inline comprehension because it is the whole safety of a
+    destructive default, and tests/test_r16_gates.py grades one truth table across every tool in tools/
+    that spells this rule -- the shape lidar_coverage._env_on's seven copies are kept safe by.
+    This tool takes no positional argument at all, so a bare word is unknown too.
+    """
+    return [a for a in argv if a not in KNOWN_FLAGS]
+
 
 # The card suppresses any measured tee-to-green change under this as level -- generate.py's
 # elev_phrase(): `if ft is None or abs(ft) < 3: return ""`. It is spelled a SECOND time here, which is
@@ -652,7 +679,19 @@ def _digest_coverage():
     return with_digest, total
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    # REFUSED BEFORE A SINGLE FILE IS READ, so the message can only mean "I did not understand you"
+    # and never gets mistaken for a verdict about the tree. The old shape was `if "--check" in
+    # sys.argv:` with the WRITE as its else, so a typo did not fail -- it regenerated the legal record
+    # and exited 0. Exit 2, the same code this tool already answers for "nothing could be checked".
+    stray = unknown_args(argv)
+    if stray:
+        print(f"unknown argument(s): {' '.join(stray)}\n"
+              f"usage: gen_provenance.py [--check]\n"
+              f"  with no argument this REWRITES {os.path.relpath(OUT, ROOT)}, so an argument this "
+              f"tool does not recognise is refused rather than treated as one it does.")
+        return 2
     # The SAME enumerator build() uses, deliberately. This was a raw glob over courses/*/course.json
     # while build() calls distribution.course_slugs(), which drops `_`-prefixed scratch directories --
     # so a tree holding nothing but one leftover fixture (a fresh clone plus one crashed test; this
@@ -669,7 +708,7 @@ def main():
               "are not courses) -- nothing to check against.")
         return 2
     text = build()
-    if "--check" in sys.argv:
+    if "--check" in argv:
         # Said BEFORE the staleness verdict, so it is printed on the pass as well as the fail: a
         # coverage figure that only appears when something else is already wrong is not a disclosure.
         digested, metas = _digest_coverage()
