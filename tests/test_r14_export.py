@@ -440,10 +440,24 @@ def test_the_readmes_shuffled_order_advice_still_describes_this_suite(tmp_path):
     than a wrong count, because a reader trusts the shuffle less, not more.
 
     So the fixture is found by AST and the README's account of WHERE it lives is graded against where it
-    was found. It is currently in the suite file rather than in conftest.py, which means a second test
-    module -- this one -- does not inherit it, and README has to say so: conftest.py is the only file
-    pytest loads for every module in the directory, which is the argument its own docstring makes for
-    the deletion guard living there.
+    was found. It is in tests/conftest.py, which is the only file pytest loads for every module in the
+    directory -- so every test module here inherits it, and README has to say that rather than the
+    narrower thing it used to say.
+
+    THE LOCATION CLAIM IS DECIDED POSITIONALLY, NOT BY THE PRESENCE OF A PATH. This test used to ask
+    `rel in said`, and that is not a decision: README named the wrong file -- it said the fixture was in
+    `tests/test_phase1_regressions.py`, where it has not lived since an earlier round -- and satisfied
+    the check anyway, because the string `tests/conftest.py` happened to appear a few words later inside
+    the sentence "it lives in the suite file rather than in `tests/conftest.py`", which asserts the
+    OPPOSITE of the truth. The doc was wrong and its guard was vacuous, which is the worse half: a wrong
+    README with a real guard gets fixed the first time the guard runs.
+
+    So the path is now pulled out of the position that CLAIMS it -- "the autouse `<name>` fixture in
+    `<path>`" -- and compared to the AST's answer; the true home may not be DENIED elsewhere in the
+    paragraph; and the SCOPE sentence is decided by derivation from that location, because those are two
+    different claims and the false one was the dangerous one. A fixture declared in a conftest is applied
+    by pytest to every test module in its directory; one declared in a test module reaches that module
+    alone. README may scope the promise to a single file only when that is what the location implies.
     """
     found = _course_restoring_autouse_fixtures()
     assert found, (
@@ -451,6 +465,10 @@ def test_the_readmes_shuffled_order_advice_still_describes_this_suite(tmp_path):
         '"leakage should be structurally impossible" is a property the suite does not have. Either the '
         "fixture was removed or its teardown was, and the shuffled-order advice is now the only thing "
         "standing between a rebinding test and the next one.")
+    modules = sorted(glob.glob(os.path.join(ROOT, "tests", "test_*.py")))
+    assert len(modules) >= 2, (
+        f"only {len(modules)} test module(s) found in tests/, so where the fixture lives cannot bound "
+        f"the claim either way and the scope half of this test would grade nothing")
     with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
         readme = fh.read()
     para = re.search(r"Run the suite in a \*\*shuffled order\*\*.+?you find out it still is\.",
@@ -458,12 +476,32 @@ def test_the_readmes_shuffled_order_advice_still_describes_this_suite(tmp_path):
     assert para, "README no longer carries the shuffled-order paragraph this test grades"
     said = para.group(0)
     for rel, name in found:
-        assert name in said and rel.replace(os.sep, "/") in said, (
-            f"README's shuffled-order advice does not name {name} in {rel}, which is the fixture the "
-            f"claim rests on. A reader who cannot find it cannot check whether the property still "
-            f"holds -- and if the fixture MOVED (to tests/conftest.py, say, where every test module "
-            f"would inherit it) the paragraph's scope sentence is now wrong.")
-    assert "conftest" in said, (
-        "README does not say how the fixture's location bounds the claim. It is not in tests/conftest.py, "
-        "so tests in a second module do not inherit it -- state that, or the promise reads as covering "
-        "the whole directory.")
+        rel = rel.replace(os.sep, "/")
+        claimed = re.search(r"`%s` fixture in `([^`]+)`" % re.escape(name), said)
+        assert claimed, (
+            f"README's shuffled-order advice no longer states, in one place, which file the `{name}` "
+            f"fixture lives in, so the property it promises names nothing a reader can go and check. "
+            f"Write it in the form \"the autouse `{name}` fixture in `<path>`\" -- one position, so this "
+            f"test can compare it to the file the fixture is actually in ({rel}) instead of settling "
+            f"for the path appearing somewhere in the paragraph.")
+        assert claimed.group(1) == rel, (
+            f"README says the autouse `{name}` fixture is in `{claimed.group(1)}`; found by AST in "
+            f"`{rel}`. Everything the paragraph promises about isolation is scoped by that location, so "
+            f"a wrong path does not merely misdirect a reader -- it makes the scope sentence beside it "
+            f"wrong too.")
+        denied = re.findall(r"rather than (?:in )?`([^`]+)`", said)
+        assert rel not in denied, (
+            f"README's shuffled-order paragraph says the `{name}` fixture is somewhere \"rather than\" "
+            f"`{rel}` -- which is the file it is actually in. That sentence is what made this test "
+            f"vacuous for a whole round: it put the right path in the paragraph while asserting the "
+            f"opposite of the truth about it.")
+        covers = len(modules) if os.path.basename(rel) == "conftest.py" else 1
+        one_file_only = re.search(r"in that file|not inherit", said)
+        assert bool(one_file_only) == (covers == 1), (
+            f"README's shuffled-order paragraph scopes the isolation promise to "
+            f"{'ONE test module' if one_file_only else 'EVERY test module in the directory'}, but the "
+            f"fixture is in `{rel}`, which pytest applies to {covers} of the {len(modules)} test "
+            f"modules in tests/. An autouse fixture declared in a conftest covers the whole directory; "
+            f"one declared in a test module covers that module alone. Say whichever is true -- a promise "
+            f"scoped to one file when it covers thirteen understates the isolation, and the reverse "
+            f"promises isolation the other twelve modules do not have.")

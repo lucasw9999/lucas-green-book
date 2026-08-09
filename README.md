@@ -108,10 +108,10 @@ appeared under shuffling:
 python3 -m pytest tests/ -q --collect-only | grep '^tests/' | sed 's/ .*//' | sort -R > /tmp/ids
 python3 -m pytest $(tr '\n' ' ' < /tmp/ids) -q      # shuffled
 ```
-The autouse `_bind_a_course` fixture in `tests/test_phase1_regressions.py` restores the `COURSE` binding
-after every test in that file, so leakage should be structurally impossible there; it lives in the suite
-file rather than in `tests/conftest.py`, so a second test module does not inherit it. The shuffle is how
-you find out it still is.
+The autouse `_bind_a_course` fixture in `tests/conftest.py` restores the `COURSE` binding after every
+test in this directory, so leakage should be structurally impossible across the whole suite: pytest
+loads `tests/conftest.py` for every test module here, so every one of them inherits it. The shuffle is
+how you find out it still is.
 
 `tools/check_scale.py` is the important one. It lays each book out in a real browser under print
 media and measures the drawn green there, rather than trusting the SVG's own attributes — a
