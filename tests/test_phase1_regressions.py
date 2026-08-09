@@ -35369,6 +35369,11 @@ def test_no_record_names_a_green_label_the_engine_does_not_print():
 # reason a plausible-looking figure was the wrong thing to leave sitting in an exemption. It still has to
 # BE a claim, and both fixtures assert exactly that against `_CELL_LABEL_CLAIM` before injecting it,
 # because a probe the pattern cannot see would prove nothing about any surface.
+#
+# ITS ALLOWLIST KEY IS DROPPED FOR THE DURATION OF THE MUTATION SWEEP. The key is the content of this
+# clause, which is the label and nothing else, so it clears that label wherever it stands alone in a
+# clause -- including in the scratch copies the fixtures below inject into, which silently made two of
+# them grade nothing. The note beside that sweep measures it.
 _PROBE_LABEL = "9999 m data"
 
 
@@ -35477,6 +35482,21 @@ def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_i
         f"the probe label {dead!r} is not a resolution claim outside the vocabulary, so injecting it "
         f"would prove nothing about any surface")
     injections = _label_injections(dead)
+    # THE PROBE'S OWN EXEMPTION IS SWITCHED OFF FOR THIS SWEEP, and that is a fix rather than a
+    # convenience. The history allowlist clears a clause by CONTENT, and `_PROBE_LABEL` is spelled as a
+    # bare string literal, so the clause it is keyed by IS the bare label -- which means that key clears
+    # the injected claim of any fixture whose claim ends up alone in a clause. Two of the thirteen below
+    # do: `_clauses` splits after a colon, so the print() and bytes templates leave their claim in a
+    # clause equal to the label itself, and both arrived EXEMPT. Measured with the key in force: those
+    # two report "nothing at all" and two surfaces this test exists to probe were graded vacuously,
+    # while the eleven whose claim sits in a longer clause still failed as they should. Dropping the key
+    # here rather than rewording those two templates, because the wording is not the fault -- any future
+    # fixture whose claim lands alone in a clause would inherit the same silent pass, and a mutation
+    # test must not be handed an exemption for the very string it is asked to find. The allowlist itself
+    # is graded next door by test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording;
+    # what THIS test grades is the collector. Nothing is hidden if the key is ever absent: the sweep is
+    # then the shipped one and the thirteen assertions below are unchanged.
+    exempt = {k: v for k, v in _HISTORICAL_LABEL_CLAUSES.items() if k != _clause_key(dead)}
     with tempfile.TemporaryDirectory() as td:
         os.makedirs(os.path.join(td, "legal"))
         for rel in sorted({s[1] for s in injections} | set(_prose_docs())):
@@ -35484,7 +35504,7 @@ def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_i
         pristine = {rel: open(os.path.join(td, rel), encoding="utf-8").read()
                     for rel in sorted({s[1] for s in injections})}
 
-        clean = _stale_label_mentions(live, root=td)
+        clean = _stale_label_mentions(live, root=td, exempt=exempt)
         assert not clean, (
             f"the unmutated copy already names a label outside the engine's vocabulary, so no "
             f"injection below would be attributable: {clean[:4]}")
@@ -35495,7 +35515,7 @@ def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_i
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(inject(pristine[rel]))
             try:
-                found = [w for w, _said, _cl in _stale_label_mentions(live, root=td)]
+                found = [w for w, _said, _cl in _stale_label_mentions(live, root=td, exempt=exempt)]
             finally:
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write(pristine[rel])
