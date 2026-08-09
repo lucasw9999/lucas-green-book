@@ -1694,7 +1694,8 @@ def test_the_suite_wide_course_module_pop_list_is_derived_from_the_engine_and_no
     test_r14_deadcode.py each grade their own, in this shape, on purpose. Not imports made inside a
     function. Not the whole population meeting the rule: eleven engine modules do, this list holds seven,
     and a fixture has no business dropping modules no test in the directory imports. And not this file's
-    own ninety-eight drop sites, whose remaining wrong names are recorded in the docstring below.
+    own ninety-five drop sites, which are graded whole by
+    test_every_module_this_file_drops_from_sys_modules_is_one_a_bound_course_needs below.
     """
     import conftest
     reach, edges = _course_reaching_modules()
@@ -1767,13 +1768,11 @@ def test_no_test_module_drops_lidar_coverage_and_forks_the_shared_env_on():
     files that already learned it grade only their own, and the next person to write a coverage test will
     reach for the same pop in whichever file they are in.
 
-    WHAT IT DOES NOT DECIDE, and this is the honest residual of the round that wrote it: `geo` and
-    `distribution` are also dropped by this file -- nineteen sites and two -- and neither meets the rule
-    either, on exactly the mechanism above. They are NOT fixed here. Three of those twenty-one sites drop
-    that one name and nothing else, so closing them means deleting a `sys.modules.pop` CALL, which moves
-    the 109 that README publishes and test_the_suite_reports_its_own_module_drop_count_correctly pins
-    against it -- one commit, with README, not this one. Until then those two names stay forked, latent:
-    no assertion in the suite compares either through an undropped holder today.
+    WHAT IT DOES NOT DECIDE: any other name. It refuses ONE, directory-wide, because that one is the
+    name whose fork is already cashed in a live assertion. The general statement -- that every name this
+    file drops must be one a bound course needs -- is
+    test_every_module_this_file_drops_from_sys_modules_is_one_a_bound_course_needs below, which was
+    impossible to write green while `geo` and `distribution` were still dropped here.
     """
     reach, _edges = _course_reaching_modules()
     assert "config" in reach, (
@@ -1802,6 +1801,119 @@ def test_no_test_module_drops_lidar_coverage_and_forks_the_shared_env_on():
         "the pop leaves them on the old function and hands the next import a second copy. See this "
         "test's docstring for the three node ids that fail because of it."
         % (len(offenders), offenders, holders))
+
+
+def test_every_module_this_file_drops_from_sys_modules_is_one_a_bound_course_needs():
+    """The whole-file statement of the class three commits in this campaign each fixed one instance of.
+
+    A `sys.modules.pop` is not free. Popping a module that another module already holds a MODULE-LEVEL
+    reference to leaves that holder bound to the OLD object, while the next `import` re-executes the file
+    and produces a SECOND copy. From then on a patch lands on the copy the code under test never calls,
+    and an identity assertion compares two copies of one thing. That is worth paying when the module is
+    course-bound -- re-reading COURSE is the whole purpose of the drop -- and it buys NOTHING when the
+    module reads no COURSE at all.
+
+    The class has cashed three times in this campaign, each time as a real failure and each time
+    "latent" right up until it was not:
+
+      * c209a50 -- forking `surface_io` let a torn-pair injection patch a second copy while
+        tools/verify_elevation read the intact pairs, so eleven holes came back checked and none torn.
+      * 384e462 and ff3e08b -- forking `lidar_coverage` made
+        `assert fetch_osm._env_on is lidar_coverage._env_on` compare two copies of one function, which
+        is the guard that stops the waiver off-vocabulary drifting into another hand-written copy.
+
+    THIS FILE HELD THE REST OF IT: nineteen sites dropped `geo`, two dropped `distribution`, and one
+    dropped `lidar_dates`. None of the three reads COURSE or imports config at import, so no drop
+    isolated anything; `geo` is held at module level by ten shipped files, `distribution` by five
+    (config.py:19, generate.py:25 and three tools) and `lidar_dates` by tools/cross_flight_check.py:43,
+    and no site dropped its holders alongside it. Three of those sites dropped that one name and NOTHING
+    else, so closing them deleted the `sys.modules.pop` CALL -- which is why this grader could not exist
+    before README's published count moved with it, and why a `("config",)` written in to preserve the
+    number would have been the exact fault every one of these graders exists to prevent.
+
+    WHAT THIS TEST DECIDES, both halves derived and neither hand-typed:
+
+      * NO ENGINE MODULE THAT READS NO COURSE IS DROPPED. The population is the glob of the engine's own
+        top-level modules and the rule is recomputed off their source -- seeded from the modules that
+        read the env var themselves, closed over module-level sibling imports -- so `geo`,
+        `distribution`, `surface_io` and `lidar_coverage` are refused here by derivation and not by name.
+      * NO DROP OF A MODULE THAT READS NO COURSE STRANDS A HOLDER. This half reaches past the engine
+        population to anything this file names, tools included, and it is the mechanism rather than the
+        proxy: for every dropped name that reaches no COURSE, every file that holds it at module level
+        must be dropped at the SAME site. That is what separates `lidar_dates` -- whose holder is not
+        co-dropped, so the pop forked it -- from the five other tools names this file drops, which are
+        INERT: `cross_flight_check`, `gen_provenance`, `gen_disclaimers` and `check_scale` have no
+        module-level holder anywhere in the repo, and `export_pdf`'s only holder
+        (tools/check_scale.py:64) is dropped at the same site, so both copies go and nothing is stranded.
+        The three `_fp_probe_*` names are synthetic modules a test writes into tmp_path and pops as its
+        own cleanup; they hold nothing and nothing holds them.
+
+    A DROPPED NAME THAT DOES REACH COURSE IS EXEMPT FROM THE SECOND HALF, and must be: `config` is held
+    at module level by most of the engine, so dropping it necessarily strands holders. That fork is the
+    point of the drop, not a defect -- which is exactly the distinction the first half draws.
+
+    WHAT IT DOES NOT DECIDE. Not the other files in tests/: conftest.py, test_r14_coverage.py and
+    test_r14_deadcode.py each grade their own list in this same shape, and
+    test_no_test_module_drops_lidar_coverage_and_forks_the_shared_env_on covers the one name whose fork
+    is already cashed across all of them. Not whether a drop is NEEDED -- a pointless pop of a
+    course-bound module costs nothing but a line. Not imports made inside a function, which re-resolve
+    out of sys.modules on every call and so can never be a stale holder.
+
+    EVERY PREMISE IS MEASURED. An empty rule, an empty population, a file with no drop sites, a holder
+    reader that reads nothing, and a drop site this grader cannot resolve to names each fail on their
+    own terms rather than passing vacuously -- because a grader for this class that silently measures
+    nothing is worse than none, the call site reading as protected either way.
+    """
+    reach, edges = _course_reaching_modules()
+    engine = set(edges)
+    assert "config" in reach, (
+        "no module in this repo was found reading os.environ['COURSE'] at import time, so this grader "
+        "derived an empty rule and would pass over any drop list at all")
+    assert len(engine) >= 10, (
+        f"only {len(engine)} top-level engine module(s) found ({sorted(engine)}), so the population this "
+        f"rule is derived over is not this repo's engine and the first assertion below grades nothing")
+    assert any(_module_level_holders(m) for m in sorted(engine)), (
+        "no module-level import of any engine module was found anywhere in the engine or tools, so the "
+        "holder reader is returning nothing for everything and the second assertion below cannot "
+        "strand a holder no matter what this file drops")
+    sites = _sys_modules_pop_names(os.path.join(ROOT, "tests", "test_phase1_regressions.py"))
+    assert len(sites) >= 50, (
+        f"only {len(sites)} sys.modules.pop site(s) resolved in this file; this grader is not reading the "
+        f"drop sites it claims to grade")
+    unresolved = ["%d: %s" % (lineno, n) for lineno, names in sites for n in names
+                  if isinstance(n, str) and n.startswith("<")]
+    assert not unresolved, (
+        f"this grader could not resolve {len(unresolved)} drop site(s) in this file to module names: "
+        f"{unresolved}. An unresolved site is not a clean one -- it is a site nothing here can vouch "
+        f"for. Spell the names at the site as a literal tuple, or as a module-level constant this "
+        f"file assigns once")
+
+    wrong = sorted({n for _lineno, names in sites for n in names if n in engine and n not in reach})
+    assert not wrong, (
+        f"this file drops {wrong} from sys.modules, and importing "
+        f"{'those modules reads' if len(wrong) > 1 else 'that module reads'} no COURSE: no env read of "
+        f"its own, and no chain of module-level sibling imports that ends at one. The drop therefore "
+        f"isolates nothing, while every module that already holds it keeps a stale reference and the "
+        f"next import builds a second copy of the file. Sites: "
+        f"{['%d: %s' % (l, sorted(set(ns) & set(wrong))) for l, ns in sites if set(ns) & set(wrong)]}")
+
+    stranded = []
+    for lineno, names in sites:
+        dropped_here = set(names)
+        for name in names:
+            if name in reach:
+                continue                    # a course-bound module MUST be dropped; that fork is the point
+            left = [h for h in _module_level_holders(name)
+                    if os.path.basename(h.split(":")[0])[:-len(".py")] not in dropped_here]
+            if left:
+                stranded.append("%d drops %r, held by %s" % (lineno, name, left))
+    assert not stranded, (
+        f"{len(stranded)} drop site(s) in this file fork a module that reads no COURSE while a file that "
+        f"holds it AT MODULE LEVEL is left resident and bound to the old object:\n  "
+        + "\n  ".join(stranded)
+        + "\nThe drop buys no course isolation, because importing the module reads no COURSE -- so all "
+          "it does is hand the next import a second copy. Drop the holder at the same site, or do not "
+          "drop the module.")
 
 
 def a_course():
@@ -8796,7 +8908,7 @@ def test_the_printed_height_is_measured_over_the_green_and_not_its_surroundings(
         if not os.path.isfile(rp):
             continue
         os.environ["COURSE"] = slug
-        for m in ("config", "geo", "render_green"):
+        for m in ("config", "render_green"):
             sys.modules.pop(m, None)
         import config                                    # noqa: F401
         import render_green as rg
@@ -18698,8 +18810,6 @@ def test_no_green_is_bound_to_two_holes():
 
     Measured across all 11 built courses: 0 greens bound to more than one hole, worst legitimate bind
     11.1 m -- so the guard only ever fires on a real fault."""
-    for m in ("geo",):
-        sys.modules.pop(m, None)
     import geo
 
     g1 = {"id": 101, "geometry": [{"lat": 1.0, "lon": 2.0}]}
@@ -18897,8 +19007,6 @@ def test_one_shared_rule_decides_what_may_be_distributed():
     It now lives in distribution.py and both the generator and any publisher ask it, so the two
     cannot drift. An App Store build, a web download and a handed-out printout are all
     distribution."""
-    for m in ("distribution",):
-        sys.modules.pop(m, None)
     import distribution
 
     ok, label, why = distribution.distribution_status({"slug": "x"})
@@ -19765,7 +19873,12 @@ def test_flight_date_is_dated_from_the_points_under_the_greens(tmp_path):
 
     os.environ["COURSE"] = a_course()
     sys.path.insert(0, os.path.join(ROOT, "tools"))
-    for m in ("config", "lidar_dates"):
+    # `lidar_dates` was dropped here too and is the same wrong class as `geo`: its module-level body is
+    # imports plus derived constants, it reads no COURSE and imports no config, so re-executing it
+    # isolated nothing -- while tools/cross_flight_check.py:43 holds it at module level and is NOT
+    # dropped at this site, so the pop handed that holder a stale copy. Every other test that uses this
+    # tool imports it without dropping it.
+    for m in ("config",):
         sys.modules.pop(m, None)
     ld = _import_first_party("lidar_dates")
 
@@ -24527,7 +24640,7 @@ def test_the_cross_flight_check_shares_the_renderers_plane_fit():
     assert os.path.exists(tool), "tools/cross_flight_check.py is gone; delete this test or the claim"
 
     sys.path.insert(0, os.path.join(ROOT, "tools"))
-    for m in ("config", "geo", "render_green", "cross_flight_check"):
+    for m in ("config", "render_green", "cross_flight_check"):
         sys.modules.pop(m, None)
     os.environ["COURSE"] = a_course()
     import render_green as rg
@@ -24621,7 +24734,7 @@ def test_the_printed_read_is_fitted_to_putting_surface_only():
             continue
         seen[slug] += 1
         os.environ["COURSE"] = slug
-        for m in ("config", "geo", "render_green"):
+        for m in ("config", "render_green"):
             sys.modules.pop(m, None)
         import render_green as rg
         from geo import mlat, mlon
@@ -24776,7 +24889,7 @@ def test_a_mapped_green_is_mostly_puttable_ground():
     worst, checked, bad, seen = (0.0, None), 0, [], collections.Counter()
     for slug in geometry_courses():
         os.environ["COURSE"] = slug
-        for m in ("config", "geo", "render_green"):
+        for m in ("config", "render_green"):
             sys.modules.pop(m, None)
         import render_green as rg
         from geo import mlat, mlon
@@ -24886,7 +24999,7 @@ def test_the_geometry_counts_the_comments_quote_are_still_true():
     for slug in geometry_courses():
         os.environ["COURSE"] = slug
         os.environ["QUIET_TEE_CHECK"] = "1"
-        for m in ("config", "geo"):
+        for m in ("config",):
             sys.modules.pop(m, None)
         import config
         import geo
@@ -25504,7 +25617,7 @@ def test_every_enlarged_green_is_on_the_back_of_its_own_hole():
         if not os.path.isfile(os.path.join(ROOT, "courses", slug, "greenbook_coach.html")):
             continue
         os.environ["COURSE"] = slug
-        for m in ("config", "geo", "render_green", "render_hole", "generate"):
+        for m in ("config", "render_green", "render_hole", "generate"):
             sys.modules.pop(m, None)
         import config
         import generate
@@ -25567,7 +25680,7 @@ def test_the_card_deck_has_exactly_one_implementation():
     the return shape, and that the labels are the corrected ones.
     """
     os.environ["COURSE"] = CORPUS[0]
-    for m in ("config", "geo", "render_green", "render_hole", "generate"):
+    for m in ("config", "render_green", "render_hole", "generate"):
         sys.modules.pop(m, None)
     import config
     import generate
@@ -25635,7 +25748,7 @@ def test_a_card_counts_water_the_golfer_can_actually_see():
     Truth table on the predicate, plus the corpus fact that makes it matter.
     """
     os.environ["COURSE"] = CORPUS[0] if CORPUS else "merion-golf-club"
-    for m in ("config", "geo", "render_hole"):
+    for m in ("config", "render_hole"):
         sys.modules.pop(m, None)
     import render_hole as rh
     cases = [
@@ -26362,7 +26475,7 @@ def test_the_cross_flight_grid_matches_the_surface_it_checks():
         pytest.skip("no course with both a point cloud and a built surface")
 
     sys.path.insert(0, os.path.join(ROOT, "tools"))
-    for m in ("config", "geo", "render_green", "cross_flight_check", "fetch_dem_hd"):
+    for m in ("config", "render_green", "cross_flight_check", "fetch_dem_hd"):
         sys.modules.pop(m, None)
     os.environ["COURSE"] = slug
     import cross_flight_check as cfc
@@ -26474,7 +26587,7 @@ Each of those puts a wrong number in a junior's pocket. `test_built_books_still_
         if not os.path.isfile(book):
             continue
         os.environ["COURSE"] = slug
-        for m in ("config", "geo", "render_green", "render_hole", "generate"):
+        for m in ("config", "render_green", "render_hole", "generate"):
             sys.modules.pop(m, None)
         import config
         import generate
@@ -26545,7 +26658,7 @@ def test_par_and_length_agree_with_each_other():
     bad = []
     for slug in CORPUS:
         os.environ["COURSE"] = slug
-        for m in ("config", "geo"):
+        for m in ("config",):
             sys.modules.pop(m, None)
         import config
         for hn in config.HOLE_NUMS:
@@ -26647,7 +26760,7 @@ def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
     for slug in geometry_courses():
         os.environ["COURSE"] = slug
         os.environ["QUIET_TEE_CHECK"] = "1"
-        for m in ("config", "geo", "render_hole"):
+        for m in ("config", "render_hole"):
             sys.modules.pop(m, None)
         import config
         import render_hole
@@ -26699,11 +26812,14 @@ def test_a_printed_carry_has_an_origin_the_geometry_corroborates():
 def _cff_zscale(slug):
     """The vertical scale fetch_dem_hd would use for one course, bound cleanly.
 
-    The pop list is the CORRECT one -- config, geo, render_green AND fetch_dem_hd -- because the test
-    below is about what happens when a caller forgets the last of those. It must not itself inherit a
-    stale binding while measuring one.
+    The pop list is the CORRECT one -- config, render_green AND fetch_dem_hd -- because the test below
+    is about what happens when a caller forgets the last of those. It must not itself inherit a stale
+    binding while measuring one. `geo` was in this list and is not one of those: it reads no COURSE and
+    imports no config, so dropping it isolated nothing and only forked it against the ten files that
+    hold it at module level. See
+    test_every_module_this_file_drops_from_sys_modules_is_one_a_bound_course_needs.
     """
-    for m in ("config", "geo", "render_green", "fetch_dem_hd"):
+    for m in ("config", "render_green", "fetch_dem_hd"):
         sys.modules.pop(m, None)
     os.environ["COURSE"] = slug
     try:
@@ -26772,7 +26888,7 @@ def test_cross_flight_check_measures_each_course_with_its_own_vertical_scale(cap
             pytest.skip("needs one multi-date course plus another whose vertical scale differs")
 
         # the oracle: the tilt of the surface each card is actually drawn from
-        for m in ("config", "geo", "render_green", "fetch_dem_hd"):
+        for m in ("config", "render_green", "fetch_dem_hd"):
             sys.modules.pop(m, None)
         os.environ["COURSE"] = target
         import cross_flight_check as cff
@@ -26796,7 +26912,7 @@ def test_cross_flight_check_measures_each_course_with_its_own_vertical_scale(cap
 
         # PRIME fetch_dem_hd with the other course, which is exactly what `--all` does to every slug
         # after the first, then ask the tool for the target course.
-        for m in ("config", "geo", "render_green", "fetch_dem_hd"):
+        for m in ("config", "render_green", "fetch_dem_hd"):
             sys.modules.pop(m, None)
         os.environ["COURSE"] = primer
         import fetch_dem_hd
@@ -26864,7 +26980,7 @@ def test_the_cover_gate_is_measured_on_the_green_the_mask_describes():
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     prev = os.environ.get("COURSE")
     try:
-        for m in ("config", "geo", "render_green", "fetch_dem_hd"):
+        for m in ("config", "render_green", "fetch_dem_hd"):
             sys.modules.pop(m, None)
         os.environ["COURSE"] = CORPUS[0]
         import cross_flight_check as cff
@@ -26976,8 +27092,6 @@ def test_an_unrecognised_build_mode_is_not_publishable():
     refusing is safer than guessing. "full" and an absent value stay distributable -- that default is
     documented and 11 corpus courses rely on it -- so the closed domain is asserted from both sides.
     """
-    for m in ("distribution",):
-        sys.modules.pop(m, None)
     import distribution
 
     # the documented domain: absent or "full" publishes, "yardage" is personal-use
@@ -27102,7 +27216,7 @@ def test_the_dem_patch_is_read_on_the_extent_the_service_returned():
         return got, float(np.median(served["arr"][inside])), int(inside.sum()), served["arr"].size
 
     try:
-        for m in ("config", "geo", "render_hole", "fetch_hole_elev"):
+        for m in ("config", "render_hole", "fetch_hole_elev"):
             sys.modules.pop(m, None)
         os.environ["COURSE"] = CORPUS[0]
         import verify_elevation as ve
@@ -28190,7 +28304,7 @@ def test_the_corridor_length_fraction_is_the_geometry_not_a_sample():
     closed-form capsule arithmetic itself rather than on a rendered card.
     """
     os.environ["COURSE"] = CORPUS[0] if CORPUS else "merion-golf-club"
-    for m in ("config", "geo", "render_hole"):
+    for m in ("config", "render_hole"):
         sys.modules.pop(m, None)
     import render_hole as rh
     f = rh.frac_len_within
