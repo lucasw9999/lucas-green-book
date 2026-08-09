@@ -34975,6 +34975,10 @@ _HISTORICAL_LABEL_CLAUSES = {
                         "invisible to 108a894's collector",
     "9d78c40961f73639": "this file, the label grader's docstring -- the sites that went on quoting the "
                         "retired label in the present tense",
+    "1392d44bc6f0ab75": "this file, `_PROBE_LABEL` -- the ONE entry here that is not a record of "
+                        "anything published: the figure the mutation fixtures inject, spelled once so "
+                        "the collector has a claim to find and absurd on purpose so nobody reads it as "
+                        "a resolution. See the note where it is spelled",
 }
 
 
@@ -35345,6 +35349,29 @@ def test_no_record_names_a_green_label_the_engine_does_not_print():
         + "\n  ".join(stale))
 
 
+# THE ONE PROBE LABEL, spelled out here and in no other place. Every mutation fixture below injects this
+# string into a scratch copy of a real file and requires the collector to report it.
+#
+# IT IS SPELLED, and the attempt NOT to spell it is why this note exists. Each fixture used to assemble
+# the label for itself, with its digit inside an interpolation, above a comment calling it BUILT rather
+# than written down. That is not a way of keeping a claim out of a file; it is the dodge the collector was
+# widened to close -- read the folding note in `_string_literals_of` -- and it worked on nothing but the
+# grader: a reader of either fixture saw the claim on the line. The moment the collector could see what
+# the reader could, both fixtures were reported as live claims, which is the correct answer to text that
+# reads as one. So the label is now written the way a reader meets it, in ONE place, and it is cleared the
+# only way this file clears a deliberate mention: by content key in _HISTORICAL_LABEL_CLAUSES, where a
+# human had to put it on purpose and where the checks on that list can see it, count it, and break if it
+# is reworded or copied. Spelling it and naming it is terminal; every way of building it is one widening
+# of the collector away from arriving here again.
+#
+# THE FIGURE IS ABSURD ON PURPOSE: a cell wider than the whole course, so no reader can mistake it for a
+# resolution some build once had -- which is what every other entry on that allowlist is about, and the
+# reason a plausible-looking figure was the wrong thing to leave sitting in an exemption. It still has to
+# BE a claim, and both fixtures assert exactly that against `_CELL_LABEL_CLAIM` before injecting it,
+# because a probe the pattern cannot see would prove nothing about any surface.
+_PROBE_LABEL = "9999 m data"
+
+
 # The TWELVE surfaces a resolution label can hide in, each with the shape of injection that reaches it,
 # plus one CONTROL that must be caught by the same collector (the blank-COMMENT-line variant) -- so
 # thirteen entries below, twelve of them measured dodges.
@@ -35358,11 +35385,14 @@ def test_no_record_names_a_green_label_the_engine_does_not_print():
 #     and the claim is caught. Both are probed, because the difference is not obvious from the code.
 #   * SECURITY.md, the one root user-facing document `_prose_docs()` omitted.
 #
-# The label to inject is PASSED IN, never typed here. A mutation test for a grader that reads this file
-# would otherwise trip its own grader on its own fixtures -- and the way out of that must not be to
-# split the phrase across two literals to hide it, because a repo where prose can dodge the sweep by
-# spelling is a repo where the next stale label dodges it too. The two SPLIT probes therefore take the
-# label apart at a boundary computed from it, rather than spelling either half.
+# The label to inject is PASSED IN as a parameter, and typed in exactly one place -- `_PROBE_LABEL` above,
+# which carries the argument for why it is typed at all. A parameter rather than that name used directly,
+# because a module-level NAME interpolated into these templates would be FOLDED into every one of them by
+# the collector this file grades, and each template would become a live claim in its own right; a local is
+# a question about runtime, which is what it honestly is. What the way out must not be is hiding the
+# phrase by spelling, because a repo where prose can dodge the sweep by spelling is a repo where the next
+# stale label dodges it too. The two SPLIT probes therefore take the label apart at a boundary computed
+# from it, rather than spelling either half.
 #
 # WHERE that boundary is decides whether those two probes grade anything, and the first choice of it made
 # them VACUOUS. They split by position -- the first two characters against the rest -- and the REST IS
@@ -35442,7 +35472,7 @@ def test_the_stale_label_grader_can_see_every_surface_a_stale_label_has_hidden_i
     import tempfile
     live = {"2.7x3.4mdata"}          # a stand-in for the engine's vocabulary; this test grades the
     #                                  COLLECTOR, and test_no_record_names... grades the vocabulary
-    dead = f"{9.9:.1f} m data"       # a figure outside it, BUILT rather than written down
+    dead = _PROBE_LABEL              # a figure outside it, spelled once above rather than built here
     assert _norm_label(dead) not in live and _CELL_LABEL_CLAIM.search(dead), (
         f"the probe label {dead!r} is not a resolution claim outside the vocabulary, so injecting it "
         f"would prove nothing about any surface")
@@ -35524,7 +35554,7 @@ def test_the_stale_label_graders_history_exemption_cannot_be_earned_by_wording()
     import shutil
     import tempfile
     live = {"2.7x3.4mdata"}
-    dead = f"{9.9:.1f} m data"
+    dead = _PROBE_LABEL
     assert _norm_label(dead) not in live and _CELL_LABEL_CLAIM.search(dead), (
         f"the probe label {dead!r} is not a resolution claim outside the vocabulary, so nothing below "
         f"would prove anything about the exemption")
