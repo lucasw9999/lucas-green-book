@@ -173,11 +173,12 @@ def _pairs_torn_at(ve, raises):
     sys.modules holds no surface_io while verify_elevation still holds the module that was there, and an
     `import surface_io` here EXECUTED surface_io.py AGAIN and patched a SECOND copy: check_course went
     on reading the real, intact pairs through the first, reported all eleven holes checked, and the
-    injection graded nothing. Measured as
+    injection graded nothing. Measured as three node ids, in this order:
 
-        pytest tests/test_phase1_regressions.py::test_the_independent_checker_says_which_region_each_side_of_it_samples \\
-               tests/test_r14_deadcode.py::test_site1_render_hole_output_is_byte_identical \\
-               tests/test_r15_verify.py::test_a_torn_pair_costs_the_hole_it_is_on_and_not_the_whole_course
+        tests/test_phase1_regressions.py
+            ::test_the_independent_checker_says_which_region_each_side_of_it_samples
+        tests/test_r14_deadcode.py::test_site1_render_hole_output_is_byte_identical
+        tests/test_r15_verify.py::test_a_torn_pair_costs_the_hole_it_is_on_and_not_the_whole_course
 
     -- 11 checked where 9 was required, with either of the first two dropped it passes, and the autouse
     COURSE fixture in conftest.py cannot see any of it: the leaked state is a module IDENTITY (in fact
