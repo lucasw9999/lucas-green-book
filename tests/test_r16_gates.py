@@ -4,7 +4,7 @@
 # https://github.com/lucasw9999/lucas-green-book
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
-Do the artifact gates in tools/ gate what they claim? Three of them did not.
+Do the four artifact gates in tools/ gate what they claim? Three of them did not.
 
 Every test here was written against the defect first and watched fail. What was reproduced, in the
 words of the runs that reproduced it:
@@ -39,6 +39,16 @@ words of the runs that reproduced it:
     exited 0. Measured live: `--all` reported "11 course(s) fully covered ... 1 not checked" and
     returned 0, and `COURSE=merion-golf-club python3 tools/check_osm_bbox.py --al` reported
     "1 course(s) fully covered" and returned 0.
+
+  * THE RULE 4.3 GATE PUBLISHED A WORST READING THAT IS NOT THE WORST. tools/check_scale.py said the
+    earth-model migration "shifts the worst gated reading from 0.3601 to 0.3600 in : 5 yd". Both ends
+    are wrong and so is the direction: re-derived below off the built markup over all 198 gated
+    greens, the worst is 0.360121 (bay-view hole 3) -> 0.3601, and under the retired sphere it was
+    0.359805 -> 0.3598. legal/06 and legal/11 both say 0.3601; the tool's own comment was the
+    outlier, and neither figure appeared in any test file.
+
+  * AND IT ANSWERED 0 FOR A TREE WITH NO BOOK IN IT, while the same file 118 lines below argues that
+    an empty measurement "is not a pass".
 
 WHAT IS DELIBERATELY NOT RUN HERE: neither legal-record generator is ever called without `--check`.
 courses/ is the only copy of the corpus and legal/03 and legal/05 are tracked records whose generator
@@ -560,3 +570,154 @@ def test_a_corridor_shortfall_is_measured_the_same_way_before_and_after_the_seam
     over = 0.001 * geo.mlat(N)
     got2 = cb.corridor_shortfalls(_NARROW, out, 68.0)
     assert got2 and abs(got2[0][1] - (over + 68.0)) <= 1, (over, got2)
+
+
+# ==================================================================================================
+# D-10 / D-20a -- tools/check_scale.py
+# ==================================================================================================
+
+def _gated_green_scales():
+    """[(in_per_5yd, slug, hole)] for every green the POCKET book gates, off the built markup.
+
+    Independent of the browser and of tools/check_scale.py, on purpose: the figure being graded is one
+    that tool publishes about itself, so re-deriving it through the tool would be the tool agreeing
+    with itself. The scale is read the way CARDS_JS reads it off the laid-out element --
+    preserveAspectRatio="meet", so the drawing scale is the SMALLER of the two fits -- and divided by
+    the same ground scale px_m_of computes from dem_hd/holeNN.json, through geo's one figure of the
+    Earth. tests/test_r14_pair.py measures a green the same way for the same reason.
+    """
+    from geo import mlat, mlon
+    rows = []
+    for book in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))):
+        slug = os.path.basename(os.path.dirname(book))
+        if slug.startswith("_"):
+            continue
+        with open(book, encoding="utf-8") as fh:
+            page = fh.read()
+        for panel in re.split(r'(?=<div class="panel hole)', page)[1:]:
+            hn = re.search(r'class="hnum"[^>]*>(\d+)<', panel)
+            grn = panel.find('<div class="grn">')
+            if not hn or grn < 0:
+                continue
+            svg = re.search(r'<svg viewBox="([^"]+)" style="width:([0-9.]+)in;height:([0-9.]+)in"',
+                            panel[grn:])
+            if not svg:
+                continue
+            vb = [float(v) for v in svg.group(1).split()]
+            k = min(float(svg.group(2)) / vb[2], float(svg.group(3)) / vb[3])
+            meta_p = os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{int(hn.group(1)):02d}.json")
+            if not os.path.isfile(meta_p):
+                continue
+            with open(meta_p, encoding="utf-8") as fh:
+                m = json.load(fh)
+            x0, y0, x1, y1 = m["bbox"]
+            clat = m["green_center"][0]
+            px_m = (((x1 - x0) * mlon(clat)) / m["W"] + ((y1 - y0) * mlat(clat)) / m["H"]) / 2.0
+            rows.append((k * 4.572 / px_m, slug, int(hn.group(1))))
+    rows.sort(reverse=True)
+    return rows
+
+
+def test_the_worst_gated_green_scale_the_tool_publishes_is_the_one_it_measures():
+    """"the worst gated reading from 0.3601 to 0.3600 in : 5 yd" -- and it is 0.3601.
+
+    Re-derived over all 198 gated greens off the built markup: 0.360121 at bay-view-golf-club hole 3,
+    with valley-hi 11 (0.360085), castlewood-hill 3 (0.360079) and bay-view 16 (0.360053) also
+    rounding to 0.3601. Running the gate agrees to the digit -- its per-course worst lines read
+    "0.3601 in/5yd" for bay-view, castlewood-hill and valley-hi.
+
+    So the comment was wrong at both ends AND in direction. legal/11 records the earth-model migration
+    as shifting the reported figure by "under +0.09%" (median +0.083% re-derived here), which moves the
+    worst UP, not down: under the retired 111320.0 sphere the same markup reads 0.359805 -> 0.3598.
+    legal/06 and legal/11 both publish 0.3601. The tool's own comment was the only copy that did not,
+    and no test file mentioned either number -- so the figure now has a producer, a name, and this
+    grader.
+    """
+    rows = _gated_green_scales()
+    if not rows:
+        pytest.skip("no pocket book with a built green surface here; courses/ is gitignored")
+    import check_scale
+    worst, slug, hole = rows[0]
+    assert round(worst, 4) == check_scale.WORST_GATED_IN_PER_5YD, (
+        f"tools/check_scale.py publishes {check_scale.WORST_GATED_IN_PER_5YD} as the worst gated "
+        f"reading; {len(rows)} greens re-derived off the built markup put it at {worst:.6f} -> "
+        f"{round(worst, 4)} ({slug} hole {hole}). A figure in a legal exhibit that no tool produces is "
+        f"the defect this gate exists to prevent.")
+    assert worst <= check_scale.LIMIT_IN_PER_5YD, (
+        f"{slug} hole {hole} is over the Rule 4.3 cap at {worst:.4f} in : 5 yd")
+    # and the two legal exhibits that quote it have to quote the SAME figure
+    figure = f"{check_scale.WORST_GATED_IN_PER_5YD:.4f}"
+    for rel in ("legal/06_RULE_4.3_CONFORMANCE.md", "legal/11_HORIZONTAL_EARTH_MODEL.md"):
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            text = fh.read()
+        assert figure in text, (
+            f"{rel} does not quote the worst gated reading {figure} in : 5 yd that the corpus "
+            f"measures. Three documents once asserted a cap that 15 greens broke; a figure quoted in "
+            f"only some of them is how that starts.")
+
+
+def test_the_worst_gated_reading_is_written_as_a_literal_exactly_once():
+    """One home for the figure. It had none in code and one in a comment, and the comment was wrong.
+
+    The value lived only in a parenthetical beside the geo import, where nothing could grade it, so it
+    said 0.3600 while legal/06 and legal/11 said 0.3601 and the tool measured 0.3601. The rule that
+    prevents the recurrence is mechanical and needs no reading of prose: the CURRENT figure is written
+    as a literal exactly once -- WORST_GATED_IN_PER_5YD's own definition -- and every other mention of
+    it goes through that name. A second literal is a second thing to forget.
+
+    Retired figures (0.3598 under the old sphere) and the wrong one this replaced stay written out, and
+    must: they are attributed history, they cannot silently become the current figure, and a note that
+    only records the correction is how "already investigated" turns into a dead end -- this file's own
+    docstring makes that argument about a stale Overpass probe.
+    """
+    with open(os.path.join(ROOT, "tools", "check_scale.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    import check_scale
+    figure = f"{check_scale.WORST_GATED_IN_PER_5YD:.4f}"
+    literals = re.findall(rf"(?<![\d.]){re.escape(figure)}(?![\d])", src)
+    assert len(literals) == 1, (
+        f"tools/check_scale.py writes the worst gated reading {figure} as a literal {len(literals)} "
+        f"times. One of them is WORST_GATED_IN_PER_5YD; the rest are copies that will drift from the "
+        f"corpus the way the retired comment did. Reference the constant instead.")
+    assert src.count("WORST_GATED_IN_PER_5YD") >= 2, (
+        "the constant must be REFERENCED where the figure is discussed, or the prose can drift from "
+        "it exactly as before")
+
+
+def test_a_tree_with_no_built_book_is_not_a_rule_4_3_pass(monkeypatch, capsys, tmp_path):
+    """"no built books found" returned 0 -- a Rule 4.3 conformance pass over zero greens.
+
+    The same file 118 lines below refuses that reading in as many words: "0 greens measured ... PASS
+    used to exit 0, so a renamed directory or a course set that failed to load would report Rule 4.3
+    conformance for an empty measurement." Both paths are the same claim and now answer the same code.
+
+    THE CONVENTION CHOSEN IS 2, and it is this file's own: its docstring already reserves 2 for
+    "nothing could be measured either way", and it is what every sibling gate answers for the same
+    question -- tools/gen_provenance.py for a tree with no course data, lidar_coverage.main for no
+    readable tile, tools/verify_elevation.py for a course it could not verify, and
+    tools/check_osm_bbox.py for a corpus it could not examine. 1 stays reserved for a MEASURED
+    non-conformance: a green over the cap, or one that went unmeasured while its book sat on disk.
+    """
+    import check_scale
+    monkeypatch.setattr(check_scale, "ROOT", tmp_path)
+    (tmp_path / "courses").mkdir()
+    rc = check_scale.main([])
+    out = capsys.readouterr().out
+    assert "no built books found" in out, out
+    assert rc == 2, (
+        f"an empty tree returned {rc} from the Rule 4.3 gate. Exit 0 is documented as 'every POCKET "
+        f"green conforms', and no green was measured.\n{out}")
+
+
+def test_the_rule_4_3_gate_documents_the_code_it_now_answers():
+    """The exit table is part of the gate. It said 2 meant one thing, and 2 now covers three.
+
+    Graded because the docstring is what a reader scripts against, and a gate whose documented codes
+    and real codes disagree is the same class of defect as a figure with no producer.
+    """
+    import check_scale
+    doc = check_scale.__doc__
+    assert re.search(r"2 =", doc), doc
+    for phrase in ("no book", "browser"):
+        assert phrase in doc, (
+            f"the exit-code table must name {phrase!r} among the things that answer 2:\n{doc}")

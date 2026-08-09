@@ -38,9 +38,18 @@ for measure_printed to find, so only the browser layout can answer. One hand mea
 documents, and they disagreed.
 
 Run:  python3 tools/check_scale.py [course-slug ...]     (default: every built course)
-Exit: 0 = every POCKET green conforms, 1 = one is over the limit or went unmeasured,
-      2 = no browser here, so nothing could be measured either way. The enlarged edition is
-      reported on every one of those paths and gates none of them.
+Exit: 0 = every POCKET green conforms
+      1 = a MEASURED non-conformance: a green over the scale limit, a card over the size limit, or a
+          green that went unmeasured while its own book sat on disk
+      2 = nothing could be measured, so the run is neither a pass nor a fail -- no book is built here,
+          no browser is installed, or the course set yielded no green at all. "no built books found"
+          used to answer 0, which is a Rule 4.3 conformance pass over zero greens, while the same file
+          argues 118 lines below that an empty measurement "is not a pass". 2 is this file's own code
+          for that question and the one every sibling gate answers for it: tools/gen_provenance.py for
+          a tree with no course data, lidar_coverage.main for no readable tile,
+          tools/verify_elevation.py for a course it could not verify, tools/check_osm_bbox.py for a
+          corpus it could not examine.
+      The enlarged edition is reported on every one of those paths and gates none of them.
 """
 import json
 import os
@@ -56,6 +65,21 @@ IN_PER_5YD = 180.0              # 5 yd on the ground, in inches -- so a printed 
                                 # 0.75 in per 5 yd being 1:240.
 LIMIT_IN_PER_5YD = 0.375        # 3/8 in : 5 yd  == 1:480 (USGA Clarification 4.3a/1)
 TARGET_IN_PER_5YD = 0.360       # our design target, ~4% inside the cap
+
+# THE WORST READING THE GATED EDITION ACTUALLY PRINTS -- a published figure, so it needs a producer.
+# bay-view-golf-club hole 3 at 0.360121 in : 5 yd, with valley-hi 11 (0.360085), castlewood-hill 3
+# (0.360079) and bay-view 16 (0.360053) also rounding to the same 4 decimals, against the 0.375 in cap:
+# a 4.0% margin. legal/06_RULE_4.3_CONFORMANCE.md and legal/11_HORIZONTAL_EARTH_MODEL.md both publish
+# it, and until now nothing in the project did -- the number lived only in the parenthetical beside the
+# geo import below, which claimed the earth-model migration shifted this reading TO 0.3600. That was
+# wrong in direction and at both ends, and no test file mentioned either value, so nothing could tell. A
+# figure in a legal exhibit that no tool produces is the defect this whole file exists to prevent.
+# WRITTEN AS A LITERAL EXACTLY HERE. Every other mention of it in this file goes through this name, and
+# tests/test_r16_gates.py refuses a second literal -- a copy in prose is what went stale.
+# GRADED, not asserted: that same test re-derives it over all 198 gated greens off the built markup --
+# without a browser and without this tool, so the check is not this gate agreeing with itself -- and
+# requires legal/06 and legal/11 to quote the same figure.
+WORST_GATED_IN_PER_5YD = 0.3601
 CARD_LIMIT_W_IN, CARD_LIMIT_H_IN = 4.25, 7.0
 
 POCKET_BOOK = "greenbook.html"           # claims conformance in print          -> GATED
@@ -72,8 +96,13 @@ sys.path.insert(0, str(ROOT))
 # own copy of `R_LAT = 111320.0`, so the day the renderer's earth model moved the gate would have gone
 # on measuring the renderer against a metric that no longer sized it -- Rule 4.3 conformance certified
 # against the wrong ruler. Import it; never re-declare it. (Measured when the model was migrated to the
-# true per-axis WGS84 scales: the ground scale below moves by a median -0.083%, which shifts the worst
-# gated reading from 0.3601 to 0.3600 in : 5 yd against a 0.375 in cap -- a 4.0% margin.)
+# true per-axis WGS84 scales: the ground scale below moves by a median -0.083%, which shifts the reported
+# in-per-5-yd figure UP by the same fraction -- legal/11's "under +0.09%" -- so the worst gated reading
+# went from 0.3598 under the retired 111320.0 sphere to WORST_GATED_IN_PER_5YD above, against a 0.375 in
+# cap: a 4.0% margin. This parenthetical used to record that shift as ending at 0.3600, which had the
+# direction backwards and both endpoints wrong, and was the only copy of the figure anywhere in the code
+# -- see WORST_GATED_IN_PER_5YD above, which is now the one place it is written and the one place a
+# grader reads it from.)
 from geo import mlat, mlon
 
 def px_m_of(course, hole):
@@ -325,17 +354,24 @@ def report_enlarged(only):
               "prints larger than tournament scale -- one of the two is wrong")
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
     # Underscore-prefixed dirs are scratch (staging, review sandboxes, the cold-build test). Every
     # other course-scanning tool filters them -- export_pdf.py, gen_disclaimers.py, gen_provenance.py
     # and the test suite -- but this one did not, so a leftover sandbox inflated the green count and
     # turned the Rule 4.3 gate RED on a clean checkout. The review workflow mandates "_" slugs, so
     # this failure was guaranteed by our own process.
-    courses = sys.argv[1:] or sorted(
+    courses = argv or sorted(
         p.parent.name for p in (ROOT / "courses").glob("*/greenbook.html")
         if not p.parent.name.startswith("_"))
     if not courses:
-        print("no built books found"); return 0
+        # NOT A PASS, and this returned 0 for as long as the file has existed -- Rule 4.3 conformance
+        # published over zero greens. The same argument is made 118 lines below about `total == 0`
+        # ("nothing was checked, so this is not a pass") and the two are the same claim; a renamed
+        # directory reaches one and an empty tree the other. 2 is the code, for the reason the exit
+        # table above gives: it is what this file already documents for "nothing could be measured",
+        # and 1 stays reserved for a measurement that FAILED.
+        print("no built books found"); return 2
 
     # Bind COURSE to a course that EXISTS here before importing config. The card size is
     # engine-wide, but config still refuses to import without a valid course, so this tool used to
@@ -451,18 +487,27 @@ def main():
     # Reported BEFORE the verdict returns, so the enlarged figures are printed on a failing run too.
     # Placed after the pocket book's own count so that count stays the FIRST "greens measured" in the
     # output, which is where the suite reads it from.
-    report_enlarged(set(sys.argv[1:]))
-    if total == 0:
-        # "0 greens measured ... PASS" used to exit 0, so a renamed directory or a course set that
-        # failed to load would report Rule 4.3 conformance for an empty measurement.
-        print("FAIL: measured 0 greens -- nothing was checked, so this is not a pass.")
-        return 1
+    report_enlarged(set(argv))
+    # ORDER IS THE VERDICT. The SPECIFIC finding first -- a green whose book is on disk and which this
+    # tool could not measure is a defect in our own pipeline and is exit 1, the code the table above
+    # reserves for a measured non-conformance. It used to sit BELOW the `total == 0` branch, so a course
+    # whose card selector had stopped matching reported "measured 0 greens" and lost the list of what
+    # had actually gone wrong to a more general message. tools/verify_elevation.py orders its own two
+    # the same way, for the same reason: "a figure that DISAGREES is the more specific finding".
     if unmeasured:
         print(f"FAIL: {len(unmeasured)} green(s)/course(s) were NOT measured, so their conformance is "
               f"unverified rather than proven:")
         for c, whyskip in unmeasured:
             print(f"   {c}: {whyskip}")
         return 1
+    if total == 0:
+        # "0 greens measured ... PASS" used to exit 0, so a renamed directory or a course set that
+        # failed to load would report Rule 4.3 conformance for an empty measurement. It then answered 1
+        # while the "no built books found" floor above answered 0, for the same claim. Both are
+        # "nothing could be measured" and both answer 2 -- reachable now only for a course set that is
+        # entirely yardage-mode, which prints blank greens by design and so has nothing to cap.
+        print("FAIL: measured 0 greens -- nothing was checked, so this is not a pass.")
+        return 2
     if not card_ok:
         # Rule 4.3 caps the book SIZE as well as the scale; this was computed, printed and then
         # ignored, so a 5 x 8 in card exited 0 while the docstring advertised both limits.
