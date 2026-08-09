@@ -331,8 +331,8 @@ def _elev_rows(slug):
         return {}
 
 
-def assert_no_course_skipped(seen, what, exempt=None):
-    """Every course with geometry must have CONTRIBUTED something -- not merely been visited.
+def assert_no_course_skipped(seen, what, exempt=None, population=None):
+    """Every course in the graded POPULATION must have CONTRIBUTED something -- not merely been visited.
 
     A COUNT floor cannot express this. Derived from CORPUS it falls with the count, so dropping a
     course keeps the test green; derived from the filesystem with a one-course slack it still keeps
@@ -350,6 +350,16 @@ def assert_no_course_skipped(seen, what, exempt=None):
     So it takes a MAPPING of course -> how many things that course contributed, and a count cannot be
     incremented without something to count. The right place for the increment is beside the per-item
     counter each of these tests already keeps, past whatever gate can legitimately skip an item.
+
+    `population` IS THE SECOND HALF OF THE SAME DEFECT, and it defaults to geometry_courses() because
+    that is what most call sites here are about. But a test that reads the SHIPPED HTML is about the
+    BOOKS, and those are two different sets: poppy-ridge ships a book and has no OSM geometry, so
+    grading a book-reading loop against geometry_courses() asks nothing at all about it -- the one book
+    least like the others is exactly the one the default population cannot see. Nine call sites already
+    iterated BOOKS while grading against geometry_courses(), which made the strongest assertion in this
+    file silent on the slug it was added for. Pass `population=set(BOOKS)` wherever the loop is over
+    BOOKS; test_a_test_that_claims_every_book_or_card_does_not_enumerate_the_geometry_corpus grades that
+    pairing off the AST so a new site cannot forget.
     """
     if not isinstance(seen, collections.abc.Mapping):
         raise TypeError(
@@ -357,6 +367,7 @@ def assert_no_course_skipped(seen, what, exempt=None):
             f"records only that the loop reached a course, which is what let twelve call sites assert "
             f"nothing at all -- see this function's docstring. Use collections.Counter() and increment "
             f"beside the per-item counter, past the gates that may legitimately skip an item.")
+    pop = geometry_courses() if population is None else set(population)
     contributed = {k for k, v in seen.items() if v}
     # `exempt` is {slug: why} for courses that legitimately contribute NOTHING to this particular
     # test -- a course printing no carry at all cannot contribute to a carry test. It must be spelled
@@ -364,17 +375,17 @@ def assert_no_course_skipped(seen, what, exempt=None):
     # was in use -- incrementing at the top of the loop so every course looks like a contributor --
     # exempts all twelve silently, which is how a whole 18-hole course could drop out unnoticed.
     exempt = exempt or {}
-    assert not (set(exempt) - geometry_courses()), (
-        f"{what}: exemption names a course with no geometry: {sorted(set(exempt) - geometry_courses())}")
+    assert not (set(exempt) - pop), (
+        f"{what}: exemption names a course outside the graded population: {sorted(set(exempt) - pop)}")
     for slug, why in exempt.items():
         assert isinstance(why, str) and len(why) > 12, (
             f"{what}: exemption for {slug} needs a real reason, got {why!r}")
     stale = sorted(s for s in exempt if seen.get(s))
     assert not stale, (f"{what}: {stale} is exempted but DID contribute -- drop the exemption rather "
                        f"than leave a stale one that would hide a real skip later")
-    missing = sorted(geometry_courses() - contributed - set(exempt))
-    assert not missing, (f"{what}: these courses have geometry on disk but contributed nothing -- "
-                         f"they are being skipped: {missing}")
+    missing = sorted(pop - contributed - set(exempt))
+    assert not missing, (f"{what}: these courses are in the graded population but contributed nothing "
+                         f"-- they are being skipped: {missing}")
 
 
 def expected_geometry_holes():
@@ -453,7 +464,14 @@ def _expected_cards():
         with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
             n += len(json.load(fh).get("holes") or {})
     return n
+
+
 needs_corpus = pytest.mark.skipif(not CORPUS, reason="per-course data is gitignored; nothing to measure")
+# The BOOK population's own gate, and it is not the same gate. `needs_corpus` asks for OSM geometry, so
+# a tree holding only poppy-ridge -- a yardage-mode book with no osm_geom.json -- skips every test
+# marked with it, including the ones whose whole subject is the shipped HTML. See _books().
+needs_books = pytest.mark.skipif(
+    not BOOKS, reason="no built greenbook.html present; courses/ is gitignored")
 
 
 def first_party_modules():
@@ -3445,6 +3463,128 @@ def test_every_published_count_of_the_scratch_slugs_written_under_courses_is_der
         "a SECOND copy of the scratch-slug count has appeared. The record is _courses_are_read_only's "
         "docstring and nowhere else -- these sites restate a figure nothing re-derives, which is how "
         "eight and nine came to be published side by side:\n  " + "\n  ".join(copies))
+
+
+# The ONE recorded reason a test may name a printed artifact in its own name and still enumerate CORPUS
+# over the shipped books. Keyed on the test's name, valued with WHY -- an unreasoned entry is refused
+# below, and an entry naming a test that no longer does it is refused too, so this cannot become a
+# parking lot. It is deliberately not a list of "geometry tests": a test that does not CLAIM every book
+# never reaches this registry in the first place.
+CORPUS_OVER_BOOKS_IS_RIGHT = {
+    "test_cold_build_reproduces_every_book_byte_for_byte":
+        "a cold start re-FETCHES the OSM cache and the LiDAR tiles and rebuilds from them, so its "
+        "population really is the geometry corpus. The loop itself then declines a yardage-mode book "
+        "through distribution.is_distributable, which is the shared rule rather than a second copy of "
+        "the build_mode test.",
+}
+
+
+def test_a_test_that_claims_every_book_or_card_does_not_enumerate_the_geometry_corpus():
+    """CORPUS and BOOKS are different populations, and the file's largest backstop mixed them up.
+
+    CORPUS is "has osm_geom.json + osm_course.json" -- a GEOMETRY gate, which is the right question for
+    a contour interval or a carry distance. BOOKS is "has greenbook.html", which is the right question
+    for anything read out of the shipped HTML. They differ by exactly one slug here, and it is the worst
+    one to lose: poppy-ridge is built in yardage mode from the scorecard alone, so it has no OSM
+    geometry, blank greens, and 18 shipped hole cards. `_books()`'s docstring already recorded the class
+    -- "The one book least like the others was the one nothing checked."
+
+    Two live instances were found by hand, both in tests whose NAME promises the whole population:
+
+      * test_every_shipped_card_is_what_the_engine_produces_now, the campaign's named general backstop
+        against a shipped book drifting from the engine, compared 198 of 216 cards -- and its own
+        `yardage_hole_panel` branch was unreachable, because config.BUILD_MODE == "yardage" is never
+        true for a slug in CORPUS.
+      * test_every_distributed_book_disclaims_affiliation_with_the_club_it_names, the only guard on the
+        sentence that makes naming a private club nominative fair use, skipped the personal-use book.
+
+    Neither could be caught by a count floor: `>= 150` against 220 panels and a "216" in the prose
+    beside it is exactly the shape that hides 18 missing cards.
+
+    SO THIS IS THE GRADER, and it is mechanical rather than a list of names. Two rules, both read off
+    this module's own AST:
+
+      (1) a test whose NAME makes a universal claim about a printed artifact -- "every" plus one of
+          book/card/sheet/pdf/distributed/shipped -- must not build a shipped-book path inside a
+          `for ... in CORPUS` loop. One reason is recorded above for the cold build, which genuinely
+          rebuilds from geometry.
+      (2) a test that loops over BOOKS and grades its coverage with assert_no_course_skipped must pass
+          `population=`, because that function's DEFAULT population is geometry_courses() -- so nine
+          sites were iterating the books and grading the geometry corpus, which asks nothing at all
+          about the book-only slug. That is the same defect one level down, and it is why the strongest
+          coverage assertion in this file was silent on the slug it exists for.
+
+    WHAT IT DOES NOT CATCH, stated so the coverage is not overread: a test that reads the books, uses
+    CORPUS, and does not promise "every ..." in its name. Twenty-three such loops exist and most are
+    correct -- a contour interval, a green depth, a printed carry and an arrow direction are all
+    genuinely geometry-gated, because a yardage-mode book prints none of them. Naming the claim in the
+    test's name is what turns it into a promise this can grade, and that is the convention this asserts
+    rather than a complete census.
+    """
+    import ast
+    import inspect
+
+    src = inspect.getsource(sys.modules[__name__])
+    tree = ast.parse(src)
+    tests = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")]
+    assert len(tests) > 100, (
+        f"only {len(tests)} test functions parsed out of this module, so the AST walk has stopped "
+        f"working rather than the suite having stopped making these claims")
+
+    ARTIFACT = {"book", "books", "card", "cards", "sheet", "sheets", "pdf", "pdfs",
+                "distributed", "shipped"}
+    claims, offenders, ungraded = [], [], []
+    for node in tests:
+        words = set(node.name.split("_"))
+        promises = "every" in words and bool(words & ARTIFACT)
+        corpus_book_loops = [
+            n.lineno for n in ast.walk(node)
+            if isinstance(n, ast.For) and isinstance(n.iter, ast.Name) and n.iter.id == "CORPUS"
+            and "greenbook" in " ".join(ast.get_source_segment(src, s) or "" for s in n.body)]
+        if promises:
+            claims.append(node.name)
+            if corpus_book_loops and node.name not in CORPUS_OVER_BOOKS_IS_RIGHT:
+                offenders.append(f"{node.name} (line {corpus_book_loops[0]})")
+        # rule (2): iterate BOOKS, grade against BOOKS
+        loops_books = any(isinstance(n, ast.For) and isinstance(n.iter, ast.Name) and n.iter.id == "BOOKS"
+                          for n in ast.walk(node))
+        graders = [n for n in ast.walk(node) if isinstance(n, ast.Call)
+                   and isinstance(n.func, ast.Name) and n.func.id == "assert_no_course_skipped"]
+        if loops_books and graders and not all("population" in {k.arg for k in g.keywords}
+                                               for g in graders):
+            ungraded.append(f"{node.name} (line {graders[0].lineno})")
+
+    assert len(claims) >= 8, (
+        f"only {len(claims)} test(s) in this module promise 'every <printed artifact>' in their name "
+        f"({claims}); the name convention this grades has changed and the rule below is now inert")
+    assert not offenders, (
+        "a test whose NAME promises every book/card/sheet enumerates CORPUS -- the OSM-GEOMETRY "
+        "population -- to decide which shipped books exist. poppy-ridge ships a book and has no OSM "
+        "geometry, so every such loop silently drops 18 of the 216 shipped hole cards:\n  "
+        + "\n  ".join(offenders)
+        + "\n\n  Iterate BOOKS (see _books()), or record the reason in CORPUS_OVER_BOOKS_IS_RIGHT "
+          "above.")
+    assert not ungraded, (
+        "a test iterates BOOKS and then hands assert_no_course_skipped no `population=`, so its "
+        "coverage is graded against geometry_courses() -- which cannot see the one slug that has a book "
+        "and no geometry. The loop reaches poppy-ridge and the assertion asks nothing about it:\n  "
+        + "\n  ".join(ungraded) + "\n\n  Pass population=set(BOOKS).")
+
+    stale = sorted(n for n in CORPUS_OVER_BOOKS_IS_RIGHT
+                   if n not in {t.name for t in tests}
+                   or not [1 for node in tests if node.name == n
+                           for x in ast.walk(node)
+                           if isinstance(x, ast.For) and isinstance(x.iter, ast.Name)
+                           and x.iter.id == "CORPUS"
+                           and "greenbook" in " ".join(ast.get_source_segment(src, s) or ""
+                                                       for s in x.body)])
+    assert not stale, (
+        f"CORPUS_OVER_BOOKS_IS_RIGHT names {stale}, which no longer enumerates CORPUS over the shipped "
+        f"books (or no longer exists). Drop the entry rather than leave a waiver that would silently "
+        f"cover the next one.")
+    for name, why in CORPUS_OVER_BOOKS_IS_RIGHT.items():
+        assert isinstance(why, str) and len(why) > 40, (
+            f"CORPUS_OVER_BOOKS_IS_RIGHT[{name!r}] needs a real reason, got {why!r}")
 
 
 def test_the_course_template_documents_every_key_the_engine_reads():
@@ -11490,6 +11630,14 @@ def test_every_distributed_book_disclaims_affiliation_with_the_club_it_names():
 
     Asserts the required ELEMENTS, not one exact string, so the wording can still be improved --
     but none of the elements can quietly go missing.
+
+    OVER BOOKS, NOT CORPUS, and that was a second silence on top of the first. CORPUS is the OSM-geometry
+    population; the sentence this test exists for is printed in the HTML, and poppy-ridge ships a book
+    with no osm_geom.json. So the one PERSONAL-USE book -- the one whose licence sentence legal/05 quotes
+    verbatim, and the one whose cover names a club it has the least standing to be confused with -- was
+    outside the only guard on the cheapest and most important line in the book. Measured: it carries
+    every element and names its club, so this cost nothing today and would have cost everything on the
+    day a conditional in generate.py dropped the clause from yardage mode only.
     """
     ELEMENTS = [
         (r"[Nn]ot affiliated", "no statement of non-affiliation"),
@@ -11501,7 +11649,7 @@ def test_every_distributed_book_disclaims_affiliation_with_the_club_it_names():
         (r"removal|remove", "offers no removal channel -- the cheapest de-escalation there is"),
     ]
     seen, problems = collections.Counter(), []
-    for slug in CORPUS:
+    for slug in BOOKS:
         for name in ("greenbook.html", "greenbook_coach.html"):
             fp = os.path.join(ROOT, "courses", slug, name)
             if not os.path.isfile(fp):
@@ -11523,7 +11671,8 @@ def test_every_distributed_book_disclaims_affiliation_with_the_club_it_names():
         "a book names a real club but omits part of the nominative-use disclaimer:\n  "
         + "\n  ".join(problems[:10]))
     assert_no_course_skipped(
-        seen, "test_every_distributed_book_disclaims_affiliation_with_the_club_it_names")
+        seen, "test_every_distributed_book_disclaims_affiliation_with_the_club_it_names",
+        population=set(BOOKS))
 
 
 def test_the_steepness_colour_still_reads_in_black_and_white():
@@ -24911,7 +25060,8 @@ def test_a_green_whose_plane_and_arrows_conflict_names_no_direction():
                 assert re.search(r'&middot; (?:[a-z]+ )?[\d.]+%', blk), (
                     f"{ref} hole {hn.group(1)} refuses the direction AND drops the measured tilt; "
                     f"the percentage is still a fact and the card should keep it")
-    assert_no_course_skipped(seen, "test_a_green_whose_plane_and_arrows_conflict_names_no_direction")
+    assert_no_course_skipped(seen, "test_a_green_whose_plane_and_arrows_conflict_names_no_direction",
+                             population=set(BOOKS))
     assert found, (
         "no green in the corpus prints the no-clear-fall wording. micke-grove 2 did (0.5% tilt, plane "
         "and arrows 177 deg apart). If a data or threshold change made every green consistent that is "
@@ -25184,7 +25334,8 @@ def test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf():
             problems.append(f"{ref}: no rotated back stamp at all -- the duplex transform is not "
                             f"reaching the PDF")
     assert checked, "no book PDF was inspected, so this test verified nothing"
-    assert_no_course_skipped(seen, "test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf")
+    assert_no_course_skipped(seen, "test_the_duplex_backs_are_actually_rotated_in_the_printed_pdf",
+                             population=set(BOOKS))
     assert not problems, "duplex rotation is wrong in the printed PDF:\n  " + "\n  ".join(problems)
 
 
@@ -25654,7 +25805,16 @@ def test_a_hole_the_survey_missed_does_not_print_as_open_ground():
                 f"fallbacks, how many holes carry a measured height -- so omitting this makes it read "
                 f"complete when it is not. Re-run tools/gen_provenance.py.")
     assert checked >= 10, f"only {checked} books with a tree layer were checked"
-    assert_no_course_skipped(seen, "test_a_hole_the_survey_missed_does_not_print_as_open_ground")
+    # Graded over the BOOKS, not the geometry corpus -- this reads the shipped card. The exemption is
+    # DERIVED from the same file the loop gates on, so it names whatever book has no tree layer rather
+    # than a slug typed in here: a hardcoded name would also fail on a tree that does not hold it.
+    assert_no_course_skipped(
+        seen, "test_a_hole_the_survey_missed_does_not_print_as_open_ground",
+        population=set(BOOKS),
+        exempt={s: "no trees_lidar.json: this book has no tree layer at all, so it cannot tell an "
+                   "unmapped corridor from open ground"
+                for s in BOOKS
+                if not os.path.isfile(os.path.join(ROOT, "courses", s, "trees_lidar.json"))})
     assert bare_total >= 3, (
         f"only {bare_total} treeless holes across the corpus; monarch-bay 1, 17 and 18 are the known "
         f"case, so if that is gone the tree fetch changed and this test now proves nothing")
@@ -25908,7 +26068,8 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
         "no ENLARGED edition's carry legend was checked. Those books print the same carry numbers and "
         "are handed to a person; build one with COACH=1 COURSE=<slug> python3 generate.py.")
     assert checked >= 10, f"only {checked} books' carry legends were checked"
-    assert_no_course_skipped(seen, "test_the_carry_legend_says_sand_because_water_is_not_quantified")
+    assert_no_course_skipped(seen, "test_the_carry_legend_says_sand_because_water_is_not_quantified",
+                             population=set(BOOKS))
     assert not problems, "the carry legend over-claims what it covers:\n  " + "\n  ".join(problems)
 
 
@@ -26434,7 +26595,8 @@ def test_the_card_only_claims_an_official_scorecard_where_one_is_recorded():
                 f"{ref}: records an official scorecard ({src[:50]!r}) but prints the weaker 'published' "
                 f"claim -- it earned the stronger one and should say so.")
     assert checked >= 10, f"only {checked} tees cards were readable"
-    assert_no_course_skipped(seen, "test_the_card_only_claims_an_official_scorecard_where_one_is_recorded")
+    assert_no_course_skipped(seen, "test_the_card_only_claims_an_official_scorecard_where_one_is_recorded",
+                             population=set(BOOKS))
     assert off_n and pub_n, (
         f"every book now makes the SAME claim ({off_n} official, {pub_n} published), so this test cannot "
         f"tell the two apart any more. The corpus had 4 and 7; if that really changed, re-measure.")
@@ -26500,7 +26662,8 @@ def test_the_naip_credit_lands_on_the_course_that_actually_used_it():
                 f"{ref}: {'traced geometry from NAIP' if traced else 'records NAIP under sources.aerial'} "
                 f"and credits it nowhere. A book that lists its sources should list all of them.")
     assert checked >= 10, f"only {checked} books checked"
-    assert_no_course_skipped(seen, "test_the_naip_credit_lands_on_the_course_that_actually_used_it")
+    assert_no_course_skipped(seen, "test_the_naip_credit_lands_on_the_course_that_actually_used_it",
+                             population=set(BOOKS))
     assert printed, (
         "no book credits USDA NAIP at all. bay-view holds two NAIP-traced greens, so if that is gone the "
         "geometry changed and this test now proves nothing -- re-measure rather than lowering the bar.")
@@ -26608,7 +26771,7 @@ def test_the_cross_flight_grid_matches_the_surface_it_checks():
 
 
 @pytest.mark.slow          # re-renders every card of every book
-@needs_corpus
+@needs_books               # BOOKS, not CORPUS: the subject is the shipped HTML, not the geometry
 def test_every_shipped_card_is_what_the_engine_produces_now():
     """The books on disk must be what today's code emits, panel for panel.
 
@@ -26648,10 +26811,28 @@ Each of those puts a wrong number in a junior's pocket. `test_built_books_still_
     course.json, both editions, the scorecard row and the totals. Nothing in this suite compares a
     yardage to anything OUTSIDE course.json; closing that needs an external reference the project does
     not hold.
+
+    IT ITERATED CORPUS, WHICH IS THE ONE POPULATION IT MUST NOT. CORPUS is "has osm_geom.json +
+    osm_course.json", a GEOMETRY gate; this test's subject is the shipped HTML, whose population is
+    BOOKS. poppy-ridge ships a book and has neither file, so 18 of the 216 shipped hole cards were
+    never compared to the engine by the backstop named after all of them -- and its own
+    `yardage_hole_panel` branch was UNREACHABLE, because `config.BUILD_MODE == "yardage"` is never True
+    for a slug in CORPUS (measured: poppy-ridge 'yardage', the other eleven None). Traced,
+    `sum(checked.values())` was 220 where 240 is right: 198 hole panels instead of 216, and 22 panel
+    makers instead of 24. The floor said `>= 150` against prose claiming 216, so it could not notice.
+
+    poppy-ridge is the worst possible course to lose here: it is the personal-use book whose licence
+    sentence legal/05 quotes verbatim, the only one built in yardage mode, and the only one with blank
+    greens. `_books()`'s own docstring already recorded the class -- "The one book least like the
+    others was the one nothing checked" -- and this was the largest instance of it left.
+
+    The count is DERIVED now (`_expected_cards()`, off each book's own course.json) rather than a round
+    number with prose beside it, and the contribution grader is handed `population=set(BOOKS)` so
+    poppy-ridge going quiet fails instead of passing unexamined.
     """
     checked = collections.Counter()
-    stale = []
-    for slug in CORPUS:
+    cards, stale = 0, []
+    for slug in BOOKS:
         book = os.path.join(ROOT, "courses", slug, "greenbook.html")
         if not os.path.isfile(book):
             continue
@@ -26673,6 +26854,7 @@ Each of those puts a wrong number in a junior's pocket. `test_built_books_still_
             panel = (generate.yardage_hole_panel(h, grp) if yardage
                      else generate.hole_panel(h, grp))
             checked[slug] += 1
+            cards += 1
             if panel not in html:
                 stale.append(f"{slug} hole {h}")
         for maker in (generate.scorecard_panel, generate.tees_panel):
@@ -26683,8 +26865,14 @@ Each of those puts a wrong number in a junior's pocket. `test_built_books_still_
             checked[slug] += 1
             if p not in html:
                 stale.append(f"{slug} {maker.__name__}")
-    assert sum(checked.values()) >= 150, (
-        f"only {sum(checked.values())} panels re-rendered; the corpus ships 216 hole cards")
+    # EXACT, and derived from the books themselves. A `>= 150` floor against a hand-typed "216" is what
+    # let 18 cards sit outside this loop; _expected_cards() sums the holes each BOOK's own course.json
+    # declares, so it is 216 here, 36 for someone who has built two courses, and it cannot be satisfied
+    # by a corpus that quietly shrank.
+    assert cards == _expected_cards(), (
+        f"{cards} hole panels re-rendered, but the built books declare {_expected_cards()} cards "
+        f"across {len(BOOKS)} slugs ({sorted(BOOKS)}). A card outside this loop is a card no test "
+        f"compares to the engine.")
     assert not stale, (
         f"{len(stale)} shipped panel(s) are not what the engine emits now:\n  "
         + "\n  ".join(stale[:12])
@@ -26692,7 +26880,8 @@ Each of those puts a wrong number in a junior's pocket. `test_built_books_still_
           "python3 tools/export_pdf.py), or a code change altered a printed value and the books "
           "still show the old one. Until they agree, every test that reads the shipped HTML is "
           "measuring yesterday's engine.")
-    assert_no_course_skipped(checked, "test_every_shipped_card_is_what_the_engine_produces_now")
+    assert_no_course_skipped(checked, "test_every_shipped_card_is_what_the_engine_produces_now",
+                             population=set(BOOKS))
 
 
 @needs_corpus
