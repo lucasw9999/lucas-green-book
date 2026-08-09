@@ -33,6 +33,7 @@ an environment variable and the text a waiver prints -- neither needs a real fet
 against the corpus would be the destructive operation these guards exist to refuse.
 """
 import contextlib
+import glob
 import io
 import json
 import os
@@ -409,6 +410,106 @@ def test_fetch_osm_reads_its_acknowledgement_keys_through_the_shared_env_on():
         assert reachable not in top, (
             "lidar_coverage now imports %s at module scope, which closes a cycle with fetch_osm's "
             "import of _env_on -- move the helper to a module below both of them" % reachable)
+
+
+def _module_level_holders(module):
+    """Engine modules that hold a reference to `module` AT IMPORT TIME, read off the engine's source.
+
+    Module level only. `import x` inside a function binds a name at call time and re-resolves out of
+    sys.modules on every call, so it cannot be the stale holder this file's guard is about; a
+    module-level `from x import y` copies the object once, for the life of the process.
+    """
+    import ast
+
+    out = []
+    for rel in sorted(glob.glob(os.path.join(ROOT, "*.py"))
+                      + glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        with open(rel, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=rel)
+        for node in tree.body:
+            hit = ((isinstance(node, ast.Import) and any(a.name == module for a in node.names))
+                   or (isinstance(node, ast.ImportFrom) and not node.level and node.module == module))
+            if hit and os.path.basename(rel) != module + ".py":
+                out.append("%s:%d" % (os.path.relpath(rel, ROOT), node.lineno))
+    return out
+
+
+def _sys_modules_pop_names(path):
+    """Every module name `path` drops from sys.modules, resolved through an enclosing `for m in (...)`.
+
+    By AST for `_env_reads`' reason, and here it is not a nicety: this file's prose NAMES the idiom it
+    does not use, so a regex over the source text finds a drop site in a docstring. Neither a comment
+    nor a docstring is a Call node.
+    """
+    import ast
+
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+    found = []
+    for n in ast.walk(tree):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "pop"
+                and ast.unparse(n.func.value).replace(" ", "") == "sys.modules"):
+            continue
+        arg = n.args[0] if n.args else None
+        if isinstance(arg, ast.Constant):
+            found.append((n.lineno, [arg.value]))
+            continue
+        names, p = [ast.unparse(arg) if arg is not None else "?"], n
+        while p in parents:                     # walk out to the `for` that supplies the loop variable
+            p = parents[p]
+            if isinstance(p, ast.For) and isinstance(p.target, ast.Name) \
+                    and isinstance(arg, ast.Name) and p.target.id == arg.id:
+                # A literal iterable is resolved to the names themselves; a named one (the sibling
+                # modules' `_COURSE_MODULES`) is reported as the expression, because the point here is
+                # to name the drop site for a reader, not to constant-fold another file's list.
+                names = ([e.value for e in p.iter.elts if isinstance(e, ast.Constant)]
+                         if isinstance(p.iter, (ast.Tuple, ast.List, ast.Set))
+                         else ["<%s>" % ast.unparse(p.iter)])
+                break
+        found.append((n.lineno, names))
+    return found
+
+
+def test_this_file_drops_no_module_from_sys_modules():
+    """The ABSENCE of the drop idiom here is load-bearing, so it is pinned rather than trusted.
+
+    `_osm()`'s docstring gives two reasons for it: the figure README publishes is counted across
+    `tests/*.py`, and nothing here needs a re-import. There is a third and sharper one, and it cost a
+    real order-dependent failure next door rather than in this file. `fetch_osm.py` holds
+    `from lidar_coverage import _env_on` AT MODULE LEVEL. Dropping `lidar_coverage` while `fetch_osm`
+    stays resident therefore leaves the holder bound to the old function and hands the next
+    `import lidar_coverage` a SECOND copy of the file -- at which point
+    test_fetch_osm_reads_its_acknowledgement_keys_through_the_shared_env_on stops asking whether
+    fetch_osm imports the shared helper and starts comparing two copies of one function. That is exactly
+    what tests/test_r14_coverage.py's fixture did until this round, and it is why this file, whose whole
+    subject is that identity, may not reach for the idiom itself.
+
+    THE HOLDER EDGE IS MEASURED, not asserted: an unmeasured premise is how this class hides. If
+    fetch_osm ever stops importing the helper at module level this test says so, which is the only
+    condition under which the hazard would not exist.
+
+    The general rule -- a name may be dropped only if importing it reaches the COURSE env var, itself or
+    through a chain of module-level sibling imports -- is graded on the lists that HAVE one, in
+    tests/test_r14_coverage.py and tests/test_r14_deadcode.py. This file's list is empty; this keeps it
+    that way, and a drop that really is needed here has to be argued against that rule and against
+    README's count, not typed in.
+    """
+    holders = _module_level_holders("lidar_coverage")
+    assert "fetch_osm.py:39" in holders or any(h.startswith("fetch_osm.py:") for h in holders), (
+        "fetch_osm.py no longer imports lidar_coverage at module level, so the premise of this test is "
+        "gone -- and so, probably, is the shared `_env_on` that "
+        "test_fetch_osm_reads_its_acknowledgement_keys_through_the_shared_env_on grades. Holders "
+        "found: %s" % (holders,))
+    dropped = _sys_modules_pop_names(os.path.abspath(__file__))
+    assert not dropped, (
+        "this file now drops %d module(s) from sys.modules: %s. Every module in this repo that reads "
+        "COURSE at import is already dropped for every test in this directory by tests/conftest.py, so "
+        "a drop here buys no isolation this file needs -- and dropping `lidar_coverage`, which reads no "
+        "COURSE at all, forks the very function this file asserts fetch_osm shares with it (see this "
+        "test's docstring). It also moves the count README publishes over tests/*.py."
+        % (len(dropped), dropped))
 
 
 def test_every_osm_acknowledgement_key_is_documented_in_the_pipeline():

@@ -28,6 +28,7 @@ shape as the original: an unanswerable question answered "fine".
 Everything here is built under tmp_path. courses/ is gitignored, is the only copy of twelve books'
 worth of data, and is read only by the corpus-calibration assertions below.
 """
+import ast
 import contextlib
 import glob
 import io
@@ -162,12 +163,30 @@ def _clean(root, **kw):
     return _course(root, **kw)
 
 
+# Every module this fixture drops from sys.modules, under one rule: importing it reaches the COURSE env
+# var -- by reading it itself, or through a chain of module-level sibling imports that ends at one that
+# does. NOT A LIST TO EXTEND BY HAND. The rule is re-derived off the engine's own source by
+# test_the_course_module_pop_list_is_derived_from_the_engine_and_not_hand_typed below, which refuses a
+# name that does not meet it. `lidar_coverage` was listed here and does not meet it; that test's
+# docstring has what it cost. Named once and used at both ends of the fixture, so the two spellings
+# cannot drift apart the way the entry and its rule did.
+_COURSE_MODULES = ("config",)
+
+
 @pytest.fixture
 def cov(monkeypatch):
     """lidar_coverage bound to a real slug, plus the two things every test here needs of it.
 
     `verdict(dir)` -> (status, bad, holes, fallback, printed); `code(dir)` -> main()'s exit code, which
     is what `python3 lidar_coverage.py` and an agent gating the fetch step actually see.
+
+    `lidar_coverage` IS NOT DROPPED and must not be, although this is its test module. It reads no
+    COURSE at import and imports no config there -- its `import config` is inside main(), so it resolves
+    out of sys.modules at call time and sees the config object this fixture just imported and patched.
+    Dropping it therefore bought no isolation and cost identity: `fetch_osm.py` and
+    `tools/verify_elevation.py` both hold `from lidar_coverage import _env_on` at module level and
+    neither is dropped here, so a pop left them on the old function and gave the next import a SECOND
+    copy of the file.
     """
     pytest.importorskip("laspy")
     pytest.importorskip("pyproj")
@@ -175,7 +194,7 @@ def cov(monkeypatch):
     if not corpus:
         pytest.skip("per-course data is gitignored; config.py needs one course to import")
     monkeypatch.setenv("COURSE", os.path.basename(corpus[0]))
-    for m in ("config", "lidar_coverage"):
+    for m in _COURSE_MODULES:
         sys.modules.pop(m, None)
     import config
     import lidar_coverage as lc
@@ -195,8 +214,160 @@ def cov(monkeypatch):
     try:
         yield types.SimpleNamespace(lc=lc, config=config, verdict=verdict, code=code)
     finally:
-        for m in ("config", "lidar_coverage"):
+        for m in _COURSE_MODULES:
             sys.modules.pop(m, None)
+
+
+# --- the drop-list above is graded, not hand-typed -----------------------------------------------
+
+def _top_level_statements(tree):
+    """Every node in `tree` that really EXECUTES when the module is imported.
+
+    A function or class BODY does not: config.py reads the env var at module level, and the same read
+    inside a `def` happens at call time, which this list is not about. Module-level `if`/`try` bodies
+    are kept -- those still run during the import.
+    """
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield from ast.walk(node)
+
+
+def _reads_course_env_at_import(tree):
+    """Does importing this module read os.environ["COURSE"] -- subscript or .get() -- itself?"""
+    for node in _top_level_statements(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            env, keys = node.func.value, node.args
+        elif isinstance(node, ast.Subscript):
+            env, keys = node.value, [node.slice]
+        else:
+            continue
+        if isinstance(env, ast.Attribute) and env.attr == "environ":
+            if any(isinstance(k, ast.Constant) and k.value == "COURSE" for k in keys):
+                return True
+    return False
+
+
+def _module_level_local_imports(tree, local):
+    """The sibling modules this one imports AT IMPORT TIME. Deferred imports are not this edge."""
+    out = set()
+    for node in _top_level_statements(tree):
+        if isinstance(node, ast.Import):
+            out |= {a.name for a in node.names if a.name in local}
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module in local:
+            out.add(node.module)
+    return out
+
+
+def _course_reaching_modules():
+    """(modules whose import reads COURSE, module-level import edges) -- derived off the engine.
+
+    Seeded from the modules that read the env var themselves and closed over module-level imports of
+    one another, because `import config` at module level runs config.py's read during YOUR import.
+    Nothing here is hand-typed, which is the point: the seed today is config alone.
+    """
+    local = {os.path.basename(p)[:-len(".py")] for p in glob.glob(os.path.join(ROOT, "*.py"))}
+    trees = {}
+    for name in sorted(local):
+        with open(os.path.join(ROOT, f"{name}.py"), encoding="utf-8") as fh:
+            trees[name] = ast.parse(fh.read())
+    reach = {n for n, t in trees.items() if _reads_course_env_at_import(t)}
+    edges = {n: _module_level_local_imports(t, local) for n, t in trees.items()}
+    grew = True
+    while grew:
+        grew = False
+        for name, deps in edges.items():
+            if name not in reach and deps & reach:
+                reach.add(name)
+                grew = True
+    return reach, edges
+
+
+def _engine_modules_this_file_imports_deferred():
+    """Every engine module this file imports from INSIDE a function, read off its own source.
+
+    A deferred import is how a test here binds a module to the course it has just set, so this is the
+    population the drop-list has to cover -- the analogue of test_r14_deadcode.py's `_bind()` names.
+    Third-party imports (laspy, numpy, pyproj) are not engine modules and are filtered out by the same
+    ROOT/*.py glob the rule itself is derived from.
+    """
+    local = {os.path.basename(p)[:-len(".py")] for p in glob.glob(os.path.join(ROOT, "*.py"))}
+    with open(os.path.abspath(__file__), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    out = set()
+    for fn in [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Import):
+                out |= {a.name for a in node.names if a.name in local}
+            elif isinstance(node, ast.ImportFrom) and not node.level and node.module in local:
+                out.add(node.module)
+    return out
+
+
+def test_the_course_module_pop_list_is_derived_from_the_engine_and_not_hand_typed():
+    """_COURSE_MODULES is a hand-typed list under a written-down rule. Grade the rule, not the list.
+
+    A NAME LISTED HERE THAT DOES NOT MEET THE RULE IS NOT UNTIDY, IT IS A HAZARD. Popping a module that
+    other modules already hold a module-level reference to leaves those holders bound to the OLD object;
+    the next `import` re-executes the file and makes a SECOND copy, so a test that reads an attribute off
+    one copy is not reading the one the code under test calls.
+
+    This list had one such name: `lidar_coverage`, the module this whole file is about. It reads no
+    COURSE and imports no config at module level (its `import config` is inside main(), resolved from
+    sys.modules at call time), so dropping it isolated nothing -- while `fetch_osm.py:39` and
+    `tools/verify_elevation.py:143` both hold `from lidar_coverage import _env_on` at module level and
+    neither is dropped here. It cost a real order-dependent failure, latent in default order only
+    because this module sorts before its victim:
+
+        tests/test_r15_osm_keys.py::test_every_osm_acknowledgement_key_is_documented_in_the_pipeline
+        tests/test_r14_coverage.py
+            ::test_only_the_known_point_cloud_vocabulary_counts_as_point_cloud_derived
+        tests/test_r15_osm_keys.py
+            ::test_fetch_osm_reads_its_acknowledgement_keys_through_the_shared_env_on
+
+    The third id asserts `fetch_osm._env_on is lidar_coverage._env_on` -- the check that stops the
+    off-vocabulary drifting into an eighth hand-written copy -- and the fixture above turned it into a
+    comparison of two copies of one function.
+
+    WHAT THIS TEST DECIDES:
+      * every name in _COURSE_MODULES reaches COURSE when it is imported -- by reading the env var
+        itself, or through a chain of module-level sibling imports that ends at one that does;
+      * every engine module this file imports inside a function AND that meets the rule is listed, so
+        nothing this file fresh-imports is left holding another test's course;
+      * the list is CLOSED under that chain: no sibling a listed module imports at module level reaches
+        COURSE while sitting outside the list.
+
+    WHAT IT DOES NOT DECIDE. Not tests/conftest.py's suite-wide list, which drops eight names for every
+    test in this directory. Not the drop-lists of sibling test modules. And not the whole population
+    meeting the rule -- eleven engine modules do, and a file has no business dropping ones it never
+    imports. Same shape as test_r14_deadcode.py's grader on purpose: one convention, two lists.
+    """
+    reach, edges = _course_reaching_modules()
+    assert "config" in reach, (
+        "no module in this repo was found reading os.environ['COURSE'] at import time, so this grader "
+        "derived an empty rule and would pass over any list at all")
+    unqualified = [m for m in _COURSE_MODULES if m not in reach]
+    assert not unqualified, (
+        f"_COURSE_MODULES lists {unqualified} under the rule 'reads the COURSE env var at import "
+        f"time', and importing {'them' if len(unqualified) > 1 else 'it'} reads no COURSE: no env read "
+        f"of its own, and no module-level import chain that ends at one. Dropping such a module from "
+        f"sys.modules gives every module that already holds it a stale reference and the next import a "
+        f"second copy of the file -- see this test's docstring for the failure that cost")
+    deferred = _engine_modules_this_file_imports_deferred()
+    assert deferred, (
+        "no deferred engine import found in this file; this half of the grader measures nothing")
+    unpopped = sorted((deferred & reach) - set(_COURSE_MODULES))
+    assert not unpopped, (
+        f"this file fresh-imports {unpopped} inside a function without listing "
+        f"{'them' if len(unpopped) > 1 else 'it'} in _COURSE_MODULES, so the module stays in "
+        f"sys.modules bound to whichever course imported it first and the next test inherits that "
+        f"binding")
+    siblings = {d for m in _COURSE_MODULES for d in edges[m]} - set(_COURSE_MODULES)
+    leaked = sorted(m for m in siblings if m in reach)
+    assert not leaked, (
+        f"{leaked} reach COURSE at import time and are imported at module level by a module in "
+        f"_COURSE_MODULES, but are not in it -- so popping the listed module drops a course-bound "
+        f"import while leaving {leaked} resident, still bound to the previous test's course")
 
 
 # --- I-1: a junk coordinate must not be allowed to vouch for the neighbourhood -------------------
