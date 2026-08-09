@@ -114,8 +114,14 @@ ENDPOINT_WINDOW = 64
 # WHAT THE CLUSTER-MASS COUNTER MAY ALLOCATE, ENFORCED RATHER THAN ASSERTED. _Extremes.add buckets every
 # gps_time in the tile at MAX_ENDPOINT_GAP_S and counts them with np.bincount. It used to offset that
 # bucket array by the CHUNK'S OWN lowest bucket, which makes the array SPAN-sized -- and a span is data,
-# so one junk-but-positive gps_time in a 2M-point chunk sized the allocation by itself:
+# so one junk-but-positive gps_time in a 2M-point chunk sized the allocation by itself, measured from
+# bucket 85,649 -- a real Alameda-2021 adjusted second, 308,339,030, which is the lowest bucket in the
+# tile the reproduction below was built from (the corpus as a whole reaches down to 54,838):
 #     1e11 -> 27,692,129 buckets (0.22 GB)     1e12 -> 2.2 GB     1e15 -> 2.2 TB
+# Each figure is `floor(junk / MAX_ENDPOINT_GAP_S) - 85,649 + 1` buckets of int64 and nothing graded
+# them; test_the_documented_bucket_blowup_figures_are_derived_not_typed recomputes all three from that
+# base and this module's own bucket width, so a re-derivation from a LOCAL clock -- which lands 7
+# buckets out, PDT being 7 h -- cannot be mistaken for a stale figure.
 # REPRODUCED END TO END on a real LAZ carrying 3,000 clean returns plus one junk value: at 1e15 the tool
 # was SIGKILLed (exit 137) with no traceback and no refusal, and at 1e18 it died on an uncaught numpy
 # MemoryError. Both are the failure gps_to_utc's own docstring says this module fixed -- "crashed the
@@ -230,7 +236,19 @@ class _Extremes:
 
     def cluster_mass(self, value):
         """How many points sit in `value`'s own temporal cluster -- its bucket and the two beside it,
-        i.e. everything within MAX_ENDPOINT_GAP_S of it and at most twice that."""
+        i.e. everything within MAX_ENDPOINT_GAP_S of it and at most twice that.
+
+        A NON-FINITE value sits in no bucket at all and weighs 0. Stated here rather than left to
+        int(): gps_time is a float64 in the point record, so +inf is storable and a corrupt tile can
+        carry one, and tile_dates' refusal message formats cluster_mass() for BOTH raw endpoints. With
+        an infinite endpoint `int(np.floor(inf / MAX_ENDPOINT_GAP_S))` raised OverflowError WHILE
+        BUILDING THE MESSAGE THAT EXPLAINS THE REFUSAL -- the tile was correctly refused and the
+        operator saw an unrelated traceback instead of the diagnosis, out of the one tool whose whole
+        purpose is that the printed date is checkable. 0 is also the true answer: add() drops such a
+        value before it can be counted, so nothing is in its bucket.
+        """
+        if not np.isfinite(value):
+            return 0
         b = int(np.floor(value / MAX_ENDPOINT_GAP_S))
         return sum(self._mass.get(b + d, 0) for d in (-1, 0, 1))
 
@@ -424,6 +442,18 @@ def gps_to_utc(gps_seconds, adjusted=True):
         return None
 
 
+def _stamp(gps_seconds):
+    """One raw gps_time as it should appear in a MESSAGE: a UTC datetime, or the value itself.
+
+    gps_to_utc returns None for anything datetime cannot represent, and every use of it below is inside
+    a line explaining why a tile was refused -- where "None" names neither the endpoint nor the fault.
+    A tile carrying +inf printed "raw range 2021-06-21 18:00:00+00:00..None", which reads as a missing
+    measurement rather than as the junk value it is. Print the number when it cannot be a date.
+    """
+    d = gps_to_utc(gps_seconds)
+    return str(d) if d is not None else f"gps_time {gps_seconds!r} (no representable date)"
+
+
 def tile_dates(path, rings=()):
     """(first, last, n_over_greens, crs_placeable, whole_first, whole_last) for one LAZ tile, or
     None when it carries no usable GPS time.
@@ -519,7 +549,7 @@ def tile_dates(path, rings=()):
                   f"{MIN_ENDPOINT_CLUSTER_PTS} points ({dating.cluster_mass(raw[0])} low, "
                   f"{dating.cluster_mass(raw[1])} high) so it is a reading rather than a pass, or the "
                   f"two ends lie more than {MAX_TILE_SPAN_DAYS:.0f} days apart (raw range "
-                  f"{gps_to_utc(raw[0])}..{gps_to_utc(raw[1])}); "
+                  f"{_stamp(raw[0])}..{_stamp(raw[1])}); "
                   f"the times in this tile are not one acquisition, so refusing to date it")
             return None
         lo, hi, n_lo, n_hi = res
@@ -530,7 +560,7 @@ def tile_dates(path, rings=()):
             # guess. The whole point of the module is that the printed date is checkable.
             raw_lo, raw_hi = dating.raw()
             print(f"    {os.path.basename(path)}: discarded {n_lo}+{n_hi} isolated gps_time value(s) "
-                  f"(raw range reaches {gps_to_utc(raw_lo)}..{gps_to_utc(raw_hi)}); no other point in "
+                  f"(raw range reaches {_stamp(raw_lo)}..{_stamp(raw_hi)}); no other point in "
                   f"the tile is within {MAX_ENDPOINT_GAP_S:.0f} s of them, so they date nothing")
         wres = whole_ext.endpoints()
         # NOT a bare min/max fallback. `wres is None` means the whole-tile set failed the SAME two
@@ -550,7 +580,7 @@ def tile_dates(path, rings=()):
         if wres is None:
             wraw = whole_ext.raw()
             print(f"    {os.path.basename(path)}: its WHOLE-tile gps_time range cannot be defended "
-                  f"(raw range {gps_to_utc(wraw[0])}..{gps_to_utc(wraw[1])}) -- the points over its "
+                  f"(raw range {_stamp(wraw[0])}..{_stamp(wraw[1])}) -- the points over its "
                   f"greens date cleanly, so the tile is still dated from those, but it reports no "
                   f"whole-tile range to contrast against")
         wlo, whi = wres[:2] if wres else (None, None)

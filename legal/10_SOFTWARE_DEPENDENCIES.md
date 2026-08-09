@@ -9,7 +9,7 @@ licences — and that asymmetry is exactly how an AGPL dependency sat in `requir
 
 ## Nothing here is redistributed
 
-This repository ships **46 tracked files: source, docs, one original banner image and one 3D-print model.** No dependency
+This repository ships **58 tracked files: source, docs, one original banner image and one 3D-print model.** No dependency
 is vendored, bundled, or re-published. The binary-attribution duties in BSD/MIT/Apache attach to
 *redistribution*, so they are not triggered. The list below is hygiene and, for one entry, a real
 compatibility question.

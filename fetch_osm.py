@@ -15,6 +15,28 @@ import urllib.parse, urllib.request, json, time, os, math
 from collections import Counter
 import config
 import geo
+# ONE definition of "a watercourse a card draws", and it lives with the renderer that draws it. The
+# census below counts water so the shrink guard can tell a lost hazard from churn; if it counted a
+# WIDER set than the map draws, a reply could lose a real stream and gain a culvert without moving the
+# number. Importing render_hole for a predicate is this project's existing pattern -- fetch_hole_elev
+# does it for par3_exact_from_tee ("one definition of 'straight par 3'") and tools/check_osm_bbox.py
+# for DRAW_CORRIDOR_M -- and the module is import-safe: constants and functions only.
+from render_hole import is_visible_watercourse
+# ONE spelling of "off" for this module's four acknowledgement keys, IMPORTED rather than re-written.
+# The four reads here were bare `os.environ.get("ALLOW_X")`, and a non-empty string is truthy -- so
+# ALLOW_HAZARD_SHRINK=0, =false and =no, every spelling a person reaches for to explicitly DISABLE the
+# waiver, WAIVED the guard standing between a re-fetch and a lost bunker or creek. That is the fault
+# fetch_trees._env_on's docstring names ("makes ALLOW_NO_TREES=0 and =false mean YES"), fixed in five
+# other modules and not in this one, which is the module guarding hazard ink.
+#
+# Imported, not copied: seven hand-written copies of this off-vocabulary already exist here, and
+# tools/verify_elevation.py set the precedent for stopping at seven. Narrowing one copy's tuple to
+# ("", "0") turns ALLOW_X=false back into a waiver in one module and nowhere else, and left the whole
+# suite green when it was tried. Safe in this direction: lidar_coverage imports only the standard
+# library and geo, so it cannot reach back to config, render_hole or this module -- see
+# test_fetch_osm_reads_its_acknowledgement_keys_through_the_shared_env_on, which pins both the
+# identity and the absence of a cycle.
+from lidar_coverage import _env_on
 
 S, W, N, E = config.COURSE["osm_bbox"]   # [south, west, north, east]
 BB = f"{S},{W},{N},{E}"
@@ -130,6 +152,22 @@ def census(elements):
     adding two streams was accepted in silence -- those two ponds are drawn inside the 45 m water
     corridor of holes 7, 10 and 18 (22.7 m, 10.0 m and 1.5 m off the played line), all three of which
     print a non-zero W in their footer.
+
+    ...and `waterway` was STILL wider than the drawn class, one level down. It counted every way
+    carrying the key, while render_hole's `creeks` takes only `is_visible_watercourse`: not a dam or a
+    weir (a structure beside water sits exactly where the water is NOT), and not a culverted, covered
+    or underground reach (merion 13 once printed "1W" whose only blue mark was a 14.7 m culvert). So
+    the same swap survived inside the surviving bucket -- lose a real stream, gain a culvert, count
+    unmoved, guard silent. Not hypothetical: 29 of this corpus's 178 waterways are undrawn today (23
+    culverts, 4 tunnel=yes, 1 tunnel=covered, 1 dam) on 8 of 12 courses, merion 8 of 20 and bay-view 4
+    of 14 among them.
+
+    The undrawn ones are counted in `waterway_undrawn` rather than dropped. Two reasons: the fetch
+    asked for them, and silence about a class the query requested is exactly what put every building
+    in `other` (1,529 of the-reserve's 1,530); and letting them fall through to `other` would make a
+    filled-in culvert a STRUCTURAL abort, which is the wrong severity for something no card draws. It
+    is listed as volatile and not as a hazard for the same reason: it churns like the drawn lines do,
+    and nothing is drawn or measured from it.
     """
     c = Counter()
     for e in elements:
@@ -141,7 +179,7 @@ def census(elements):
         elif t.get('natural') == 'water':
             c['water'] += 1
         elif t.get('waterway'):
-            c['waterway'] += 1
+            c['waterway' if is_visible_watercourse(e) else 'waterway_undrawn'] += 1
         elif t.get('natural') or t.get('landuse'):
             c[t.get('natural') or t.get('landuse')] += 1
         else:
@@ -160,7 +198,7 @@ VOLATILE_KINDS = frozenset({
     # observed in this corpus' caches: tree, tree_row, wood, waterway, building, rock
     # ...plus the other landcover kinds main()'s own queries ask for
     'tree', 'tree_row', 'wood', 'forest', 'scrub', 'wetland',
-    'waterway', 'building', 'bare_rock', 'rock', 'stone',
+    'waterway', 'waterway_undrawn', 'building', 'bare_rock', 'rock', 'stone',
 })
 
 # Kinds whose loss removes drawn HAZARD ink from a card: sand and water, the tan and the blue, the two
@@ -168,9 +206,17 @@ VOLATILE_KINDS = frozenset({
 # because rare is exactly when one loss matters most -- see the block in _check_response.
 #
 # `waterway` is in BOTH sets, and that is the point. It churns (a creek is re-segmented at a road
-# crossing, so the-reserve's 53-way network legitimately becomes 52) and it is also drawn, in the same
-# blue as a pond, by render_hole's `creeks`. So it keeps the PROPORTIONAL part of the churn tolerance
-# and loses the floor of 1: 2% of 53 is still one way, 2% of 3 is zero.
+# crossing) and it is also drawn, in the same blue as a pond, by render_hole's `creeks`. So it keeps
+# the PROPORTIONAL part of the churn tolerance and loses the floor of 1: 2% of 53 is one way, 2% of 3
+# is zero. Since the bucket became the DRAWN lines only (see census), the-reserve's network is 49 of
+# them and 2% of 49 is also zero -- so no course in this corpus is currently handed a free
+# re-segmentation, and the proportional part is what a 50+ line course would get. That direction is
+# the safe one for a hazard kind, and the free loss it withdraws is the one this pair of sets exists
+# to withdraw.
+#
+# `waterway_undrawn` -- the culverts, the tunnels and the dams -- is volatile and NOT a hazard kind,
+# because no card draws it and nothing measures from it. A mapper marking a reach culverted is an OSM
+# improvement, and it must not read as a lost hazard.
 #
 # `water` -- the natural=water AREAS -- is a hazard kind and NOT a volatile one, which is where it
 # differs from the merged bucket these two were split out of. The re-segmentation that earns waterway
@@ -182,7 +228,7 @@ VOLATILE_KINDS = frozenset({
 HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water', 'waterway'})
 
 # 2%, floor 1. Chosen from what these counts actually are on this corpus (the-reserve 2,462 trees and
-# 1,530 buildings, micke-grove 532 trees, the-reserve 53 waterway ways, merion 8 wood) against what the
+# 1,530 buildings, micke-grove 532 trees, the-reserve 49 waterway ways, merion 8 wood) against what the
 # guard has to keep catching: every documented truncation lost 89-100% of a kind (fairway 18 -> 0,
 # 37 -> 1, 23 -> 4, and the remark replies that return nothing at all). So 2% sits an order of
 # magnitude below the smallest real failure while covering ordinary editing -- 49 trees at the-reserve,
@@ -190,7 +236,8 @@ HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'wat
 # of 2,462 hard-aborted the whole fetch, and without a floor a 4 -> 3 tree shrink still would.
 # (Every count here is the FETCHABLE one, i.e. the baseline the guard really compares. the-reserve's
 # waterways were once published as "60 water ways"; 60 is the raw merged figure, of which 7 were pond
-# areas -- one of those carrying _from_relation -- leaving the 53 lines and 6 areas the guard sees.)
+# areas -- one of those carrying _from_relation -- leaving 53 lines and 6 areas, and of those 53 lines
+# four are culverts the map does not draw, so the drawn bucket the guard compares is 49.)
 CHURN_TOLERANCE = 0.02
 
 
@@ -201,7 +248,8 @@ def _churn_tolerance(old_count, kind=None):
     whole fetch) and it is wrong for a HAZARD kind, where it would hand a three-watercourse course a
     free watercourse. Hazard kinds therefore get the proportional part only, which is zero below 50
     features. (Only `waterway` is in both sets, so only `waterway` ever reads this branch; the other
-    hazard kinds are not volatile and _check_response gives them no tolerance at all.)
+    hazard kinds are not volatile and _check_response gives them no tolerance at all, and
+    `waterway_undrawn` is volatile but not a hazard so it takes the floor like the landcover kinds.)
     """
     if kind in HAZARD_KINDS:
         return int(old_count * CHURN_TOLERANCE)
@@ -229,6 +277,17 @@ def _check_response(j, path, out):
     tree prescribed it -- so waiving a deleted tree stump also waived the green check that exists to stop
     18 cards rebinding. The third was split off for the identical reason: a waiver granted for a
     re-mapped green must not also accept a bunker that quietly stopped being fetched.
+
+    AND NONE OF THE THREE IS SILENT WHEN IT IS SPENT. A waiver changes the exit code; it never hides the
+    finding -- the shape fetch_trees.check_layer, lidar_coverage.report_or_exit, fetch_hole_elev and
+    render_hole all already use, and the one these three were the exception to. They accepted the loss of
+    drawn sand or water and printed nothing at all, so the build left no trace of what it gave up, and
+    `courses/` is gitignored: once the reply is written the baseline it was compared against is gone.
+    That is not a hypothetical here. See the block below on febbbba, whose four re-fetched courses have
+    no surviving pre-fetch caches and whose zero-drift claim is therefore unverifiable at cache level.
+    So each waiver now prints the COUNTS it accepted, per kind, not a generic sentence: "bunker 36 -> 35"
+    tells a reader which ink left the card, "a hazard loss was accepted" tells them nothing they can act
+    on.
     """
     if not isinstance(j, dict) or not isinstance(j.get('elements'), list):
         raise SystemExit(f"ABORT: Overpass reply for {out} is not an element list -- refusing to write.")
@@ -339,39 +398,52 @@ def _check_response(j, path, out):
             bucket[k] = (oc[k], nc[k])
         def _detail(d):
             return ", ".join(f"{k} {o} -> {n}" for k, (o, n) in sorted(d.items()))
-        if lost and not os.environ.get("ALLOW_STRUCTURAL_SHRINK"):
-            raise SystemExit(
-                f"ABORT: Overpass returned FEWER features than the existing cache for {out}:\n"
-                f"    {_detail(lost)}\n"
-                f"  Overwriting would silently rebind holes to the wrong greens -- a card then\n"
-                f"  prints a confident, correctly-computed read of the WRONG putting surface.\n"
-                f"  Re-run; if OSM really did lose these features, set ALLOW_STRUCTURAL_SHRINK=1\n"
-                f"  deliberately.")
-        if hazard and not os.environ.get("ALLOW_HAZARD_SHRINK"):
-            raise SystemExit(
-                f"ABORT: Overpass returned FEWER HAZARD features than the existing cache for {out}:\n"
-                f"    {_detail(hazard)}\n"
-                f"  Sand and water are the two things this book promises never to omit -- the map draws\n"
-                f"  them and the footer counts them as NB and NW. There is no rarity exemption here on\n"
-                f"  purpose: a course with one water hazard is the course where losing it is invisible.\n"
-                f"  Re-run; if OSM really did lose them (a bunker filled in, a pond drained), set\n"
-                f"  ALLOW_HAZARD_SHRINK=1 deliberately -- that waives THIS check only, never the\n"
-                f"  greens/holes/fairways one, and no other waiver grants it.")
-        if churn and not os.environ.get("ALLOW_SHRINK"):
-            raise SystemExit(
-                f"ABORT: Overpass returned far fewer features of a churning kind than the existing\n"
-                f"  cache for {out}:\n"
-                f"    {_detail(churn)}\n"
-                f"  A drop this large is nearly always a partial reply. Nothing a card MEASURES comes\n"
-                f"  from these, but the map would draw less of the course than it has. Re-run; if OSM\n"
-                f"  really did lose them, set ALLOW_SHRINK=1 deliberately -- that waives THIS check\n"
-                f"  only, never the greens/holes/fairways one above.")
-        if old_n >= 4 and new_n < old_n * 0.5 and not os.environ.get("ALLOW_STRUCTURAL_SHRINK"):
-            raise SystemExit(
-                f"ABORT: Overpass returned {new_n} golf features for {out} but the existing cache has\n"
-                f"  {old_n}. A collapse like this is nearly always a partial reply, and overwriting\n"
-                f"  would silently rebind holes to the wrong greens. Re-run; if OSM really did lose\n"
-                f"  these features, set ALLOW_STRUCTURAL_SHRINK=1 deliberately.")
+        if lost:
+            if not _env_on("ALLOW_STRUCTURAL_SHRINK"):
+                raise SystemExit(
+                    f"ABORT: Overpass returned FEWER features than the existing cache for {out}:\n"
+                    f"    {_detail(lost)}\n"
+                    f"  Overwriting would silently rebind holes to the wrong greens -- a card then\n"
+                    f"  prints a confident, correctly-computed read of the WRONG putting surface.\n"
+                    f"  Re-run; if OSM really did lose these features, set ALLOW_STRUCTURAL_SHRINK=1\n"
+                    f"  deliberately.")
+            print(f"WARNING: ALLOW_STRUCTURAL_SHRINK set -- accepting the loss of feature(s) a card is "
+                  f"built from in {out}: {_detail(lost)}")
+        if hazard:
+            if not _env_on("ALLOW_HAZARD_SHRINK"):
+                raise SystemExit(
+                    f"ABORT: Overpass returned FEWER HAZARD features than the existing cache for {out}:\n"
+                    f"    {_detail(hazard)}\n"
+                    f"  Sand and water are the two things this book promises never to omit -- the map draws\n"
+                    f"  them and the footer counts them as NB and NW. There is no rarity exemption here on\n"
+                    f"  purpose: a course with one water hazard is the course where losing it is invisible.\n"
+                    f"  Re-run; if OSM really did lose them (a bunker filled in, a pond drained), set\n"
+                    f"  ALLOW_HAZARD_SHRINK=1 deliberately -- that waives THIS check only, never the\n"
+                    f"  greens/holes/fairways one, and no other waiver grants it.")
+            print(f"WARNING: ALLOW_HAZARD_SHRINK set -- accepting the loss of drawn hazard ink in {out}: "
+                  f"{_detail(hazard)} -- the map draws that much less sand and water and the footer "
+                  f"counts it as NB/NW")
+        if churn:
+            if not _env_on("ALLOW_SHRINK"):
+                raise SystemExit(
+                    f"ABORT: Overpass returned far fewer features of a churning kind than the existing\n"
+                    f"  cache for {out}:\n"
+                    f"    {_detail(churn)}\n"
+                    f"  A drop this large is nearly always a partial reply. Nothing a card MEASURES comes\n"
+                    f"  from these, but the map would draw less of the course than it has. Re-run; if OSM\n"
+                    f"  really did lose them, set ALLOW_SHRINK=1 deliberately -- that waives THIS check\n"
+                    f"  only, never the greens/holes/fairways one above.")
+            print(f"WARNING: ALLOW_SHRINK set -- accepting a large drop in a churning kind in {out}: "
+                  f"{_detail(churn)} -- the map draws less of the course than it has")
+        if old_n >= 4 and new_n < old_n * 0.5:
+            if not _env_on("ALLOW_STRUCTURAL_SHRINK"):
+                raise SystemExit(
+                    f"ABORT: Overpass returned {new_n} golf features for {out} but the existing cache has\n"
+                    f"  {old_n}. A collapse like this is nearly always a partial reply, and overwriting\n"
+                    f"  would silently rebind holes to the wrong greens. Re-run; if OSM really did lose\n"
+                    f"  these features, set ALLOW_STRUCTURAL_SHRINK=1 deliberately.")
+            print(f"WARNING: ALLOW_STRUCTURAL_SHRINK set -- accepting a collapse in the total "
+                  f"golf-feature count for {out}: {old_n} -> {new_n}")
 
 
 def _bindings(elements, out):
@@ -420,12 +492,24 @@ def _check_bindings(elements, out, prev=()):
     replace: comparing hole -> green against the PREVIOUS binding catches a rebind whether or not it
     collides. ALLOW_REBIND=1 to accept one deliberately, e.g. when OSM has genuinely redrawn a green
     under a new id.
+
+    AND IT IS READ AFTER THE COMPARISON, NOT BEFORE IT. The key used to short-circuit at the top --
+    `if not prev or os.environ.get("ALLOW_REBIND"): return` -- which cost two things at once. The truthy
+    read made ALLOW_REBIND=0 and =false RETURN, i.e. the spellings that mean "do not waive this" waived
+    it; and returning before `moved` is computed meant a spent waiver could not name what it accepted,
+    so the one waiver in this module whose finding is "a card may now print the wrong putting surface"
+    was also the quietest. Reading it here, beside the abort, fixes both: the same waiver, the same
+    outcome, and a printed line naming every hole that moved and the two green ids it moved between.
+
+    The cost of moving it is one extra `_bindings(prev, out)` pass on the runs where the key IS set,
+    which is the pass every other run already makes -- and it is inside the same try/except SystemExit,
+    so an old cache that cannot be bound is still "nothing to compare against" rather than a stop.
     """
     bound = _bindings(elements, out)
     if bound is None:
         return
     geo.assert_one_green_per_hole(bound, label=f"{config.SLUG} ({out})")
-    if not prev or os.environ.get("ALLOW_REBIND"):
+    if not prev:
         return
     try:
         was = _bindings(prev, out)
@@ -438,6 +522,10 @@ def _check_bindings(elements, out, prev=()):
              if (was[hn] or {}).get('id') != (bound[hn] or {}).get('id')]
     if moved:
         lines = "\n".join(f"    hole {hn}: green {a} -> green {b}" for hn, a, b in moved)
+        if _env_on("ALLOW_REBIND"):
+            print(f"WARNING: ALLOW_REBIND set -- accepting {len(moved)} hole(s) in {out} binding to a "
+                  f"DIFFERENT green than the existing cache:\n{lines}")
+            return
         raise SystemExit(
             f"ABORT: {len(moved)} hole(s) would bind to a DIFFERENT green than the existing cache:\n"
             f"{lines}\n"

@@ -38,14 +38,50 @@ DIR = config.COURSE_DIR
 # No default. A course.json without "location" used to fall back to -121.0, i.e. silently pick
 # California UTM zone 10 -- for a Pennsylvania course (zone 18) every tree would be projected
 # through the wrong zone, and nothing would say so.
+#
+# The zone FORMULA is geo.utm_epsg's, not a copy of it. This line used to spell
+# `"EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)` and so did fetch_dem_hd.py, byte for byte, while
+# geo.utm_epsg -- added by d2b0d10 (2026-07-29) to be the one home for exactly this fact -- had no
+# callers at all. That commit's message describes geo.py as the shared home for "the same two facts ...
+# previously derived independently in fetch_dem_hd.py and fetch_trees.py", the vertical unit and the UTM
+# zone; it wired both files to geo.vertical_scale and left the zone behind, so the migration was never
+# finished. geo.py's own docstring says this duplication-drift hazard has already cost this project two
+# audits (the nine-module R_LAT saga), and the zone decides which projection every tree position is
+# computed through.
 _LOC = config.COURSE.get("location") or {}
 if not isinstance(_LOC, dict) or _LOC.get("lon") is None:
     raise SystemExit('course.json needs "location": {"lat": .., "lon": ..} -- it selects the UTM '
                      'zone for every tree position. Refusing to guess one.')
 _LON = _LOC["lon"]
-UTM = "EPSG:%d" % (26900 + int((_LON + 180) / 6) + 1)
+UTM = geo.utm_epsg(_LON)
 FWD = Transformer.from_crs("EPSG:4326", UTM, always_xy=True)   # lon/lat -> UTM m
 INV = Transformer.from_crs(UTM, "EPSG:4326", always_xy=True)
+
+GC = 4.0        # ground-grid cell (m) for height-above-ground. At module scope because the grid this
+                # sizes is what every marker's height is measured against, and ground_grid() below is
+                # graded on its own rather than through a whole run.
+
+# THE WIDEST SPAN THIS STAGE WILL EVER GRID FOR ONE TILE, in metres of the course's UTM zone.
+#
+# The grid below is sized from the coordinates of the tile's own ground returns, and that number has to
+# have a ceiling. Two of them, in fact, because the two failures are different:
+#
+#   * a stray coordinate INSIDE an honest tile -- caught by construction, by clipping the points to the
+#     tile's own header extent before anything measures them (see in_header_bbox). A point outside the
+#     tile's own stated bbox is by definition not a point this stage may use.
+#   * a header that itself claims the junk -- nothing inside the file then contradicts it, so the clip
+#     above bounds the grid by an absurd extent. That is what this constant refuses, BY NAME.
+#
+# 10 km is chosen against what the corpus is. Measured over all 78 tiles on disk: 41 carry US survey
+# feet in their header (914.4 m at the widest), 4 carry 1499.99 m, and 33 carry 1000.0 m. Of the 41
+# ftUS tiles, 24 span exactly 2999.99 ftUS, 9 span exactly 2499.999 ftUS, and the remaining 8 are edge
+# tiles narrower than that in at least one axis -- a mapped delivery tiles its coverage on a fixed
+# grid, and the courses near the edge of that grid get a shorter tile in whichever axis runs off it.
+# So the widest tile here is 1500 m and the largest bare-earth grid any stored tile can produce is
+# 376 x 376 cells, 1.08 MiB. A 10 km ceiling is 6.7x wider in each axis than that and costs 47.8 MiB if
+# a real delivery ever ships tiles that big, while the unbounded arithmetic it replaces reached 466 GiB
+# from a single junk coordinate.
+GRID_SPAN_MAX_M = 10_000.0
 
 def laz_to_utm():
     """Transformer from the tiles' native CRS -> the course's UTM zone (metres) + vertical scale to m."""
@@ -70,6 +106,148 @@ def laz_to_utm():
             "  that carries its units (a compound EPSG code or full WKT), then re-run." % UTM)
     # vertical unit from the CRS axis, never guessed from its name (see geo.vertical_scale)
     return Transformer.from_crs(src, UTM, always_xy=True), geo.vertical_scale(src)
+
+
+def _dem_hd():
+    """fetch_dem_hd, imported LAZILY -- for its producer-disowned point filter, nothing else.
+
+    That module is the one place in this project that knows how to ask a LAS file which of its points
+    the vendor marked DO NOT USE, and it applies that filter to THE SAME TILES this stage reads. A
+    second copy of the flag names and the getattr dance here is a second thing to keep in step, and its
+    own comment already says why it exists: "so the next course's tiles cannot quietly contribute
+    rejected points to a green."
+
+    Lazily, because importing it creates COURSE_DIR/dem_hd and sweeps that directory's staging files at
+    IMPORT time. That is the green-surface stage's business, not a tree fetch's, so the import happens
+    past main()'s "no LAZ tiles" refusal instead -- i.e. only on a course that has a point cloud, and so
+    already has a dem_hd/. (tools/cross_flight_check.py imports it from inside a function for the
+    neighbouring reason: to keep config binding out of module scope.)
+    """
+    import fetch_dem_hd
+    return fetch_dem_hd
+
+
+def disowned_tally():
+    """A fresh {flag: counts} in fetch_dem_hd's own shape, so its format_disowned_report can print it.
+
+    The shape is shared for the same reason the filter is: "ran on 78 of 78 tiles, 0 ground point(s)
+    dropped" and "DID NOT RUN on 78 of 78 tiles" are the two readings a silent filter makes identical,
+    and that sentence is already written -- once -- over there.
+    """
+    fdh = _dem_hd()
+    return {f: {fdh.FILTER_APPLIED: 0, fdh.FILTER_UNAVAILABLE: 0, "flagged": 0, "dropped": 0}
+            for f in fdh.DISOWNED_FLAGS}
+
+
+def in_header_bbox(las):
+    """Mask of the points inside the tile's OWN header extent, in the tile's native units.
+
+    THE CEILING ON THE GRID, by construction. Everything downstream measured the span of the class-2
+    returns straight off the data -- `nx = int((x[gnd].max() - gx0) / GC) + 2` -- so ONE junk
+    coordinate sized the whole allocation by itself. Measured on a 540 x 240 m fixture plus one stray
+    class-2 return: 9.2 MiB at 4 km out, 1.76 GiB at 61 km, 4.69 GiB at 100 km, 466 GiB at 1000 km,
+    which is a MemoryError or an exit-137 OOM kill with no traceback and nothing naming the tile.
+
+    pyproj is why nothing upstream catches it: for the five courses whose tiles are reprojected
+    EPSG:6419 -> EPSG:26910 a garbage native coordinate comes back FINITE, so the arithmetic succeeds
+    and the allocation is the first thing that fails.
+
+    A point outside the tile's own header bbox is by definition not a point this stage may use, so the
+    honest fix is to drop it before anything measures it -- the same treatment tools/lidar_dates.py
+    gives its MASS_BUCKETS window, and for the same reason ("one junk gps_time ... sized the allocation
+    by itself"). Compared in NATIVE units, against the header the producer wrote, because that is the
+    only statement of what this tile IS; a reprojected garbage coordinate is indistinguishable from a
+    real one.
+
+    LATENT on this corpus, measured: over all 78 tiles on disk not one point lies outside its own tile's
+    header bbox (0 of 2,479,193,850), and the widest tile is 1500 m across. This drops nothing today.
+    """
+    h = las.header
+    x = np.asarray(las.x)
+    y = np.asarray(las.y)
+    return (x >= h.x_min) & (x <= h.x_max) & (y >= h.y_min) & (y <= h.y_max)
+
+
+def tile_points(las, pt2utm, zscale, label="", tally=None):
+    """(cls, x, y, z, gnd) for ONE tile: XY in the course's UTM metres, Z in metres, `gnd` = usable ground.
+
+    Two prefilters, and they are deliberately not the same shape:
+
+      * EVERY point is clipped to the tile's own header extent (see in_header_bbox). This bounds the
+        grid, and it is applied to the candidate returns too -- a coordinate the tile disowns is not a
+        tree either, and the candidates are indexed into the grid with np.clip, so a stray one would be
+        folded onto an edge cell and measured against ground it is nowhere near.
+      * `gnd` additionally excludes the returns the PRODUCER disowns. Only the ground returns, which is
+        what fetch_dem_hd does over these same tiles. Measured over all 78 tiles (2,479,193,850
+        points): `withheld` resolves on 78 of 78 and marks 19,979,730 points, `synthetic` marks none,
+        and ZERO of the withheld points are class-2 -- so this changes no stored tree layer. It matters
+        because the bare-earth grid is what every marker's height-above-ground is measured against, so
+        one disowned ground return either invents a marker or deletes one, and the markers are drawn on
+        the hole maps.
+        NOT extended to the candidates: 17,376,591 of the withheld points ARE candidates across this
+        corpus, so filtering them would move drawn ink on shipped cards. That is a change to make
+        deliberately and measure, not one to smuggle in beside a fix.
+    """
+    fdh = _dem_hd()
+    keep = in_header_bbox(las)
+    n_out = int(keep.size - keep.sum())
+    if n_out:
+        h = las.header
+        print(f"  {label}: dropping {n_out:,} point(s) outside this tile's own header extent "
+              f"[{h.x_min:.2f},{h.x_max:.2f}] x [{h.y_min:.2f},{h.y_max:.2f}] (native units) -- "
+              f"they are not points this stage may use, and one of them can size the ground grid")
+    cls = np.asarray(las.classification)[keep]
+    x, y = pt2utm.transform(np.asarray(las.x)[keep], np.asarray(las.y)[keep])
+    z = np.asarray(las.z)[keep] * zscale
+    gnd = cls == 2
+    for flag in fdh.DISOWNED_FLAGS:
+        bad, status = fdh.disowned_mask(las, flag)
+        if tally is not None and flag in tally:
+            tally[flag][status] = tally[flag].get(status, 0) + 1
+        if bad is None:
+            continue                       # no such bit in this point format; the tally reports it
+        bad = bad[keep]
+        if tally is not None and flag in tally:
+            tally[flag]["flagged"] += int(bad.sum())
+        n_drop = int((gnd & bad).sum())
+        if n_drop:
+            if tally is not None and flag in tally:
+                tally[flag]["dropped"] += n_drop
+            print(f"  {label}: dropping {n_drop:,} ground point(s) flagged {flag}")
+        gnd = gnd & ~bad
+    return cls, x, y, z, gnd
+
+
+def ground_grid(gx, gy, gz, label=""):
+    """(grd, gx0, gy0) -- min ground z per GC-metre cell, over the GROUND returns handed in.
+
+    `grd` is np.inf where no ground return landed, which is what makes an unmeasured cell produce a
+    non-finite height rather than a confident one.
+
+    The span is refused rather than allocated when it is wider than one tile can be. Reaching here with
+    such a span means the tile's HEADER claims it -- tile_points has already clipped the points to that
+    header -- so nothing inside the file contradicts it and there is no honest grid to build. The
+    refusal names the tile because the failure this replaces was an exit-137 over a directory of 78 of
+    them, with no traceback and nothing saying which.
+    """
+    gx0, gy0 = gx.min(), gy.min()
+    spanx, spany = float(gx.max() - gx0), float(gy.max() - gy0)
+    if not (spanx <= GRID_SPAN_MAX_M and spany <= GRID_SPAN_MAX_M):
+        raise SystemExit(
+            f"REFUSING to grid {label or 'this tile'}: its ground returns span "
+            f"{spanx:,.0f} x {spany:,.0f} m, over the {GRID_SPAN_MAX_M:,.0f} m one tile may cover.\n"
+            f"  The points have already been clipped to the tile's own header extent, so the HEADER\n"
+            f"  claims this span -- either the file is corrupt or \"lidar_crs\" is projecting it\n"
+            f"  through the wrong CRS. A {GC:.0f} m grid over that is "
+            f"{(spanx / GC + 2) * (spany / GC + 2) * 8 / 2 ** 30:,.1f} GiB, which is an OOM kill and\n"
+            f"  not an error message. Fix or remove the tile.")
+    nx = int(spanx / GC) + 2
+    ny = int(spany / GC) + 2
+    grd = np.full((nx, ny), np.inf)
+    gi = ((gx - gx0) / GC).astype(int)
+    gj = ((gy - gy0) / GC).astype(int)
+    np.minimum.at(grd, (gi, gj), gz)
+    return grd, gx0, gy0
 
 def dist_pt_seg(px,py,ax,ay,bx,by):
     dx,dy=bx-ax,by-ay; L2=dx*dx+dy*dy
@@ -191,9 +369,14 @@ def check_layer(out, path):
         corridor, an osm_geom.json that lost its golf=hole ways leaves the corridor list empty, a tile
         with no class-2 return is skipped. None of those is "this course has no trees", and the
         difference is invisible downstream -- render_hole._lidar_trees() hard-stops on a MISSING file
-        when the course has tiles, but an EMPTY one parses, generate._course_has_trees() then drops the
-        per-card "no tree data" caveat as noise, and gen_provenance reports bare holes only
+        when the course has tiles, but an EMPTY one parses, generate._book_draws_trees() then finds no
+        hole that drew a mark of either kind and drops the per-card "no tree data" caveat as noise, and
+        gen_provenance reports bare holes only
         `if tl and any(tl.values())`. So the one state nothing reports is the one that reports nothing.
+        (That reader used to be called generate._course_has_trees; 6325af0 replaced it because it keyed
+        the caveat on the LiDAR marker list while render_hole FALLS BACK to OSM tree nodes. The
+        successor asks what each hole DREW, so on a course that has OSM trees an empty layer now draws
+        sparse OSM markers instead of nothing -- the same silence reached a different way.)
       * ALLOW_TREE_LOSS -- some hole that HAD canopy now has none. Checked per hole because the
         aggregate cannot see it: a course can keep 96% of its markers while one card goes from
         tree-lined to open ground, and that card is what a golfer aims over.
@@ -274,6 +457,74 @@ def on_playing_surface(lon,lat,surfaces):
             return kind
     return False
 
+
+# The two stale-cache guards below were inline in main(), and their escape hatches were read there
+# too -- `os.environ.get("ALLOW_NO_BUILDINGS", "").lower() not in (...)` spelled out twice, inside a
+# function body. Nothing could reach either one: no test can import a local, so narrowing, removing or
+# inverting either flag was invisible. The existing pin table for this repo's off-vocabulary says so in
+# its own docstring ("the two inline reads ... are still unreachable ... pinning them needs the read
+# routed through fetch_trees._env_on first"), and records that narrowing a copy of that vocabulary to
+# ("", "0") -- which makes ALLOW_X=false a WAIVER -- left the whole suite at its baseline.
+#
+# So: lifted to module scope, and the reads go through _env_on like the other two hatches here. The flag
+# names stay LITERAL rather than becoming module constants, because that pin table also requires every
+# module-scope ALLOW_* string it finds to be one it drives, and it drives the two check_layer hatches
+# only.
+def check_buildings(n_bld):
+    """Refuse to place tree markers against a cache that carries no building footprints.
+
+    A cache fetched before way[building] was added silently disables the footprint test, and clubhouse
+    roofs come back as trees -- 53 of them at Merion. A roof is 2.5-35 m above ground and reads exactly
+    like canopy on the unclassified tiles most of this corpus uses, so the FOOTPRINT is the only thing
+    that identifies it.
+    """
+    if n_bld:
+        return
+    if not _env_on("ALLOW_NO_BUILDINGS"):
+        raise SystemExit("no building polygons in osm_course.json -- this cache predates the "
+                         "way[building] query, so roofs would be drawn as trees.\n"
+                         "  Re-run: COURSE=%s python3 fetch_osm.py   "
+                         "(or set ALLOW_NO_BUILDINGS=1 if this course genuinely has none)"
+                         % config.SLUG)
+    print("WARNING: ALLOW_NO_BUILDINGS set -- building footprint test DISABLED; "
+          "roofs may be drawn as trees")
+
+
+def check_relations(rel_path):
+    """Refuse a cache that predates fetch_osm.py's MULTIPOLYGON pass -- the same fault one query deeper.
+
+    A building, pond or fairway mapped as a relation is invisible to a cache that predates that pass, so
+    load_playing_surfaces() never sees the footprint and its roof or its open water comes back as canopy.
+    That is the identical failure check_buildings exists for (53 markers on Merion's clubhouse; 615 of
+    the 68,884 markers shipping before these two filters were inside a mapped pond, worst 22.0 m in --
+    the corpus stores 68,257 today, that set less exactly those 615 and the 12 a too-narrow osm_bbox hid).
+
+    The marker is the FILE, not a count of relations: a cache with zero flattened rings is either a
+    course that genuinely has no multipolygons or a cache that never asked, and those two are not the
+    same claim. osm_relations.json exists exactly when the pass ran, so its presence records "we asked"
+    and a reply of zero relations is then a positive answer.
+
+    Measured over this corpus: castlewood-hill and castlewood-valley WERE the only two caches with no
+    osm_relations.json, and also the only two with zero `_from_relation` elements; the other nine carry
+    1 to 36 flattened rings (monarch-bay 36 fairways, micke-grove 19, the-reserve 19, valley-hi 18).
+    Both were re-fetched on 2026-08-04 when their osm_bbox was widened to cover the drawing corridor
+    (see tools/check_osm_bbox.py), and both replies hold ZERO golf / natural=water / building relations
+    -- so nothing was in fact missing from those two books, and now the FILE says so instead of a
+    comment. All eleven caches with geometry carry osm_relations.json today; this gate is what keeps a
+    twelfth from arriving without one.
+    """
+    if os.path.exists(rel_path):
+        return
+    if not _env_on("ALLOW_NO_RELATIONS"):
+        raise SystemExit("no osm_relations.json -- this cache predates fetch_osm.py's multipolygon\n"
+                         "  pass, so a building, pond or fairway mapped as a RELATION is missing from\n"
+                         "  osm_course.json and its roof or its open water would be drawn as trees.\n"
+                         "  Re-run: COURSE=%s python3 fetch_osm.py   (or set ALLOW_NO_RELATIONS=1 if\n"
+                         "  you have confirmed this bbox has no multipolygon features)" % config.SLUG)
+    print("WARNING: ALLOW_NO_RELATIONS set -- multipolygon buildings and ponds are NOT in this\n"
+          "         cache; their roofs and their water may be drawn as trees")
+
+
 def main():
     tiles = sorted(glob.glob(f"{DIR}/laz/*.laz"))
     if not tiles:
@@ -287,51 +538,8 @@ def main():
     n_golf=sum(1 for s in surfaces if s[5]=='golf')
     n_bld=sum(1 for s in surfaces if s[5]=='building')
     n_water=sum(1 for s in surfaces if s[5]=='water')
-    _allow = os.environ.get("ALLOW_NO_BUILDINGS", "").lower() not in ("", "0", "false", "no")
-    if n_bld == 0 and not _allow:
-        # A cache fetched before way[building] was added silently disables the footprint test, and
-        # clubhouse roofs come back as trees (53 of them at Merion). Fail loudly instead.
-        raise SystemExit("no building polygons in osm_course.json -- this cache predates the "
-                         "way[building] query, so roofs would be drawn as trees.\n"
-                         "  Re-run: COURSE=%s python3 fetch_osm.py   "
-                         "(or set ALLOW_NO_BUILDINGS=1 if this course genuinely has none)"
-                         % config.SLUG)
-    if n_bld == 0:
-        print("WARNING: ALLOW_NO_BUILDINGS set -- building footprint test DISABLED; "
-              "roofs may be drawn as trees")
-    # The same fault one query deeper. fetch_osm.py's MULTIPOLYGON pass was added after some caches
-    # were built, and a building, pond or fairway mapped as a relation is invisible to a cache that
-    # predates it -- so load_playing_surfaces() above never sees that footprint and its roof or its
-    # open water comes back as canopy. That is the identical failure the ALLOW_NO_BUILDINGS gate
-    # exists for (53 markers on Merion's clubhouse; 615 of the 68,884 markers shipping before these two
-    # filters were inside a mapped pond, worst 22.0 m in -- the corpus stores 68,257 today, that set
-    # less exactly those 615 and the 12 a too-narrow osm_bbox hid), and there was no equivalent check
-    # for it.
-    #
-    # The marker is the FILE, not a count of relations: a cache with zero flattened rings is either a
-    # course that genuinely has no multipolygons or a cache that never asked, and those two are not
-    # the same claim. osm_relations.json exists exactly when the pass ran, so its presence records
-    # "we asked" and a reply of zero relations is then a positive answer.
-    #
-    # Measured over this corpus: castlewood-hill and castlewood-valley WERE the only two caches with no
-    # osm_relations.json, and also the only two with zero `_from_relation` elements; the other nine carry
-    # 1 to 36 flattened rings (monarch-bay 36 fairways, micke-grove 19, the-reserve 19, valley-hi 18).
-    # Both were re-fetched on 2026-08-04 when their osm_bbox was widened to cover the drawing corridor
-    # (see tools/check_osm_bbox.py), and both replies hold ZERO golf / natural=water / building relations
-    # -- so nothing was in fact missing from those two books, and now the FILE says so instead of a
-    # comment. All eleven caches with geometry carry osm_relations.json today; this gate is what keeps a
-    # twelfth from arriving without one.
-    _rel = f"{DIR}/osm_relations.json"
-    _allow_rel = os.environ.get("ALLOW_NO_RELATIONS", "").lower() not in ("", "0", "false", "no")
-    if not os.path.exists(_rel) and not _allow_rel:
-        raise SystemExit("no osm_relations.json -- this cache predates fetch_osm.py's multipolygon\n"
-                         "  pass, so a building, pond or fairway mapped as a RELATION is missing from\n"
-                         "  osm_course.json and its roof or its open water would be drawn as trees.\n"
-                         "  Re-run: COURSE=%s python3 fetch_osm.py   (or set ALLOW_NO_RELATIONS=1 if\n"
-                         "  you have confirmed this bbox has no multipolygon features)" % config.SLUG)
-    if not os.path.exists(_rel):
-        print("WARNING: ALLOW_NO_RELATIONS set -- multipolygon buildings and ponds are NOT in this\n"
-              "         cache; their roofs and their water may be drawn as trees")
+    check_buildings(n_bld)
+    check_relations(f"{DIR}/osm_relations.json")
     geom = json.load(open(f"{DIR}/osm_geom.json"))["elements"]
     # hole centrelines as UTM segment lists.
     # ONE hole-line chooser for the whole pipeline. This used to keep the longest way per ref,
@@ -347,23 +555,20 @@ def main():
             for hn, h in geo.hole_lines(geom, _loc.get('lat'), _loc.get('lon')).items()}
     BUF=42.0                      # metres either side of the centerline
     CELL=5.0                      # thinning grid (m) -> ~one marker per clump
-    GC=4.0                        # ground grid cell (m) for height-above-ground
     acc={hn:{} for hn in hlines}  # hole -> {cell:(x,y)}
+    tally=disowned_tally()
     for tf in tiles:
         las=laspy.read(tf)
-        cls=np.asarray(las.classification)
-        # reproject XY to the course UTM zone (metres), scale Z to metres (State Plane ftUS -> m)
-        x,y = pt2utm.transform(np.asarray(las.x), np.asarray(las.y))
-        z = np.asarray(las.z)*zscale
-        # bare-earth grid from ground returns (class 2): min z per GC-metre cell
-        gnd=cls==2
+        label=os.path.basename(tf)
+        # Every point in the course's UTM metres, clipped to the tile's OWN header extent, plus the
+        # ground mask the bare-earth grid may be built from. See tile_points: one junk coordinate used
+        # to size this grid, and a ground return the producer disowned used to define local ground.
+        cls,x,y,z,gnd = tile_points(las, pt2utm, zscale, label=label, tally=tally)
         if not gnd.any():
-            print(os.path.basename(tf),"no ground"); continue
-        gx0,gy0=x[gnd].min(),y[gnd].min()
-        nx=int((x[gnd].max()-gx0)/GC)+2; ny=int((y[gnd].max()-gy0)/GC)+2
-        grd=np.full((nx,ny), np.inf)
-        gi=((x[gnd]-gx0)/GC).astype(int); gj=((y[gnd]-gy0)/GC).astype(int)
-        np.minimum.at(grd, (gi,gj), z[gnd])
+            print(label,"no ground"); continue
+        # bare-earth grid from ground returns (class 2): min z per GC-metre cell
+        grd,gx0,gy0 = ground_grid(x[gnd], y[gnd], z[gnd], label=label)
+        nx,ny = grd.shape
         # Candidate canopy points: NON-ground, 2.5-35 m above local ground.
         # Excluded classes: 2 ground, 6 BUILDING, 7 noise, 9 water, 17 bridge deck, 18 high noise.
         # We must NOT restrict to class 5 (high vegetation): 10 of 11 courses have ZERO class-5
@@ -387,7 +592,12 @@ def main():
                          for j in range(len(line)-1))
                 if near<BUF:
                     acc[hn][(round(px/CELL),round(py/CELL))]=(px,py)
-        print(os.path.basename(tf),f"processed ({int(tree.sum())} canopy pts)")
+        print(label,f"processed ({int(tree.sum())} canopy pts)")
+    # Say what the producer-disowned filter DID, always -- fetch_dem_hd's own wording, because it is
+    # the same filter over the same tiles. Without this a filter that ran and found nothing to drop and
+    # a filter that never ran at all print the same thing: nothing.
+    for _line in _dem_hd().format_disowned_report(tally):
+        print(_line)
     out={}
     dropped_surface=0; dropped_building=0
     for hn,cells in acc.items():

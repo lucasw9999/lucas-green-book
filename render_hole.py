@@ -435,7 +435,6 @@ def frac_len_within(pts, line, buf):
 def render_hole(hnum, HOLES, font_scale=1.0):
     course, geom = load()
     greens=[e for e in geom if e.get('tags',{}).get('golf')=='green' and e.get('geometry')]
-    holes =[e for e in geom if e.get('tags',{}).get('golf')=='hole'  and e.get('geometry')]
     _loc = config.COURSE.get('location') or {}
     hole = geo.hole_lines(geom, _loc.get('lat'), _loc.get('lon'))[hnum]   # see geo.hole_lines
     line=hole['geometry']
@@ -1021,7 +1020,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # So this is a floor kept against geometry the corpus does not yet contain, not a rule shaping the
     # printed ladder -- do not attribute a missing row to it without measuring.
-    for Y0,Xc,yd,ft,ft_exact in cands:
+    for Y0,_,yd,ft,ft_exact in cands:
         if Y0-lastY < FSN*1.35:
             continue
         lastY=Y0
@@ -1267,17 +1266,17 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # N (the-reserve 16 prints "carry 177" for sand reaching 322). Refusing there would withdraw a
     # correct carry, which is the one thing this rule must not do.
     #
-    # Cost: 8 figures across 8 of 198 cards, 128 -> 119; four cards lose their only carry row
+    # Cost: 9 figures across 9 of 198 cards, 128 -> 119; four cards lose their only carry row
     # (philadelphia 1, micke-grove 3 and 13, callippe 12) and no course loses all of them. Nothing is
     # hidden -- the bunkers stay drawn and stay counted in the footer's "NB". Only the false invitation
     # goes.
     #
     # AND THE CARD SAYS SO, because withdrawing the figure silently left a different fault. Nine windows
-    # in this corpus have no landing area: merion 1 is one of them and it cost no printed
-    # figure only because that hole's fourth merged window is the refused one, so the three it prints are
-    # the three it keeps. On five of the nine (merion 1 and 10, castlewood-valley 8, copper-valley 3,
-    # monarch-bay 14) an EARLIER carry survives, so the printed list just ended before the sand did and
-    # nothing distinguished "no more sand" from "sand we declined to number".
+    # in this corpus have no landing area: merion 1 is one of them -- its fourth merged window is the
+    # refused one, and the three it keeps (172, 212, 245) are the three it prints. On five of the nine
+    # (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14) an EARLIER carry
+    # survives, so the printed list just ended before the sand did and nothing distinguished "no more
+    # sand" from "sand we declined to number".
     #
     # `sand_to_green` is that statement, and it carries no digit ON PURPOSE. Both edges are supported
     # numbers and both are wrong to print: the near edge is the lay-up invitation this rule exists to

@@ -1,0 +1,555 @@
+#!/usr/bin/env python3
+# Lucas Green Book -- Copyright (c) 2026 Lucas Wu. "Lucas Green Book" is a trademark of Lucas Wu.
+# Free for personal, non-commercial use. Licensed under PolyForm Noncommercial 1.0.0.
+# https://github.com/lucasw9999/lucas-green-book
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+"""
+Two guards that were missing from paths nothing was watching.
+
+  * THE PAIR. A green surface is dem_hd/holeNN.npy plus dem_hd/holeNN.json, and they only mean
+    anything together -- the array carries no georeference, the sidecar's bbox places every pixel.
+    surface_io.read_pair is this project's one definition of "a pair I am willing to measure
+    through", and it was called by NO reader outside surface_io.py: fetch_hole_elev.green_elevation
+    and three tools loaded the two halves with a bare json.load + np.load and checked neither the
+    recorded shape nor the recorded array_sha256. The pipeline runs fetch_hole_elev BEFORE
+    generate.py, so a torn pair put a wrong height into hole_elev.json first and render_green
+    refused the hole afterwards -- naming only the surface rebuild as the remedy, so hole_elev.json
+    kept the figure measured through the tear.
+
+  * THE BLANK GREEN'S SCALE. render() caps a drawn green at 0.36 in : 5 yd against Rule 4.3's
+    3/8 in : 5 yd; _blank_green's tournament branch applied no cap at all, on the stated grounds
+    that "no green image is drawn to scale" -- which is false of the true-shape outline it draws.
+
+Corpus tests SKIP where per-course data is absent (courses/ is gitignored), because a skip is
+visibly not a pass. Nothing here writes inside courses/: the torn-pair fixtures are built under
+tmp_path and the code under test is pointed at them.
+"""
+import ast
+import inspect
+import json
+import math
+import os
+import re
+import sys
+
+import numpy as np
+import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+
+# Rule 4.3's own numbers, spelled here the way tests/test_phase1_regressions.py spells them rather
+# than imported from tools/check_scale.py -- importing that gate pulls in export_pdf's headless-shell
+# discovery for a constant.
+LIMIT_IN_PER_5YD = 0.375        # USGA Clarification 4.3a/1: 3/8 in : 5 yd == 1:480
+TARGET_IN_PER_5YD = 0.360       # the design target render() sizes to, ~4% inside the cap
+
+from geo import mlat, mlon      # noqa: E402  the project's ONE figure of the Earth
+
+
+def _green_metas():
+    """(course, hole, meta) for every built green surface, or [] on a fresh clone."""
+    import glob
+    out = []
+    for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "dem_hd", "hole*.json"))):
+        slug = os.path.basename(os.path.dirname(os.path.dirname(p)))
+        if slug.startswith("_"):
+            continue
+        with open(p, encoding="utf-8") as fh:
+            m = json.load(fh)
+        if "W" in m and "H" in m and m.get("polygon") and m.get("bbox"):
+            out.append((slug, int(m["hole"]), m))
+    return out
+
+
+_METAS = _green_metas()
+needs_corpus = pytest.mark.skipif(not _METAS,
+                                  reason="per-course data is gitignored; nothing to measure")
+
+
+def _px_m(meta):
+    """Metres per DEM pixel, mean of the two axes -- the ground scale tools/check_scale.py divides by."""
+    xmin, ymin, xmax, ymax = meta["bbox"]
+    clat = meta["green_center"][0]
+    return (((xmax - xmin) * mlon(clat)) / meta["W"] + ((ymax - ymin) * mlat(clat)) / meta["H"]) / 2.0
+
+
+def _drawn_in_per_view_unit(svg):
+    """The drawing scale a browser lays this SVG out at, in inches per viewBox unit.
+
+    Measured off the emitted markup exactly the way tools/check_scale.py's CARDS_JS measures it off
+    the laid-out element: preserveAspectRatio="meet", so the scale is the SMALLER of the two fits.
+    """
+    vb = [float(v) for v in re.search(r'viewBox="([^"]+)"', svg).group(1).split()]
+    st = re.search(r'style="width:([0-9.]+)in;height:([0-9.]+)in"', svg)
+    assert st, "a tournament card must size its green in inches, not in %"
+    return min(float(st.group(1)) / vb[2], float(st.group(2)) / vb[3]), vb
+
+
+def _in_per_5yd(svg, meta):
+    """What this drawing's printed scale is, in inches per 5 yards. The gated quantity."""
+    k, _vb = _drawn_in_per_view_unit(svg)
+    return k * 4.572 / _px_m(meta)
+
+
+# --------------------------------------------------------------------------------------------------
+# The pair
+# --------------------------------------------------------------------------------------------------
+
+# The tear _torn_fixture commits, in metres PER AXIS. Both axes move, so the displacement is
+# TEAR_M*sqrt(2) = 7.07 m, not TEAR_M. Shared with the grader on green_elevation's published cost of a
+# tear, so the fixture and that figure cannot describe two different experiments -- which is what they
+# did: the docstring published a north-only triple while the fixture shifted north AND east.
+TEAR_M = 5.0
+
+
+def _torn_bbox(meta, north_m=TEAR_M, east_m=TEAR_M):
+    """meta's bbox displaced north_m north and east_m east, in degrees, about its own centre latitude."""
+    clat = meta["green_center"][0]
+    dlat, dlon = north_m / mlat(clat), east_m / mlon(clat)
+    x0, y0, x1, y1 = meta["bbox"]
+    return [x0 + dlon, y0 + dlat, x1 + dlon, y1 + dlat]
+
+
+def _green_mask(poly_px, W, H):
+    """render_green.point_in_poly over every cell centre, vectorised.
+
+    Byte-for-byte the same even-odd crossing test with the same 1e-12 guard on the denominator, run
+    over a meshgrid instead of two Python loops. The corpus grader below needs 396 of these masks and
+    the scalar form takes minutes; it is asserted cell-for-cell against render_green.point_in_poly on a
+    real green before it is trusted, so the shortcut cannot quietly become a different mask.
+    """
+    X, Y = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
+    inside = np.zeros((H, W), bool)
+    n = len(poly_px)
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly_px[i]
+        xj, yj = poly_px[j]
+        inside ^= ((yi > Y) != (yj > Y)) & (X < (xj - xi) * (Y - yi) / (yj - yi + 1e-12) + xi)
+        j = i
+    return inside
+
+
+def _height_m(a, poly_px):
+    """green_elevation's own measurement -- the nanmedian inside the ring, in metres, or None.
+
+    Takes the ring ALREADY in pixels so a caller can place one array's cells by two different bboxes,
+    which is exactly what a torn pair is and therefore how its cost is measured.
+    """
+    H, W = a.shape
+    mask = _green_mask(poly_px, W, H)
+    if not mask.any() or np.all(np.isnan(a[mask])):
+        return None
+    return float(np.nanmedian(a[mask]))
+
+
+def _commit_torn_pair(base, arr_run2, meta_run1, arr_run1):
+    """Write the torn pair surface_io.commit_surface's two os.replace calls can leave behind.
+
+    Run 1 commits properly (array and sidecar agree, digest recorded). Run 2's array then lands and
+    the process dies before the sidecar rename -- so this run's array sits beside last run's
+    sidecar. W and H are EQUAL on both runs, which is the case that matters: the pixel dimensions
+    truncate metres to whole pixels, so a green whose polygon moves by less than one pixel keeps
+    them, and the shape check alone cannot see the tear. The recorded array_sha256 can.
+    """
+    import surface_io
+    surface_io.commit_surface(base, arr_run1, meta_run1)
+    np.save(base + ".npy", arr_run2)          # the second rename never happened
+
+
+def _torn_fixture(tmp_path):
+    """A dem_hd holding one honest pair (hole 4) and one torn pair (hole 7), from real geometry.
+
+    Real geometry, because a torn bbox has to be a bbox that could plausibly have moved: run 1's
+    sidecar is run 2's shifted TEAR_M north AND TEAR_M east, which is inside a single pixel of drift for
+    these surfaces and is what a re-traced OSM ring looks like. What that displacement costs the printed
+    height is published in green_elevation's docstring and graded below, off this same shift.
+    """
+    slug, hole, meta = _METAS[0]
+    src = os.path.join(ROOT, "courses", slug, "dem_hd", f"hole{hole:02d}")
+    arr2 = np.load(src + ".npy")
+    dem = tmp_path / "dem_hd"
+    dem.mkdir(parents=True, exist_ok=True)
+    import surface_io
+
+    honest = dict(meta, hole=4)
+    surface_io.commit_surface(str(dem / "hole04"), arr2, honest)
+
+    run1 = dict(meta, hole=7, bbox=_torn_bbox(meta))
+    arr1 = arr2.copy()
+    arr1[0, 0] = arr1[0, 0] + 0.01           # a different run's array, same dtype and shape
+    _commit_torn_pair(str(dem / "hole07"), arr2, run1, arr1)
+    return str(tmp_path), honest, run1, arr2
+
+
+@needs_corpus
+def test_a_torn_green_pair_cannot_write_a_hole_height(tmp_path, monkeypatch):
+    """green_elevation must refuse a pair whose two halves came from different runs.
+
+    THE ORDER IS THE WHOLE PROBLEM. PIPELINE.md runs fetch_hole_elev at step 6, before generate.py
+    at step 7, so this function writes hole_elev.json first and render_green only refuses the hole
+    later -- and render_green's remedy named the surface rebuild alone, so the height measured
+    through the tear stayed in hole_elev.json and generate.py went on printing it.
+
+    It checked `insufficient` and NaN-ness and nothing else: no H/W consistency test against the
+    sidecar and no array_sha256 test, which is the only property that distinguishes two runs whose
+    arrays have the same shape. Returning None would not do either -- PIPELINE.md notes that a
+    missing elevation line is indistinguishable from an honest refusal, so a tear has to stop the
+    run and say so.
+    """
+    import fetch_hole_elev as fhe
+    dem_root, honest, run1, arr2 = _torn_fixture(tmp_path)
+    monkeypatch.setattr(fhe, "DIR", dem_root)
+
+    ok = fhe.green_elevation(4)
+    assert ok is not None and math.isfinite(ok), (
+        "the honest pair must still measure a height, or this test cannot fail for the right reason")
+
+    with pytest.raises(SystemExit) as e:
+        fhe.green_elevation(7)
+    msg = str(e.value)
+    assert "hole07" in msg or "hole 7" in msg, f"the refusal must name the hole: {msg}"
+    assert "fetch_hole_elev" in msg, (
+        "the refusal must name re-running fetch_hole_elev --write as part of the remedy: "
+        "hole_elev.json is derived, and rebuilding only the surface leaves the torn figure in it")
+
+    # And the figure it would have written is not the honest one, so this is a guard over a real
+    # difference rather than a formality: the mask is placed by the torn sidecar's bbox.
+    import render_green as rg
+    a = arr2.astype(float)
+    a[~np.isfinite(a)] = np.nan
+    a[np.abs(a) > 1e30] = np.nan
+    H, W = a.shape
+    poly = rg.poly_to_px(run1["polygon"], run1["bbox"], W, H)
+    mask = np.array([[rg.point_in_poly(c + 0.5, r + 0.5, poly) for c in range(W)] for r in range(H)])
+    would_have = float(np.nanmedian(a[mask]))
+    assert abs(would_have - ok) * 3.28084 > 0.1, (
+        f"the torn read must differ from the honest one for this fixture to be discriminating "
+        f"(moved {abs(would_have - ok) * 3.28084:.3f} ft)")
+
+
+@needs_corpus
+def test_what_a_torn_bbox_costs_the_printed_height_is_the_tear_the_fixture_applies():
+    """green_elevation publishes what a torn bbox costs the printed green height. Recompute it.
+
+    Nothing graded that sentence, and it described a DIFFERENT EXPERIMENT from the one this file runs.
+    It published "a 5 m torn bbox moves the height by a median 0.18 ft, p95 0.60 ft, worst 1.04 ft";
+    those three reproduce to the digit, but only for a NORTH-ONLY 5 m shift, while `_torn_fixture`
+    shifts north AND east -- 7.07 m of displacement, which measures median 0.27 / p95 1.19 / worst 1.89
+    ft. The two readings were visibly inconsistent from inside the repo: 171d978's own message cites
+    bay-view 4 at 1.39 ft as its reproduction, and 1.39 is LARGER than the "worst 1.04 ft" published
+    three sentences above it, which one experiment cannot produce.
+
+    So BOTH triples are graded here, each against the shift it names, and the shift the fixture applies
+    is read out of the same TEAR_M the fixture uses. The direction of the old error was conservative --
+    the real cost is bigger than was published, so nothing was overclaimed as safe -- but a figure with
+    no producer is the defect this repo keeps finding, and this one had two producers disagreeing.
+
+    RECOMPUTED, never repeated: every figure below comes out of the corpus on this disk through
+    green_elevation's own arithmetic, and the docstring is parsed for what to compare against.
+    """
+    import fetch_hole_elev as fhe
+    import render_green as rg
+    doc = " ".join((fhe.green_elevation.__doc__ or "").split())
+
+    # (1) The tear the published triple is ABOUT, read out of the prose. If the prose stops naming the
+    # per-axis shift this fixture applies, the figures below are no longer figures about it.
+    m_axis = re.search(r"([\d.]+) m on EACH axis", doc)
+    assert m_axis and abs(float(m_axis.group(1)) - TEAR_M) < 1e-9, (
+        f"green_elevation must say what tear its published cost describes, in the {TEAR_M:g} m per axis "
+        f"_torn_fixture actually commits; the prose says {m_axis.group(1) if m_axis else 'nothing'}")
+
+    # (2) The mask shortcut, checked against the real thing before anything is measured with it.
+    slug0, hole0, meta0 = _METAS[0]
+    a0 = np.load(os.path.join(ROOT, "courses", slug0, "dem_hd", f"hole{hole0:02d}.npy"))
+    H0, W0 = a0.shape
+    p0 = rg.poly_to_px(meta0["polygon"], meta0["bbox"], W0, H0)
+    ref = np.array([[rg.point_in_poly(c + 0.5, r + 0.5, p0) for c in range(W0)] for r in range(H0)])
+    assert (ref == _green_mask(p0, W0, H0)).all(), (
+        f"the vectorised mask disagrees with render_green.point_in_poly on {slug0} hole {hole0}, so "
+        f"nothing measured with it is a measurement of what the pipeline reads")
+
+    def sweep(north_m, east_m):
+        """(|moved| ft, slug, hole) for every built pair, honest bbox against the displaced one."""
+        out = []
+        for slug, hole, meta in _METAS:
+            if meta.get("insufficient"):
+                continue                      # green_elevation states no height for these either
+            a = np.load(os.path.join(ROOT, "courses", slug, "dem_hd",
+                                     f"hole{hole:02d}.npy")).astype(float)
+            a[~np.isfinite(a)] = np.nan
+            a[np.abs(a) > 1e30] = np.nan
+            if np.all(np.isnan(a)):
+                continue
+            H, W = a.shape
+            h0 = _height_m(a, rg.poly_to_px(meta["polygon"], meta["bbox"], W, H))
+            h1 = _height_m(a, rg.poly_to_px(meta["polygon"],
+                                            _torn_bbox(meta, north_m, east_m), W, H))
+            if h0 is None or h1 is None:
+                continue
+            out.append((abs(h1 - h0) * 3.28084, slug, hole))
+        return out
+
+    def triple(rows):
+        v = sorted(r[0] for r in rows)
+        return (float(np.median(v)), float(np.percentile(v, 95)), max(v))
+
+    wrong = []
+    diag = sweep(TEAR_M, TEAR_M)
+    north = sweep(TEAR_M, 0.0)
+    for pat, rows, what in (
+            (r"on EACH axis.*?median ([\d.]+) ft, p95 ([\d.]+) ft, worst ([\d.]+) ft", diag,
+             f"the {TEAR_M:g} m-per-axis tear the fixture applies"),
+            (r"NORTH-ONLY [\d.]+ m shift.*?median ([\d.]+) ft, p95 ([\d.]+) ft, worst ([\d.]+) ft",
+             north, "the north-only shift")):
+        m = re.search(pat, doc)
+        if not m:
+            wrong.append(f"green_elevation publishes no median/p95/worst for {what} ({pat!r})")
+            continue
+        for label, pub, got in zip(("median", "p95", "worst"), [float(g) for g in m.groups()],
+                                   triple(rows)):
+            if abs(pub - got) >= 0.005:
+                wrong.append(f"{what}: docstring says {label} {pub} ft, this corpus measures "
+                             f"{got:.4f} ft over {len(rows)} pair(s)")
+
+    # The two holes the prose names by name, because an unnamed worst case cannot be re-found and
+    # bay-view 4 is the one 171d978's message quotes.
+    worst = max(diag)
+    m_worst = re.search(r"on EACH axis.*?worst [\d.]+ ft \(([a-z0-9-]+) (\d+)\)", doc)
+    if not m_worst:
+        wrong.append("green_elevation does not name the green its worst case belongs to")
+    elif (m_worst.group(1), int(m_worst.group(2))) != (worst[1], worst[2]):
+        wrong.append(f"docstring names {m_worst.group(1)} {m_worst.group(2)} as the worst green; this "
+                     f"corpus's worst is {worst[1]} {worst[2]} at {worst[0]:.4f} ft")
+    m_bv = re.search(r"bay-view 4 moves ([\d.]+) ft", doc)
+    bv = [r for r in diag if r[1] == "bay-view-golf-club" and r[2] == 4]
+    if bv and not m_bv:
+        wrong.append("green_elevation does not state what bay-view 4 moves, which is the single hole "
+                     "171d978's message reproduces the tear on")
+    elif bv and abs(float(m_bv.group(1)) - bv[0][0]) >= 0.005:
+        wrong.append(f"docstring says bay-view 4 moves {m_bv.group(1)} ft; this corpus measures "
+                     f"{bv[0][0]:.4f} ft")
+
+    assert not wrong, (
+        "green_elevation publishes a cost for a torn bbox that this corpus does not measure:\n  "
+        + "\n  ".join(wrong))
+
+
+@needs_corpus
+def test_the_cross_flight_check_reads_the_shipped_surface_through_the_pair_guard(tmp_path):
+    """tools/cross_flight_check.py's _shipped_putt fixes one putting-surface classification for both
+    passes off the SHIPPED array -- and loaded it with a bare np.load.
+
+    That tool's evidence is legal/09, and surface_io.commit_surface's own docstring names it as one
+    of the consumers that re-derive metres-per-pixel from the sidecar and so inherit a tear rather
+    than notice it. A pass comparison run against a torn pair is not a repeatability measurement.
+    """
+    import cross_flight_check as cfc
+    dem_root, _honest, run1, arr2 = _torn_fixture(tmp_path)
+    W, H = run1["W"], run1["H"]
+    mask = np.zeros((H, W), bool)
+    mask[H // 4:3 * H // 4, W // 4:3 * W // 4] = True
+    grid = (W, H, 0.4, 0.4, mask)
+
+    good = cfc._shipped_putt(dict(run1, hole=4, _dir=dem_root), grid)
+    assert good is not None, "the honest pair must still classify, or this test proves nothing"
+    with pytest.raises(ValueError, match="torn"):
+        cfc._shipped_putt(dict(run1, hole=7, _dir=dem_root), grid)
+
+
+def _surface_reads(path):
+    """(calls_read_pair, [bare np.load lines]) for one module, BY AST rather than by substring.
+
+    `read_pair` resolved either as `surface_io.read_pair(...)` or as a bare `read_pair(...)` where the
+    name is genuinely bound to it -- imported `from surface_io`, or defined in this module, which is how
+    surface_io.py's own backfill calls it. Both are real calls and neither is a mention. What is NOT
+    accepted is the token appearing in a comment, a docstring or an import alias -- which is all the
+    substring test this function replaces could ever have established.
+    """
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    bound = any((isinstance(n, ast.ImportFrom) and n.module == "surface_io"
+                 and any(a.name == "read_pair" for a in n.names))
+                or (isinstance(n, ast.FunctionDef) and n.name == "read_pair")
+                for n in ast.walk(tree))
+    calls, loads = False, []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr == "read_pair" \
+                and isinstance(f.value, ast.Name) and f.value.id == "surface_io":
+            calls = True
+        elif isinstance(f, ast.Name) and f.id == "read_pair" and bound:
+            calls = True
+        elif isinstance(f, ast.Attribute) and f.attr == "load" \
+                and isinstance(f.value, ast.Name) and f.value.id in ("np", "numpy"):
+            loads.append(node.lineno)
+    return calls, loads
+
+
+def test_read_pair_is_the_definition_every_surface_reader_uses():
+    """The claim surface_io.read_pair's docstring makes about itself, graded.
+
+    STRUCTURAL, and said so plainly: there is no output-level discriminator for "this module reached
+    the same conclusion by its own arithmetic". What it locks down is the thing that actually went
+    wrong -- four readers of the pair, none of them calling the one function that defines what a
+    readable pair is, so the guard existed and covered nobody. A fifth reader added next month is the
+    failure this catches.
+
+    BY AST, IN BOTH DIRECTIONS. The first version of this test asserted `"read_pair(" in src`, which
+    establishes that the token appears SOMEWHERE in the file -- a comment or a docstring will do, and
+    every one of these four modules carries a paragraph explaining why the call is there. So it graded
+    presence, not coverage, and its stated target (a fifth reader) is precisely what it could not see: a
+    second, bare read added beside a module's existing call leaves the token in place. Both halves are
+    now real -- each module must contain an actual Call to surface_io.read_pair, and none of them may
+    call np.load itself, which is the thing routing them through read_pair exists to stop.
+
+    TWO DELIBERATE EXEMPTIONS, and they are not oversights. surface_io.py is read_pair's home and holds
+    the only np.load a surface may be opened with. render_green.render keeps its own INLINE check and is
+    asserted to be stricter instead: it refuses a sidecar carrying NO array_sha256, which read_pair
+    accepts by design -- surface_io's own digest backfill reads unstamped pairs through read_pair, so
+    read_pair cannot hold that bar without stamp_digest being unable to read the pairs it exists to
+    stamp. read_pair is the floor; the renderer holds a ceiling above it.
+    """
+    missing = []
+    for rel in ("fetch_hole_elev.py", os.path.join("tools", "verify_elevation.py"),
+                os.path.join("tools", "gen_provenance.py"),
+                os.path.join("tools", "cross_flight_check.py")):
+        calls, loads = _surface_reads(os.path.join(ROOT, rel))
+        if not calls:
+            missing.append(f"{rel} contains no CALL to surface_io.read_pair, so the shape and "
+                           f"array_sha256 checks that define a readable pair are absent from it")
+        if loads:
+            missing.append(f"{rel} opens an array itself with np.load at line(s) "
+                           f"{', '.join(str(n) for n in loads)} -- a surface read that bypasses the "
+                           f"pair guard, which is the drift routing it through read_pair removed")
+    assert not missing, "a reader of the green surface pair does not read it as a pair:\n  " + \
+        "\n  ".join(missing)
+
+    # The two exemptions, asserted rather than assumed, so neither can be quietly widened.
+    home_calls, home_loads = _surface_reads(os.path.join(ROOT, "surface_io.py"))
+    assert home_calls and home_loads, (
+        "surface_io.py is read_pair's home and holds the one np.load a surface may be opened with; it "
+        "now has one or the other, which means the definition moved without this test noticing")
+    import render_green
+    render_src = inspect.getsource(render_green.render)
+    assert "DIGEST_KEY) is None" in render_src, (
+        "render_green must keep REFUSING a sidecar with no array_sha256. read_pair accepts one (the "
+        "backfill needs to), so routing the renderer through it would loosen the one guard that "
+        "covers every printed slope")
+
+
+# --------------------------------------------------------------------------------------------------
+# The blank green's scale
+# --------------------------------------------------------------------------------------------------
+
+@needs_corpus
+def test_a_blank_green_is_capped_by_rule_4_3_like_a_measured_one():
+    """A pocket card badged "DESIGNED TO CONFORM - RULE 4.3" must not draw an over-scale green,
+    whether the surface was measured or not.
+
+    _blank_green draws the OSM outline of the putting green, uniformly scaled -- that is an image of
+    a putting green, so the Clarification's 3/8 in : 5 yd applies to it. Its tournament branch fit
+    the panel and nothing else, on a comment claiming no green image is drawn to scale. Measured
+    across the built corpus as if each green were blank, 23 of 198 exceeded the cap, worst
+    castlewood-hill 14 at 0.4772 in : 5 yd -- 27% over -- while legal/06 asserts as a blanket fact
+    that greens are "rendered at 0.36 in : 5 yd". tools/check_scale.py would have caught it after
+    the fact, in a browser, if anyone ran it; nothing prevented it.
+
+    0 of 198 corpus greens are blank today, so this is the latent case -- and the trigger arrives
+    for a whole course at once (see depth_width_yd), not for one green.
+    """
+    import render_green as rg
+    over = []
+    for slug, hole, meta in _METAS:
+        svg, summary = rg._blank_green(dict(meta, insufficient=True), True)
+        ipf = _in_per_5yd(svg, meta)
+        if ipf > LIMIT_IN_PER_5YD:
+            over.append((round(ipf, 4), slug, hole))
+        assert summary["scale_max_in"] is not None, (
+            f"{slug} hole {hole}: a blank card records no legal on-page height, so nothing "
+            f"downstream can state the scale it was drawn at")
+    over.sort(reverse=True)
+    assert not over, (
+        f"{len(over)} of {len(_METAS)} greens drawn through the blank path exceed the Rule 4.3 cap "
+        f"of {LIMIT_IN_PER_5YD} in : 5 yd, worst {over[:3]}")
+
+
+@needs_corpus
+def test_a_blank_green_and_a_measured_one_are_sized_against_the_same_panel():
+    """The blank path reserved 0.18 in of footer room where render() reserves 3*0.125 + 0.125.
+
+    render()'s own comment says why 0.18 is wrong: a footer can wrap to three lines plus the
+    playline, so 0.18 under-reserves by up to 0.32 in and a green sized against it is too tall for
+    its panel. A blank card's footer is the same .foot flex row, so it wraps the same way.
+
+    BEHAVIOURAL ONLY WHERE HEIGHT IS THE BINDING FIT, which is the whole difficulty, and the first
+    version of this fixture did not have it. That version wrote its ring as [lon, lat] pairs while
+    poly_to_px reads (lat, lon), so the shape drawn was not the 8 m x 40 m green its comment claimed:
+    it laid out at VBw 95.70 x VBh 41.10, aspect 2.3285, and WIDTH bound it -- w-fit 0.021001 against
+    h-fit 0.093917 -- so it drew 0.863 in into a 3.860 in panel, 4.5x of slack, and the assertion
+    below passed at every footer allowance between 0.18 and 0.50. (The rotation was never the problem:
+    approach_frame returns -90 - a_ang, and at bearing 0 a_ang is exactly -90, so theta is 0.0 and the
+    pixel ring is drawn north-up. That half of the old comment was true.)
+
+    16 m wide x 80 m deep at 0.4 m per pixel, ring in (lat, lon) like every real sidecar's, lays out
+    at VBw 56.0 x VBh 216.0, aspect 0.2593 -- below the GRN_PANEL_W_IN/GRN_PANEL_H_IN = 0.5207 ratio at
+    which height starts to bind -- and at 0.2043 in : 5 yd it is far enough inside the Rule 4.3 cap
+    that neither of the other two fits can take over. It draws 3.860 in with the shared constant and
+    4.180 in with the 0.18 allowance restored, so the assertion below fails when the constant is put
+    back. That the fixture is height-bound at all is now asserted rather than asserted-about, because a
+    fixture that quietly stops binding is exactly how this test came to grade nothing.
+
+    Synthetic, because no shipped card reaches it. Measured through the blank path across the 198 built
+    green geometries, height binds on 0: 167 are limited by the 2.010 in column and 31 by the Rule 4.3
+    cap, and the most height-limited green (castlewood-valley 13, VBw/VBh = 0.5508) still sits above
+    0.5207. (Those two counts are the BLANK path's, whose viewBox is the padded ring alone; the 172/26
+    split at GRN_PANEL_W_IN is render()'s, over its own viewBox.)
+    """
+    import render_green as rg
+    # 16 m wide (E-W) x 80 m deep (N-S) at 0.4 m per pixel, approached from due north. The ring is
+    # (lat, lon) per vertex because that is the order poly_to_px reads and every real sidecar writes.
+    clat = 37.5
+    res_m, w_m, h_m = 0.4, 16.0, 80.0
+    w_deg, h_deg = w_m / mlon(clat), h_m / mlat(clat)
+    lon0, lat0 = -122.0, clat
+    ring = [[lat0, lon0], [lat0, lon0 + w_deg], [lat0 + h_deg, lon0 + w_deg], [lat0 + h_deg, lon0]]
+    meta = {"hole": 3, "W": int(round(w_m / res_m)), "H": int(round(h_m / res_m)),
+            "bbox": [lon0, lat0, lon0 + w_deg, lat0 + h_deg],
+            "green_center": [lat0 + h_deg / 2.0, lon0 + w_deg / 2.0], "polygon": ring,
+            "approach_bearing": 0.0, "insufficient": True}
+    svg, _summary = rg._blank_green(meta, True)
+    k, vb = _drawn_in_per_view_unit(svg)
+    VBw, VBh = vb[2], vb[3]
+    drawn_h_in = k * VBh
+
+    # ANTI-VACUITY, in two parts, both about this fixture rather than about the code. The footer
+    # allowance can only move a drawing whose HEIGHT fit is the binding one of the three, and the
+    # allowance it replaced has to actually overfill the panel; without both, the assertion after them
+    # is satisfied by any allowance and grades nothing.
+    cap, w_fit = TARGET_IN_PER_5YD * _px_m(meta) / 4.572, rg.GRN_PANEL_W_IN / VBw
+    assert rg.GRN_PANEL_H_IN / VBh < min(cap, w_fit), (
+        f"this fixture is not height-bound (h-fit {rg.GRN_PANEL_H_IN / VBh:.6f} against w-fit "
+        f"{w_fit:.6f} and Rule 4.3 cap {cap:.6f}), so what footer allowance the blank path reserves "
+        f"cannot change what it draws and the assertion below cannot fail")
+    one_line_h_in = rg.config.CARD_H_IN - 2*0.07 - 0.50 - 0.18       # the allowance render() replaced
+    would_have_drawn = min(cap, w_fit, one_line_h_in / VBh) * VBh
+    assert would_have_drawn > rg.GRN_PANEL_H_IN + 0.05, (
+        f"restoring the one-line 0.18 in allowance would draw {would_have_drawn:.3f} in into a "
+        f"{rg.GRN_PANEL_H_IN:.3f} in panel, which does not overfill it, so the assertion below is "
+        f"satisfied either way")
+
+    assert drawn_h_in <= rg.GRN_PANEL_H_IN + 1e-9, (
+        f"the blank path drew a {drawn_h_in:.3f} in green into a {rg.GRN_PANEL_H_IN:.3f} in panel; "
+        f"it is sized against a footer allowance render() already replaced")
+    assert _in_per_5yd(svg, meta) <= LIMIT_IN_PER_5YD, "and it must still be inside the Rule 4.3 cap"
+
+    # ONE spelling of the panel, referenced by both paths -- not a third copy of the arithmetic.
+    for fn in (rg.render, rg._blank_green):
+        src = inspect.getsource(fn)
+        assert "GRN_PANEL_H_IN" in src and "GRN_PANEL_W_IN" in src, (
+            f"{fn.__name__} computes its own panel size instead of using the shared constants")
+        assert "0.18" not in src, f"{fn.__name__} still carries the one-line-footer allowance"

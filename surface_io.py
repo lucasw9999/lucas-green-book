@@ -152,9 +152,24 @@ def commit_surface(base, arr, meta):
 def read_pair(base):
     """(arr, meta, digest) for a pair ALREADY on disk, refusing one whose two halves disagree.
 
-    The read half of this module, and the shared definition of "a pair I am willing to touch". The
-    digest backfill below needs it twice -- once to check every pair before writing anything, once
-    while writing -- and two copies of that judgement would be the drift this module exists to remove.
+    The read half of this module, and the shared definition of "a pair I am willing to MEASURE
+    THROUGH". Every reader that derives a number from a surface goes through it -- the digest backfill
+    below (twice: once to check every pair before writing anything, once while writing),
+    fetch_hole_elev.green_elevation, tools/verify_elevation.py, tools/gen_provenance.py and
+    tools/cross_flight_check.py. It was called by none of them for as long as it existed, and each had
+    its own bare `json.load` + `np.load` instead, which is the drift this module exists to remove: the
+    guard was written, documented, and covered nobody. fetch_hole_elev runs BEFORE generate.py, so the
+    reader a tear reached first was the one that writes hole_elev.json.
+
+    IT IS THE FLOOR, NOT THE CEILING, and that distinction is load-bearing rather than pedantic. A
+    MISSING DIGEST is accepted here, because stamp_digest and main() below read unstamped pairs through
+    this function in order to stamp them -- a strict read would make the backfill unable to read the
+    pairs it exists to fix. render_green.render therefore keeps its own inline check rather than calling
+    this: post-backfill it REFUSES a sidecar carrying no digest, since every built sidecar now has one
+    and a missing key means the file was hand-written, restored from an older tree or truncated. Routing
+    the renderer through here would loosen the guard that stands in front of every printed slope, which
+    is the exact regression 7b2d097 shipped (`not in (None, digest)` covered 0 of 198 greens). It also
+    blanks an `insufficient` green without opening the array at all, which this cannot do.
 
     Raises ValueError naming the disagreement. NEVER writes, and never opens the .npy for anything but
     a read: the array is the measurement, the sidecar is the description of it, and a migration of the

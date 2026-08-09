@@ -54,7 +54,14 @@
   "_tees": [
     "REQUIRED for the Tees panel. yards/rating/slope come from the card; use null for anything the",
     "club does not publish (9-hole courses often have no rating). Ratings must FALL as yardage",
-    "falls -- if they don't, you have mixed a women's rating into a men's column."
+    "falls -- if they don't, you have mixed a women's rating into a men's column.",
+    "",
+    "RATING AND SLOPE ARE ONE MEASUREMENT of one tee for one gender, so null them TOGETHER. A card",
+    "that publishes 70.0/116 under Red where the row beneath is 'Ladies' Handicap' is publishing a",
+    "WOMEN'S pair: dropping the 70.0 and keeping the 116 leaves half a refused pair in a column the",
+    "book labels men's, and the build now REFUSES it (see config.slopes_without_a_rating). If a men's",
+    "slope for that tee genuinely is published elsewhere, say where with",
+    "\"slope_source\": \"<publication, tee and value>\" on that tee and it will print."
   ],
   "tees": [
     {
@@ -79,7 +86,7 @@
       "name": "Red",
       "yards": 5445,
       "rating": null,
-      "slope": 115
+      "slope": null
     }
   ],
   "_featured_tee": "REQUIRED: the big number on each hole card. secondary_tee is the small one.",
@@ -272,6 +279,21 @@
     "could be wrong."
   ],
   "build_mode": "full",
+  "_rebuilt": [
+    "OPTIONAL, and only ever printed by a build_mode 'yardage' book: the year this course was",
+    "rebuilt, as a bare year -- \"rebuilt\": 2025. The yardage guide card then says \"this course",
+    "was rebuilt in <year> with new greens\" as the reason its greens are blank. Leave it out and",
+    "the card gives the reason every yardage book supports (no trustworthy post-construction",
+    "green-surface data) with NO year, which is correct and is the safe default -- so set it only",
+    "if the year is a fact you can point at.",
+    "",
+    "A bare year is the clean way to state it. generate.py will also read one out of prose in",
+    "_status or dem_source, because the two local courses that state a rebuild state it there, but",
+    "it prints nothing rather than guess: 'mid-2025', '2025?', 'will be rebuilt in 2027',",
+    "'scheduled to be rebuilt in 2028', 'not rebuilt since 1990', 'no rebuild; last renovated",
+    "1974' and 'rebuilt after the 2024-12-17 LiDAR flight' all print no year at all. Do not rely",
+    "on the prose reader for a NEW course -- set this key."
+  ],
   "_greens_possibly_outdated": [
     "OPTIONAL: hole numbers whose greens were rebuilt AFTER the LiDAR flight. Those cards print",
     "the real map but are labelled 'pre-rebuild data' and the guide page names the holes.",

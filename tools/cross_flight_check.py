@@ -39,6 +39,7 @@ from scipy.interpolate import griddata
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import distribution                                      # noqa: E402  (path set above)
+import surface_io                                        # noqa: E402  (read_pair: the pair guard)
 from lidar_dates import course_tz, gps_to_utc            # noqa: E402  (same dir)
 
 # A pass that merely clips the edge of a green cannot be compared with one that covered it: its
@@ -163,10 +164,20 @@ def _shipped_putt(meta, grid):
     as too steep to putt, and the comparison would then be measuring that reclassification rather
     than a difference in the ground. Holding one definition fixed for both passes isolates the
     question actually being asked: did the SURFACE change between the surveys?
+
+    THE SHIPPED SURFACE IS READ AS A PAIR, through surface_io.read_pair. This was a bare np.load beside
+    a bare json.load in check(), so neither the shape the sidecar records nor its array_sha256 was
+    checked -- and surface_io.commit_surface's own docstring names this tool as one of the consumers that
+    re-derive metres-per-pixel from that same sidecar and therefore INHERIT a tear rather than notice it.
+    The mask and the grid this classification is taken over come from the sidecar; a pair whose halves
+    are from different runs classifies the shipped green against another run's extent, and the tool then
+    reports the resulting difference as survey repeatability -- which is the evidence in legal/09.
     """
     import render_green as rg
-    W, H, px_x, px_y, mask = grid
-    arr = np.load(f"{meta['_dir']}/dem_hd/hole{meta['hole']:02d}.npy")
+    # W and H are not needed here and never were: the mask carries the shape and green_summary takes the
+    # two pixel sizes. The five-name unpack was copied from _summary, which does use them.
+    _W, _H, px_x, px_y, mask = grid
+    arr, _meta, _digest = surface_io.read_pair(f"{meta['_dir']}/dem_hd/hole{meta['hole']:02d}")
     if not mask.any() or np.isnan(arr[mask]).all():
         return None
     arr = np.where(np.isnan(arr), float(np.nanmedian(arr[mask])), arr)

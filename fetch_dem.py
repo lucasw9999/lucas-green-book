@@ -395,7 +395,6 @@ def main():
     # by distance to the course centre and REFUSES a near-tie rather than guessing.
     _loc = config.COURSE.get('location') or {}
     holes = list(geo.hole_lines(els, _loc.get('lat'), _loc.get('lon')).values())
-    gc = [(g, *centroid(g)) for g in greens]
 
     # Bind EVERY hole to its green and check the invariant BEFORE deciding what to write. Building
     # `bound` inside the write loop made the check vacuous exactly when it mattered: both `ONLY=` and

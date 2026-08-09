@@ -98,31 +98,35 @@ python3 -m pytest tests/ -q          # regression tests (skip cleanly with no co
 python3 tools/check_scale.py         # measures the LAID-OUT green scale against Rule 4.3
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
-Run the suite in a **shuffled order** now and then, not just as collected. This file rebinds
-`COURSE` and drops modules from `sys.modules` at 99 sites, so a test can silently reconfigure the next
-one, and file order alone will never show it — a real `IndexError` in `render_hole` hid behind that for
-its whole life and only appeared under shuffling:
+Run the suite in a **shuffled order** now and then, not just as collected. It rebinds `COURSE` and
+drops modules from `sys.modules` at 106 sites — counted across `tests/*.py` with comments and string
+literals stripped, so every one of them executes; a plain `grep -c` reads higher, because the suite's
+own comments discuss the idiom — so a test can silently reconfigure the next one, and file order alone
+will never show it: a real `IndexError` in `render_hole` hid behind that for its whole life and only
+appeared under shuffling:
 ```bash
 python3 -m pytest tests/ -q --collect-only | grep '^tests/' | sed 's/ .*//' | sort -R > /tmp/ids
 python3 -m pytest $(tr '\n' ' ' < /tmp/ids) -q      # shuffled
 ```
-An autouse fixture now restores the `COURSE` binding after every test, so leakage should be structurally
-impossible; the shuffle is how you find out it still is.
+The autouse `_bind_a_course` fixture in `tests/conftest.py` restores the `COURSE` binding after every
+test in this directory, so leakage should be structurally impossible across the whole suite: pytest
+loads `tests/conftest.py` for every test module here, so every one of them inherits it. The shuffle is
+how you find out it still is.
 
 `tools/check_scale.py` is the important one. It lays each book out in a real browser under print
 media and measures the drawn green there, rather than trusting the SVG's own attributes — a
 stylesheet can override those, which is exactly how 15 greens once printed over the legal scale
 while every attribute looked correct. It exits non‑zero if any green exceeds 3/8 in : 5 yd. (It also
 measures the printed 5‑yd bar in the PDF, and **that figure gates too** &mdash; the Rule 4.3 claim is
-about the artifact a player carries, not the HTML it came from.) `tools/export_pdf.py --check` is the
-companion: beside each book it records a digest of the HTML **and** a digest of the exported PDF, then
-re‑derives both from the files on disk, so a stale export, a book printed by hand and a half‑written
-one are each named rather than assumed. It used to say it "proves the PDF you would actually print
-came from the HTML on disk" while recording the HTML's digest alone — which proved that a *note* beside
-the PDF named the current HTML. Interrupting an export made the point: the writer truncates the book in
-place, so the printable artifact came back with zero pages while its stamp still agreed, and `--check`
-exited 0. The export stages and renames now, and a file with no trailer is refused whatever its stamp
-says.
+about the artifact a player carries, not the HTML it came from.) `tools/export_pdf.py` is the
+companion, in two steps: the export beside each book records a digest of the HTML **and** a digest of
+the exported PDF, and `--check` records nothing — it re‑derives both from the files on disk and
+compares, so a stale export, a book printed by hand and a half‑written one are each named rather than
+assumed. It used to say it "proves the PDF you would actually print came from the HTML on disk" while
+recording the HTML's digest alone — which proved that a *note* beside the PDF named the current HTML.
+Interrupting an export made the point: the writer truncates the book in place, so the printable
+artifact came back with zero pages while its stamp still agreed, and `--check` exited 0. The export
+stages and renames now, and a file with no trailer is refused whatever its stamp says.
 
 **After adding a course, regenerate the two derived legal docs** — the test suite fails until you do,
 and the failure names staleness rather than telling you which command fixes it:

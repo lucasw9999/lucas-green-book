@@ -153,6 +153,21 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    `golf=hole` centerlines, tees, bunkers, water within `osm_bbox`; cache to
    `osm_geom.json` / `osm_course.json`. 🔎 Sanity-check that greens match hole
    numbers (each hole-end within a few metres of a distinct green; no dupes).
+   `fetch_osm.py` also REFUSES to let a reply overwrite a good cache if it lost features against it --
+   three independent checks. A loss of a STRUCTURAL kind a card is built from (a green, hole, fairway,
+   or a collapse in the total golf-feature count) is cleared by `ALLOW_STRUCTURAL_SHRINK=1`; a loss of
+   a HAZARD kind (sand or water, with no rarity exemption) is cleared separately by
+   `ALLOW_HAZARD_SHRINK=1`, which waives THAT check only, never the structural one; a large drop in a
+   VOLATILE kind (trees, buildings, landcover -- nearly always a partial reply) is cleared by
+   `ALLOW_SHRINK=1`, which likewise waives only itself. A fourth, independent check catches a REBIND --
+   a hole landing on a different green than the existing cache had, the shape a truncated reply takes
+   from the outside -- cleared by `ALLOW_REBIND=1` (OSM genuinely redrew a green under a new id). None
+   of the four grants any of the others. Spending one is never silent: each prints a `WARNING:` naming
+   itself and the counts it accepted (`bunker 36 -> 35`, `hole 7: green 501 -> green 502`), which is the
+   only record the loss leaves, since `courses/` is gitignored and the reply overwrites the cache it was
+   compared against. And only an affirmative value turns one on -- all four are read through
+   `lidar_coverage._env_on`, so `=0`, `=false`, `=no` and an empty value all mean OFF, the same
+   vocabulary every other `ALLOW_*` key here uses.
 4. **🔎 Best LiDAR.** `fetch_lidar.py` pulls the newest dense USGS 3DEP tiles covering
    the course from The National Map into `laz/` (prefer QL1/QL2). For Alameda County 2021,
    `fetch_lidar_alameda.py` decodes the `w####n####` tile names and grabs **all** sub-project
@@ -167,6 +182,15 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    product tier: 3DEP's seamless service is a MULTI-RESOLUTION MOSAIC, and at every green this stage
    has run on it answered from the 1/9 arc-second tier, so the label used to say `1 m` and was wrong
    by 2.7x E-W and 3.4x N-S.
+   `fetch_trees.py` REFUSES to write a layer that would look like "no trees" without being one: an
+   EMPTY layer -- wrong `lidar_crs`, a corridor list gone missing, a tile with no ground returns --
+   stops with `ALLOW_NO_TREES=1` as the only way through, and a hole that HAD canopy losing every
+   marker it had stops separately with `ALLOW_TREE_LOSS=1` (two different questions, so two different
+   waivers; neither silences the other). It also refuses to RUN at all against a cache with no building
+   footprints -- a clubhouse roof reads as canopy without one, 53 markers on Merion's before this test
+   existed -- cleared by `ALLOW_NO_BUILDINGS=1`, and against a cache that predates the multipolygon
+   pass, where a relation-mapped building or pond is invisible the same way -- cleared by
+   `ALLOW_NO_RELATIONS=1`. All four are independent: none waives another.
    `lidar_coverage.py` then checks every green and hole centreline against the tiles' HEADER bounding
    boxes, and cross-checks `dem_hd/` for what the point cloud actually produced -- a rectangle can
    prove a green is outside the survey, never that it is inside it. It STOPS the fetch on anything it
@@ -174,13 +198,30 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    permanently over the bay), `ALLOW_UNCHECKED_COVERAGE=1` builds with no check at all.
 6. **Elevation.** `fetch_hole_elev.py --write` measures each hole's tee-to-green height change from the
    same ground returns -- median Z at the back tee against the median of the green's own surface -- into
-   `hole_elev.json`. Run it AFTER the surfaces exist, since it reads them. Skipping it is silent: the
+   `hole_elev.json`. It REFUSES to write a file in which a hole that printed a height would go quiet --
+   whether the row disappears outright or survives but falls under the print floor, which drops the
+   line with nothing raised; `ALLOW_ELEV_LOSS=1` accepts a real loss (a green rebuilt, a tee re-mapped)
+   and waives both forms of it, deliberately ONE key for both since they are the same underlying loss
+   reached two different ways. Run it AFTER the surfaces exist, since it reads them. Skipping it is silent: the
    cards simply print no height line, which is also what a hole whose tee cannot be located does, so
    there is nothing on the page to tell a missing stage from an honest refusal. `tools/verify_elevation.py`
-   cross-checks the result against the independent 3DEP seamless DEM; run it when adding a course.
+   cross-checks the result against the independent 3DEP seamless DEM; run it when adding a course. It
+   exits 2 if a course RECORDS printed tee-to-green heights but this run verified none of them;
+   `ALLOW_UNVERIFIED_COURSES=1` accepts that by name, for a course that can never be verified here (its
+   greens permanently outside 3DEP coverage). The key cannot silence a run that verified nothing
+   ANYWHERE (still exit 2 regardless), and it cannot silence a torn green-surface pair, which has no key
+   at all -- the fix there is to rebuild the green, not to waive it. A course with no recorded heights at
+   all needs no key: it prints no height line, so there is nothing here for the tool to have failed to
+   verify.
 7. **Build.** `generate.py` renders the combined cards -> `greenbook.html` (add `COACH=1` for the
-   optional large-print edition), then `tools/export_pdf.py` -> `greenbook.pdf`. Always export with
-   that tool, never by hand: hand-exported PDFs drifted three commits behind the engine once, and
+   optional large-print edition), then `tools/export_pdf.py` -> `greenbook.pdf`. `render_hole.py`
+   (called from `generate.py`) refuses to draw a hole's trees from OSM's sparse tree nodes when the
+   course HAS LiDAR tiles but no `trees_lidar.json` -- 25 markers instead of 5086 on Merion, with the
+   legend still promising trees -- and stops until you run `fetch_trees.py`, or set
+   `ALLOW_OSM_TREES=1` to accept the sparse map deliberately. It does not cover a CORRUPT
+   `trees_lidar.json`, which is a separate, unwaivable stop in `generate.py` (re-run `fetch_trees.py`),
+   and a course with no LiDAR tiles at all needs no key: OSM trees are then the honest best available.
+   Always export with that tool, never by hand: hand-exported PDFs drifted three commits behind the engine once, and
    the printed book still showed a 40% slope label the code had already stopped emitting. The tool
    records a hash of the source HTML beside each PDF so `--check` can prove they match.
 8. **Verify (never skip).** Eyeball each green (golf-plausible slope % and feed

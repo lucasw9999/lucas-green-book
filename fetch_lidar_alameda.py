@@ -254,7 +254,11 @@ def main():
                 # stage as .part and rename, so an interrupted transfer cannot be mistaken for a
                 # complete tile by the size check on the next run. fetch_lidar.py was fixed this way;
                 # this module still wrote straight to the final name.
-                urllib.request.urlretrieve(url, fn + ".part")
+                # fetch_lidar.download_tile, not urlretrieve: it names a read timeout (urlretrieve
+                # accepts none and forwards none, so the socket blocked forever on a stalled transfer
+                # and this retry loop could never fire) and refuses a non-https URL. Shared rather
+                # than written twice, like sweep_partials and plan_downloads above it.
+                fetch_lidar.download_tile(url, fn + ".part")
                 n = os.path.getsize(fn + ".part")
                 if sz and n != sz:
                     # A short read that still parses is the worst case: the tile looks fine and simply

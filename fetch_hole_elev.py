@@ -70,6 +70,7 @@ import numpy as np
 
 import config
 import geo
+import surface_io                 # read_pair: the one definition of a pair worth measuring through
 from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
 import render_hole                 # for par3_exact_from_tee: one definition of "straight par 3"
 
@@ -212,7 +213,7 @@ def tee_anchor(hnum, line, greens):
           - anything else                     -> REFUSE. A par 4/5 card follows a played route that
             can dogleg, so there is no way to say where the missing yardage went.
     """
-    green, gend, tend = geo.match_green(line, greens, label=f"hole {hnum}")
+    green, _gend, tend = geo.match_green(line, greens, label=f"hole {hnum}")
     la0 = sum(p['lat'] for p in line)/len(line)
     lo0 = sum(p['lon'] for p in line)/len(line)
     em = lambda la, lo: ((lo-lo0)*mlon(la0), (la-la0)*mlat(la0))
@@ -653,16 +654,52 @@ def green_elevation(hole):
     DEM over the same green polygon goes 0.161 m -> 0.018 m, better on 159 of 177 holes and in all 11
     courses. 3DEP independently reproduces the raised-pad mechanism (green interior above its padded
     patch by +0.179 m there against +0.144 m here, r = 0.909), so this is a region error, not a datum one.
+
+    THE PAIR IS READ AS A PAIR, through surface_io.read_pair. This loaded the sidecar with json.load and
+    the array with np.load and checked NEITHER the shape the meta records nor the array_sha256 it records
+    -- only `insufficient` and NaN-ness -- so a pair torn by the two os.replace calls in
+    surface_io.commit_surface (this run's array beside last run's sidecar) placed the mask by the WRONG
+    bbox and this function returned a number for it. PIPELINE.md runs this stage at step 6, before
+    generate.py at step 7, so that number reached hole_elev.json FIRST; render_green refuses the same
+    hole at render time, but its remedy named only the surface rebuild, after which the render succeeds
+    and hole_elev.json still holds the figure measured through the tear.
+
+    WHAT A TEAR COSTS, measured over the real 198 pairs, for the tear the fixture in
+    tests/test_r14_pair.py actually commits -- a torn bbox 5.0 m on EACH axis, i.e. a north-east
+    displacement of 7.07 m: it moves the height by a median 0.27 ft, p95 1.19 ft, worst 1.89 ft
+    (castlewood-valley-course 12), and bay-view 4 moves 1.39 ft, which is the hole 171d978's message
+    quotes as its reproduction. A NORTH-ONLY 5.0 m shift is the cheaper half of the same experiment --
+    median 0.18 ft, p95 0.60 ft, worst 1.04 ft -- and that north-only triple is what this docstring used
+    to publish about a fixture displacing both axes, which is how the "worst" case published here came
+    out SMALLER than the single hole cited three sentences later. One experiment cannot do that, so both
+    triples are now stated with the shift each belongs to and both are recomputed from this corpus by
+    tests/test_r14_pair.py::test_what_a_torn_bbox_costs_the_printed_height_is_the_tear_the_fixture_applies.
+    Either way the figure is printed in WHOLE FEET under a 3 ft floor, so this was a missing guard rather
+    than a live wrong number.
+
+    A TEAR STOPS THE RUN rather than returning None. The None arm of this function means "no height can
+    honestly be stated for this hole", and generate.py then omits the line -- which PIPELINE.md's own
+    step 6 note says is indistinguishable from an honest refusal. A torn pair is not a refusal, it is a
+    broken tree, and the run that produced it may have torn more than one hole.
     """
-    mp = f"{DIR}/dem_hd/hole{hole:02d}.json"
-    npy = mp.replace(".json", ".npy")
-    if not (os.path.isfile(mp) and os.path.isfile(npy)):
+    base = f"{DIR}/dem_hd/hole{hole:02d}"
+    if not (os.path.isfile(base + ".json") and os.path.isfile(base + ".npy")):
         return None
-    with open(mp) as f:
-        meta = json.load(f)
+    try:
+        a_raw, meta, _digest = surface_io.read_pair(base)
+    except ValueError as e:
+        raise SystemExit(
+            f"{config.SLUG} hole {hole}: {e}\n"
+            f"  The array and the sidecar committed beside it are from DIFFERENT RUNS, so the green\n"
+            f"  ring would be rasterised against ground these pixels do not cover and this hole's\n"
+            f"  height would be measured through that. Rebuild the surface AND re-measure -- \n"
+            f"  hole_elev.json is derived, so it stays stale until this stage runs again:\n"
+            f"    COURSE={config.SLUG} ONLY={hole} OVERWRITE=1 python3 fetch_dem_hd.py\n"
+            f"    COURSE={config.SLUG} ONLY={hole} python3 fetch_dem.py\n"
+            f"    COURSE={config.SLUG} python3 fetch_hole_elev.py --write")
     if meta.get("insufficient"):
         return None            # no trustworthy surface -> no elevation claim either
-    a = np.load(npy).astype(float)
+    a = a_raw.astype(float)
     a[~np.isfinite(a)] = np.nan
     a[np.abs(a) > 1e30] = np.nan
     if np.all(np.isnan(a)):

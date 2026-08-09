@@ -504,6 +504,40 @@ def depth_width_yd(meta):
     return ((fy - by) * my / 0.9144, (max(rxs) - min(rxs)) * mx / 0.9144)
 
 
+# The .grn panel a tournament card gives a green drawing, in inches. ONE spelling, because BOTH card
+# paths size a drawing against the same physical panel: render() for a measured green, _blank_green for
+# one we will not read. The blank path carried its own copy of the height with a hardcoded 0.18 in
+# footer allowance -- 4.180 in of room against render()'s 3.860 in for the same card -- so the two
+# paths computed a different available height for one piece of paper.
+#
+# WIDTH must match generate.py's CSS: card minus padding, minus the 1px flex gap, times the .grn share
+# (2.4 of 1.6+2.4). Measured in-browser at 2.010in.
+# Why 2.4/4.0 and not wider. 172 of 198 greens are limited by this 2.010 in column rather than by the
+# Rule 4.3 cap, so a wider share would draw them bigger -- but the hole map pays for it, and measured,
+# the trade is not worth taking:
+#     1.5/2.5 -> green 2.093 in (+4.2%), 101 of 198 hole maps shrink 6%
+#     1.4/2.6 -> green 2.177 in (+8.3%), 119 of 198 hole maps shrink 13%
+# Only the hole maps whose viewBox is SHORTER than 100*LAY_H/LAY_W are affected (108 of 198 are
+# height-limited today and lose nothing), which is why the cost lands on about half of them. And the 26
+# greens already at the legal cap gain zero from any of this. So the whole exchange buys 0.08 in on a
+# green that is already 2 in across, at the price of shrinking half the hole maps. Left alone
+# deliberately; do not re-open it without re-measuring those two lines.
+#
+# HEIGHT is the card minus its padding, minus the header, minus the FOOTER ALLOWANCE. That allowance
+# was a hardcoded 0.18 in, which assumed a ONE-LINE footer. It can be three: at 7.5pt with normal
+# leading a line is ~0.125 in, and a five-tee course prints "feeds ... %" then "Nyd deep * NB NW *
+# three tees" then the carry/elevation playline. 0.18 in under-reserves by up to 0.32 in, so a green
+# sized against it would be too tall for its panel -- and a blank card's footer is the same .foot flex
+# row plus playline_html, so it wraps the same way and needs the same reservation.
+# Precautionary: measured across the corpus, HEIGHT binds on 0 of 198 greens -- 172 are limited by the
+# 2.01 in column width and 26 by the Rule 4.3 cap, and the most height-limited green's blank-path
+# aspect (VBw/VBh = 0.5508) sits above the 0.5207 ratio at which height starts to bind -- so this
+# changes no output today. It is fixed because the day a tall narrow green meets a three-line footer,
+# the failure is a green clipped by its own panel, and nothing in the pipeline is watching for that.
+GRN_PANEL_W_IN = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)
+GRN_PANEL_H_IN = config.CARD_H_IN - 2*0.07 - 0.50 - (3*0.125 + 0.125)
+
+
 def _blank_green(meta, tournament, rebuilt=False):
     """A green we will NOT read. Draw the real outline -- that geometry IS measured, it comes from
     OSM -- with ruled lines to mark your own read, and say plainly why there are no arrows. Printing
@@ -547,10 +581,30 @@ def _blank_green(meta, tournament, rebuilt=False):
         f'<line x1="{VBx+4:.1f}" y1="{VBy+VBh*0.42+i*7:.1f}" x2="{VBx+VBw-4:.1f}" '
         f'y2="{VBy+VBh*0.42+i*7:.1f}" stroke="#cfcfcf" stroke-width="0.5"/>' for i in range(4))
     if tournament:
-        # no scale claim is needed (no green image is drawn to scale), so just fit the panel
-        grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)
-        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - 0.18
-        kf = min(grn_w_in/VBw, grn_h_in/VBh)
+        # RULE 4.3 APPLIES TO THIS DRAWING TOO, and the comment that used to sit here denied it: "no
+        # scale claim is needed (no green image is drawn to scale), so just fit the panel". The path
+        # above IS an image of the putting green -- the same OSM ring the measured card draws,
+        # uniformly scaled -- so the Clarification's 3/8 in : 5 yd governs it exactly as it governs
+        # render()'s output, and this branch applied no cap at all.
+        #
+        # Measured across the 198 built green geometries as if each were blank: 23 exceed the
+        # 0.375 in : 5 yd limit and 31 exceed the 0.36 design target; the worst is castlewood-hill 14
+        # at 0.4772 in : 5 yd, 27% over -- on the POCKET card, which is the edition badged "DESIGNED
+        # TO CONFORM - RULE 4.3", and while legal/06 states "rendered at 0.36 in : 5 yd" as a blanket
+        # fact. tools/check_scale.py does measure this SVG (a blank card still matches its `.grn svg`
+        # selector) and would have failed afterwards -- but only in a browser, and only if run, so the
+        # cap was detected rather than prevented.
+        #
+        # LATENT today: no built green is blank. It is fixed rather than noted because the trigger is
+        # not one green -- see depth_width_yd, a course with no usable LiDAR blanks all 18 at once.
+        xmin, ymin, xmax, ymax = meta['bbox']
+        clat = meta['green_center'][0]
+        # The scalar mean of the two axes, which is the ground scale tools/check_scale.py divides the
+        # laid-out drawing by; render() sizes against the same mean for the same reason.
+        px_m = ((xmax-xmin)*mlon(clat)/meta['W'] + (ymax-ymin)*mlat(clat)/meta['H']) / 2.0
+        # The SAME panel render() sizes a measured green into -- see GRN_PANEL_W_IN. This branch used to
+        # spell the height itself, with a one-line footer allowance render() had already replaced.
+        kf = min(0.36*px_m/4.572, GRN_PANEL_W_IN/VBw, GRN_PANEL_H_IN/VBh)  # legal ceiling, then the fit
         wattr, hattr = f'{VBw*kf:.3f}in', f'{VBh*kf:.3f}in'
         wrapopen = ('<div style="display:flex;align-items:center;justify-content:center;'
                     'width:100%;height:100%">'); wrapclose = '</div>'
@@ -572,7 +626,10 @@ def _blank_green(meta, tournament, rebuilt=False):
                      feeds=("rebuilt since survey" if rebuilt else "not surveyed"),
                      undul_ft=0.0, conf="no data", depth_yd=depth_yd, width_yd=width_yd,
                      front_bank_yd=0.0, back_bank_yd=0.0,
-                     scale_max_in=None, insufficient=True)
+                     # The legal max on-page height for this green, the same expression render()
+                     # records. It was None, which said "this card makes no scale claim" about a card
+                     # that draws a true-shape green -- see the cap above.
+                     scale_max_in=round(0.075 * d_yd, 3), insufficient=True)
 
 
 # Render-time gate. Deliberately looser than fetch_dem_hd.py's producer gate (NAN_FRAC_MAX=0.02):
@@ -777,9 +834,13 @@ def render(hole, tournament=False):
             f"hole {hole} of {config.SLUG}: the green surface and its metadata do not match -- the\n"
             f"{torn}\n"
             f"  One of the two is from a different run, so the green ring would be placed on the wrong\n"
-            f"  ground. Rebuild that hole:\n"
+            f"  ground. Rebuild that hole, and RE-MEASURE ITS HEIGHT: fetch_hole_elev.py runs at\n"
+            f"  PIPELINE.md step 6, before this stage, and it read the same pair -- so hole_elev.json\n"
+            f"  already holds a figure measured through this tear, and rebuilding the surface alone\n"
+            f"  makes the render succeed while the card goes on printing that figure:\n"
             f"    COURSE={config.SLUG} ONLY={hole} OVERWRITE=1 python3 fetch_dem_hd.py\n"
-            f"    COURSE={config.SLUG} ONLY={hole} python3 fetch_dem.py")
+            f"    COURSE={config.SLUG} ONLY={hole} python3 fetch_dem.py\n"
+            f"    COURSE={config.SLUG} python3 fetch_hole_elev.py --write")
     # NoData sentinels must die before anything measures this surface. USGS 3DEP ships
     # -3.4028235e38; a single one of those makes the 15 cm contour loop iterate over a 3.4e38
     # range and the process is OOM-killed with no message at all (rc=137, zero output).
@@ -793,11 +854,9 @@ def render(hole, tournament=False):
 
     poly = poly_to_px(meta['polygon'], bbox, W, H)
     # rasterize polygon mask
-    ys, xs = np.mgrid[0:H, 0:W]
     mask = np.zeros((H, W), bool)
     # scanline point-in-poly (vectorized-ish, fine at this size)
     for r in range(H):
-        row = []
         yv = r+0.5
         xints = []
         n = len(poly); j = n-1
@@ -851,7 +910,7 @@ def render(hole, tournament=False):
     surf, core, S = green_summary(arr, mask, px_x, px_y)
     slope, dcol, drow = S['slope'], S['dcol'], S['drow']
     relief_m, med_slope = S['relief_m'], S['med_slope']
-    tilt_pct, undul_ft, rise_ft = S['tilt_pct'], S['undul_ft'], S['rise_ft']
+    tilt_pct, undul_ft = S['tilt_pct'], S['undul_ft']
     pdc, pdr = S['pdc'], S['pdr']
     conf = S['conf']
 
@@ -1139,30 +1198,10 @@ def render(hole, tournament=False):
         # Nothing in the book said that before: "fit to page" on A4 happens to shrink a Letter sheet,
         # which is safe, but any deliberate enlargement is not.
         legal_kf = 0.36 * px_m / 4.572                                   # legal ceiling
-        # .grn column width must match generate.py's CSS: card minus padding, minus the 1px
-        # flex gap, times the .grn share (2.4 of 1.6+2.4). Measured in-browser at 2.010in.
-        # Why 2.4/4.0 and not wider. 172 of 198 greens are limited by this 2.010 in column rather than
-        # by the Rule 4.3 cap, so a wider share would draw them bigger -- but the hole map pays for it,
-        # and measured, the trade is not worth taking:
-        #     1.5/2.5 -> green 2.093 in (+4.2%), 101 of 198 hole maps shrink 6%
-        #     1.4/2.6 -> green 2.177 in (+8.3%), 119 of 198 hole maps shrink 13%
-        # Only the hole maps whose viewBox is SHORTER than 100*LAY_H/LAY_W are affected (108 of 198 are
-        # height-limited today and lose nothing), which is why the cost lands on about half of them. And
-        # the 26 greens already at the legal cap gain zero from any of this. So the whole exchange buys
-        # 0.08 in on a green that is already 2 in across, at the price of shrinking half the hole maps.
-        # Left alone deliberately; do not re-open it without re-measuring those two lines.
-        grn_w_in = (config.CARD_W_IN - 2*0.07 - 1/96) * (2.4/4.0)        # .grn column width
-        # Footer allowance. This was a hardcoded 0.18 in, which assumed a ONE-LINE footer. It can be
-        # three: at 7.5pt with normal leading a line is ~0.125 in, and a five-tee course prints "feeds
-        # ... %" then "Nyd deep * NB NW * three tees" then the carry/elevation playline. 0.18 in
-        # under-reserves by up to 0.32 in, so a green sized against it would be too tall for its panel.
-        # Precautionary: measured across the corpus, HEIGHT binds on 0 of 198 greens -- 172 are limited
-        # by the 2.01 in column width and 26 by the Rule 4.3 cap -- so this changes no output today. It
-        # is fixed because the day a tall narrow green meets a three-line footer, the failure is a green
-        # clipped by its own panel, and nothing in the pipeline is watching for that.
-        foot_lines_in = 3 * 0.125 + 0.125                                # 3 footer lines + playline
-        grn_h_in = config.CARD_H_IN - 2*0.07 - 0.50 - foot_lines_in      # minus header + foot
-        fit_kf = min(grn_w_in/VBw, grn_h_in/VBh)                         # fit the whole frame
+        # The panel itself -- one spelling for this path and the blank one, which used to reserve a
+        # one-line footer and so gave itself 0.32 in more room for the same card. Every measurement and
+        # every reason behind the two numbers is at GRN_PANEL_W_IN; do not re-derive them here.
+        fit_kf = min(GRN_PANEL_W_IN/VBw, GRN_PANEL_H_IN/VBh)              # fit the whole frame
         kf = min(legal_kf, fit_kf)
         wattr, hattr = f'{VBw*kf:.3f}in', f'{VBh*kf:.3f}in'
         wrapopen = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%">'

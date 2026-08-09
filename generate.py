@@ -17,6 +17,7 @@ Not affiliated with, and not derived from, any commercial green-book product.
 import math
 import json
 import os
+import re
 import base64
 import render_green
 import render_hole
@@ -57,6 +58,54 @@ IG_QR = _data_uri(os.path.join(ROOT, "lucaswu.golf_qr_small.png"))
 
 DISTRIBUTABLE = distribution.is_distributable(config.COURSE)
 
+# THE REASON A BOOK MAY NOT BE SHARED IS STATED IN TWO RECORDS, and nothing tied their WORDS together.
+# The left half of each pair is what the card prints; the right half is what distribution.py's own reason
+# for the SAME refusal has to claim -- that reason is what tools/gen_provenance.py writes into
+# legal/03_PROVENANCE_BY_COURSE.md. The verdict already cannot disagree (both are keyed on the same data
+# facts, is_distributable and is_yardage); the two TEXTS still could, which is the same
+# claim-published-in-two-records-with-no-cross-check shape as the rest of this file's history.
+#
+# Each probe is a MINIMAL course record of that class, so the check asks distribution.py what it says
+# about the refusal itself and not about whichever course happens to be loaded -- flipping DISTRIBUTABLE
+# on a course whose record is fine (which the suite does, to reach the wording) must not trip it.
+#
+# The printed sentences are quoted verbatim in legal/05_DISCLAIMER_TEXT.md, which is generated FROM the
+# books, so they are the half that must not move; if distribution.py rewords a reason so that it no
+# longer makes the claim the card is printing, THIS build stops rather than shipping the disagreement.
+_REFUSALS = {
+    "yardage": (
+        {"build_mode": distribution.YARDAGE},
+        ("yardage mode", "blank greens"),
+        "<b>This copy is for personal use only &mdash; please do not share or redistribute "
+        "it</b>, because its greens are blank for want of trustworthy survey data and a reader "
+        "elsewhere cannot know that. Not for sale. All rights reserved."),
+    "unvouched": (
+        {"build_mode": "not-a-documented-build-mode"},
+        ("unrecognised build_mode", "unknown"),
+        "<b>This copy is for personal use only &mdash; please do not share or redistribute "
+        "it</b>, because this course's build record is not one this project can vouch for and a "
+        "reader elsewhere cannot know that. Not for sale. All rights reserved."),
+}
+
+
+def _refusal_sentence(kind):
+    """The printed reason for one refusal -- once distribution.py still gives that reason for it."""
+    probe, must_claim, sentence = _REFUSALS[kind]
+    ok, _label, why = distribution.distribution_status(probe)
+    missing = [c for c in must_claim if c not in why.lower()]
+    if ok or missing:
+        raise SystemExit(
+            f"generate.py prints a {kind!r} refusal on the card while distribution.py no longer gives "
+            f"that reason for it, so the book and legal/03_PROVENANCE_BY_COURSE.md would state "
+            f"different reasons for the same verdict.\n"
+            f"  the card says:      {sentence}\n"
+            f"  distribution.py:    {(why or '(it does not refuse this at all)')!r}\n"
+            + (f"  missing claim(s):   {', '.join(repr(m) for m in missing)}\n" if missing else "")
+            + f"  Reconcile the two. The card's wording is printed in a shipped book and quoted "
+              f"verbatim in legal/05_DISCLAIMER_TEXT.md, so restoring the reason in distribution.py is "
+              f"normally the cheaper half; changing the card means rebuilding that book and its PDF.")
+    return sentence
+
 
 def sharing_line():
     """The licence sentence -- and for a book that may NOT be shared, a licence that says so.
@@ -84,6 +133,11 @@ def sharing_line():
     greens are claimed only by the book that has them. The other refusals are typos in a hand-edited
     field, and what they were meant to say is unknown, so the sentence says that instead of guessing.
 
+    THE TWO TEXTS could still drift, which the verdict being shared does not fix: distribution.py holds
+    its own reason strings, legal/03 is generated from those, and these sentences were spelled here with
+    nothing comparing them. Each refusal is taken from _REFUSALS now, which pairs the printed sentence
+    with the claim distribution.py's reason for the same refusal must carry -- see _refusal_sentence().
+
     The yardage wording is quoted verbatim in legal/05_DISCLAIMER_TEXT.md; changing it invalidates that
     record. test_the_licence_sentence_never_states_a_reason_the_book_contradicts pins both branches.
     """
@@ -91,12 +145,8 @@ def sharing_line():
         return ("This book: free to share, not for sale &mdash; "
                 "CC&nbsp;BY-NC-ND&nbsp;4.0.")
     if distribution.is_yardage(config.COURSE):
-        return ("<b>This copy is for personal use only &mdash; please do not share or redistribute "
-                "it</b>, because its greens are blank for want of trustworthy survey data and a reader "
-                "elsewhere cannot know that. Not for sale. All rights reserved.")
-    return ("<b>This copy is for personal use only &mdash; please do not share or redistribute "
-            "it</b>, because this course's build record is not one this project can vouch for and a "
-            "reader elsewhere cannot know that. Not for sale. All rights reserved.")
+        return _refusal_sentence("yardage")
+    return _refusal_sentence("unvouched")
 
 
 def esc(s):
@@ -146,23 +196,162 @@ def yardage_hole_panel(hole, sheet_label):
   <div class="ynote">{lines}</div>
 </div>'''
 
+# A rebuild this course's OWN record states, in the PAST tense, with a year: "Course rebuilt 2025",
+# "fully rebuilt (Jay Blasi, reopened May 2025)". Past participles only, and the year has to sit inside
+# the same clause (no sentence or semicolon between them), because the sentence printed from this is
+# past tense too -- "this course WAS rebuilt in YYYY". "the rebuild is expected 2027" and "2021 LiDAR is
+# pre-rebuild" must not become a claim that it happened, and neither matches.
+_REBUILT_RE = re.compile(r"\b(?:rebuilt|renovated|reconstructed|reopened)\b(?P<gap>[^.;]{0,60}?)"
+                         r"\b(?P<year>(?:19|20)\d{2})\b", re.I)
+# ...and a past participle is what English builds its future passives and its negations out of, so the
+# participle alone does not mean it happened. The three vetoes below are what the docstring's claim
+# actually costs; each was MEASURED printing a completed rebuild before it existed.
+#
+# (a) THE YEAR DATES A DIFFERENT EVENT. Between the participle and the year, a relational preposition
+#     means the year is that preposition's object and not the rebuild's date:
+#     "greens rebuilt after the 2024-12-17 LiDAR flight" claimed 2024, the FLIGHT's year.
+_YEAR_DATES_ANOTHER_EVENT_RE = re.compile(
+    r"\b(?:after|before|since|until|till|prior|preced\w*|follow\w*|predat\w*|postdat\w*|pre|post)\b",
+    re.I)
+# (b) THE CLAUSE PUTS IT IN THE FUTURE. "the greens will be rebuilt in 2027" claimed 2027; "greens are
+#     scheduled to be rebuilt in 2028" claimed 2028. Deliberately NARROW, and clause-local rather than
+#     field-wide, because a record can legitimately be waiting for something else in the same breath as
+#     stating a finished rebuild -- poppy-ridge's own _status is "AWAITING ELEVATION DATA -- course fully
+#     rebuilt (Jay Blasi, reopened May 2025)", and its dem_source opens "PENDING post-2025 LiDAR". The
+#     modal there governs the DATA, not the rebuild, and no word-list can tell those apart: "awaiting"
+#     is therefore not in this list and "pending" is only ever consulted inside the matching clause.
+_NOT_YET_RE = re.compile(r"\b(?:will|shall|would|going\s+to|to\s+be|schedul\w+|slat\w+|plan\w+|"
+                         r"expect\w+|due|upcoming|propos\w+|project\w+|anticipat\w+|intend\w*|"
+                         r"pending|forthcoming)\b", re.I)
+# (c) THE CLAUSE NEGATES IT, or the record negates the rebuild anywhere in the field. Clause-local
+#     negation catches "this course has not been rebuilt since 1990", which claimed 1990 -- the year the
+#     record says it LAST was. The field-wide form is needed because the negation and the year can sit in
+#     different clauses: "no rebuild; last renovated 1974 and unchanged" claimed 1974. That one refuses
+#     the whole field, so it stays tight -- a negation adjacent to a rebuild WORD, not a negation
+#     anywhere: poppy-ridge says "2021 (pre-rebuild), which we will NOT use" and "intentionally NOT
+#     used", and neither negates a rebuild.
+_NEGATED_CLAUSE_RE = re.compile(r"\b(?:not|n[o']t|no|never|neither|nor|without|un\w+)\b", re.I)
+_NO_REBUILD_AT_ALL_RE = re.compile(r"\b(?:not|n[o']t|no|never|without)\b[^.;]{0,20}?"
+                                   r"\bre-?(?:buil\w*|novat\w*|construct\w*|open\w*)", re.I)
+# The fields of a course record that carry this fact today, in the order they are read. "rebuilt" is the
+# explicit one to set on a NEW course; the other two are where the corpus states it in prose.
+_REBUILT_FIELDS = ("rebuilt", "_status", "dem_source")
+
+
+def _clause_around(text, start, end):
+    """The sentence/clause of `text` containing text[start:end], bounded by "." and ";".
+
+    The same boundary _REBUILT_RE already uses for the gap between a participle and its year, so a
+    veto read from the clause is read from the same span the match was allowed to cross.
+    """
+    lo = max(text.rfind(".", 0, start), text.rfind(";", 0, start)) + 1
+    after = [i for i in (text.find(".", end), text.find(";", end)) if i != -1]
+    return text[lo:min(after)] if after else text[lo:]
+
+
+def _rebuild_year():
+    """The year THIS course's own record says it was rebuilt, or None if it does not say.
+
+    yardage_guide_panel() hardcoded "(this course was rebuilt in 2025)" and "This course was <b>rebuilt
+    in 2025 with new greens</b>". Both print in the shipped book and PDF of the one course built in
+    yardage mode, where they are true -- and both would have printed unchanged on the SECOND such
+    course, asserting a rebuild, in a year, about a course nothing in this project says was rebuilt at
+    all. Latent only because 11 of the 12 records carry no build_mode; the claim was keyed on the build
+    MODE, which says "no trustworthy post-construction elevation exists" and says nothing about why.
+
+    So the year comes from a per-course fact, and a record that does not state one prints no claim --
+    the card still gives the reason every yardage-mode book supports (no trustworthy post-construction
+    green-surface data), which is what build_mode actually means.
+
+    WHY PROSE FIELDS AND NOT ONLY AN EXPLICIT KEY. courses/ is gitignored and hand-edited -- it is the
+    only copy of the transcribed scorecards -- and the printed sentence is quoted verbatim in
+    legal/05_DISCLAIMER_TEXT.md, which is generated FROM the books. Requiring a new key would mean
+    editing a course record and reprinting a book and its PDF to say exactly what they already say. The
+    fact is already recorded per course, in that course's own record, in the two fields the corpus uses
+    for it ("Course rebuilt 2025 (Jay Blasi)" / "fully rebuilt (Jay Blasi, reopened May 2025) with new
+    greens"), so it is read from there. `"rebuilt": 2025` is read first and is the clean way to state it
+    on a new course.
+
+    WHAT THIS DECIDES, AND WHAT IT DOES NOT. A regex cannot decide English, and this one is not trying
+    to. It decides one question -- "may the book print this year as a rebuild that HAPPENED?" -- and it
+    is built to answer "no" whenever it is unsure, because printing nothing is always the safe outcome
+    and the book has a complete, supported sentence without a year in it. Specifically it refuses:
+
+      * prose with no past participle and no year at all;
+      * a year the participle does not date: "rebuilt AFTER the 2024-12-17 flight" (_YEAR_DATES_...);
+      * a clause that puts the rebuild ahead of the record: "will be rebuilt in 2027", "scheduled to be
+        rebuilt in 2028", "the rebuild is planned for 2029" (_NOT_YET_RE);
+      * a clause that negates it, and a field that says a rebuild did not happen at all: "has not been
+        rebuilt since 1990", "no rebuild; last renovated 1974 and unchanged" (the two _NEGAT.../
+        _NO_REBUILD... patterns);
+      * a year it cannot parse: `"rebuilt": "mid-2025"` and `"2025?"` print nothing, which is correct;
+      * two fields stating DIFFERENT years, because then the record disagrees with itself and a printed
+        year would be a choice this code is not entitled to make;
+      * and ANY vetoed wording in ANY of the three fields refuses the whole answer, rather than
+        discarding that one field and printing a year found elsewhere.
+
+    It does NOT decide, and cannot: whether a modal governs the rebuild or something else in the same
+    clause (poppy-ridge's "AWAITING ELEVATION DATA -- course fully rebuilt ... 2025" is a clause where
+    a future word and a finished rebuild coexist, and the word lists are narrow precisely so that
+    record still reads); a participle and its year separated by a full stop; reported speech ("the club
+    says it was rebuilt in 2019"); a partial or phased rebuild described as a whole one; or whether the
+    year, or the record, is TRUE. A wording outside what it decides gets no claim, not a guess -- so the
+    way this gate fails is a card that is silent about a real rebuild, and the way it must never fail is
+    a card that announces one the record does not.
+    """
+    course = config.COURSE or {}
+    years = set()
+    for key in _REBUILT_FIELDS:
+        val = str(course.get(key) or "")
+        if key == "rebuilt" and re.fullmatch(r"\s*(?:19|20)\d{2}\s*", val):
+            years.add(val.strip())        # the explicit field may state the bare year
+            continue
+        if _NO_REBUILD_AT_ALL_RE.search(val):
+            return None                   # the record says a rebuild did not happen
+        for m in _REBUILT_RE.finditer(val):
+            if _YEAR_DATES_ANOTHER_EVENT_RE.search(m.group("gap")):
+                return None               # the year dates something other than the rebuild
+            clause = _clause_around(val, m.start(), m.end())
+            if _NOT_YET_RE.search(clause) or _NEGATED_CLAUSE_RE.search(clause):
+                return None               # stated as future, or negated
+            years.add(m.group("year"))
+    return years.pop() if len(years) == 1 else None
+
+
 def yardage_guide_panel():
+    """The yardage-mode legend card. Its rebuild sentence is gated on _rebuild_year() -- see there.
+
+    Both halves of the claim are assembled rather than written out so the two cannot disagree with each
+    other: one card cannot say a rebuild explains the missing arrows while the About text below it says
+    nothing about a rebuild. Plain-string concatenation, like the _naip_line() and sharing_line() splices
+    already here -- NOT an f-string, because splicing a segment out of an f-string is what once printed
+    a literal "{qr}" into 12 books.
+    """
+    year = _rebuild_year()
+    if year:
+        no_arrows = " (this course was\n    rebuilt in " + year + ")"
+        blank_why = ("This course was <b>rebuilt in\n      " + year + " with new greens</b>, and "
+                     "accurate post-construction green-surface data is not yet publicly\n"
+                     "      available")
+        elev_why = "that data does not yet reflect this rebuilt course"
+    else:
+        no_arrows = ""
+        blank_why = ("Accurate post-construction green-surface data for this course is not publicly\n"
+                     "      available")
+        elev_why = "that data does not describe this course&rsquo;s greens as they are now"
     return '''<div class="panel guide">
   <div class="gtitle">How to use this book</div>
   <div class="legrow"><span><b>Yardages</b> to the green for every tee are on each hole card &mdash;
     from the official scorecard. The big number is the <b>back tee</b>.</span></div>
   <div class="legrow"><span>Use the <b>Read &amp; notes</b> lines to jot the pin, the slope you see, and how the
     ball rolls. Pair this with the printed <b>course aerial</b> to see fairways, bunkers, trees, greens &amp; tees.</span></div>
-  <div class="legrow"><span>Green break arrows aren&rsquo;t printed &mdash; see &ldquo;About&rdquo; below for why (this course was
-    rebuilt in 2025).</span></div>
+  <div class="legrow"><span>Green break arrows aren&rsquo;t printed &mdash; see &ldquo;About&rdquo; below for why''' + no_arrows + '''.</span></div>
   <div class="abt">
     <div class="abthead">About &amp; legal</div>
     <div class="abtxt">A free, <b>independent</b> yardage book for junior golfers, <b>not for sale</b>. Par,
-      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. This course was <b>rebuilt in
-      2025 with new greens</b>, and accurate post-construction green-surface data is not yet publicly
-      available &mdash; so rather than print slope maps that could be wrong, the greens are left <b>blank
+      yardage &amp; handicap (<b>HCP</b> = men&rsquo;s stroke index) are <b>facts</b> from the published scorecard. ''' + blank_why + ''' &mdash; so rather than print slope maps that could be wrong, the greens are left <b>blank
       to mark your own read</b>. (Our other books compute slope from public-domain USGS 3DEP elevation;
-      that data does not yet reflect this rebuilt course, so we do not use it here.)''' + _naip_line() + ''' <b>No proprietary
+      ''' + elev_why + ''', so we do not use it here.)''' + _naip_line() + ''' <b>No proprietary
       data, images, artwork, layout or trade dress from any commercial green-reading product was used,
       copied or referenced.</b> Not affiliated with, endorsed or sponsored by any course, club, association
       or product; course names &amp; trademarks belong to their owners and are used only to identify the
@@ -1221,6 +1410,60 @@ def _deck_thirds(nums):
     return out
 
 
+def write_book(out, html):
+    """Write a finished book into courses/<slug>/ the way everything else there writes: stage, rename, sweep.
+
+    THE TWO BOOKS WERE THE ONLY ARTIFACTS THIS PROJECT WROTE UNDER courses/<slug>/ IN PLACE. Both
+    writers were
+
+        with open(out, "w", encoding="utf-8") as _f: _f.write(doc(sheets_html, config.BRAND))
+
+    and Python evaluates open() FIRST, so the previous good book was truncated to 0 bytes before doc()
+    had been called at all -- and then stayed incomplete for the whole 4.24-6.80 MB write, which is many
+    buffer flushes. ENOSPC, SIGKILL, a closed lid or a power loss anywhere in that window leaves a
+    truncated or empty greenbook.html and the last good one is gone. courses/ is gitignored: no copy in
+    history, none on a remote, none anywhere.
+
+    THE REMEDY LOOP THEN CERTIFIES THE WRECK, which is what makes this worse than lost work.
+    tools/export_pdf.py --check reports WRONG_SOURCE and prints "Re-run: python3 tools/export_pdf.py";
+    Chromium parses truncated HTML happily and prints whatever sheets it got; write_stamp records the
+    wreck's html digest beside the short PDF's; the next --check prints "all N PDF(s) match the HTML
+    they were exported from". The sheets a torn write loses are the LAST ones, and the last card is the
+    back cover -- where the copyright, trademark and licence block lives. So a book missing its licence
+    passes every gate in the pipeline.
+
+    export_pdf.py makes this exact argument for the PDF it prints FROM this file -- "Playwright's writer
+    opens its destination `wb` ... writing in place truncates a good book first: interrupt it and the
+    printable artifact is gone" -- and stages for it. The writer feeding it did not. Same three lines as
+    fetch_trees.write_layer, with the stage removed in a `finally` either way.
+
+    DOT-PREFIXED, like export_pdf.staged_pdf and surface_io.staged_names, for the reason export_pdf
+    states: the suite's `courses/*/*` read-only snapshot exempts a leading dot as OS litter or a stage,
+    and glob (which is how every tool here enumerates books) does not match one either. A leftover
+    `greenbook.html.part` would read as course data nothing has ever seen; `.greenbook.html.part` reads
+    as what it is.
+
+    `html` is a finished string, not a callable, so the document is rendered BEFORE anything is opened:
+    a failure while building it cannot touch the destination at all.
+
+    encoding="utf-8" explicitly. Without it Python uses the platform default, while the document it is
+    writing declares <meta charset="utf-8"> -- and every book contains 18 en-dashes (U+2013) from the
+    thumb-index tabs, generated unconditionally by _deck_thirds. On a cp1252 machine those become byte
+    0x96, which utf-8 cannot decode, so all 18 tabs render as replacement characters; under an ASCII
+    locale the build dies with UnicodeEncodeError. Declaring one encoding and writing another is a bug
+    that cannot reproduce on the author's machine.
+    """
+    tmp = os.path.join(os.path.dirname(out), f".{os.path.basename(out)}.part")
+    try:
+        with open(tmp, "w", encoding="utf-8") as _f:
+            _f.write(html)
+        os.replace(tmp, out)
+    finally:
+        if os.path.exists(tmp):     # a no-op once the rename above has happened
+            os.remove(tmp)
+    return out
+
+
 def build_deck():
     """(panels, n_leading, n_holes) -- the flat, ordered card deck for this course.
 
@@ -1436,14 +1679,9 @@ def main():
 
     sheets_html = build_pages(panels)
     out = os.path.join(COURSE_DIR, "greenbook.html")
-    # encoding="utf-8" explicitly. Without it Python uses the platform default, while the document
-    # it is writing declares <meta charset="utf-8"> -- and every book contains 18 U+2013 en-dashes
-    # from the thumb-index tabs (generated unconditionally, "1\u201333" and friends). On a cp1252
-    # machine those become byte 0x96, which utf-8 cannot decode, so all 18 tabs render as
-    # replacement characters; under an ASCII locale the build dies with UnicodeEncodeError. Declaring
-    # one encoding and writing another is a bug that cannot reproduce on the author's machine.
-    with open(out, "w", encoding="utf-8") as _f:
-        _f.write(doc(sheets_html, config.BRAND))
+    # Staged and renamed -- see write_book(), which carries the encoding note that used to live here
+    # and the reason a book may not be written over itself.
+    write_book(out, doc(sheets_html, config.BRAND))
     print(f"Wrote {out} (single conforming build) "
           f"-> cards {config.CARD_W_IN}x{config.CARD_H_IN}in, {config.PER}/sheet duplex")
 
@@ -1780,8 +2018,7 @@ def build_coach(coach_name=""):
             f'<title>Enlarged Edition &mdash; {esc(COURSE)}</title><style>{css}</style>'
             f'</head><body>{"".join(pages)}</body></html>')
     out = os.path.join(COURSE_DIR, "greenbook_coach.html")
-    with open(out, "w", encoding="utf-8") as _f:   # see the note in the pocket writer
-        _f.write(html)
+    write_book(out, html)      # staged and renamed, exactly like the pocket book -- see write_book()
     print(f"Wrote {out} (ENLARGED edition for {coach_name}) "
           f"-> {len(cards)} cards, {len(pages)} PDF pages, {config.PER}/sheet duplex "
           f"(same layout as pocket book; each hole = 2 cards: map front / green back)")

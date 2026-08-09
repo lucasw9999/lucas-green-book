@@ -16,7 +16,7 @@ Then: COURSE=<slug> python3 fetch_dem_hd.py   # precision green surfaces
       COURSE=<slug> python3 fetch_trees.py    # trees from canopy returns
       COURSE=<slug> python3 generate.py
 """
-import glob, os, re, json, time, urllib.parse, urllib.request
+import glob, os, re, json, shutil, time, urllib.parse, urllib.request
 import config
 
 DIR = config.COURSE_DIR
@@ -39,11 +39,20 @@ def _filtered_count(v):
     download url" -- so the count has to be read out of the prose. Anything unrecognised reads as 0,
     which is the safe direction: an unparsed value then shows up as an unaccounted-for row and gets
     reported, rather than silently excusing a shortfall.
+
+    A NEGATIVE VALUE IS NOT A COUNT, and reads as 0 for exactly the same reason. Returned unchanged it
+    made `len(got) + filtered >= total` unreachable, so a page of 14 products against a stated total of
+    14 was declared "a TRUNCATED listing ... with -1 reported removed" and the course could not be
+    built at all -- the second time a healthy listing has been hard-refused by this accounting. 0 is
+    the neutral element here: it excuses nothing, so a real truncation still refuses, and it removes
+    nothing, so a listing whose rows are otherwise accounted for is accepted. Clamping to abs(v) or
+    dropping the sign would have been the other error -- inventing removed rows the service never
+    claimed, which is what the per-page bound in tnm_items exists to stop.
     """
     if isinstance(v, bool):
         return 0
     if isinstance(v, int):
-        return v
+        return max(v, 0)
     if isinstance(v, str):
         m = re.search(r"\d+", v)
         return int(m.group(0)) if m else 0
@@ -142,6 +151,13 @@ def tnm_items(tries=8):
     castlewood-valley 7/6, monarch-bay 25/24 -- so `len(got) < total` is the NORMAL state there and
     means nothing is wrong.
 
+    `filteredOut` IS A THIRD-PARTY NUMBER AND IS READ IN BOTH DIRECTIONS DEFENSIVELY, because trusting
+    it either way broke a listing: a negative value reads as 0 (see _filtered_count) so it cannot refuse
+    a listing that is otherwise accounted for, and a per-page value is capped at the rows the page did
+    NOT serve out of the window it was asked for, so it cannot pay for rows that window never held. One
+    bound without the other fails the opposite case -- a healthy listing refused, or a truncated one
+    excused.
+
       * WALKED TO THE END and accounted for at least `total` rows, but fewer DISTINCT products came
         back. Every offset in the range was asked, so `got` already holds every product the service was
         willing to show; the deficit is repeated rows or filtered ones, not missing tiles. That is
@@ -217,16 +233,25 @@ def tnm_items(tries=8):
         offset += len(items)
         stalled = stalled + 1 if new == 0 else 0
         stalls_seen += 1 if new == 0 else 0
-        # A FILTERED COUNT MAY NEVER EXCUSE A STALL, so it is accumulated under two bounds. Caught by
-        # this function's own regression test: a service re-serving page one while reporting
-        # "387 items have been removed" made `len(got) + filtered` meet a stated 400 on the FIRST page,
-        # which broke the walk and returned page one as the whole survey -- exactly the defect the stall
-        # detector exists for, re-entered through the new accounting.
-        #   * PER PAGE, no page can have filtered more products than the window it was asked for holds;
+        # A FILTERED COUNT MAY NEVER EXCUSE A STALL OR A TRUNCATION, so it is accumulated under two
+        # bounds. Caught by this function's own regression test: a service re-serving page one while
+        # reporting "387 items have been removed" made `len(got) + filtered` meet a stated 400 on the
+        # FIRST page, which broke the walk and returned page one as the whole survey -- exactly the
+        # defect the stall detector exists for, re-entered through the new accounting.
+        #   * PER PAGE, RECONCILED AGAINST THE ROWS ACTUALLY SERVED. The window a page was asked for
+        #     holds TNM_PAGE_MAX rows and the service's own message says it filters WITHIN that window
+        #     -- "Retrieved 14 item(s) Retrieved (1 through 200) 1 items have been removed because they
+        #     don't have a download url" -- so rows considered = served + filtered <= max, and at most
+        #     `TNM_PAGE_MAX - len(items)` of them can have been removed. Bounding by TNM_PAGE_MAX alone
+        #     ignored the rows in hand and let a crafted or buggy value pay for rows the window never
+        #     held: 5 products served beside `filteredOut: "200 items have been removed"` accounted for
+        #     a stated 205 on page one, so a listing 200 products short was accepted in silence and the
+        #     course was built on 5 tiles. max(0, ...) because a service that over-fills a page past
+        #     its own `max` has already left the contract and may not earn a filtered count by it.
         #   * ONLY ON PROGRESS, because a page that repeated its rows repeated its filtered count too,
         #     and summing those double-counts without bound.
         if new:
-            filtered += min(page_filtered, TNM_PAGE_MAX)
+            filtered += max(0, min(page_filtered, TNM_PAGE_MAX - len(items)))
         if stalled >= TNM_STALL_PAGES:
             break                   # not honouring `offset`; the accounting below says what that cost
         # Its position relative to the sub-cap block below is NOT load-bearing, and saying so beats
@@ -512,6 +537,68 @@ def sweep_partials(laz_dir):
         os.remove(stale)
 
 
+# READ DEADLINE for one tile transfer, in seconds. Every other request in this project names a timeout
+# -- tnm_items 90, fetch_osm 150, fetch_dem and tools/verify_elevation 120, fetch_lidar_alameda's HEAD
+# 30 -- and the bulk tile download, the LARGEST fetch in the project at 78 tiles and 11.6 GiB, was the
+# only one with none. It used urllib.request.urlretrieve, which accepts no timeout and forwards none, so
+# the socket inherited socket.getdefaulttimeout(): nothing here ever calls socket.setdefaulttimeout, so
+# that is None -- a blocking socket on connect AND on every read. A connection that establishes and then
+# goes quiet mid-transfer blocks in recv() forever, and the `for a in range(4)` + `time.sleep(3)` retry
+# wrapped around it can never advance, because nothing raises. PIPELINE.md step 4 tells the user to run
+# this unattended.
+#
+# It is a PER-READ deadline, not a whole-transfer one: a 300 MB tile legitimately takes minutes, and each
+# read only has to produce a byte within this window. 120 s is the same figure fetch_dem uses against the
+# same producer. NOT socket.setdefaulttimeout, which is process-global and would silently retime every
+# other request in the process.
+DOWNLOAD_TIMEOUT_S = 120
+
+
+def download_tile(url, dest, timeout=DOWNLOAD_TIMEOUT_S):
+    """Stream one LAZ tile to `dest`. Shared by both fetchers; the only bulk transfer in the project.
+
+    TWO THINGS urlretrieve COULD NOT DO, which is why it is gone:
+
+      * NAME A TIMEOUT. See DOWNLOAD_TIMEOUT_S. `urlopen(..., timeout=N)` sets it on the socket, so a
+        stalled read raises TimeoutError -- which the caller's existing `except Exception` retry already
+        handles, and which is the whole reason that retry loop exists.
+      * REFUSE A SCHEME. `url` comes out of the TNM reply BODY (`it['downloadURL']`) and is the only
+        request address in this project that is not an https module constant, so nothing stopped an
+        `http://` from being honoured as a silent downgrade -- or, worse, a `file://`, which urlretrieve
+        implements itself by COPYING A LOCAL FILE into laz/ and reporting it as a downloaded tile. The
+        scheme is checked BEFORE anything is opened, so a refused URL cannot leave a staged file behind.
+
+    ONE THING IT DID DO IS KEPT: urlretrieve raised ContentTooShortError when the body ran out before
+    the announced Content-Length, and dropping that would have cost the only truncation check on the
+    path where TNM reports no `sizeInBytes` -- plan_downloads' own comment says that path "still cannot
+    tell a truncated file from a complete one", and a short tile that still parses simply has no points
+    over part of the course. It raises IOError instead, which the same retry handles.
+
+    Also sends a User-Agent, like every other request this project makes: urlretrieve sent none, and
+    head_size's docstring records an anonymous request being answered 403 by an intermediary and read
+    as the edge of the survey.
+
+    Staging and renaming stay with the callers, which both write `<tile>.part` and rename only after
+    checking the size TNM reported: this function is the transfer and nothing else.
+    """
+    scheme = urllib.parse.urlparse(url).scheme.lower()
+    if scheme != "https":
+        raise SystemExit(
+            f"refusing to fetch a LiDAR tile over {scheme or 'no'}:// -- {url}\n"
+            f"  This URL came out of the producer's reply body, not from a constant in this repo, and\n"
+            f"  it is the only request address here that does. http:// is a silent TLS downgrade and\n"
+            f"  file:// would copy a local file into laz/ and report it as a downloaded tile. Check\n"
+            f"  what the service returned; do not relax this to build.")
+    req = urllib.request.Request(url, headers={'User-Agent': 'greenbook/1.0'})
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as out:
+        stated = (r.info() or {}).get("Content-Length")
+        shutil.copyfileobj(r, out)
+    got = os.path.getsize(dest)
+    if stated is not None and str(stated).strip().isdigit() and got != int(stated):
+        raise IOError(f"transfer ended after {got:,} bytes; the server announced "
+                      f"{int(stated):,} for {os.path.basename(url)}")
+
+
 def copy_suffix(sub, i, stem, ext, used):
     """Filename for an extra sub-project copy of one cell: `<stem>__Co<n><ext>`.
 
@@ -691,8 +778,10 @@ def main():
         for a in range(4):
             try:
                 # download to .part and rename, so an interrupted transfer cannot be mistaken
-                # for a complete tile by the size check above on the next run
-                urllib.request.urlretrieve(u, fn + ".part")
+                # for a complete tile by the size check above on the next run. download_tile names a
+                # read timeout and refuses a non-https URL; urlretrieve could do neither, so a
+                # transfer that went quiet mid-stream blocked here forever and this retry never fired.
+                download_tile(u, fn + ".part")
                 got = os.path.getsize(fn + ".part")
                 if want and got != want:
                     # A short read that still parses is the worst case: the tile looks fine and
