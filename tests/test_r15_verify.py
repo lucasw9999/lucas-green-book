@@ -155,15 +155,39 @@ def _dem_that_agrees(ve, cdir):
 
 
 @contextlib.contextmanager
-def _pairs_torn_at(raises):
-    """Make `surface_io.read_pair` raise `raises[holeNN]` for those bases, and behave for the rest.
+def _pairs_torn_at(ve, raises):
+    """Make the read_pair CHECK_COURSE CALLS raise `raises[holeNN]` for those bases; behave for the rest.
 
     The tear is injected AT read_pair because read_pair is where the code under test meets it, and the
     exceptions handed in here are the ones a real torn pair on disk produced (see
     `_real_tear_exceptions`). Every other hole goes through the real function, so a fix that refused
     everything would not pass.
+
+    PATCHED ON `ve.surface_io`, AND A FRESH `import surface_io` HERE IS NOT THE SAME OBJECT. That is not
+    a nicety; it is the whole of why this test passed alone and failed in a full run. verify_elevation
+    does `import surface_io` at module level and calls `surface_io.read_pair(...)`, so the function it
+    reaches is an attribute of the module object IT bound. tests/test_r14_deadcode.py's autouse
+    `_isolate_course_binding` pops every name in its `_COURSE_MODULES` out of sys.modules after each of
+    its own tests, and that tuple -- documented as "every module that reads the COURSE env var at import
+    time" -- lists surface_io, which reads no COURSE and imports no config. So once that file has run,
+    sys.modules holds no surface_io while verify_elevation still holds the module that was there, and an
+    `import surface_io` here EXECUTED surface_io.py AGAIN and patched a SECOND copy: check_course went
+    on reading the real, intact pairs through the first, reported all eleven holes checked, and the
+    injection graded nothing. Measured as
+
+        pytest tests/test_phase1_regressions.py::test_the_independent_checker_says_which_region_each_side_of_it_samples \\
+               tests/test_r14_deadcode.py::test_site1_render_hole_output_is_byte_identical \\
+               tests/test_r15_verify.py::test_a_torn_pair_costs_the_hole_it_is_on_and_not_the_whole_course
+
+    -- 11 checked where 9 was required, with either of the first two dropped it passes, and the autouse
+    COURSE fixture in conftest.py cannot see any of it: the leaked state is a module IDENTITY (in fact
+    the ABSENCE of a sys.modules entry), not a COURSE binding, and restoring COURSE cannot make a second
+    copy of surface_io become the copy verify_elevation holds.
+
+    Reaching through `ve` cannot drift back into that: `ve.surface_io` is BY CONSTRUCTION the object
+    whose read_pair check_course calls, whatever any other test has done to sys.modules.
     """
-    import surface_io
+    surface_io = ve.surface_io
     real = surface_io.read_pair
 
     def patched(base):
@@ -179,7 +203,7 @@ def _pairs_torn_at(raises):
         surface_io.read_pair = real
 
 
-def _real_tear_exceptions(tmp_path):
+def _real_tear_exceptions(ve, tmp_path):
     """{label: exception} raised by read_pair on two REAL torn pairs written under tmp_path.
 
     The two spellings of one tear, both built through the producer that commits a pair:
@@ -191,8 +215,13 @@ def _real_tear_exceptions(tmp_path):
 
     Captured rather than assumed, so this file cannot end up catching an exception class that a tear
     does not actually raise -- which is how a guard comes to cover nothing.
+
+    Captured through `ve.surface_io`, the same module object the checker reads its pairs through, for
+    the reason `_pairs_torn_at` states: a bare `import surface_io` in this file is a second copy of the
+    module once anything has dropped it from sys.modules, and an exception raised by a copy the code
+    under test never calls is a guess about that code dressed up as a measurement.
     """
-    import surface_io
+    surface_io = ve.surface_io
     arr = np.arange(12, dtype=float).reshape(3, 4)
     meta = {"hole": 1, "H": 3, "W": 4, "bbox": [-75.0, 40.0, -74.999, 40.001],
             "polygon": [[40.0, -75.0], [40.0, -74.999], [40.001, -74.999]]}
@@ -301,7 +330,7 @@ def test_a_torn_pair_costs_the_hole_it_is_on_and_not_the_whole_course(tmp_path):
     """
     ve = _verify_elevation()
     cdir = os.path.join(ROOT, "courses", SOURCE)
-    tears = _real_tear_exceptions(tmp_path)
+    tears = _real_tear_exceptions(ve, tmp_path)
 
     with _dem_that_agrees(ve, cdir):
         intact, intact_out = _check(ve, SOURCE)
@@ -316,7 +345,7 @@ def test_a_torn_pair_costs_the_hole_it_is_on_and_not_the_whole_course(tmp_path):
     raises = {f"hole{gone:02d}": tears["missing array"],
               f"hole{faked:02d}": tears["digest disagrees"]}
 
-    with _dem_that_agrees(ve, cdir), _pairs_torn_at(raises):
+    with _dem_that_agrees(ve, cdir), _pairs_torn_at(ve, raises):
         torn, torn_out = _check(ve, SOURCE)
 
     assert torn[0] != "RAISED", (
