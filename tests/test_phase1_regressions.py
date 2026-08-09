@@ -1381,10 +1381,32 @@ def test_the_printed_qr_module_is_smaller_than_its_css_width_implies_and_the_rec
 
 
 def _courses_diff(before, after):
-    """(vanished, touched) between two snapshots."""
+    """(vanished, touched, added) between two snapshots.
+
+    `added` IS THE THIRD DIRECTION AND IT WAS MISSING. This returned two lists, both derived from
+    `before`, so a path that appears only in `after` was invisible to every caller -- and the session
+    guard above, whose docstring says it works "by comparing the set of paths", compared exactly one
+    end of that set. Reproduced on a fake root using these same functions: create
+    `courses/<real slug>/course.json.part` and `courses/<real slug>/dem_hd/hole99.json`, delete
+    nothing, modify nothing, and the snapshot SEES both while this returned ([], []) and the guard
+    passed.
+
+    What that costs is not tidiness. A stray `course.json.part` survives beside the hand-transcribed
+    scorecard, which is the loss _courses_are_read_only exists to argue about; and a bogus
+    `dem_hd/holeNN.json` is then read as a real surface by surface_io._sidecars,
+    gen_provenance._digest_coverage and tools/cross_flight_check -- whose output is legal/09's
+    evidence -- and jams `surface_io.py --stamp` for the whole corpus. A file that should not be there
+    is course data too, in the only sense that matters here: nothing else in the tree will ever tell
+    you it arrived.
+
+    Not a dot-prefix exception: `_courses_snapshot` already drops dotted names, so a staged
+    `.holeNN.json.part` that surface_io.sweep_staged is about to remove never reaches this comparison
+    in the first place.
+    """
     vanished = sorted(set(before) - set(after))
     touched = sorted(k for k in set(before) & set(after) if before[k] != after[k])
-    return vanished, touched
+    added = sorted(set(after) - set(before))
+    return vanished, touched, added
 
 
 # The deletion guard -- the predicate AND the wrappers that install it -- lives in tests/conftest.py.
@@ -1436,18 +1458,25 @@ def _courses_are_read_only():
     under courses/ instead of tmp_path is a natural thing to write, and would look fine until the day it
     picked a real slug -- or the day a test rewrote a real course.json in place.
 
-    Session-scoped, comparing the set of paths and the mtime of every course.json and book, so it costs
-    one directory walk per run rather than one per test.
+    Session-scoped, comparing the set of paths IN BOTH DIRECTIONS and the mtime of every course.json
+    and book, so it costs one directory walk per run rather than one per test. The both-directions part
+    is recent: the comparison used to be built only out of `before`, so a file the suite CREATED inside
+    a real course was seen by the snapshot and reported by nothing. See _courses_diff.
     """
     before = _courses_snapshot(ROOT)
     yield
-    vanished, touched = _courses_diff(before, _courses_snapshot(ROOT))
+    vanished, touched, added = _courses_diff(before, _courses_snapshot(ROOT))
     assert not vanished, (
         f"the test run DELETED files under courses/, which is gitignored and has no copy anywhere: "
         f"{vanished[:5]}")
     assert not touched, (
         f"the test run modified files under courses/: {touched[:5]}. Course data and built books are "
         f"inputs to the suite, not scratch space -- write to tmp_path instead.")
+    assert not added, (
+        f"the test run CREATED files inside a real course: {added[:5]}. A leftover there is not "
+        f"harmless: a stray course.json.part sits beside the hand-transcribed scorecard, and a bogus "
+        f"dem_hd/holeNN.json is read as a real green surface by surface_io, gen_provenance and "
+        f"tools/cross_flight_check -- write to tmp_path, or to a slug starting with '_'.")
 
 
 @pytest.fixture(autouse=True)
@@ -1957,6 +1986,12 @@ def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_rea
     spelling of "is that a course or somebody's scratch?" -- and asserted here in both directions,
     because the cheap way to silence a false alarm is to stop looking. Scratch churn must be silent AND
     a real course losing course.json, or having its book rewritten, must still trip.
+
+    ALL THREE DIRECTIONS, and the third one arrived late. `_courses_diff` returned (vanished, touched),
+    both built out of `before`, so a file the suite CREATED inside a real course was invisible -- the
+    snapshot saw it and nothing compared it. Cases (2b), (3b) and (3c) below grade that direction on
+    both sides of the scratch rule; see _courses_diff for what a stray .part or a bogus
+    dem_hd/holeNN.json costs downstream.
     """
     import inspect
     import shutil
@@ -1976,11 +2011,12 @@ def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_rea
     # synth_engine's teardown does to courses/_synth_ticks.
     before = _courses_snapshot(root)
     shutil.rmtree(scratch)
-    vanished, touched = _courses_diff(before, _courses_snapshot(root))
+    vanished, touched, added = _courses_diff(before, _courses_snapshot(root))
     assert not vanished, (
         f"the guard reads a scratch fixture cleaning up after itself as destroyed corpus data: "
         f"{vanished}. That is the phantom teardown failure; no real course was touched.")
     assert not touched, f"scratch churn reported as a corpus modification: {touched}"
+    assert not added, f"scratch churn reported as a corpus addition: {added}"
 
     # (2) rewriting a scratch course.json in place, which _synth_bmode does six times in one test
     scratch.mkdir()
@@ -1989,23 +2025,56 @@ def test_the_read_only_courses_guard_ignores_scratch_slugs_and_still_catches_rea
     os.utime(p_scratch, (1.0, 1.0))
     before = _courses_snapshot(root)
     os.utime(p_scratch, (2.0, 2.0))
-    assert _courses_diff(before, _courses_snapshot(root)) == ([], []), \
+    assert _courses_diff(before, _courses_snapshot(root)) == ([], [], []), \
         "rewriting a scratch course.json is reported as corpus damage"
+
+    # (2b) and a scratch course GAINING a file is silent too -- every fixture under courses/ builds one
+    # file at a time, so the addition direction has to be as scratch-blind as the other two.
+    before = _courses_snapshot(root)
+    (scratch / "osm_geom.json").write_text("z", encoding="utf-8")
+    assert _courses_diff(before, _courses_snapshot(root)) == ([], [], []), \
+        "a scratch fixture writing its own osm_geom.json is reported as corpus damage"
 
     # (3) the protection this fixture exists for is UNCHANGED: a real course losing its hand-verified
     # scorecard still trips, and so does a real book being rewritten.
     before = _courses_snapshot(root)
     (real / "course.json").unlink()
-    vanished, _ = _courses_diff(before, _courses_snapshot(root))
+    vanished, _, _ = _courses_diff(before, _courses_snapshot(root))
     assert vanished == ["courses/sample-golf-club/course.json"], (
         f"the guard no longer notices a REAL course's course.json being deleted: {vanished}")
 
     os.utime(real / "greenbook.html", (1.0, 1.0))
     before = _courses_snapshot(root)
     os.utime(real / "greenbook.html", (2.0, 2.0))
-    _, touched = _courses_diff(before, _courses_snapshot(root))
+    _, touched, _ = _courses_diff(before, _courses_snapshot(root))
     assert touched == ["courses/sample-golf-club/greenbook.html"], (
         f"the guard no longer notices a REAL book being rewritten: {touched}")
+
+    # (3b) A FILE ARRIVING inside a real course is the third direction, and it was ungraded -- this
+    # function returned two lists both derived from `before`, so `after`-only paths were invisible and
+    # the session guard passed on exactly this. Both spellings below are the ones that cost something:
+    # a `.part` stranded beside the hand-transcribed scorecard, and a bogus green surface that
+    # surface_io, gen_provenance and tools/cross_flight_check all then read as real.
+    before = _courses_snapshot(root)
+    (real / "course.json.part").write_text("x", encoding="utf-8")
+    (real / "dem_hd").mkdir()
+    (real / "dem_hd" / "hole99.json").write_text("{}", encoding="utf-8")
+    vanished, touched, added = _courses_diff(before, _courses_snapshot(root))
+    assert added == ["courses/sample-golf-club/course.json.part",
+                     os.path.join("courses", "sample-golf-club", "dem_hd", "hole99.json")], (
+        f"a file CREATED inside a real course is not reported: {added}. The snapshot sees it; the diff "
+        f"has to say so, or a stray .part beside the scorecard and a bogus dem_hd/holeNN.json are both "
+        f"silent.")
+    assert not vanished and not touched, (
+        f"an addition was miscounted as a deletion or a rewrite: {vanished} / {touched}")
+
+    # (3c) and the ONE deliberate exception stays: a dotted staged name is what surface_io.sweep_staged
+    # is about to remove, so it must not read as an arrival either. _courses_snapshot drops it, which is
+    # why this passes without a rule here.
+    before = _courses_snapshot(root)
+    (real / "dem_hd" / ".hole99.json.part").write_text("{}", encoding="utf-8")
+    assert _courses_diff(before, _courses_snapshot(root)) == ([], [], []), \
+        "a staged .holeNN.json.part now reads as an arrival, so a sweep doing its job trips the guard"
 
     # (4) and the logic just measured is the logic the session fixture runs, with the scratch rule
     # borrowed rather than respelled. Both are what made this defect survive: a closure nothing could
