@@ -180,6 +180,18 @@ def _a_course_exists_to_bind(_deletion_cannot_reach_a_real_course):
             shutil.rmtree(d, ignore_errors=True)
 
 
+# Every module this directory's course binding drops from sys.modules, under one rule: importing it
+# reaches the COURSE env var -- by reading it itself, or through a chain of module-level sibling imports
+# that ends at one that does. NOT A LIST TO EXTEND BY HAND. The rule is re-derived off the engine's own
+# source by test_the_suite_wide_course_module_pop_list_is_derived_from_the_engine_and_not_hand_typed, in
+# tests/test_phase1_regressions.py -- there rather than here because pytest collects no test from a
+# conftest -- and that test refuses a name that does not meet it. `geo` was listed here and does not meet
+# it; that test's docstring has what dropping such a name costs. Named once and iterated below, so the
+# entry and the rule cannot drift apart the way they did in test_r14_coverage.py and test_r14_deadcode.py.
+_COURSE_MODULES = ("config", "render_hole", "render_green",
+                   "fetch_trees", "fetch_hole_elev", "fetch_dem", "fetch_dem_hd")
+
+
 @pytest.fixture(autouse=True)
 def _bind_a_course():
     """Bind COURSE for every test IN THIS DIRECTORY, and restore it afterwards.
@@ -216,6 +228,17 @@ def _bind_a_course():
     every module here, which is the argument this file's own docstring already makes for the deletion
     guard below.
 
+    WHAT IT DROPS IS `_COURSE_MODULES` ABOVE, AND `geo` IS NOT IN IT. It was, for every test in this
+    directory, and it does not meet the rule that list is written under: geo reads no COURSE and imports
+    no config, it is pure geodesy whose whole module-level body is `import math`, a lazily-filled WGS84
+    constant pair and two float thresholds, so it holds nothing course-bound to isolate. Dropping it
+    bought nothing and cost identity. TEN files hold `import geo` AT MODULE LEVEL and this fixture
+    drops only six of them (fetch_osm, lidar_coverage, tools/check_scale and tools/verify_elevation are
+    not dropped), so every teardown left those holders bound to the old module object and handed the next
+    `import geo` a SECOND copy of the file. That is the mechanism behind two order-dependent failures
+    already fixed in this campaign, at c209a50 and 384e462; here it was latent rather than cashed, since
+    nothing yet compares geo through one of the undropped holders.
+
     Verified after the original change: file order, reverse order, three shuffle seeds, and all 164
     tests each in their own process.
     """
@@ -244,8 +267,7 @@ def _bind_a_course():
             os.environ.pop("COURSE", None)
         else:
             os.environ["COURSE"] = prev
-        for m in ("config", "render_hole", "render_green", "geo",
-                  "fetch_trees", "fetch_hole_elev", "fetch_dem", "fetch_dem_hd"):
+        for m in _COURSE_MODULES:
             sys.modules.pop(m, None)
 
 

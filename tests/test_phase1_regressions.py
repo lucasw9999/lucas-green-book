@@ -1500,6 +1500,308 @@ def _no_network(request):
 # and it is the same argument conftest.py's own docstring already makes for the deletion guard -- which
 # was moved out of this file for it one round earlier. Named here so the move is greppable from where
 # the fixture used to be.
+#
+# ITS DROP-LIST IS GRADED FROM HERE, in the two tests below, because pytest collects no test out of a
+# conftest and conftest cannot import a test module. Same reason `_courses()` above delegates to
+# conftest.corpus_slugs rather than re-deriving it: one home for a rule, two spellings of it is the drift
+# this repo has fixed in four other places.
+
+
+def _top_level_statements(tree):
+    """Every node in `tree` that really EXECUTES when the module is imported.
+
+    A function or class BODY does not: config.py reads the env var at module level, and the same read
+    inside a `def` happens at call time, which these lists are not about -- that distinction is the
+    whole of lidar_coverage's case below. Module-level `if`/`try` bodies are kept; those still run
+    during the import.
+    """
+    import ast
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield from ast.walk(node)
+
+
+def _reads_course_env_at_import(tree):
+    """Does importing this module read os.environ["COURSE"] -- subscript or .get() -- itself?"""
+    import ast
+    for node in _top_level_statements(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            env, keys = node.func.value, node.args
+        elif isinstance(node, ast.Subscript):
+            env, keys = node.value, [node.slice]
+        else:
+            continue
+        if isinstance(env, ast.Attribute) and env.attr == "environ":
+            if any(isinstance(k, ast.Constant) and k.value == "COURSE" for k in keys):
+                return True
+    return False
+
+
+def _module_level_local_imports(tree, local):
+    """The sibling modules this one imports AT IMPORT TIME. Deferred imports are not this edge."""
+    import ast
+    out = set()
+    for node in _top_level_statements(tree):
+        if isinstance(node, ast.Import):
+            out |= {a.name for a in node.names if a.name in local}
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module in local:
+            out.add(node.module)
+    return out
+
+
+def _course_reaching_modules():
+    """(modules whose import reads COURSE, module-level import edges) -- derived off the engine.
+
+    Seeded from the modules that read the env var themselves and closed over module-level imports of
+    one another, because `import config` at module level runs config.py's read during YOUR import.
+    Nothing here is hand-typed, which is the point: the seed today is config alone, and eleven of the
+    fifteen engine modules reach it.
+
+    Deliberately byte-for-byte the derivation in tests/test_r14_coverage.py and
+    tests/test_r14_deadcode.py, which grade their own drop-lists with it. One rule, one shape, three
+    lists; a cleverer variant here would be a second definition of the rule, which is the fault every
+    one of these graders exists to prevent.
+    """
+    import ast
+    local = {os.path.basename(p)[:-len(".py")] for p in glob.glob(os.path.join(ROOT, "*.py"))}
+    trees = {}
+    for name in sorted(local):
+        with open(os.path.join(ROOT, f"{name}.py"), encoding="utf-8") as fh:
+            trees[name] = ast.parse(fh.read())
+    reach = {n for n, t in trees.items() if _reads_course_env_at_import(t)}
+    edges = {n: _module_level_local_imports(t, local) for n, t in trees.items()}
+    grew = True
+    while grew:
+        grew = False
+        for name, deps in edges.items():
+            if name not in reach and deps & reach:
+                reach.add(name)
+                grew = True
+    return reach, edges
+
+
+def _module_level_holders(module):
+    """Shipped files that hold a reference to `module` AT IMPORT TIME, read off the engine's source.
+
+    Module level only, and that restriction is the mechanism. `import x` inside a function binds a name
+    at call time and re-resolves out of sys.modules on every call, so it can never be a stale holder; a
+    module-level `import x` or `from x import y` copies the object ONCE, for the life of the process, and
+    a later pop of `x` leaves that copy behind while the next import builds a second one.
+    """
+    import ast
+    out = []
+    for rel in sorted(glob.glob(os.path.join(ROOT, "*.py"))
+                      + glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        with open(rel, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=rel)
+        for node in tree.body:
+            hit = ((isinstance(node, ast.Import) and any(a.name == module for a in node.names))
+                   or (isinstance(node, ast.ImportFrom) and not node.level and node.module == module))
+            if hit and os.path.basename(rel) != module + ".py":
+                out.append("%s:%d" % (os.path.relpath(rel, ROOT), node.lineno))
+    return out
+
+
+def _sys_modules_pop_names(path):
+    """[(lineno, [names])] -- every module name `path` drops from sys.modules, resolved by AST.
+
+    BY AST, NOT BY GREP, for the reason `_code_only` exists: this suite's comments and docstrings quote
+    the idiom they discuss -- this very docstring does -- so a regex over the source text finds drop
+    sites in prose. Neither a comment nor a docstring is a Call node.
+
+    A bare `sys.modules.pop("x", None)` gives its name directly. The prevailing spelling here is a loop,
+    `for m in (...): sys.modules.pop(m, None)`, so the enclosing `for` that supplies the loop variable is
+    walked out to and its iterable resolved -- a literal tuple to the names themselves, a module-level
+    NAME (conftest's `_COURSE_MODULES`) to that constant's own elements. Anything else is reported as the
+    unresolved source expression, which reads as "cannot vouch for this site" rather than as "clean".
+    """
+    import ast
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    consts = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, (ast.Tuple, ast.List, ast.Set))
+                and node.value.elts
+                and all(isinstance(e, ast.Constant) for e in node.value.elts)):
+            consts[node.targets[0].id] = [e.value for e in node.value.elts]
+    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+    found = []
+    for n in ast.walk(tree):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "pop"
+                and ast.unparse(n.func.value).replace(" ", "") == "sys.modules"):
+            continue
+        arg = n.args[0] if n.args else None
+        if isinstance(arg, ast.Constant):
+            found.append((n.lineno, [arg.value]))
+            continue
+        names, p = ["<%s>" % (ast.unparse(arg) if arg is not None else "?")], n
+        while p in parents:                     # walk out to the `for` that supplies the loop variable
+            p = parents[p]
+            if isinstance(p, ast.For) and isinstance(p.target, ast.Name) \
+                    and isinstance(arg, ast.Name) and p.target.id == arg.id:
+                if isinstance(p.iter, (ast.Tuple, ast.List, ast.Set)):
+                    names = [e.value for e in p.iter.elts if isinstance(e, ast.Constant)]
+                elif isinstance(p.iter, ast.Name) and p.iter.id in consts:
+                    names = list(consts[p.iter.id])
+                break
+        found.append((n.lineno, names))
+    return found
+
+
+def test_the_suite_wide_course_module_pop_list_is_derived_from_the_engine_and_not_hand_typed():
+    """conftest's `_COURSE_MODULES` is a hand-typed list under a written-down rule. Grade the rule.
+
+    A NAME LISTED THERE THAT DOES NOT MEET THE RULE IS NOT UNTIDY, IT IS A HAZARD, and this is the
+    widest list in the suite: conftest's `_bind_a_course` is autouse and package-scoped, so it drops
+    every one of these names after EVERY test in this directory. Popping a module that other modules
+    already hold a module-level reference to leaves those holders bound to the OLD object; the next
+    `import` re-executes the file and makes a SECOND copy, so a test that patches an attribute on one
+    copy patches something the code under test never calls, and an assertion comparing identity compares
+    two copies of one thing.
+
+    The list had one such name, `geo`, and it is the same defect two commits in this campaign have
+    already had to fix at the other end:
+
+      * c209a50 removed `geo` and `surface_io` from tests/test_r14_deadcode.py's list. surface_io's fork
+        had been letting a torn-pair injection patch a second copy while tools/verify_elevation read the
+        intact pairs, so eleven holes came back checked and none was named torn.
+      * 384e462 removed `lidar_coverage` from tests/test_r14_coverage.py's fixture, which had been
+        forking the `_env_on` that tests/test_r15_osm_keys.py asserts fetch_osm shares with it.
+
+    `geo` reads no COURSE and imports no config: its module-level body is `import math`, a lazily-filled
+    WGS84 constant pair and two float thresholds, so it holds nothing course-bound and dropping it
+    isolated nothing. What it cost is identity, in the same shape: ten shipped files hold `import geo` at
+    module level and this fixture dropped six of them, leaving fetch_osm, lidar_coverage,
+    tools/check_scale and tools/verify_elevation on the old object after every single test. Latent rather
+    than cashed only because nothing yet compares geo through one of those four.
+
+    WHAT THIS TEST DECIDES:
+      * every name in conftest's list reaches COURSE when it is imported -- by reading the env var
+        itself, or through a chain of module-level sibling imports that ends at one that does;
+      * `config` is in it, because a suite-wide binding that does not drop the one module which actually
+        reads the env var is not restoring a binding at all;
+      * the list is CLOSED under that chain: no sibling a listed module imports at module level reaches
+        COURSE while sitting outside the list -- the converse, and what would have flagged geo from the
+        other side;
+      * the list conftest ITERATES is the list this test read, so the name and its use cannot drift
+        apart the way the entry and its rule did.
+
+    WHAT IT DOES NOT DECIDE. Not the sibling modules' narrower lists -- test_r14_coverage.py and
+    test_r14_deadcode.py each grade their own, in this shape, on purpose. Not imports made inside a
+    function. Not the whole population meeting the rule: eleven engine modules do, this list holds seven,
+    and a fixture has no business dropping modules no test in the directory imports. And not this file's
+    own ninety-eight drop sites, whose remaining wrong names are recorded in the docstring below.
+    """
+    import conftest
+    reach, edges = _course_reaching_modules()
+    assert "config" in reach, (
+        "no module in this repo was found reading os.environ['COURSE'] at import time, so this grader "
+        "derived an empty rule and would pass over any list at all")
+    listed = tuple(conftest._COURSE_MODULES)
+    unqualified = [m for m in listed if m not in reach]
+    assert not unqualified, (
+        f"tests/conftest.py's _COURSE_MODULES lists {unqualified} under the rule 'reads the COURSE env "
+        f"var at import time', and importing {'them' if len(unqualified) > 1 else 'it'} reads no COURSE: "
+        f"no env read of its own, and no module-level import chain that ends at one. Dropping such a "
+        f"module from sys.modules gives every module that already holds it a stale reference and the next "
+        f"import a second copy of the file -- and this fixture does it after EVERY test in the directory. "
+        f"See this test's docstring for the two failures that cost")
+    assert "config" in listed, (
+        f"conftest's _bind_a_course restores the COURSE binding but no longer drops `config`, the only "
+        f"module in this repo that reads the env var at import time. Every test after the first would "
+        f"reuse a config bound to whichever course imported it first, which is the leakage the fixture "
+        f"exists to prevent. It drops: {listed}")
+    siblings = {d for m in listed for d in edges[m]} - set(listed)
+    leaked = sorted(m for m in siblings if m in reach)
+    assert not leaked, (
+        f"{leaked} reach COURSE at import time and are imported at module level by a module in "
+        f"conftest's _COURSE_MODULES, but are not in it -- so popping the listed module drops a "
+        f"course-bound import while leaving {leaked} resident, still bound to the previous test's course")
+    dropped = _sys_modules_pop_names(os.path.join(ROOT, "tests", "conftest.py"))
+    assert dropped, (
+        "no sys.modules.pop site found in tests/conftest.py, so `_COURSE_MODULES` is a list this grader "
+        "reads and the fixture no longer uses; every assertion above is then measuring dead source")
+    for lineno, names in dropped:
+        assert list(names) == list(listed), (
+            f"tests/conftest.py:{lineno} drops {names}, which is not the `_COURSE_MODULES` this test "
+            f"graded ({list(listed)}). The list and the site it feeds have drifted apart, which is "
+            f"exactly what naming it once was meant to make impossible")
+
+
+def test_no_test_module_drops_lidar_coverage_and_forks_the_shared_env_on():
+    """`lidar_coverage` may not be dropped ANYWHERE in tests/, and four sites in this file did.
+
+    It looks like a module a coverage test should re-import, and it is not one. Its module-level body
+    imports glob, json, math, os, sys and `geo`; `geo` imports only `math`; and its `import config` sits
+    INSIDE main(), at lidar_coverage.py:650, so it resolves out of sys.modules at call time and sees
+    whatever config the caller has just bound. Nothing about importing it reads COURSE, so dropping it
+    isolates nothing at all.
+
+    What it costs is identity, and the cost was CASHED, not theoretical. fetch_osm.py:39 and
+    tools/verify_elevation.py:143 both hold `from lidar_coverage import _env_on` AT MODULE LEVEL, and no
+    fixture in this directory drops either of them -- so a pop left both holders on the old function
+    while the next `import lidar_coverage` re-executed the file and produced a SECOND copy. At that point
+    tests/test_r15_osm_keys.py's `assert fo._env_on is lidar_coverage._env_on` -- the guard that stops
+    the off-vocabulary drifting into an eighth hand-written copy -- stops asking whether fetch_osm
+    imports the shared helper and starts comparing two copies of one function. 384e462 fixed one such
+    site, in tests/test_r14_coverage.py's `cov` fixture. Four more were in THIS file, and each
+    reproduced on its own in three node ids and under two seconds:
+
+        tests/test_r15_osm_keys.py::test_every_osm_acknowledgement_key_is_documented_in_the_pipeline
+        tests/test_phase1_regressions.py::<the site's own test>
+        tests/test_r15_osm_keys.py::test_fetch_osm_reads_its_acknowledgement_keys_through_the_shared_env_on
+
+    -- 1 failed, 2 passed before; 3 passed after. Latent in collected order only because this file sorts
+    before test_r15_osm_keys.py.
+
+    BOTH PREMISES ARE MEASURED, NOT ASSERTED, because an unmeasured premise is how this class hides: the
+    rule is re-derived off the engine's own source, and so is the holder edge. If lidar_coverage ever
+    starts reading COURSE at import, or fetch_osm ever stops importing the helper at module level, this
+    test says so instead of quietly guarding nothing.
+
+    DIRECTORY-WIDE, not this file, and that is deliberate: the name is wrong in every drop-list, the two
+    files that already learned it grade only their own, and the next person to write a coverage test will
+    reach for the same pop in whichever file they are in.
+
+    WHAT IT DOES NOT DECIDE, and this is the honest residual of the round that wrote it: `geo` and
+    `distribution` are also dropped by this file -- nineteen sites and two -- and neither meets the rule
+    either, on exactly the mechanism above. They are NOT fixed here. Three of those twenty-one sites drop
+    that one name and nothing else, so closing them means deleting a `sys.modules.pop` CALL, which moves
+    the 109 that README publishes and test_the_suite_reports_its_own_module_drop_count_correctly pins
+    against it -- one commit, with README, not this one. Until then those two names stay forked, latent:
+    no assertion in the suite compares either through an undropped holder today.
+    """
+    reach, _edges = _course_reaching_modules()
+    assert "config" in reach, (
+        "no module in this repo was found reading os.environ['COURSE'] at import time, so this grader "
+        "derived an empty rule and cannot tell a course-bound module from a pure one")
+    assert "lidar_coverage" not in reach, (
+        "lidar_coverage now reaches the COURSE env var at import time -- it reads it, or it imports "
+        "config at module level rather than inside main(). If that is intended then dropping it from "
+        "sys.modules has become the right thing to do and this test is obsolete; but check the holders "
+        "below first, because forking it still breaks their identity: %s"
+        % (_module_level_holders("lidar_coverage"),))
+    holders = _module_level_holders("lidar_coverage")
+    assert any(h.startswith("fetch_osm.py:") for h in holders), (
+        "fetch_osm.py no longer imports lidar_coverage at module level, so the premise of this test is "
+        "gone -- and so, probably, is the shared `_env_on` that "
+        "test_fetch_osm_reads_its_acknowledgement_keys_through_the_shared_env_on grades. Holders "
+        "found: %s" % (holders,))
+    offenders = []
+    for path in sorted(glob.glob(os.path.join(ROOT, "tests", "*.py"))):
+        for lineno, names in _sys_modules_pop_names(path):
+            if "lidar_coverage" in names:
+                offenders.append("%s:%d drops %s" % (os.path.basename(path), lineno, list(names)))
+    assert not offenders, (
+        "lidar_coverage is dropped from sys.modules at %d site(s): %s. It reads no COURSE at import, so "
+        "the drop isolates nothing, and %s hold it at module level and are not dropped alongside it -- so "
+        "the pop leaves them on the old function and hands the next import a second copy. See this "
+        "test's docstring for the three node ids that fail because of it."
+        % (len(offenders), offenders, holders))
 
 
 def a_course():
@@ -18898,7 +19200,7 @@ def test_the_fetchers_stop_on_the_coverage_verdict_they_asked_for(tmp_path, monk
     pytest.importorskip("pyproj")
     slug = a_course()
     os.environ["COURSE"] = slug
-    for m in ("config", "lidar_coverage", "fetch_lidar", "fetch_lidar_alameda"):
+    for m in ("config", "fetch_lidar", "fetch_lidar_alameda"):
         sys.modules.pop(m, None)
     import config
     import lidar_coverage
@@ -19070,7 +19372,7 @@ def test_the_coverage_verdict_is_one_call_and_carries_the_fallback_set(tmp_path,
     pytest.importorskip("laspy")
     pytest.importorskip("pyproj")
     os.environ["COURSE"] = a_course()
-    for m in ("config", "lidar_coverage"):
+    for m in ("config",):
         sys.modules.pop(m, None)
     import config
     import lidar_coverage as lc
@@ -19218,7 +19520,7 @@ def test_the_dem_hd_cross_check_counts_the_population_it_drew_from(tmp_path):
     pytest.importorskip("laspy")
     pytest.importorskip("pyproj")
     os.environ["COURSE"] = a_course()
-    for m in ("config", "lidar_coverage"):
+    for m in ("config",):
         sys.modules.pop(m, None)
     import lidar_coverage as lc
 
@@ -19397,7 +19699,7 @@ def test_the_docs_describe_the_coverage_check_the_code_performs():
     pytest.importorskip("laspy")
     pytest.importorskip("pyproj")
     os.environ["COURSE"] = a_course()
-    for m2 in ("config", "lidar_coverage"):
+    for m2 in ("config",):
         sys.modules.pop(m2, None)
     import lidar_coverage as lc
 
