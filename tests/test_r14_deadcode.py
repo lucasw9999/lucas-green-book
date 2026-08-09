@@ -22,6 +22,7 @@ fetch_dem_hd.build_targets() only read files under courses/. fetch_dem.main() ad
 network fetch and its write poisoned as a defence-in-depth check on this file's own precondition
 (every green already has a good surface, so main() should never reach either).
 """
+import ast
 import glob
 import hashlib
 import importlib
@@ -34,18 +35,24 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-# Every module that reads the COURSE env var at import time (directly, or via config/geo at import).
-_COURSE_MODULES = ("config", "geo", "surface_io", "fetch_dem", "fetch_dem_hd",
-                    "render_hole", "render_green")
+# Every module that reads the COURSE env var at import time -- itself, or through a chain of
+# module-level sibling imports that ends at one that does. NOT A LIST TO EXTEND BY HAND: the rule is
+# re-derived off the engine's own source by
+# test_the_course_module_pop_list_is_derived_from_the_engine_and_not_hand_typed below, which refuses a
+# name that does not meet it. surface_io and geo were both listed here and neither meets it; that
+# test's docstring has what the first one cost.
+_COURSE_MODULES = ("config", "fetch_dem", "fetch_dem_hd", "render_hole", "render_green")
 
 
 @pytest.fixture(autouse=True)
 def _isolate_course_binding():
     """Restore COURSE and drop course-bound modules after every test in this file.
 
-    Mirrors tests/test_phase1_regressions.py's _bind_a_course fixture for the same reason it exists
-    there: several tests below rebind COURSE and pop config/render_*/fetch_* out of sys.modules, so
-    without this, test order would decide which course the NEXT test inherits.
+    Mirrors tests/conftest.py's _bind_a_course fixture for the same reason it exists there: several
+    tests below rebind COURSE and pop config/render_*/fetch_* out of sys.modules, so without this,
+    test order would decide which course the NEXT test inherits. (That fixture used to live in
+    tests/test_phase1_regressions.py, which is where this docstring named it; it moved to conftest.py
+    so it could cover every module in the directory rather than one.)
     """
     prev = os.environ.get("COURSE")
     try:
@@ -57,6 +64,141 @@ def _isolate_course_binding():
             os.environ["COURSE"] = prev
         for m in _COURSE_MODULES:
             sys.modules.pop(m, None)
+
+
+def _top_level_statements(tree):
+    """Every node in `tree` that really EXECUTES when the module is imported.
+
+    A function or class BODY does not: config.py reads the env var at module level, and the same read
+    inside a `def` happens at call time, which this list is not about. Module-level `if`/`try` bodies
+    are kept -- those still run during the import.
+    """
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield from ast.walk(node)
+
+
+def _reads_course_env_at_import(tree):
+    """Does importing this module read os.environ["COURSE"] -- subscript or .get() -- itself?"""
+    for node in _top_level_statements(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            env, keys = node.func.value, node.args
+        elif isinstance(node, ast.Subscript):
+            env, keys = node.value, [node.slice]
+        else:
+            continue
+        if isinstance(env, ast.Attribute) and env.attr == "environ":
+            if any(isinstance(k, ast.Constant) and k.value == "COURSE" for k in keys):
+                return True
+    return False
+
+
+def _module_level_local_imports(tree, local):
+    """The sibling modules this one imports AT IMPORT TIME. Deferred imports are not this edge."""
+    out = set()
+    for node in _top_level_statements(tree):
+        if isinstance(node, ast.Import):
+            out |= {a.name for a in node.names if a.name in local}
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module in local:
+            out.add(node.module)
+    return out
+
+
+def _course_reaching_modules():
+    """(modules whose import reads COURSE, module-level import edges) -- derived off the engine.
+
+    Seeded from the modules that read the env var themselves and closed over module-level imports of
+    one another, because `import config` at module level runs config.py's read during YOUR import.
+    Nothing here is hand-typed, which is the point: the seed today is config alone.
+    """
+    local = {os.path.basename(p)[:-len(".py")] for p in glob.glob(os.path.join(ROOT, "*.py"))}
+    trees = {}
+    for name in sorted(local):
+        with open(os.path.join(ROOT, f"{name}.py"), encoding="utf-8") as fh:
+            trees[name] = ast.parse(fh.read())
+    reach = {n for n, t in trees.items() if _reads_course_env_at_import(t)}
+    edges = {n: _module_level_local_imports(t, local) for n, t in trees.items()}
+    grew = True
+    while grew:
+        grew = False
+        for name, deps in edges.items():
+            if name not in reach and deps & reach:
+                reach.add(name)
+                grew = True
+    return reach, edges
+
+
+def _names_this_file_binds():
+    """Every module name this file hands to _bind(), read off this file's own source."""
+    with open(os.path.abspath(__file__), encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_bind":
+            out |= {a.value for a in node.args[1:] if isinstance(a, ast.Constant)}
+    return out
+
+
+def test_the_course_module_pop_list_is_derived_from_the_engine_and_not_hand_typed():
+    """_COURSE_MODULES is a hand-typed list under a written-down rule. Grade the rule, not the list.
+
+    A NAME LISTED HERE THAT DOES NOT MEET THE RULE IS NOT UNTIDY, IT IS A HAZARD, and this list had
+    two. Popping a module that other modules already hold a module-level reference to leaves those
+    holders bound to the OLD object; the next `import` re-executes the file and makes a SECOND copy,
+    so a test that patches an attribute on one copy patches something the code under test never calls.
+
+      * surface_io -- seven module-level holders (fetch_dem, fetch_dem_hd, fetch_hole_elev,
+        render_green, tools/gen_provenance, tools/cross_flight_check, tools/verify_elevation), and
+        NOTHING ELSE in tests/ ever dropped it, so this list was the whole of the hazard. It cost a
+        real order-dependent failure, fixed in 89a2412: a torn-pair injection patched the second copy
+        while tools/verify_elevation.check_course read the intact pairs through the first, so eleven
+        holes came back checked and no hole was named torn. See tests/test_r15_verify.py's
+        `_pairs_torn_at`, which reaches through `ve.surface_io` for exactly that reason.
+      * geo -- same shape, latent rather than cashed: it reads no COURSE and imports no config, it is
+        pure geodesy with no course-bound state, and tests/conftest.py's `_bind_a_course` drops it for
+        every test in this directory anyway, so dropping it a second time here bought nothing.
+
+    WHAT THIS TEST DECIDES:
+      * every name in _COURSE_MODULES reaches COURSE when it is imported -- by reading the env var
+        itself, or through a chain of module-level sibling imports that ends at one that does;
+      * every module name this file hands to _bind() is in the list, so nothing this file
+        fresh-imports is left holding another test's course;
+      * the list is CLOSED under that chain: no sibling a listed module imports at module level
+        reaches COURSE while sitting outside the list. That is the converse, as far as it can safely
+        go here, and it is what would have flagged geo/surface_io from the other side.
+
+    WHAT IT DOES NOT DECIDE. Not the suite-wide list -- tests/conftest.py's `_bind_a_course` drops
+    eight names for every test in this directory, and this file's list is deliberately narrower than
+    that. Not imports made inside a function. And not the whole population meeting the rule: eleven
+    engine modules do, and a file has no business dropping the ones it never imports.
+    """
+    reach, edges = _course_reaching_modules()
+    assert "config" in reach, (
+        "no module in this repo was found reading os.environ['COURSE'] at import time, so this "
+        "grader derived an empty rule and would pass over any list at all")
+    unqualified = [m for m in _COURSE_MODULES if m not in reach]
+    assert not unqualified, (
+        f"_COURSE_MODULES lists {unqualified} under the rule 'reads the COURSE env var at import "
+        f"time', and importing {'them' if len(unqualified) > 1 else 'it'} reads no COURSE: no env "
+        f"read of its own, and no module-level import chain that ends at one. Dropping such a module "
+        f"from sys.modules gives every module that already holds it a stale reference and the next "
+        f"import a second copy of the file -- see this test's docstring for the failure that cost")
+    bound = _names_this_file_binds()
+    assert bound, (
+        "no _bind(slug, ...) call found in this file; this half of the grader measures nothing")
+    unpopped = sorted(bound - set(_COURSE_MODULES))
+    assert not unpopped, (
+        f"this file fresh-imports {unpopped} through _bind() without listing "
+        f"{'them' if len(unpopped) > 1 else 'it'} in _COURSE_MODULES, so the module stays in "
+        f"sys.modules bound to whichever course imported it first and the next test inherits that "
+        f"binding")
+    siblings = {d for m in _COURSE_MODULES for d in edges[m]} - set(_COURSE_MODULES)
+    leaked = sorted(m for m in siblings if m in reach)
+    assert not leaked, (
+        f"{leaked} reach COURSE at import time and are imported at module level by a module in "
+        f"_COURSE_MODULES, but are not in it -- so popping the listed module drops a course-bound "
+        f"import while leaving {leaked} resident, still bound to the previous test's course")
 
 
 def _corpus_slugs():
