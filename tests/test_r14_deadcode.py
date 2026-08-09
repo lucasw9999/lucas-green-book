@@ -169,7 +169,7 @@ def test_the_course_module_pop_list_is_derived_from_the_engine_and_not_hand_type
         go here, and it is what would have flagged geo/surface_io from the other side.
 
     WHAT IT DOES NOT DECIDE. Not the suite-wide list -- tests/conftest.py's `_bind_a_course` drops
-    eight names for every test in this directory, and this file's list is deliberately narrower than
+    seven names for every test in this directory, and this file's list is deliberately narrower than
     that. Not imports made inside a function. And not the whole population meeting the rule: eleven
     engine modules do, and a file has no business dropping the ones it never imports.
     """

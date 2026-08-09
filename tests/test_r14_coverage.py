@@ -337,7 +337,7 @@ def test_the_course_module_pop_list_is_derived_from_the_engine_and_not_hand_type
       * the list is CLOSED under that chain: no sibling a listed module imports at module level reaches
         COURSE while sitting outside the list.
 
-    WHAT IT DOES NOT DECIDE. Not tests/conftest.py's suite-wide list, which drops eight names for every
+    WHAT IT DOES NOT DECIDE. Not tests/conftest.py's suite-wide list, which drops seven names for every
     test in this directory. Not the drop-lists of sibling test modules. And not the whole population
     meeting the rule -- eleven engine modules do, and a file has no business dropping ones it never
     imports. Same shape as test_r14_deadcode.py's grader on purpose: one convention, two lists.
