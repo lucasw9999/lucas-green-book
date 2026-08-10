@@ -697,7 +697,9 @@ def test_the_worst_gated_reading_is_written_as_a_literal_exactly_once():
         "it exactly as before")
 
 
-def test_a_tree_with_no_built_book_is_not_a_rule_4_3_pass(monkeypatch, capsys, tmp_path):
+@pytest.mark.parametrize("courses_dir_exists", [True, False])
+def test_a_tree_with_no_built_book_is_not_a_rule_4_3_pass(courses_dir_exists, monkeypatch, capsys,
+                                                          tmp_path):
     """"no built books found" returned 0 -- a Rule 4.3 conformance pass over zero greens.
 
     The same file 118 lines below refuses that reading in as many words: "0 greens measured ... PASS
@@ -713,7 +715,11 @@ def test_a_tree_with_no_built_book_is_not_a_rule_4_3_pass(monkeypatch, capsys, t
     """
     import check_scale
     monkeypatch.setattr(check_scale, "ROOT", tmp_path)
-    (tmp_path / "courses").mkdir()
+    # BOTH SHAPES. A fresh clone has no courses/ at all (it is gitignored) and a wiped one has an empty
+    # courses/; pathlib's glob answers [] for either, so the floor has to read the same way for both or
+    # the one nobody tested is the one a stranger meets.
+    if courses_dir_exists:
+        (tmp_path / "courses").mkdir()
     rc = check_scale.main([])
     out = capsys.readouterr().out
     assert "no built books found" in out, out
