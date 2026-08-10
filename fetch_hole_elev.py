@@ -72,6 +72,7 @@ import config
 import geo
 import surface_io                 # read_pair: the one definition of a pair worth measuring through
 from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
+from lidar_coverage import _env_on   # the project's ONE reading of an escape-hatch key -- see it there
 import render_hole                 # for par3_exact_from_tee: one definition of "straight par 3"
 
 DIR = config.COURSE_DIR
@@ -766,18 +767,6 @@ def elevation_change_m(green_z_m, tee_z_raw, vscale):
     return green_z_m - tee_z_raw * vscale
 
 
-def _env_on(name):
-    """An escape hatch is ON only if it is not an explicit off.
-
-    Parsed the way fetch_trees._env_on parses its two, NOT for truthiness: bool(os.environ.get(..))
-    makes ALLOW_ELEV_LOSS=0 and =false mean YES, and this one waives the guard that stands between a
-    survey that came back thinner and a book that quietly stops printing a height it used to. It now
-    really does waive that -- check_rows watched only for a row DISAPPEARING, so a row that survived and
-    crossed the print floor took the line off its card with nothing to waive.
-    """
-    return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
-
-
 def stored_rows(path):
     """{hole: row} for the hole_elev.json already on disk; {} when there is none to compare against.
 
@@ -828,8 +817,10 @@ def check_rows(rows, path):
     and nothing printed. That is the same silent partial loss, through the one door this function did not
     watch, and it is live rather than hypothetical: 5 rows sit within 0.15 ft of it -- copper-valley 4 at
     +3.14, micke-grove 6 at +2.96, micke-grove 9 at -3.03, micke-grove 13 at -3.05 and the-reserve 10 at
-    -2.95. So both kinds are refused, and ALLOW_ELEV_LOSS waives both, which is what _env_on's docstring
-    has always claimed it waives.
+    -2.95. So both kinds are refused, and ALLOW_ELEV_LOSS waives both -- deliberately ONE key, since a
+    row that vanishes and a row that falls under the print floor are the same loss reached two ways. The
+    key is read through lidar_coverage._env_on, this project's one off-vocabulary, so `=0`, `=false`,
+    `=no`, `=off` and an empty value all leave the guard standing.
     """
     prev = stored_rows(path)
     lost = sorted(int(h) for h in prev if h not in rows)

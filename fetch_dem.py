@@ -43,6 +43,7 @@ import numpy as np, rasterio
 import config
 import geo
 from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
+from lidar_coverage import _env_on   # the project's ONE reading of an escape-hatch key -- see it there
 import surface_io
 
 DIR = config.COURSE_DIR
@@ -52,12 +53,13 @@ OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 # run for, and it then sits in dem_hd/ forever -- which matters because that file is the only on-disk
 # trace of the surface pair's rename window, and evidence a dead run also leaves is not evidence.
 surface_io.sweep_staged(OUT)
-# replace a good 0.4 m surface on purpose. Parsed the way fetch_trees.py parses its two escape
-# hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
+# replace a good 0.4 m surface on purpose. Read through lidar_coverage._env_on, this project's ONE
+# off-vocabulary, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
 # OVERWRITE=no all mean YES, so the word "false" armed the path that trades every 0.4 m LiDAR green
 # for the coarse seamless mosaic -- the exact loss keeps_existing_surface below exists to prevent. An
-# explicit off must be off.
-OVERWRITE = os.environ.get("OVERWRITE", "").lower() not in ("", "0", "false", "no")
+# explicit off must be off, and the vocabulary this flag used to spell for itself was one of five
+# hand-written copies that then all had to learn `off` and a `.strip()` separately.
+OVERWRITE = _env_on("OVERWRITE")
 def is_seamless(meta):
     """True when this surface came from the seamless mosaic rather than 0.4 m LiDAR ground returns.
 
@@ -375,6 +377,15 @@ def only_holes(raw):
 
 
 def main():
+    # A SPENT WAIVER MUST LEAVE A RECORD. Every ALLOW_* key in this project prints `KEY set -- <what it
+    # accepted>` when it is exercised; OVERWRITE printed nothing, and the only mention of it in this
+    # stage's output was the SUGGESTION below, on the path where it is NOT set. So the one flag that can
+    # discard a 0.4 m LiDAR surface was the one flag whose use left no trace -- and `courses/` is
+    # gitignored, so the surface it discards has no other copy and the run's own output is the only
+    # record there is. A suggestion is not a receipt.
+    if OVERWRITE:
+        print("WARNING: OVERWRITE set -- this run will REPLACE existing green surfaces with the coarse\n"
+              "  seamless mosaic instead of keeping the 0.4 m LiDAR ones. dem_hd/ has no other copy.")
     # ONLY=14,10 restricts the run to specific holes. Protecting the neighbours' sharp 0.4 m
     # surfaces is no longer its job -- keeps_existing_surface() does that unconditionally now, which
     # also means ONLY= on a hole that already holds a good LiDAR surface writes nothing without

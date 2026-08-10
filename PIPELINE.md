@@ -166,8 +166,20 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    itself and the counts it accepted (`bunker 36 -> 35`, `hole 7: green 501 -> green 502`), which is the
    only record the loss leaves, since `courses/` is gitignored and the reply overwrites the cache it was
    compared against. And only an affirmative value turns one on -- all four are read through
-   `lidar_coverage._env_on`, so `=0`, `=false`, `=no` and an empty value all mean OFF, the same
-   vocabulary every other `ALLOW_*` key here uses.
+   `lidar_coverage._env_on`, and so is **every other acknowledgement key in this file**, `OVERWRITE`
+   and `QUIET_TEE_CHECK` included. That vocabulary is CLOSED and it is the whole rule: an unset key and
+   the values empty, `=0`, `=false`, `=no` and `=off` all mean OFF, in any case and ignoring
+   surrounding whitespace. Anything else means ON — `none` and `disable` included, so a mistyped *yes*
+   still waives rather than silently refusing. Do not trust that from this sentence alone: it used to
+   claim that vocabulary held for every acknowledgement key here, while one key eleven lines below used
+   none of it -- which is how an operator sets `=0` and spends the waiver they were trying to leave off.
+   `tests/test_r16_env.py` derives the key list from the source and holds every one of them to it.
+   Before re-fetching, `python3 tools/check_osm_bbox.py --all` checks that every printed hole's drawing
+   corridor lies inside the box each cache RECORDS being fetched with. A course with no `osm_bbox` or no
+   cache on disk is cleared by `ALLOW_UNCHECKED_OSM_BBOX=1`; a cache that records no query box at all --
+   so the FETCH is unverified even where the declared box covers the corridor -- is cleared separately by
+   `ALLOW_UNRECORDED_FETCH_BOX=1`. Neither waives the other, and a cache that cannot be read has no key
+   at all: fix the data rather than certifying what nobody looked at.
 4. **🔎 Best LiDAR.** `fetch_lidar.py` pulls the newest dense USGS 3DEP tiles covering
    the course from The National Map into `laz/` (prefer QL1/QL2). For Alameda County 2021,
    `fetch_lidar_alameda.py` decodes the `w####n####` tile names and grabs **all** sub-project
@@ -214,7 +226,8 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
    all needs no key: it prints no height line, so there is nothing here for the tool to have failed to
    verify.
 7. **Build.** `generate.py` renders the combined cards -> `greenbook.html` (add `COACH=1` for the
-   optional large-print edition), then `tools/export_pdf.py` -> `greenbook.pdf`. `render_hole.py`
+   optional large-print edition, and `COACH_NAME=<name>` to put a coach's name on it), then
+   `tools/export_pdf.py` -> `greenbook.pdf`. `render_hole.py`
    (called from `generate.py`) refuses to draw a hole's trees from OSM's sparse tree nodes when the
    course HAS LiDAR tiles but no `trees_lidar.json` -- 25 markers instead of 5086 on Merion, with the
    legend still promising trees -- and stops until you run `fetch_trees.py`, or set
@@ -227,6 +240,13 @@ Most steps are generic; a few need per-course research/judgment (marked 🔎).
 8. **Verify (never skip).** Eyeball each green (golf-plausible slope % and feed
    direction; near-flat greens marked "(faint)"), confirm hole layouts match
    satellite, and that yardages equal the scorecard.
+   Any stage that loads a course also warns, on stderr, when the book headlines a tee SHORTER than the
+   longest on the scorecard -- the-reserve printed `376 Gold` beside a BLACK marker on 10 of 18 holes,
+   up to 46 yd out on the number a player reads as *how far I have hit it*. Which tee a book is for is a
+   real editorial choice, so it warns rather than refuses: put `"shorter_tee_is_deliberate": true` in
+   `course.json` for a book that means it, or set `QUIET_TEE_CHECK=1` to silence one run (step 3's
+   off-vocabulary, so `QUIET_TEE_CHECK=0` does NOT silence it). This is the only key in the family that
+   prints nothing when it is spent -- a notice would be the note it exists to suppress.
 
 ## Data sources & licences (keep us clean)
 - **USGS 3DEP / LiDAR** — public domain (US Government). No restriction.

@@ -84,6 +84,43 @@ def course_slugs(root=None):
                   if is_corpus_slug(s))
 
 
+def is_course_record(course):
+    """Is this something this module can answer ABOUT at all -- a NON-EMPTY parsed course.json object?
+
+    The one readability test, because two functions need it and they were disagreeing. `build_mode`
+    laundered every falsy non-dict through `(course or {})` and `distribution_status` tested only
+    `course is None`, so four other spellings of "the record could not be read" answered *publishable*
+    and a fifth crashed. Measured before this existed:
+
+        None       -> refused (the only one that was right)
+        {} / [] / 0 / False / ''  -> (True, "Distributed", "")
+        'yardage'                 -> AttributeError: 'str' object has no attribute 'get'
+
+    Each of those is a real shape: a course.json rooted on a list, a file holding a bare literal, an
+    empty read, and a caller passing the MODE where the record goes. tools/gen_provenance.py hands this
+    module JSON it loaded itself and writes the answer into the Status column of
+    legal/03_PROVENANCE_BY_COURSE.md, whose legend reads *"Distributed" = built from open,
+    public-domain and factual inputs only, AND HANDED OUT ON THAT BASIS*.
+
+    AN EMPTY DICT IS NOT A COURSE RECORD, and it was the last input here still reading *publishable*.
+    `{}` looks like the documented "no build_mode means full" default and is not it: that default is a
+    statement about one OPTIONAL FIELD being absent from a record that has content, and 11 of the 12
+    corpus records exercise it with 15-18 keys apiece. `{}` omits everything, including the four keys
+    config.py declares required -- `name`, `address`, `hole_cols`, `holes` -- and `holes` IS the
+    scorecard transcription, so an empty mapping is a course.json with no course in it. It is the shape
+    a truncated or reset file has.
+
+    The two callers diverge exactly where it matters. `config.py` REFUSES `{}` at import, exit 1, naming
+    the four missing keys; `tools/gen_provenance.py:_row` loads the same file itself, hands it straight
+    here with no validation in between, and writes the answer into that Status column. So the fail-open
+    was reachable only on the path that publishes a legal record, and it published one on no information
+    at all -- which is the thing distribution_status's own docstring forbids: "every uncertain input has
+    to resolve to no". Refusing a real course wrongly is visible and recoverable; stamping an empty one
+    "Distributed" is neither.
+    """
+    return isinstance(course, dict) and bool(course)
+
+
 def build_mode(course):
     """The course's build mode, NORMALISED. The one spelling of this read for the whole engine.
 
@@ -99,11 +136,18 @@ def build_mode(course):
     describing a book that was not made. Four of five plausible spellings of the value diverged
     ("Yardage", " yardage", "YARDAGE", "yardage\n"); only the exact one agreed.
 
+    A record this module cannot read has NO mode, and says so by answering "" rather than raising --
+    `build_mode("yardage")` used to be an AttributeError. The publish decision for such a record is
+    distribution_status's, which refuses it; this function's job is to answer, and a reader that raises
+    where a verdict was expected turns a decision into a traceback.
+
     Lives here rather than in config.py because this module is the one thing that must answer for a
     course record it did not load -- tools/gen_provenance.py hands it parsed JSON directly -- so it
     cannot depend on config, and config can depend on it.
     """
-    return ((course or {}).get("build_mode") or "").strip().lower()
+    if not is_course_record(course):
+        return ""
+    return (course.get("build_mode") or "").strip().lower()
 
 
 def distribution_status(course):
@@ -112,8 +156,14 @@ def distribution_status(course):
     Fails CLOSED, deliberately. This decides whether a book may be handed out, so every uncertain
     input has to resolve to "no":
 
-    * `None` means the course record could not be read. An exact `== "yardage"` test answered
-      "Distributed" for that, which is a publish decision taken on no information at all.
+    * A record this module CANNOT READ is refused. That used to mean `None` alone, and `None` is one
+      spelling of it out of seven: `(course or {})` laundered every falsy non-dict into an empty course,
+      so `[]` (a course.json rooted on a list), `0` and `False` (a file holding a bare literal) and `''`
+      (an empty read) each answered *publishable*, and `'yardage'` -- a caller passing the MODE where
+      the record goes -- raised AttributeError instead of deciding. An exact `== "yardage"` test
+      answered "Distributed" for `None` too, which is a publish decision taken on no information at all.
+      `{}` is the seventh and was the last one left: see is_course_record for why an empty mapping is
+      not the documented "no build_mode" default that it looks like.
     * The mode is normalised before comparison. `"YARDAGE"` and `" yardage"` both answered
       "Distributed" too, so a stray capital or space in a hand-edited course.json -- and course.json
       IS hand-edited, it holds the scorecard transcription -- would have shipped a personal-use book.
@@ -128,16 +178,26 @@ def distribution_status(course):
 
     Refusing rather than guessing is the governing rule of this project, and it is the right way for this
     particular uncertainty to fall: an unrecognised value is a typo, and the two things a typo could have
-    meant have opposite consequences for what gets printed. An absent or empty build_mode is NOT
-    uncertain -- "defaults 'full'" is documented and 11 corpus courses rely on it -- so it stays
-    distributable.
+    meant have opposite consequences for what gets printed. An absent or empty build_mode FIELD is NOT
+    uncertain -- "defaults 'full'" is documented and 11 corpus courses rely on it -- so a record that has
+    content but no build_mode stays distributable. An empty RECORD is a different input wearing the same
+    shape; see is_course_record.
 
     The corpus uses only `None` (11 courses) and `"yardage"` (1), so nothing changes today; this is
     about which way the next typo falls.
     """
-    if course is None:
+    if isinstance(course, dict) and not course:
+        # Spelled apart from the branch below because "the course record is a dict, not a parsed
+        # course.json object" is a confusing thing to say about `{}`. The fault is that it is EMPTY.
         return (False, "Personal",
-                "no course record could be read, so distributability is unknown; refusing by default")
+                "the course record is EMPTY -- a course.json with no course in it: no name, no "
+                "address, no hole_cols and no holes, and the holes table IS the scorecard. That is "
+                "the shape a truncated or reset file has, not the documented 'no build_mode means "
+                "full' default, so what this book was built from is unknown; refusing by default")
+    if not is_course_record(course):
+        return (False, "Personal",
+                f"the course record is a {type(course).__name__}, not a parsed course.json object, so "
+                f"nothing here could be read and distributability is unknown; refusing by default")
     mode = build_mode(course)
     if mode == YARDAGE:
         return (False, "Personal",

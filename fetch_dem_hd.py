@@ -20,6 +20,7 @@ from scipy.spatial import cKDTree
 import config
 import geo
 from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
+from lidar_coverage import _env_on   # the project's ONE reading of an escape-hatch key -- see it there
 import surface_io
 
 DIR = config.COURSE_DIR
@@ -33,12 +34,14 @@ RES = 0.4                                   # target metres/pixel
 # OVERWRITE=1 lets a refused 0.4 m attempt replace a working seamless fallback with a blank green --
 # see keeps_existing_surface, whose guard this flag is the escape hatch for. (The sentence lost its
 # subject when this was promoted from a trailing comment on the assignment to a block above it, so it
-# has read as a fragment beginning "replace a working..." since fd1f1ca.) Parsed the way
-# fetch_trees.py parses its two
-# escape hatches, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
+# has read as a fragment beginning "replace a working..." since fd1f1ca.) Read through
+# lidar_coverage._env_on, this project's ONE off-vocabulary, NOT for truthiness:
+# bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
 # OVERWRITE=no all mean YES, so the word "false" armed the one path in this stage that can turn a card
-# that prints a real read into a blank one. An explicit off must be off.
-OVERWRITE = os.environ.get("OVERWRITE", "").lower() not in ("", "0", "false", "no")
+# that prints a real read into a blank one. An explicit off must be off, and the vocabulary this flag
+# used to spell for itself was one of five hand-written copies that then all had to learn `off` and a
+# `.strip()` separately.
+OVERWRITE = _env_on("OVERWRITE")
 # Point flags the PRODUCER disowns: "do not use this measurement", and "computed, not observed".
 # Named at module scope so a test can assert the SET rather than grep main() for the words -- the
 # first version of that test searched main()'s text, where both words also appear in the comment
@@ -313,6 +316,13 @@ def keeps_existing_surface(meta_path, overwrite=False):
 
 
 def main():
+    # A SPENT WAIVER MUST LEAVE A RECORD -- see the same notice in fetch_dem.main(). Here the loss is
+    # sharper: with OVERWRITE set, a green this stage REFUSES (too few returns, too much extrapolation)
+    # overwrites whatever fetch_dem already filled in, and the card then prints BLANK where it printed a
+    # real read. The only symptom is the blank itself, so the flag has to say so on its way in.
+    if OVERWRITE:
+        print("WARNING: OVERWRITE set -- a green this stage REFUSES will replace the surface already in\n"
+              "  dem_hd/, including a working seamless fallback, and that card will print BLANK.")
     pt2utm, zscale = laz_to_utm()
     print(f"LiDAR -> {UTM} reproject; vertical scale to m =", zscale)
     targets=build_targets()

@@ -17,6 +17,7 @@ that course's cached data (osm_*.json, laz/, dem_hd/) and outputs (greenbook.*).
 import glob, json, os, sys
 
 import distribution   # for build_mode: one normalised spelling of that read; it must not import config
+from lidar_coverage import _env_on   # the project's ONE reading of an escape-hatch key -- see it there
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SLUG = os.environ.get("COURSE", "the-reserve-at-spanos-park")
@@ -293,12 +294,18 @@ FRONT_I, FRONT_NAME = ((FI, FEATURED) if _LONGEST_OF_PAIR_IS_SECONDARY else (SI,
 _ALL_TOTALS = {t: sum(HOLES[h][2 + i] for h in HOLES) for i, t in enumerate(TEES)} if HOLES else {}
 _LONGEST_TEE = max(_ALL_TOTALS, key=_ALL_TOTALS.get) if _ALL_TOTALS else None
 SHORTER_TEE_IS_DELIBERATE = bool(COURSE.get("shorter_tee_is_deliberate"))
+# QUIET_TEE_CHECK silences the note. It is read through lidar_coverage._env_on, the project's ONE
+# off-vocabulary, and NOT for truthiness: `bool(os.environ.get(..))` made `QUIET_TEE_CHECK=0` and
+# `=false` SILENCE the warning, which is the same invertible-waiver defect this repo has now closed
+# three times. It is the one key in the family that cannot announce itself -- a notice saying "the note
+# you asked me to suppress is suppressed" is the note -- so the vocabulary is the only thing standing
+# between "I explicitly left this on" and a book that headlines a tee up to 46 yd short of the one a
+# junior is actually playing, with no line of output either way. Documented in PIPELINE.md step 8.
 if (_LONGEST_TEE and _LONGEST_TEE != BACK_NAME and not SHORTER_TEE_IS_DELIBERATE
-        and not os.environ.get("QUIET_TEE_CHECK")):
-    import sys as _sys
+        and not _env_on("QUIET_TEE_CHECK")):
     print(f"  NOTE: this book headlines {BACK_NAME} ({_ALL_TOTALS[BACK_NAME]} yd), but "
           f"{_LONGEST_TEE} ({_ALL_TOTALS[_LONGEST_TEE]} yd) is longer.\n"
           f"        Every derived number -- tee marker, from-tee yardages, carries, elevation --\n"
           f"        is measured from {BACK_NAME}. Set featured_tee/secondary_tee to build on\n"
           f"        {_LONGEST_TEE}, or add \"shorter_tee_is_deliberate\": true to silence this.",
-          file=_sys.stderr)
+          file=sys.stderr)
