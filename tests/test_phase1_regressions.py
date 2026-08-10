@@ -230,6 +230,42 @@ def _carry_frame(info, line, tend, gend):
     return em, raw_yd, from_tee_yd, off_m
 
 
+def _ladder_ink(markup):
+    """The colour THIS artifact inks the depth-ladder numbers with, as an int -- read from the artifact.
+
+    Two shapes exist and any one book is one or the other, because 30a324f moved the ink. Before it each
+    rung <text> carried its own `fill`; after it the fill sits on the enclosing <g>, so the numbers
+    inherit the `paint-order` that lets them carry the white halo which carries the contrast fix -- and
+    no rung <text> has a `fill` at all.
+
+    A test that grades a SHIPPED artifact has to read the ink that artifact was made with. Hard-coding
+    either colour makes the test true of one side of a rebuild and false of the other, which is exactly
+    how three tests here came to pass only because the books were stale.
+
+    The GROUP shape is tried first, because the two patterns are mutually exclusive only in that order:
+    post-fix a rung <text> has no `fill` of its own, so the per-text pattern cannot match it; pre-fix
+    there is no fill-bearing group carrying the ladder's stroke-linejoin, so the group pattern cannot
+    match. Returns None when neither is present, which every caller treats as a finding and not a skip.
+    """
+    m = re.search(r'<g fill="#([0-9a-f]{6})"[^>]*stroke-linejoin="round"><text[^>]*font-size="3\.4"',
+                  markup)
+    if m:
+        return int(m.group(1), 16)
+    m = re.search(r'<text[^>]*font-size="3\.4"[^>]*fill="#([0-9a-f]{6})"', markup)
+    return int(m.group(1), 16) if m else None
+
+
+# The depth ladder's rung numbers, selected by GLYPH SIZE rather than by ink. 3.4 is the ladder's own
+# font-size and the only numeric text on a green card at it -- the compass "N" shares the size and is not
+# a digit -- so this matches both the pre-fix markup (fill on each <text>) and the post-fix markup (fill
+# on the group), verified to return the identical rungs on every shipped card and on cards rendered from
+# the current tree. A colour selector cannot: after 30a324f no rung <text> carries a fill.
+_LADDER_RUNGS = re.compile(r'font-size="3\.4"[^>]*>(\d+)</text>')
+# A ladder GROUP with at least one number in it. Used only to tell "this green is shallower than one
+# rung" (a legitimate skip) from "the selector above has stopped matching" (a finding).
+_LADDER_GROUP = re.compile(r'<g fill="#[0-9a-f]{6}"[^>]*stroke-linejoin="round"><text')
+
+
 def _dist_to_poly(pt, poly, em):
     """Metres from a projected point to a polygon: 0 inside, else nearest edge. Written here rather
     than imported so the test's model choice does not lean on the engine's own geometry code."""
@@ -10888,8 +10924,20 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
             dm = re.search(r"(\d+)yd deep", blk)
             if not (hm and dm):
                 continue
-            rungs = [int(x) for x in re.findall(r'fill="#8a8a8a"[^>]*>(\d+)</text>', blk)]
+            rungs = [int(x) for x in _LADDER_RUNGS.findall(blk)]
             if not rungs:
+                # A green shallower than one rung draws no number, which is a real skip. A card that
+                # carries a ladder GROUP and yields no numbers is the selector having stopped matching,
+                # and that must never read as "this card has no ladder": the colour selector this used
+                # to carry -- fill="#8a8a8a" on a rung <text> -- matched nothing at all once 30a324f
+                # moved the ink onto the group, so every card fell through this `continue` and the only
+                # thing that spoke up was the coverage floor below, blaming a missing course.
+                if _LADDER_GROUP.search(blk):
+                    problems.append(
+                        f"{ref} hole {hm.group(1)}: the card carries a depth-ladder group but no rung "
+                        f"number was parsed out of it, so the selector has stopped matching the "
+                        f"engine's markup. Fix the selector -- do not let this read as a green with no "
+                        f"ladder, which is how a stale one skipped every card in the corpus")
                 continue
             checked += 1
             seen_courses[ref] += 1   # past the gates: counts WORK, not intent
@@ -10934,6 +10982,19 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
     median disagreement 0.02%, worst 1.10%. Bounded at 5% for glyph-centre and one-decimal rounding
     on rungs that can sit only ~15 pt apart; a genuine axis mix-up would show as a whole aspect
     ratio, far outside it.
+
+    THE LADDER'S INK IS READ FROM THE BOOK, NOT WRITTEN HERE -- see _ladder_ink. It was the literal
+    0x8a8a8a, and 30a324f moved it, so on a rebuilt PDF this test would have found no rungs at all,
+    skipped every slot on `len(rungs) < 3`, and then failed on its coverage floor with a message about
+    courses being skipped rather than about the ladder.
+
+    EXPECT SOMEWHAT FEWER CARDS AFTER THAT REBUILD, and it is the extractor and not this test. The ink
+    now sits under a white halo, so each rung is TWO overlapping runs, and PyMuPDF's `dict` extraction
+    drops some of the overlapped fill runs: 89 of 107 rung labels survived on an 18-green export from
+    this tree (83%). Cards carrying only 2 or 3 rungs can therefore fall under the three-rung gate --
+    16 of the corpus's 216 green cards are in that band -- which is why the floor below is stated with
+    room rather than at the card count. It is a coverage cost, not a loosened bound: every card that IS
+    compared is compared against the same 5%.
     """
     try:
         import fitz
@@ -10946,6 +11007,18 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
         pdf = os.path.join(ROOT, "courses", ref, "greenbook.pdf")
         if not os.path.exists(pdf):
             continue
+        # THE LADDER'S INK, READ FROM THE BOOK THIS PDF WAS PRINTED FROM. It was the literal 0x8a8a8a,
+        # which 30a324f changed -- so this test would have found no rungs at all in a rebuilt PDF, kept
+        # `continue`-ing on `len(rungs) < 3`, and failed on its coverage floor instead of on its subject.
+        # Reading the colour out of the HTML beside the PDF makes the test true of the artifact in front
+        # of it rather than of the one it wishes were there, on either side of a rebuild. See _ladder_ink.
+        html_p = os.path.splitext(pdf)[0] + ".html"
+        ink = _ladder_ink(open(html_p, encoding="utf-8").read()) if os.path.exists(html_p) else None
+        assert ink is not None, (
+            f"{ref}: the depth ladder's ink cannot be read out of greenbook.html, so this test cannot "
+            f"tell a rung from a slope label in the PDF beside it. Neither the group-fill nor the "
+            f"per-text-fill shape of the ladder markup is present -- teach _ladder_ink the new shape "
+            f"rather than letting the rung set come back empty")
         cfg, _rh = _engine(ref)
         cw, ch, gut = cfg.CARD_W_IN*72, cfg.CARD_H_IN*72, cfg.GUTTER_IN*72
         pw, ph = cfg.PAGE_W_IN*72, cfg.PAGE_H_IN*72
@@ -10975,7 +11048,7 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
                     rungs = sorted(((fitz.Rect(sp["bbox"]).y0 + fitz.Rect(sp["bbox"]).y1)/2,
                                     int(sp["text"].strip()))
                                    for sp in spans
-                                   if sp["text"].strip().isdigit() and sp["color"] == 0x8a8a8a
+                                   if sp["text"].strip().isdigit() and sp["color"] == ink
                                    and int(sp["text"].strip()) % 5 == 0
                                    and s.contains(fitz.Rect(sp["bbox"])))
                     rungs.sort(key=lambda t: t[1])
@@ -16380,19 +16453,56 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         pytest.skip("pymupdf not installed")
     PUTTING_PLAUSIBLE_MAX_PCT = 12
 
-    def slope_label_sets(path):
-        """{(page, font resource): {values}} for the runs that are a green's slope labels."""
-        by = {}
+    def slope_label_sets(path, ink):
+        """{(page, font resource): {values}} for the runs that are a green's slope labels.
+
+        `ink` is the colour THIS book draws its depth-ladder numbers in (see _ladder_ink), and it is
+        what separates the two haloed layers. Before 30a324f the ladder needed no separating: its
+        numbers were `stroke="none"` and so landed in a real font, never in a Type3 resource. Giving
+        them the white halo that carries the contrast fix makes Chrome emit a SECOND Type3 run for
+        them, and measured on an 18-green export from this tree that run carries {5,10,...,40} -- so
+        without this the flagged set becomes [15,20,25,30,35,40] and the test reports "unputtable
+        slopes" for depth-ladder rungs. A failure with the wrong diagnosis sends someone hunting a
+        slope defect that does not exist.
+        """
+        by, origins, ladder_at = {}, {}, []
         with fitz.open(path) as d:
             for pg in d:
                 for blk in pg.get_text("rawdict")["blocks"]:
                     for ln in blk.get("lines", []):
                         for sp in ln.get("spans", []):
+                            txt = "".join(c.get("c", "") for c in sp.get("chars", [])).strip()
+                            if not re.fullmatch(r"\d{1,3}", txt):
+                                continue
+                            x, y = round(sp["bbox"][0], 1), sp["bbox"][1]
+                            # the ladder's own ink: the fill run under a rung's halo
+                            if sp.get("color") == ink:
+                                ladder_at.append((pg.number, x, y, txt))
+                                continue
                             if "Type3" not in sp.get("font", ""):
                                 continue
-                            txt = "".join(c.get("c", "") for c in sp.get("chars", [])).strip()
-                            if re.fullmatch(r"\d{1,3}", txt):
-                                by.setdefault((pg.number, sp["font"]), set()).add(int(txt))
+                            key = (pg.number, sp["font"])
+                            by.setdefault(key, set()).add(int(txt))
+                            origins.setdefault(key, []).append((x, y, txt))
+        # A Type3 resource is the LADDER when one of its glyphs is painted over by the ladder's own ink
+        # at the same place. Decided per RESOURCE and not per glyph: `rawdict` drops some of the
+        # overlapped fill runs (83% survived on that same export), so one match has to be enough, and
+        # a resource is per green card so this cannot over-reach into another card's layer.
+        #
+        # WHY CO-LOCATION AND NOT THE OTHER TWO CANDIDATES. Span SIZE separates them arithmetically --
+        # a rung run is 3.4/4.6 of its own card's slope run -- but only when both exist, and a green
+        # with rungs and no slope label would then be read as a slope layer, which is the misleading
+        # direction. Intersecting with `html_slopes` is the very thing this test removed: it made a PDF
+        # accusable only of printing a slope its HTML also printed, so a stale export could not be
+        # caught. Co-location leans on neither: it reads the ladder's declared ink and the fact that a
+        # stroked glyph is painted twice in one place, and the verdict stays read from the PDF alone.
+        ladder = set()
+        for key, pts in origins.items():
+            if any(key[0] == pn and abs(x - lx) < 0.5 and abs(y - ly) < 2.0 and t == lt
+                   for x, y, t in pts for pn, lx, ly, lt in ladder_at):
+                ladder.add(key)
+        by = {k: v for k, v in by.items() if k not in ladder}
+        _found_ladders.append(len(ladder))
         # `all(x < 100)` alone. An earlier version also required at least one value not a multiple of
         # 5, on the theory that ladder rungs and gutter ticks are always multiples. Measured, that
         # clause excluded 0 of 252 resources -- zero discriminating power -- while carrying all the
@@ -16402,10 +16512,14 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         # 5 -- so the clause was precisely wrong for the case it was written for. Two live cards are one
         # glyph from it: callippe p4 is {5,6} and castlewood-hill p1 is {3,5}.
         #
-        # The real discriminators are the two structural facts: the ladder rungs are drawn with
-        # stroke="none" and land in a Type0 font, so they never enter this dict at all; and the gutter
-        # resource always carries a 3-digit to-green radius alongside its 1-2 digit from-tee number, so
-        # all(x < 100) excludes it.
+        # The other structural discriminator is the gutter's: its resource always carries a 3-digit
+        # to-green radius alongside its 1-2 digit from-tee number, so all(x < 100) excludes it.
+        #
+        # THIS PARAGRAPH USED TO NAME A THIRD, and it was true only because of a defect: "the ladder
+        # rungs are drawn with stroke='none' and land in a Type0 font, so they never enter this dict at
+        # all". They were stroke="none" BECAUSE they sat inside the dashed-line group and could not
+        # carry a halo, which is what made them the faintest data on the card. The moment that was fixed
+        # they entered this dict, and the separation above had to be built.
         return {k: v for k, v in by.items() if all(x < 100 for x in v)}
 
     checked = 0
@@ -16415,11 +16529,33 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         html = os.path.splitext(pdf)[0] + ".html"
         if not os.path.exists(html):
             continue
+        _found_ladders = []
         html_slopes = {int(v) for v in re.findall(
             r'font-size="4\.6"[^>]*font-weight="700">(\d+)</text>', open(html, encoding="utf-8").read())}
         if not html_slopes:
             continue      # yardage-mode: the greens are deliberately blank, no slope labels exist
-        sets = slope_label_sets(pdf)
+        # The ladder's ink, from the book this PDF was printed from, and the number of haloed ladder
+        # groups that book carries -- one per green card that draws a rung. Both come from the artifact
+        # rather than from this file, so the pair moves together across a rebuild.
+        src = open(html, encoding="utf-8").read()
+        ink = _ladder_ink(src)
+        assert ink is not None, (
+            f"{os.path.relpath(pdf, ROOT)}: the depth ladder's ink cannot be read out of the HTML "
+            f"beside it, so the ladder layer cannot be told from the slope layer in the PDF. Teach "
+            f"_ladder_ink the new markup shape -- do not let the ladder's rungs be reported as slopes")
+        n_haloed = len(_LADDER_GROUP.findall(src))
+        sets = slope_label_sets(pdf, ink)
+        # A HALOED LADDER MUST HAVE BEEN FOUND AND REMOVED. Without this, a discriminator that stopped
+        # matching would hand every rung value straight to the verdict below and report a green's 15, 20,
+        # 25... as unputtable slopes -- a failure with the wrong diagnosis, which is worse than a clean
+        # one. Self-activating: a pre-halo book carries no such group, so `n_haloed` is 0 and this is
+        # inert; measured on an 18-green export from this tree, 18 groups in the source gave exactly 18
+        # identified resources, so equality is what the mechanism actually delivers.
+        assert _found_ladders and _found_ladders[0] >= n_haloed, (
+            f"{os.path.relpath(pdf, ROOT)}: the HTML carries {n_haloed} haloed depth-ladder group(s) but "
+            f"only {_found_ladders[0] if _found_ladders else 0} ladder font resource(s) were identified "
+            f"in the PDF, so the depth ladder is NOT being separated from the slope labels. Whatever "
+            f"this test reports below would be rung numbers, not slopes -- fix the separation first.")
         # One resource per green card, so the count is a floor on having found the layer at all. A
         # rewrite that stops emitting per-green fonts, or a discriminator that stops matching, would
         # otherwise silently examine nothing and pass.
