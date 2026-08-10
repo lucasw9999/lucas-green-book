@@ -27205,16 +27205,18 @@ def test_one_normalised_spelling_of_build_mode_across_the_engine(tmp_path):
 def test_the_card_only_claims_an_official_scorecard_where_one_is_recorded():
     """The tees card said "Yardages from the official scorecard." on every book. 7 of 11 had none.
 
-    Only 4 courses record an official or printed club scorecard. The other 7 record third-party
-    aggregators -- BlueGolf, NCGA, GolfLink, Wikipedia, Golfify -- so "official" was a claim about
-    provenance the record does not support, printed directly beside the numbers it vouches for. The same
-    book already said the honest version two cards away: the guide card credits "facts from the PUBLISHED
-    scorecard".
+    Only 4 courses record an official or printed club card. The other 7 record a source that does not
+    evidence one, so "official" was a claim about PROVENANCE the record cannot support, printed directly
+    beside the numbers it vouches for. The same book already said the honest version two cards away: the
+    guide card credits "facts from the PUBLISHED scorecard".
 
-    Aggregator data is not the problem and this is not a downgrade for its own sake. bay-view's own source
-    note records that a third-party record was WRONG and had to be corrected against the club's card --
-    which is exactly why the distinction is worth printing rather than papering over. A reader who knows
-    the yardages came from an aggregator can weigh them; one told they came from the club cannot.
+    WHICH CLASS OF RECORD IS WHICH IS THE ONLY THING THAT MOVES HERE, and no figure does. A scorecard
+    number is a fact wherever it is read, and the book prints the same yardages either way; what the fix
+    withdraws is a sentence about where they were read. It is not a downgrade for its own sake and not a
+    verdict on any record's quality: bay-view is the case that makes the distinction worth printing, since
+    its own source note records a per-hole figure that was WRONG and had to be corrected from the club's
+    own card. A reader told the numbers came from the club cannot weigh them; a reader told they came from
+    published scorecard data can.
 
     Derived from sources.scorecard, the same field the provenance record is built from, so the card and
     legal/03 cannot disagree. Asserted in BOTH directions: a course that earned "official" must still say
