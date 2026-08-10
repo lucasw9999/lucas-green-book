@@ -3617,6 +3617,104 @@ def test_a_test_that_claims_every_book_or_card_does_not_enumerate_the_geometry_c
             f"CORPUS_OVER_BOOKS_IS_RIGHT[{name!r}] needs a real reason, got {why!r}")
 
 
+# Names this file's prose deliberately attributes to a module that no longer has them, with WHY. A
+# RETIRED name is worth naming -- knowing what a helper used to be called is how a reader follows a
+# commit -- but it has to be marked, or it is indistinguishable from a name that never existed.
+PROSE_NAMES_A_RETIRED_HELPER = {
+    "generate._course_has_trees":
+        "retired by 6325af0 in favour of generate._book_draws_trees, and the sentence naming it says "
+        "so: it keyed the per-card caveat on the LiDAR marker list while render_hole falls back to OSM "
+        "tree nodes. The old name is the searchable half of that history.",
+}
+
+
+def test_this_file_s_prose_never_names_an_engine_helper_that_does_not_exist():
+    """A docstring naming a function nobody wrote sends the reader nowhere, and this file had one.
+
+    `sweep_stale_parts`, attributed to fetch_lidar, appeared in three places -- twice in
+    test_no_staged_write_leaves_its_part_file_behind's census of staged writers and once in
+    test_the_two_osm_cache_writes_sweep_up_after_a_failure -- and no such function has ever existed. It
+    is `sweep_partials` (fetch_lidar.py:526). That is not a typo with no cost: there is a
+    live `.part` in the corpus right now, left by a killed download
+    (courses/callippe-preserve-golf-course/laz/USGS_LPC_CA_AlamedaCounty_2021_B21_w6162n2049__Co3.laz.part),
+    and whether it is litter or evidence depends on knowing which function sweeps laz/ and when. A
+    reader who greps the name the docstring gave them finds nothing and concludes nothing sweeps it.
+
+    This file is 37,000 lines of deliberately dense prose that names the code beside it -- which is its
+    best feature and exactly why a stale name survives here: nothing executes a docstring. So the
+    references are graded. Every `<first-party module>.<name>` written in a COMMENT or a STRING in this
+    file must resolve to something that module actually defines or imports, and a name deliberately kept
+    for its history is recorded above with the reason.
+
+    Measured over the whole file with the fix in place: one retired name, recorded, and no others.
+    """
+    import ast
+    import io
+    import inspect
+    import tokenize
+
+    defined = {}
+    for path in sorted(glob.glob(os.path.join(ROOT, "*.py"))) + \
+            sorted(glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        mod = os.path.basename(path)[:-3]
+        with open(path, encoding="utf-8") as fh:
+            try:
+                tree = ast.parse(fh.read(), filename=path)
+            except SyntaxError:            # a module mid-edit is not this test's subject
+                continue
+        names = set()
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(n.name)
+            elif isinstance(n, ast.Assign):
+                names |= {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)}
+            elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+                names.add(n.target.id)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                # an imported name IS reachable as `module.name`, which is how fetch_trees._env_on
+                # (imported from lidar_coverage) is a true reference and not a phantom
+                names |= {(a.asname or a.name).split(".")[0] for a in n.names}
+        defined.setdefault(mod, set()).update(names)
+    assert len(defined) > 15, (
+        f"only {len(defined)} first-party module(s) found; the glob has stopped rather than the tree "
+        f"having shrunk")
+
+    src = inspect.getsource(sys.modules[__name__])
+    pattern = re.compile(r"\b(" + "|".join(sorted(defined)) + r")\.([A-Za-z_][A-Za-z0-9_]*)")
+    phantom = {}
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type not in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        for m in pattern.finditer(tok.string):
+            mod, name = m.group(1), m.group(2)
+            # `fetch_osm.py` is a FILENAME, not an attribute; dunders are the language's, not ours
+            if name == "py" or name.startswith("__") or name in defined[mod]:
+                continue
+            ref = f"{mod}.{name}"
+            if ref in PROSE_NAMES_A_RETIRED_HELPER:
+                continue
+            phantom.setdefault(ref, set()).add(tok.start[0])
+    assert not phantom, (
+        "this file's prose names an engine helper that does not exist. A reader greps it, finds "
+        "nothing, and concludes the behaviour it describes is absent -- which is what a "
+        "`sweep_stale_parts` attributed to fetch_lidar did for the laz/ sweep, three times over, with "
+        "a real stale .part sitting in the corpus:\n  "
+        + "\n  ".join(f"{r} at line(s) {sorted(ls)}" for r, ls in sorted(phantom.items()))
+        + "\n\n  Fix the name, or record it in PROSE_NAMES_A_RETIRED_HELPER with why the old spelling "
+          "is worth keeping.")
+
+    stale = sorted(r for r in PROSE_NAMES_A_RETIRED_HELPER if r not in src)
+    assert not stale, (
+        f"PROSE_NAMES_A_RETIRED_HELPER records {stale}, which this file no longer mentions. Drop the "
+        f"entry rather than leave a waiver that would cover the next phantom of the same name.")
+    for ref, why in PROSE_NAMES_A_RETIRED_HELPER.items():
+        mod, name = ref.split(".", 1)
+        assert mod in defined and name not in defined[mod], (
+            f"PROSE_NAMES_A_RETIRED_HELPER[{ref!r}] is not retired at all -- {mod} defines {name} "
+            f"again, so the waiver is hiding a live reference from the check")
+        assert isinstance(why, str) and len(why) > 40, f"{ref} needs a real reason, got {why!r}"
+
+
 def test_the_course_template_documents_every_key_the_engine_reads():
     """examples/course.json is the ONLY course data this repo ships, and a stranger's whole map of
 
@@ -4300,8 +4398,13 @@ def test_nothing_is_drawn_off_the_putting_surface():
                                         f"the green -- its centroid falls outside its own polygon")
 
     assert arrows > 5000, f"only {arrows} arrows examined -- the sweep found almost nothing"
-    assert hole_pins >= 150 and green_pins >= 150, \
-        f"only {hole_pins} hole pins and {green_pins} green pins examined"
+    # DERIVED, not 150. Every hole with geometry draws one pin on its hole map and one on its green,
+    # so the population is expected_geometry_holes() -- 198 here, 18 for someone who has built one
+    # course, and a floor of 150 let a quarter of the corpus fall out of the sweep unnoticed.
+    want_pins = expected_geometry_holes()
+    assert hole_pins == want_pins and green_pins == want_pins, (
+        f"examined {hole_pins} hole pins and {green_pins} green pins where {want_pins} holes have "
+        f"geometry on disk -- a card whose pin this sweep never looked at is a card it cannot grade")
     assert slope_labels > 500, f"only {slope_labels} slope labels examined"
     assert_no_course_skipped(seen, "test_nothing_is_drawn_off_the_putting_surface")
     assert not problems, ("marks are drawn off the putting surface they describe:\n  "
@@ -5106,10 +5209,24 @@ def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
                     f"Arrow length is normalised to each green's own 92nd-percentile slope, which "
                     f"spans {worst[1][0]:.2f}%-{worst[2][0]:.2f}% inside one book, so a reader "
                     f"comparing two holes by arrow length is reading a scale that moved between them")
-    assert checked >= 14, (
-        f"only {checked} arrow-legend instances found across the built books; the corpus prints 14 "
-        f"(11 pocket colour books + 3 enlarged). A legend this test cannot find is a legend it cannot "
-        f"grade")
+    # DERIVED, and it was ZERO-SLACK: `>= 14` against exactly 14 on this machine, so anyone with two
+    # courses failed it for having less data -- the same defect 40623b4 removed five absolute floors
+    # for. The population is one arrow legend per BOOK FILE THAT DRAWS ARROWS, and a yardage-mode book
+    # draws none (blank greens), so it is asked of distribution.build_mode rather than counted.
+    import distribution
+    want_legends = 0
+    for f in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
+        d = os.path.dirname(f)
+        if not distribution.is_corpus_slug(os.path.basename(d)):
+            continue
+        with open(os.path.join(d, "course.json"), encoding="utf-8") as fh:
+            # build_mode takes the RECORD, not the slug -- it is the one reader of this field for the
+            # whole engine and it normalises a hand-edited " Yardage\n" the way config.py does not.
+            if distribution.build_mode(json.load(fh)) != "yardage":
+                want_legends += 1
+    assert checked == want_legends, (
+        f"{checked} arrow-legend instances found across the built books, where {want_legends} book "
+        f"file(s) draw arrows at all. A legend this test cannot find is a legend it cannot grade")
     assert not problems, ("the arrow legend does not say the length is scaled per green:\n  "
                           + "\n  ".join(problems[:6]))
 
@@ -5669,25 +5786,49 @@ def test_every_osm_using_book_carries_the_attribution_odbl_requires():
         "the copyright URL": r"osm\.org/copyright|openstreetmap\.org/copyright",
         "the USGS credit": r"USGS(?:&nbsp;|\s)*3DEP",
     }
+    # The map detector, TOLERANT OF A CLASS LIST and asserted in BOTH directions. It read
+    # `minilab">(HOLE|GREEN)`, which requires the quote to close immediately after the class name --
+    # so a restyle to `class="minilab wide"` would make it match nothing, the "draws no maps" control
+    # below would pass on every book, and a book drawing OSM maps with no attribution would ship. That
+    # is verbatim the `abtxt` -> `abtxt legal` failure gen_disclaimers was already fixed for, on a
+    # LICENCE OBLIGATION this time. Two faults deep, so the positive direction is asserted too: every
+    # OSM-using book must MATCH, which makes a class refactor fail loudly in fourteen books at once
+    # instead of silently disarming the control.
+    MAP = re.compile(r'class="minilab[^"]*">\s*(?:HOLE|GREEN)')
     checked, problems = 0, []
+    import distribution
+    want_osm_books = 0
     for p in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "greenbook*.html"))):
-        ref = os.path.basename(os.path.dirname(p))
+        d = os.path.dirname(p)
+        ref = os.path.basename(d)
         if ref.startswith("_"):
             continue
+        with open(os.path.join(d, "course.json"), encoding="utf-8") as fh:
+            if distribution.build_mode(json.load(fh)) != "yardage":
+                want_osm_books += 1
         with open(p, encoding="utf-8") as fh:
             html = fh.read()
         if "OpenStreetMap" not in html:
             # No OSM data in this book. Confirm that is really why, rather than a lost credit.
-            assert not re.search(r'minilab">(HOLE|GREEN)', html), (
+            assert not MAP.search(html), (
                 f"{ref}/{os.path.basename(p)} draws maps but never names OpenStreetMap -- if those "
                 f"maps are OSM-derived this is an ODbL breach, not an omission")
             continue
         checked += 1
+        assert MAP.search(html), (
+            f"{ref}/{os.path.basename(p)} names OpenStreetMap but this test can no longer find a HOLE "
+            f"or GREEN mini-label in it, so the control that catches an UNATTRIBUTED book has gone "
+            f"blind. The label markup moved; fix the pattern rather than the books.")
         for what, pat in ELEMENTS.items():
             if not re.search(pat, html, re.I):
                 problems.append(f"{ref}/{os.path.basename(p)} is a Produced Work from OSM data but "
                                 f"is missing {what}")
-    assert checked >= 10, f"only {checked} OSM-using books checked -- build them first"
+    # DERIVED, not `>= 10` against 14. A licence obligation is the last place for a floor with four
+    # books of slack in it: every book NOT built in yardage mode draws OSM maps and therefore owes the
+    # attribution, and that population is asked of distribution.build_mode rather than counted here.
+    assert checked == want_osm_books, (
+        f"{checked} OSM-using books checked, where {want_osm_books} book file(s) are built from OSM "
+        f"geometry. A Produced Work this loop never opened is one whose attribution nothing checked.")
     assert not problems, ("ODbL attribution is incomplete in a distributed book:\n  "
                           + "\n  ".join(problems))
 
@@ -8454,7 +8595,10 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                         f"{ref} hole {hn}: the card says {CARRY_REFUSED_MARK!r} but the sand stops "
                         f"{front - reach:.2f} yd SHORT of the green front ({reach:.2f} against "
                         f"{front:.2f}) -- the words over-claim the geometry")
-    assert checked >= 150, f"only {checked} cards checked -- build the books first"
+    # DERIVED: one increment per hole card, so the population is the holes with geometry on disk.
+    assert checked == expected_geometry_holes(), (
+        f"{checked} cards checked where {expected_geometry_holes()} holes have geometry -- the old "
+        f"floor was a flat 150, which let a quarter of the corpus drop out silently")
     assert_no_course_skipped(
         seen_courses, "test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green")
     assert not problems, ("a card withholds a carry without saying so:\n  "
@@ -8816,7 +8960,18 @@ def test_the_playline_is_never_clipped_by_its_own_nowrap():
                     tightest.append((r["slack"], rel, r["hole"], r["txt"]))
         finally:
             b.close()
-    assert checked >= 150, f"only {checked} playlines measured -- build the books first"
+    # DERIVED FROM THE ARTIFACT, not a flat 150. The population is the `.playline` divs the books
+    # actually contain -- 193 here, because a card whose OSM centreline never reached its back tee
+    # prints no playline row at all -- counted from the HTML rather than typed, so the browser query
+    # silently matching fewer of them is what this catches. A round floor could not: 150 admitted a
+    # quarter of them going missing.
+    want_playlines = 0
+    for f in books:
+        with open(f, encoding="utf-8") as fh:
+            want_playlines += len(re.findall(r'class="playline"', fh.read()))
+    assert checked == want_playlines, (
+        f"the browser measured {checked} playlines where the books contain {want_playlines}. A row this "
+        f"probe never selected is a row that could be clipped in print with nothing objecting.")
     assert not clipped, "a card's playline is silently truncated in print:\n  " + "\n  ".join(clipped[:6])
     # ...and the headroom must stay real, not merely non-negative. 10 px is two characters.
     worst = min(tightest)
@@ -9450,8 +9605,9 @@ def test_the_elevation_word_matches_the_elevation_sign():
                 level += 1
     assert printed >= 50, f"only {printed} elevation phrases checked -- build the books first"
     # 55 of 171 records fall under the 3 ft level threshold, so the printed count is ~2/3 of the
-    # records; a floor on the RECORDS is what catches a skipped course.
-    assert printed + level >= 150, (
+    # records; a count of the RECORDS is what catches a skipped course, and it is DERIVED -- the old
+    # `>= 150` was a round number 12% under the 171 rows on disk, and it scaled with nothing.
+    assert printed + level == expected_elev_rows(), (
         f"only {printed + level} elevation records reached ({printed} printed, {level} level) -- "
         f"a course is being skipped")
     assert level >= 10, f"only {level} holes exercised the level threshold"
@@ -9518,7 +9674,9 @@ def test_a_from_tee_number_is_never_scaled_off_a_line_that_disagrees_with_the_ca
                     f"({gap:.0f}% apart) and no exact mechanism applies, yet it prints from-tee "
                     f"numbers {printed}. Those are interpolated along a route the yardage does not "
                     f"describe -- the gutter should stay empty instead.")
-    assert checked >= 150, f"only {checked} holes compared -- build the books first"
+    assert checked == expected_geometry_holes(), (
+        f"{checked} holes compared where {expected_geometry_holes()} have geometry on disk; the old "
+        f"floor was a flat 150 and scaled with nothing")
     assert big >= 5, (f"only {big} holes disagree with their card by >5%, where 24 are expected -- "
                       f"either the corpus shrank or the comparison is not measuring what it did")
     # An empty gutter is correct where the line cuts a dogleg, but it is also what a REGRESSION looks
@@ -10220,7 +10378,9 @@ def test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth():
             front=want[(slug, hole)]["front"], back=want[(slug, hole)]["back"])
         seen[slug] += 1
     assert_no_course_skipped(seen, "test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth")
-    assert len(want) >= 180, f"only {len(want)} greens walked of the corpus's 198"
+    assert len(want) == expected_surfaces(), (
+        f"{len(want)} greens walked where {expected_surfaces()} surfaces are built on disk (the old "
+        f"floor was a flat 180 beside a hand-typed 198)")
 
     # THE FLOOR IS THE ENGINE'S OWN, not a second copy of it. This constant and generate.py's
     # BANK_NOTE_MIN_YD are one figure in two records, which is the defect this suite keeps finding
@@ -11098,7 +11258,26 @@ def test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness
         f"a cluster of {min(accepted)} points set a published endpoint, below the measured floor of "
         f"{ld.MIN_ENDPOINT_CLUSTER_PTS}")
 
-    # (5) THE LIVE CORPUS. Every tile the eleven records name must still date, and to the same days.
+    # (5) THE LIVE CORPUS. Every tile the records name must still date, and to the same days.
+    #
+    # THE POPULATION IS DERIVED, and the two floors here used to be `checked >= 39` and
+    # `len(seen_courses) >= 11` -- the exact figures this machine happens to hold, with ZERO slack, so a
+    # reader with two courses failed both for having less data. Worse, `>= 39` directly contradicted the
+    # `continue` twenty lines below that blesses a missing .laz: laz/ is the one re-downloadable thing
+    # under courses/, so a tile absent from disk is not a defect -- and demanding all 39 made it one.
+    # Both are now counted from the same two facts the loop itself gates on (a record naming tiles, and
+    # the tile being on disk), so they scale and cannot contradict the gate.
+    want_tiles, want_courses = 0, set()
+    for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
+        cdir = os.path.dirname(cj)
+        if os.path.basename(cdir).startswith("_"):
+            continue
+        with open(cj, encoding="utf-8") as fh:
+            tiles = ((json.load(fh).get("lidar_flown") or {}).get("tiles") or {})
+        on_disk = [n for n in tiles if os.path.exists(os.path.join(cdir, "laz", n))]
+        want_tiles += len(on_disk)
+        if on_disk:
+            want_courses.add(os.path.basename(cdir))
     checked, problems, seen_courses = 0, [], collections.Counter()
     for cj in sorted(glob.glob(os.path.join(ROOT, "courses", "*", "course.json"))):
         cdir = os.path.dirname(cj)
@@ -11134,11 +11313,12 @@ def test_a_junk_cluster_that_saturates_the_window_is_refused_by_its_own_thinness
         pytest.skip("no LAZ tiles on disk (laz/ is refetchable and gitignored)")
     assert not problems, ("re-dating the recorded tiles no longer reproduces the recorded label:\n  "
                           + "\n  ".join(problems[:8]))
-    assert checked >= 39, (
-        f"only {checked} of the 39 recorded tiles were re-dated, so the eleven ACQUIRED labels are not "
-        f"all being proven")
-    assert len(seen_courses) >= 11, (
-        f"only {len(seen_courses)} courses re-dated; eleven have a recorded label: {sorted(seen_courses)}")
+    assert checked == want_tiles, (
+        f"{checked} of the {want_tiles} recorded tiles PRESENT ON DISK were re-dated, so an ACQUIRED "
+        f"label is not being proven")
+    assert set(seen_courses) == want_courses, (
+        f"re-dated {sorted(seen_courses)}; {sorted(want_courses)} have a recorded label with tiles on "
+        f"disk. The difference is {sorted(want_courses - set(seen_courses))}.")
 
 
 def test_one_junk_gps_time_cannot_size_the_cluster_mass_counters_allocation(tmp_path):
@@ -13328,7 +13508,9 @@ def test_built_books_still_match_the_engine_and_the_data():
             if printed != fresh:
                 stale.append(f"{slug} h{hn}: book has {printed!r}, engine+data say {fresh!r}")
     # A sweep that examines nothing passes vacuously, which is the failure mode this file keeps hitting.
-    assert compared >= 150, f"only {compared} playlines compared; expected the whole corpus"
+    assert compared == expected_geometry_holes(), (
+        f"{compared} playlines compared where {expected_geometry_holes()} holes have geometry; the old "
+        f"floor was a flat 150 and said 'expected the whole corpus' while accepting three quarters")
     assert not stale, ("built books are stale against the engine or the data:\n  "
                        + "\n  ".join(stale[:8]) + (" ..." if len(stale) > 8 else ""))
 
@@ -17878,6 +18060,72 @@ def test_course_json_is_written_atomically(tmp_path):
         "as an interrupted rewrite of the hand-transcribed card.")
 
 
+def _staged_renames():
+    """Every `os.replace`/`os.rename` in the engine whose SOURCE is a staged `.part` name.
+
+    Returns sorted (module, function, line), module spelled the way a docstring names it
+    ("tools/lidar_dates", "fetch_osm"). This is the census
+    test_no_staged_write_leaves_its_part_file_behind publishes, DERIVED instead of counted by hand --
+    and the reason it is derived is that the hand count was wrong three times running. The docstring
+    said "both", the commit correcting it said "there were three", the next correction said eight
+    writers and ten renames, and the truth was eleven and twelve: `generate.write_book` (the book HTML)
+    and `tools/export_pdf.export` (the printed PDF) both stage a `.part` under courses/<slug>/ and
+    neither was named in any entry or in any exclusion note. Every one of those misses is a staged
+    writer that stayed unfixed while its siblings were repaired for the identical defect, which is the
+    argument that docstring makes about itself.
+
+    The source is resolved two levels, because that is how far the tree spells it: a literal
+    (`fn + ".part"`, `path + ".part"`, an f-string), a local bound to one, or a local bound to a CALL of
+    a helper whose own body builds the name (surface_io.staged_names, export_pdf.staged_pdf). One
+    spelling of the staged name per artifact is the convention those helpers exist for, so following the
+    call is following the convention rather than working around it.
+    """
+    import ast
+
+    out = []
+    for path in sorted(glob.glob(os.path.join(ROOT, "*.py"))) + \
+            sorted(glob.glob(os.path.join(ROOT, "tools", "*.py"))):
+        rel = os.path.relpath(path, ROOT)[:-3]
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        tree = ast.parse(src, filename=rel)
+        parent = {}
+        for node in ast.walk(tree):
+            for kid in ast.iter_child_nodes(node):
+                parent[kid] = node
+        # module-level helpers whose own body builds a staged name, for the one-hop indirection
+        stagers = {n.name for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and ".part" in (ast.get_source_segment(src, n) or "")}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("replace", "rename")
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"
+                    and node.args):
+                continue
+            fn, walk = None, node
+            while walk in parent:
+                walk = parent[walk]
+                if isinstance(walk, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    fn = walk
+                    break
+            arg = node.args[0]
+            staged = ".part" in ast.unparse(arg)
+            if not staged and isinstance(arg, ast.Name) and fn is not None:
+                for a in ast.walk(fn):
+                    targets = ([a.target] if isinstance(a, ast.AnnAssign)
+                               else list(a.targets) if isinstance(a, ast.Assign) else [])
+                    names = {t.id for tgt in targets for t in ast.walk(tgt) if isinstance(t, ast.Name)}
+                    if arg.id not in names or a.value is None:
+                        continue
+                    rhs = ast.unparse(a.value)
+                    if ".part" in rhs or any(re.search(rf"\b{s}\b", rhs) for s in stagers):
+                        staged = True
+                        break
+            if staged:
+                out.append((rel, fn.name if fn else "<module>", node.lineno))
+    return sorted(out)
+
+
 def test_no_staged_write_leaves_its_part_file_behind(tmp_path, monkeypatch):
     """Staged writes in this project stage a `.part` and rename it. Two of them swept up after themselves.
 
@@ -17888,10 +18136,13 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path, monkeypatch):
       * tools/lidar_dates.py write_lidar_flown -> courses/<slug>/course.json.part
       * surface_io.commit_surface -> courses/<slug>/dem_hd/.holeNN.npy.part and .holeNN.json.part
 
-    THE CENSUS WAS WRONG TWICE, which is how each newly-found one stayed unfixed while its siblings
-    were being repaired for the identical defect. This docstring said "both"; the commit that
-    corrected it said "there were three". Counted mechanically at every `os.replace` of a `.part` in
-    the tree, there are EIGHT staged writers committing TEN renames (surface_io makes three):
+    THE CENSUS WAS WRONG THREE TIMES, which is how each newly-found one stayed unfixed while its
+    siblings were being repaired for the identical defect. This docstring said "both"; the commit that
+    corrected it said "there were three"; the correction after that said EIGHT writers and TEN renames
+    and was wrong again, in the same direction, by the same mechanism -- a number typed out beside a
+    list nothing re-derived. So it is derived now, by _staged_renames() below, which AST-counts every
+    os.replace whose source is a staged `.part` name and requires every one to be NAMED here. There are
+    ELEVEN staged writers committing TWELVE renames (surface_io.commit_surface makes two):
 
       under courses/<slug>/ -- the one directory NO sweep reaches:
         1. tools/lidar_dates.write_lidar_flown   -> course.json
@@ -17899,23 +18150,33 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path, monkeypatch):
         3. fetch_trees.write_layer               -> trees_lidar.json
         4. fetch_osm.fetch                       -> osm_geom.json, osm_relations.json
         5. fetch_osm.main                        -> osm_course.json
+        6. generate.write_book                   -> greenbook.html, greenbook_coach.html
+        7. tools/export_pdf.export               -> greenbook.pdf, greenbook_coach.pdf
       under courses/<slug>/dem_hd/ -- swept by surface_io.sweep_staged (`.hole*.part`):
-        6. surface_io.commit_surface             -> .holeNN.npy, .holeNN.json
-           surface_io.stamp_digest               -> .holeNN.json   (the digest backfill; sidecar only)
-      under courses/<slug>/laz/ -- swept by fetch_lidar.sweep_stale_parts (`*.part`):
-        7. fetch_lidar
-        8. fetch_lidar_alameda
+        8. surface_io.commit_surface             -> .holeNN.npy, .holeNN.json
+        9. surface_io.stamp_digest               -> .holeNN.json   (the digest backfill; sidecar only)
+      under courses/<slug>/laz/ -- swept by fetch_lidar.sweep_partials (`*.part`):
+       10. fetch_lidar.main
+       11. fetch_lidar_alameda.main
 
-    All eight carry a failure-path cleanup now. Numbers 2 and 3 are driven elsewhere because they
+    6 and 7 are the two the eight-and-ten count missed, and they are not the harmless end of the list:
+    generate.write_book and tools/export_pdf.export write the book and the printed book, the two
+    artifacts a reader is actually handed. Both stage DOT-PREFIXED, which is why nothing else noticed
+    them -- the read-only snapshot and its coverage walk both exempt a dotted name.
+
+    All eleven carry a failure-path cleanup now. Numbers 2 and 3 are driven elsewhere because they
     need a course on disk to import their module -- write_hole_elev in
     test_the_third_staged_write_sweeps_up_after_a_failure, fetch_trees.write_layer with the other tree
-    tests -- and 4 and 5 in test_the_two_osm_cache_writes_sweep_up_after_a_failure, which was the last
-    pair added and the reason the count above is enumerated rather than asserted as a word.
+    tests -- 4 and 5 in test_the_two_osm_cache_writes_sweep_up_after_a_failure, and 7 in
+    test_a_staged_book_left_by_a_kill_is_swept_before_the_next_export.
 
-    fetch_lidar.py:sweep_stale_parts and fetch_lidar_alameda both sweep as well as clean up, with the
+    fetch_lidar.py:sweep_partials and fetch_lidar_alameda both sweep as well as clean up, with the
     argument that applies unchanged here -- a .part is never valid data,
     because both are only renamed into place after the write returns. There is a real example on disk
-    from a killed download, dated the day before this was written.
+    from a killed download, dated the day before this was written
+    (courses/callippe-preserve-golf-course/laz/USGS_LPC_CA_AlamedaCounty_2021_B21_w6162n2049__Co3.laz.part),
+    and knowing WHICH function sweeps it is the whole point of naming the function: this docstring said
+    `sweep_stale_parts` in three places and no such function has ever existed.
 
     Why it matters more than tidiness, and it is not that the disk fills up: a stray course.json.part
     sitting beside course.json is indistinguishable from an interrupted rewrite of the ONE
@@ -17927,7 +18188,37 @@ def test_no_staged_write_leaves_its_part_file_behind(tmp_path, monkeypatch):
     Both directions: the litter is gone after a FAILED write, and the pair still lands after a
     successful one.
     """
+    import inspect
     import numpy as np
+
+    # ---- the census above, re-derived -----------------------------------------------------------
+    # A number typed beside a list is what went wrong here three times. Both figures and every entry
+    # come off the AST now; a new staged writer fails this until the list names it.
+    words = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+             "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+             "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+             "twenty": 20}
+    renames = _staged_renames()
+    writers = sorted({(m, f) for m, f, _ in renames})
+    doc = inspect.getdoc(test_no_staged_write_leaves_its_part_file_behind) or ""
+    said = re.search(r"There are\s+(\w+)\s+staged writers committing\s+(\w+)\s+renames", doc, re.S)
+    assert said, "the census sentence has moved; this test can no longer grade the figures it publishes"
+    assert (words.get(said.group(1).lower()), words.get(said.group(2).lower())) \
+        == (len(writers), len(renames)), (
+        f"the published census says {said.group(1)} writers / {said.group(2)} renames; the tree has "
+        f"{len(writers)} / {len(renames)}:\n  "
+        + "\n  ".join(f"{m}.{f}:{ln}" for m, f, ln in renames))
+    # Named in the NUMBERED LIST, not merely somewhere in the prose. The list is what a reader checks
+    # a new writer against, and a name that appears only in a paragraph about it is not in the census.
+    listed = "\n".join(ln for ln in doc.splitlines() if re.match(r"\s*\d+\.\s", ln))
+    unnamed = sorted(f"{m}.{f}" for m, f in writers if f"{m}.{f}" not in listed)
+    assert not unnamed, (
+        f"a staged writer is not in the numbered census above: {unnamed}. Every one this docstring "
+        f"failed to name stayed unfixed while its siblings were repaired -- generate.write_book and "
+        f"tools/export_pdf.export were the last two, and they write the book and the printed book.")
+    assert len(renames) >= 10, (
+        f"only {len(renames)} staged rename(s) found in the tree, so the AST walk has stopped working "
+        f"rather than the tree having stopped staging writes")
 
     import surface_io
     sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -18080,7 +18371,9 @@ def test_each_card_footer_matches_its_own_map():
             if bool(footer[1]) != bool(drawn[1]):
                 bad.append((slug, "water/ink disagree about whether there is any",
                             footer[1], drawn[1]))
-    assert checked >= 150, f"only {checked} hole cards examined"
+    assert checked == expected_geometry_holes(), (
+        f"{checked} hole cards examined where {expected_geometry_holes()} holes have geometry on disk; "
+        f"the old floor was a flat 150")
     assert not bad, (f"{len(bad)} of {checked} cards print a count that contradicts their own map "
                      f"(slug, what, footer, drawn): {bad[:6]}")
 
@@ -18331,7 +18624,7 @@ def test_the_two_osm_cache_writes_sweep_up_after_a_failure(tmp_path, monkeypatch
         going, tries again, and on the fourth failure raises "FAILED to fetch" -- with a
         `osm_geom.json.part` left beside the only copy of the greens and nothing anywhere reporting
         it. Nor does any sweep reach it: surface_io.sweep_staged matches dem_hd's dot-prefixed
-        `.hole*.part` only, and fetch_lidar.sweep_stale_parts is laz/-only. courses/<slug>/ itself is
+        `.hole*.part` only, and fetch_lidar.sweep_partials is laz/-only. courses/<slug>/ itself is
         the one directory nothing sweeps.
 
     Both failures are induced between the staged open and the rename, which is the whole window a
@@ -24390,6 +24683,7 @@ def test_every_printed_licence_sentence_says_the_same_thing():
              "its greens are blank for want of trustworthy survey data and a reader elsewhere cannot "
              "know that. Not for sale. All rights reserved.")
     n_free = n_owned = 0
+    per_book = collections.Counter()
     for path, slug, coach in _built_books():
         with open(os.path.join(ROOT, "courses", slug, "course.json"), encoding="utf-8") as fh:
             distributable, label, _why = distribution.distribution_status(json.load(fh))
@@ -24405,13 +24699,24 @@ def test_every_printed_licence_sentence_says_the_same_thing():
             assert other not in text, (
                 f"{slug}{' (coach)' if coach else ''} <{tag} class={cls!r}> prints BOTH licence "
                 f"sentences")
+            per_book[path] += 1
             if distributable:
                 n_free += 1
             else:
                 n_owned += 1
-    assert n_free >= 25 and n_owned >= 2, (
-        f"scanned {n_free} free-to-share and {n_owned} personal-use licence sentences; expected the "
-        f"corpus's 28 and 2, so this test is not measuring what it claims")
+    # DERIVED, and per BOOK. `n_free >= 25 and n_owned >= 2` had ZERO slack on the personal-use side --
+    # this corpus holds exactly one personal-use book printing exactly two licence sentences, so anyone
+    # whose tree has none failed a test about a licence obligation for having less data, and anyone
+    # whose tree has one book failed the free side too. What the floor was really for is anti-vacuity:
+    # every built book must print at least one licence sentence, which is the population itself.
+    silent = sorted(os.path.relpath(p, ROOT) for p, _s, _c in _built_books() if not per_book[p])
+    assert not silent, (
+        f"a built book prints no licence sentence at all, so this test looked at it and asserted "
+        f"nothing: {silent}. That is the shape sharing_line() was added to fix -- a book carrying a "
+        f"licence it has no right to, or none.")
+    assert n_free + n_owned == sum(per_book.values()) and per_book, (
+        f"the licence-sentence census does not add up: {n_free} free + {n_owned} personal against "
+        f"{sum(per_book.values())} blocks read")
 
 
 @needs_corpus
@@ -26954,7 +27259,7 @@ Each of those puts a wrong number in a junior's pocket. `test_built_books_still_
                              population=set(BOOKS))
 
 
-@needs_corpus
+@needs_books               # BOOKS: a hand-transcribed scorecard needs no OSM geometry
 def test_par_and_length_agree_with_each_other():
     """The FIRST check in this suite on a scorecard fact that is not another copy of itself.
 
@@ -26978,13 +27283,27 @@ def test_par_and_length_agree_with_each_other():
     index swapped with its neighbour. Those need a published reference this project does not hold, and
     the honest way to close them is a committed file of per-hole yardages transcribed a second time from
     each course's card -- a data task, not a code one.
+
+    THREE POPULATIONS USED TO APPEAR IN FOUR LINES OF THIS TEST. It iterated CORPUS (the OSM-geometry
+    gate, 11 slugs / 198 holes), asserted `>= 190`, and said "the corpus has 216" in the failure it
+    would print. The scorecard has nothing to do with OSM geometry -- poppy-ridge's 18 rows are
+    hand-transcribed exactly like the other twelve books' and were the ones no par/length check ever
+    saw. Over BOOKS the population is _expected_cards(), derived from each book's own course.json, and
+    the assertion is EXACT.
+
+    AND THE `continue` IS GONE. `if par not in BOUNDS or not isinstance(yd, (int, float)) or yd <= 0:
+    continue` silently dropped exactly the rows this test exists to catch: a par of 7, or a par stored
+    as the STRING "4", or a yardage stored as "413", skipped the bounds check AND lowered the count that
+    was supposed to notice. A transcription error that changes a cell's TYPE is at least as likely as
+    one that changes its value -- both come from re-keying a printed card -- so a row this test cannot
+    grade is now a failure that names it rather than a hole quietly excused.
     """
     # Generous against the measured corpus (par 3 max 250 -> 260; par 4 min 275 -> 265, max 502 -> 540;
     # par 5 min 469 -> 440). Wide enough that no real hole is accused, tight enough that a swapped row is.
     BOUNDS = {3: (90, 260), 4: (265, 540), 5: (440, 700), 6: (600, 900)}
     checked = collections.Counter()
-    bad = []
-    for slug in CORPUS:
+    bad, ungradeable = [], []
+    for slug in BOOKS:
         os.environ["COURSE"] = slug
         for m in ("config",):
             sys.modules.pop(m, None)
@@ -26992,22 +27311,31 @@ def test_par_and_length_agree_with_each_other():
         for hn in config.HOLE_NUMS:
             row = config.HOLES[hn]
             par, yd = row[0], row[config.BACK_I]
-            if par not in BOUNDS or not isinstance(yd, (int, float)) or yd <= 0:
-                continue
             checked[slug] += 1
+            if par not in BOUNDS or not isinstance(yd, (int, float)) or yd <= 0:
+                ungradeable.append(f"{slug} hole {hn}: par {par!r}, {config.BACK_NAME} yardage {yd!r}")
+                continue
             lo, hi = BOUNDS[par]
             if not (lo <= yd <= hi):
                 bad.append(f"{slug} hole {hn}: par {par} at {yd} yd from {config.BACK_NAME} "
                            f"(a par {par} runs {lo}-{hi} yd)")
-    assert sum(checked.values()) >= 190, (
-        f"only {sum(checked.values())} holes checked; the corpus has 216")
+    assert not ungradeable, (
+        "a scorecard row cannot be graded against the par/length bounds at all, so it was being skipped "
+        "-- a par outside {3, 4, 5, 6}, or a par or yardage stored as a string, which is exactly the "
+        "kind of transcription error this test exists to find:\n  " + "\n  ".join(ungradeable[:8])
+        + "\n  Fix the row, or widen BOUNDS if the par is real (a par 7 exists on a handful of "
+          "courses).")
+    assert sum(checked.values()) == _expected_cards(), (
+        f"{sum(checked.values())} holes checked; the built books declare {_expected_cards()} rows "
+        f"across {sorted(BOOKS)}")
     assert not bad, (
         "a hole's par and its length contradict each other, which usually means a row was mis-keyed -- "
         "the hole took another hole's par or another hole's yardage:\n  " + "\n  ".join(bad))
-    assert_no_course_skipped(checked, "test_par_and_length_agree_with_each_other")
+    assert_no_course_skipped(checked, "test_par_and_length_agree_with_each_other",
+                             population=set(BOOKS))
 
 
-@needs_corpus
+@needs_books               # BOOKS: the subject is what a CARD prints, not the geometry
 def test_no_par_3_prints_a_carry():
     """"carry N" is a tee-shot decision, and a par 3 does not have one.
 
@@ -27025,10 +27353,17 @@ def test_no_par_3_prints_a_carry():
     Checked on the ARTIFACT and against the scorecard's own par, so it cannot be satisfied by reading
     the same constant the renderer reads. The map still draws every bunker and the footer still counts
     it, so this hides nothing -- it removes an invitation to play a shot that does not exist.
+
+    OVER BOOKS, AND THE COUNT IS DERIVED. This iterated CORPUS and asserted `>= 150` while its own
+    message said "the corpus ships 216" -- three claims, three different populations, and the loop
+    reached 198. CORPUS is the OSM-geometry gate, which has nothing to do with what a card prints;
+    poppy-ridge ships 18 cards with hole numbers on them and no geometry at all. It prints no carry
+    today, so this costs nothing now and closes the door on a yardage-mode card ever printing one
+    unwatched.
     """
     checked = collections.Counter()
     offenders = []
-    for slug in CORPUS:
+    for slug in BOOKS:
         book = os.path.join(ROOT, "courses", slug, "greenbook.html")
         cj = os.path.join(ROOT, "courses", slug, "course.json")
         if not (os.path.isfile(book) and os.path.isfile(cj)):
@@ -27050,11 +27385,12 @@ def test_no_par_3_prints_a_carry():
             if par == 3 and carry:
                 offenders.append(f"{slug} hole {hn.group(1)} (par 3, {(holes[hn.group(1)] or [0,0,0])[2]} yd) "
                                  f"prints carry {carry.group(1)}")
-    assert sum(checked.values()) >= 150, (
-        f"only {sum(checked.values())} hole cards examined; the corpus ships 216")
+    assert sum(checked.values()) == _expected_cards(), (
+        f"{sum(checked.values())} hole cards examined; the built books declare {_expected_cards()} "
+        f"across {sorted(BOOKS)}. A card outside this loop can print a par-3 carry unnoticed.")
     assert not offenders, ("a par 3 prints a carry, which invites a lay-up that does not exist:\n  "
                            + "\n  ".join(offenders))
-    assert_no_course_skipped(checked, "test_no_par_3_prints_a_carry")
+    assert_no_course_skipped(checked, "test_no_par_3_prints_a_carry", population=set(BOOKS))
 
 
 @needs_corpus
@@ -30225,7 +30561,9 @@ def test_the_confidence_gate_tests_a_fall_the_green_actually_has():
                             f"({S['rise_ft'] / real_ft:.2f}x)")
         if S["conf"] == "clear" and real_ft < 0.8:
             flips[f"{slug} h{hole}"] = (S["tilt_pct"], S["rise_ft"], real_ft)
-    assert checked >= 180, f"only {checked} green surfaces measured; the corpus has 198"
+    assert checked == expected_surfaces(), (
+        f"{checked} green surfaces measured where {expected_surfaces()} are built on disk; the old "
+        f"floor was a flat 180 with a hand-typed 198 beside it")
     assert_no_course_skipped(seen, "test_the_confidence_gate_tests_a_fall_the_green_actually_has")
     assert not problems, ("the confidence gate is not measuring the fall of its own plane:\n  "
                           + "\n  ".join(problems[:6]))
@@ -30546,7 +30884,9 @@ def test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measure
         if s["width_yd"] != int(round(truth_w)):
             problems.append(f"{slug} h{hole}: width {s['width_yd']} against a ground length of "
                             f"{truth_w:.4f} yd -> {int(round(truth_w))}")
-    assert checked >= 180, f"only {checked} greens measured; the corpus has 198"
+    assert checked == expected_surfaces(), (
+        f"{checked} greens measured where {expected_surfaces()} surfaces are built on disk; the old "
+        f"floor was a flat 180 beside a hand-typed 198")
     assert_no_course_skipped(
         seen, "test_a_printed_green_depth_is_the_ground_length_of_the_line_the_card_measured")
     assert not problems, ("printed green sizes are not the ground lengths of the lines they were "
@@ -30735,7 +31075,9 @@ def test_the_plane_and_arrow_spread_the_card_quotes_is_the_one_the_corpus_shows(
         cosang = (pdc * ax + pdr * ay) / (math.hypot(pdc, pdr) * math.hypot(ax, ay))
         gaps.append((math.degrees(math.acos(max(-1.0, min(1.0, cosang)))), slug, hole))
         seen[slug] += 1
-    assert len(gaps) >= 180, f"only {len(gaps)} greens measured; the corpus has 198"
+    assert len(gaps) == expected_surfaces(), (
+        f"{len(gaps)} greens measured where {expected_surfaces()} surfaces are built on disk; the old "
+        f"floor was a flat 180 beside a hand-typed 198")
     assert_no_course_skipped(
         seen, "test_the_plane_and_arrow_spread_the_card_quotes_is_the_one_the_corpus_shows")
     v = sorted(g[0] for g in gaps)
@@ -30901,8 +31243,10 @@ def test_the_engine_names_every_printed_tilt_that_appears_both_marked_and_unmark
             else:
                 continue
             seen[slug] += 1
-    assert sum(seen.values()) >= 190, (
-        f"only {sum(seen.values())} green footers were read; the corpus prints 198")
+    # DERIVED off the surfaces on disk, not a 190 beside a hand-typed 198. One footer per built green.
+    assert sum(seen.values()) == expected_surfaces(), (
+        f"{sum(seen.values())} green footers were read where {expected_surfaces()} green surfaces are "
+        f"built on disk")
     both = sorted(set(marked) & set(unmarked), key=float)
 
     # The suppression, asserted rather than claimed. `green_honesty` drops the mark on a NO_CLEAR_FALL
@@ -31168,7 +31512,9 @@ def test_the_depth_conversion_says_what_its_exactness_is_measured_against():
         if s["depth_yd"] != int(round(ground)):
             wrong.append(f"{slug} h{hole}: prints {s['depth_yd']}yd deep, ground length "
                          f"{ground:.4f} yd -> {int(round(ground))}")
-    assert checked >= 180, f"only {checked} greens measured; the corpus has 198"
+    assert checked == expected_surfaces(), (
+        f"{checked} greens measured where {expected_surfaces()} surfaces are built on disk; the old "
+        f"floor was a flat 180 beside a hand-typed 198")
     assert_no_course_skipped(
         seen, "test_the_depth_conversion_says_what_its_exactness_is_measured_against")
     assert len(wrong) == said_count, (
@@ -31367,7 +31713,9 @@ def test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER(
                                   retired_lat_scale * math.cos(math.radians(meta["green_center"][0])))
         if int(round(was)) != pr:
             moved[(slug, hole)] = (int(round(was)), pr, ground)
-    assert checked >= 180, f"only {checked} printed green depths measured; the corpus prints 198"
+    assert checked == expected_surfaces(), (
+        f"{checked} printed green depths measured where {expected_surfaces()} surfaces are built on "
+        f"disk; the old floor was a flat 180 beside a hand-typed 198")
     assert_no_course_skipped(
         seen, "test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER")
     assert not wrong, (
@@ -31809,9 +32157,12 @@ def _grade_tick_error_table(rec, note, measured):
 
     # (c) every cell, re-derived, and graded to its own last published digit
     per_tick, vertex, counts, bands = measured
-    assert counts["holes"] >= 180 and counts["crossings"] >= 600, (
-        f"only {counts['holes']} holes and {counts['crossings']} radius crossings measured; the corpus "
-        f"draws 198 centrelines")
+    # DERIVED. `>= 180` sat beside a hand-typed 198 and admitted a fifth of the corpus dropping out of
+    # the table this whole item re-derives. The crossings floor stays a floor: a radius that falls off
+    # the end of a short hole legitimately has no crossing, so that count is not a population.
+    assert counts["holes"] == expected_geometry_holes() and counts["crossings"] >= 600, (
+        f"{counts['holes']} holes and {counts['crossings']} radius crossings measured, where "
+        f"{expected_geometry_holes()} holes have geometry on disk")
     bad = []
     for R in sorted(published):
         for col, model in ((0, "retired"), (1, "live")):
@@ -33251,7 +33602,9 @@ def test_the_served_dem_pixel_must_be_square_in_metres():
         if r > worst:
             worst, worst_at = r, os.path.relpath(p, ROOT)
     if n:
-        assert n >= 150, f"only {n} surfaces checked; expected the whole corpus"
+        assert n == expected_surfaces(), (
+            f"{n} surfaces checked where {expected_surfaces()} are built on disk; the old floor was a "
+            f"flat 150 and said 'expected the whole corpus' while accepting three quarters of it")
         assert worst < fd.PIXEL_ASPECT_MAX, (
             f"{worst_at} is {worst:.6f} off square, which this gate would now refuse. Either the "
             f"tolerance is too tight or that surface really is anisotropic")
@@ -34745,8 +35098,11 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
                 f"{slug}: drawn {what} count {o.count(needle)} before the re-fetch, "
                 f"{n.count(needle)} now -- fetch_osm.py claims these are identical")
     # anti-vacuous, but only where the corpus that backs the claim is actually built
-    if len(CORPUS) >= 11:
-        assert len(have) >= 11, (
+    # DERIVED: every course in the corpus, not a hard 11. The gate stays because the preserved books
+    # live outside the repo and a stranger has none of them; what it must not do is publish a figure
+    # that only holds on this machine.
+    if os.path.isdir(ev) and CORPUS:
+        assert len(have) >= len(CORPUS), (
             f"only {len(have)} preserved books could be compared against a corpus of {len(CORPUS)} "
             f"courses; the claim in fetch_osm.py covers all of them, so either the evidence at {ev} "
             f"has been moved or the books have not been rebuilt")
