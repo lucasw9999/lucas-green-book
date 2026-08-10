@@ -43,10 +43,11 @@ than quoted at them.
      also stops at 3.45:1 on paper, still under 4.5.
 
   3. THE COVER ADDRESS HAD NO FITTING LOGIC. A fixed 9-unit font inside a 221.3 pt gold frame. The
-     13th course's address is **2.965 in** wide with **3.93 pt** of clearance a side; next tightest is
-     Castlewood at 10.46 pt, median 24.85 pt. The title has had a width-aware estimator all along; the
-     address did not, so one longer address crosses the frame with nothing to notice. Fixed to 8.6
-     units on that one cover -- **9.84 pt** clear -- and the other twelve render byte-identical.
+     13th course's address is 48 characters, **2.965 in** wide with **3.93 pt** of clearance a side;
+     next tightest is Castlewood at 10.46 pt, median 24.85 pt. The title has had a width-aware
+     estimator all along; the address did not, and at 49 characters it crosses the gold rule with
+     nothing in the pipeline to notice. Fixed to 8.4 units on that one cover -- **9.84 pt** clear --
+     and the other twelve render byte-identical.
 
   4. A COURSE NAME OVER 30 CHARACTERS WITH NO EM-DASH GREEDY-FILLS, and the fill splits "Golf Club".
      Exactly one course reaches that branch, so a smarter `_title_lines` would rewrap ZERO of the
@@ -725,7 +726,7 @@ def test_no_cover_address_crosses_the_gold_frame():
         comparison does not depend on the order of attributes in the source.
       * the guard's CHARACTER BUDGET is walked rather than quoted: synthetic addresses of growing
         length are fed through the module global the covers read, and the longest one that still
-        clears the bar is reported. The corpus's longest is 47 characters and the budget must reach at
+        clears the bar is reported. The corpus's longest is 48 characters and the budget must reach at
         least 60, because the corpus is exactly the population that cannot exercise a guard.
       * the estimator behind the sizing must be CONSERVATIVE -- the real glyph box no wider than the
         width the rule predicted -- or the rule is guessing in the dangerous direction. Measured over

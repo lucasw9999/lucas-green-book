@@ -838,9 +838,10 @@ def _addr_line(addr_y):
 
     The 6.0 FLOOR is the cover's own smallest type: the copyright line prints at 6.2 units. Walked in
     the browser, the guard holds the frame with 5 pt to spare out to 64 characters and keeps the address
-    inside it out to 67; the corpus's longest is 47. Past that the address crosses, and the test walks
-    that budget rather than trusting this paragraph -- so a 68-character address fails loudly there
-    instead of quietly on paper.
+    inside it out to 67; the corpus's longest is 48, whose estimate at the old fixed 9 was 307.2 units
+    against a 307.4-unit inner span -- ONE character from crossing the gold rule. Past 67 the address
+    crosses, and the test walks that budget rather than trusting this paragraph -- so a 68-character
+    address fails loudly there instead of quietly on paper.
 
     ONE IMPLEMENTATION, for the reason _title_lines gives for being shared: the two covers carried
     identical copies of this line, and a fix applied to one of them leaves the enlarged edition -- the
