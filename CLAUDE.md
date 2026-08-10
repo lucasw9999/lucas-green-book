@@ -33,7 +33,7 @@ generated from the sources in §2. State the open source a number came from:
 > tee polygons" · "facts from the published scorecard"
 
 Do **not** record a figure as having been sourced from, checked against, or verified against any
-third-party or commercial compilation, directory or aggregator. If a figure's provenance cannot be
+third-party or commercial compilation of course data. If a figure's provenance cannot be
 stated in open-data terms, say plainly that it is single-source or unresolved — an honest gap in
 writing is worth more than a citation that muddies §2.
 
