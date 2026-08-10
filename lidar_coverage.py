@@ -90,22 +90,43 @@ SEAMLESS_SOURCE = "seamless"
 
 
 def _env_on(name):
-    """An escape hatch is ON only if it is not an explicit off -- fetch_trees._env_on's rule.
+    """THE project's one reading of an escape-hatch environment key. Every waiver in the engine.
 
-    Parsed this way, NOT for truthiness: bool(os.environ.get(..)) makes ALLOW_COVERAGE_GAPS=0 and
-    =false mean YES, and these two waive the only check standing between a green the tiles do not
-    reach and a fetch that reports success.
+    The off-vocabulary is CLOSED and enumerated: a hatch is OFF for an UNSET key and for the values
+    empty, `0`, `false`, `no` and `off` -- in any case, with surrounding whitespace ignored. Every
+    other value is ON, including a typo'd affirmative, because a hatch that recognised only `1` and
+    `true` would read a mistyped yes as a refusal to waive and put the surprise on the safe side of the
+    wrong decision.
 
-    This is the SEVENTH site in the repo spelling that off-vocabulary (fetch_dem and fetch_dem_hd hold
-    it in a module constant, fetch_hole_elev and fetch_trees in an `_env_on` of their own, and
-    fetch_trees twice more inline) and it is deliberately not imported from any of them: this module
-    must keep importing where laspy and numpy are absent, which is the one case ALLOW_UNCHECKED_COVERAGE
-    exists for. What makes six of the seven safe is not a shared home, it is that ONE table drives
-    them -- test_overwrite_off_does_not_arm_the_overwrite_path_in_either_surface_stage, which now
-    DISCOVERS every module defining `_env_on` rather than listing them, so a copy cannot arrive
-    unpinned. The two fetch_trees reads spelled inside function bodies are still unreachable by it.
+    ENUMERATED RATHER THAN SUMMARISED, because the summary was false. This docstring used to say "ON
+    only if it is not an explicit off" and stop, and three of the words a person reaches for to turn a
+    waiver off were not in the vocabulary at all. Measured before the fix, on this function:
+
+        ''  -> False    '0' -> False    'false' -> False    'no' -> False
+        'off' -> TRUE   'OFF' -> TRUE   '0 ' -> TRUE   ' 0' -> TRUE   '0\\n' -> TRUE
+
+    Each of those TRUEs SPENDS the waiver, which is the worst direction for this family to fail in:
+    the safety-conscious spelling gets the unsafe outcome. Two spellings named there are not typos but
+    ordinary shell and editor artefacts -- `KEY=0 ` out of a heredoc, `KEY=0\\n` out of a file read.
+    `distribution.build_mode` already stripped for exactly that reason ("a trailing space is a
+    realistic typo") and this did not. Words like `none` and `disable` are still ON: they are not in the
+    vocabulary, and the vocabulary is the specification.
+
+    NOT bool(os.environ.get(..)), which is where this whole class comes from: a non-empty string is
+    truthy, so `=0` and `=false` meant YES. That defect has been introduced three separate times in
+    this repo -- most recently across the four keys guarding hazard ink, where `ALLOW_HAZARD_SHRINK=0`
+    ACCEPTED the loss of drawn sand and water.
+
+    ONE DEFINITION, not a convention. This vocabulary was hand-copied to five sites (an `_env_on` each
+    in fetch_trees and fetch_hole_elev, an OVERWRITE constant each in fetch_dem and fetch_dem_hd), all
+    five agreeing only because nothing had yet edited one of them -- and then the fix that added `off`
+    would have had to find all five. They now import this function; a copy cannot drift from itself.
+    It lives HERE, below every caller, because this module must keep importing where laspy and numpy
+    are absent -- which is the one case ALLOW_UNCHECKED_COVERAGE exists for -- so it can be imported by
+    modules that cannot be imported back (see tests/test_r15_osm_keys.py, which pins the absence of
+    that cycle).
     """
-    return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no", "off")
 
 
 def tile_footprints(laz_dir):
@@ -645,7 +666,6 @@ def report_or_exit(course_dir):
 
 
 def main():
-    import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import config
     # One call, one answer -- and the answer now includes the dem_hd fallback set. main() used to

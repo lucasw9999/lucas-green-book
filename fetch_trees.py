@@ -32,6 +32,7 @@ import numpy as np, laspy
 from pyproj import Transformer
 import config
 import geo
+from lidar_coverage import _env_on   # the project's ONE reading of an escape-hatch key -- see it there
 
 DIR = config.COURSE_DIR
 # NAD83 UTM zone chosen from the course longitude (26910 = CA zone 10, 26919 = MA zone 19)
@@ -348,16 +349,6 @@ def _stored_layer(path):
     return {str(k): len(v) for k, v in j.items() if isinstance(v, list)}
 
 
-def _env_on(name):
-    """An escape hatch is ON only if it is not an explicit off.
-
-    Parsed the way this module's other two hatches are, NOT for truthiness: bool(os.environ.get(..))
-    makes ALLOW_NO_TREES=0 and =false mean YES, and these two waive the guards that stand between a
-    failed survey and a book that draws a tree-lined hole as open ground.
-    """
-    return os.environ.get(name, "").lower() not in ("", "0", "false", "no")
-
-
 def check_layer(out, path):
     """Refuse to commit a tree layer that has LOST the canopy the stored one recorded.
 
@@ -469,7 +460,9 @@ def on_playing_surface(lon,lat,surfaces):
 # So: lifted to module scope, and the reads go through _env_on like the other two hatches here. The flag
 # names stay LITERAL rather than becoming module constants, because that pin table also requires every
 # module-scope ALLOW_* string it finds to be one it drives, and it drives the two check_layer hatches
-# only.
+# only. `_env_on` is now IMPORTED from lidar_coverage rather than spelled here: this module used to hold
+# its own copy of the off-vocabulary, and the round that had to add `off` and a `.strip()` to it would
+# have had to find all five copies.
 def check_buildings(n_bld):
     """Refuse to place tree markers against a cache that carries no building footprints.
 
