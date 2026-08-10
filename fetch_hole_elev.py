@@ -83,12 +83,23 @@ TEE_R_M = 15.0          # half-width of the square WINDOW the mapped-pad sample 
 # and the relief the gate bounds are measured over that window, not over the whole pad. That is the
 # right sample and it is derived from a measurement rather than inherited from the fallback: see
 # tee_elevations. It is NO LONGER the fallback region -- see TEE_FALLBACK_R_M.
-TEE_FALLBACK_R_M = 6.0  # radius of the disc sampled when NO mapped tee ring holds the anchor
+TEE_FALLBACK_R_M = 5.842  # radius of the disc sampled when NO mapped tee ring holds the anchor
 # MEASURED FROM THE CORPUS, not chosen. The pad branch samples the mapped ring intersected with the
-# window, and the median area of that region is 113.5 m^2 over the 177 mapped pads (the 12.6% share
-# _tee_pads publishes, against the 900 m^2 box); a disc of that area has a radius of 6.0104 m. So the
+# window, and the median area of that region is 107.2 m^2 over the 194 mapped pads (the 11.9% share
+# _tee_pads publishes, against the 900 m^2 box); a disc of that area has a radius of 5.8416 m. So the
 # fallback now samples a region the size of a teeing ground, centred on the anchor, which is what the
 # pad branch gets from the polygon and the fallback had no way to ask for.
+#
+# SO IT MOVES WITH THE CORPUS, and that is a property, not an accident: it was 6.0 over 177 pads and a
+# 13th course took the median mapped pad from 113.5 m^2 to 107.2, i.e. this radius from 6.0104 to
+# 5.8416. Re-typed rather than frozen, because the sentence above says the region is the size of a
+# teeing ground and 194 pads estimate that better than 177 -- a constant that claims to be a
+# measurement and is not is the defect class this module keeps recording. NOT ROUNDED to buy headroom
+# either: see the swept margin below, which is the reason the temptation exists.
+# THE COST OF THAT CHOICE, written down because it is real: adding a course can move a printed height
+# on a course that had nothing to do with it. Nothing moved this time (see COST below -- all five
+# fallback cards print what they printed at 6.0), and merion 9 is the hole to watch, with 0.18 m of
+# headroom under this radius. It is watched: the sweep below is graded, and the grader names that hole.
 #
 # WHAT IT REPLACED, and why: the fallback was a full TEE_R_M box -- 900 m^2 of whatever surrounds the
 # anchor -- and the relief check sits inside `if on_pad:`, so nothing bounded how much height that
@@ -103,20 +114,20 @@ TEE_FALLBACK_R_M = 6.0  # radius of the disc sampled when NO mapped tee ring hol
 # window.
 #
 # SWEPT CONTINUOUSLY, at 0.01 m, because a discrete probe gets this wrong: at {2.5, 5, 7.5, 10} m all
-# five look settled, and merion 9's printed integer flips from 33 to 32 at 5.66 m -- 0.34 m below this
-# radius, the tightest margin any of the five has. Above, the nearest flip is 7.87 m away. bay-view 16
+# five look settled, and merion 9's printed integer flips from 33 to 32 at 5.66 m -- 0.18 m below this
+# radius, the tightest margin any of the five has. Above, the nearest flip is 8.03 m away. bay-view 16
 # prints 48 from 0.2 m all the way to 13.11 m, so the value that arrives sits in a 12.9 m-wide band
 # while the 46 it replaces occupied a 1.6 m sliver at the very top of the box's range. That merion 9
-# margin is thin and is published rather than smoothed: its change measures -32.553 ft, 0.053 ft from
+# margin is thin and is published rather than smoothed: its change measures -32.521 ft, 0.021 ft from
 # the 32/33 rounding boundary, so the integer is genuinely near a tie and the radius is not tuned to
 # pick a side of it.
-MIN_TEE_PTS = 25        # fallback disc only: below this the disc barely reached the tee at all
+MIN_TEE_PTS = 24        # fallback disc only: below this the disc barely reached the tee at all
 # RE-DERIVED for the smaller region. This was 200, calibrated against the 900 m^2 box -- 0.2222
-# returns/m^2 -- and left at 200 over a 113.097 m^2 disc it would have meant something 8x stricter than
-# it says, which is the exact fault _crs_units_per_m records about this same constant. Preserving the
-# areal density it encoded gives 0.2222 * pi * 6.0^2 = 25.1 -> 25.
-# Latent either way today: the thinnest fallback sample is castlewood-hill 4's 984 returns, a 39.4x
-# margin, and it refuses nothing above r = 0.85 m. What it changes is the next course whose fallback
+# returns/m^2 -- and left at 200 over a 107.219 m^2 disc it would have meant something 8.4x stricter
+# than it says, which is the exact fault _crs_units_per_m records about this same constant. Preserving
+# the areal density it encoded gives 0.2222 * pi * 5.842^2 = 23.8 -> 24.
+# Latent either way today: the thinnest fallback sample is castlewood-hill 4's 938 returns, a 39.1x
+# margin, and it refuses nothing above r = 0.82 m. What it changes is the next course whose fallback
 # anchor sits on thin ground. It also has to stay above the 20 returns `_spread` needs before it uses
 # percentiles, or every fallback row's recorded relief would quietly become a peak-to-peak.
 # When the sample is the mapped TEE RING, "few points" no longer means "we probably missed the tee" --
@@ -160,8 +171,8 @@ MIN_TEE_PTS = 25        # fallback disc only: below this the disc barely reached
 # pad spanning 3.1 ft.
 # THAT BAND IS A STATEMENT ABOUT THE PAD BRANCH ALONE. It was offered as evidence for the threshold
 # without saying so, and the threshold sits inside a predicate with a second branch that never reaches
-# it: the fallback branch gates on COUNT only and accepts bay-view 16, whose sample spans 7.8 ft over
-# the 6.0 m disc (31.9 ft over the 15 m box that disc replaced). See
+# it: the fallback branch gates on COUNT only and accepts bay-view 16, whose sample spans 7.6 ft over
+# the 5.842 m disc (31.9 ft over the 15 m box that disc replaced). See
 # tee_median_is_trustworthy, which now states that cost instead of leaving it to be discovered.
 # NOR IS IT A STATEMENT ABOUT THE WHOLE MAPPED PAD. 7 pads span more than MAX_TEE_RELIEF_FT over the
 # whole ring while the sampled window is level -- callippe-preserve 11, merion 14, merion 16,
@@ -604,8 +615,8 @@ def tee_median_is_trustworthy(n, relief_raw, on_pad, vscale):
       and that is deliberate: the disc legitimately reaches off a raised tee onto the ground below it,
       so its spread measures the region and not the tee, and gating on it would silence all five
       fallback cards for an artifact. What made that acceptable to state and not merely to assert is
-      that the REGION is now the size of a teeing ground: bay-view 16's sample spans 7.8 ft over the
-      6.0 m disc where the old 15 m box spanned 31.9 ft over 10,532 returns, and its median is now the
+      that the REGION is now the size of a teeing ground: bay-view 16's sample spans 7.6 ft over the
+      5.842 m disc where the old 15 m box spanned 31.9 ft over 10,532 returns, and its median is now the
       ground at its own anchor rather than 1.90 ft below it. That card printed 46 and prints 48.
       See TEE_FALLBACK_R_M for the derivation, the two printed integers it moves, and the swept margins.
 

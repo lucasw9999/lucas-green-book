@@ -22578,7 +22578,7 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
 # this table against the point cloud.
 TEE_SAMPLES_MEASURED = {
     ("bay-view", 3): (4581, 3.572, True),
-    ("bay-view", 16): (1129, 7.836, False),
+    ("bay-view", 16): (1073, 7.622, False),
     ("callippe-preserve", 11): (5068, 2.000, True),
     ("castlewood-hill", 9): (838, 2.755, True),
     ("castlewood-hill", 18): (150, 4.302, True),
@@ -22621,7 +22621,7 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
         flattest pad REFUSED     castlewood-hill 9, then merion 1, merion 11, bay-view 3,
                                  castlewood-hill 18, philadelphia 18
 
-    Measured over all 177 anchors that land on a mapped pad (172 of them carry ground returns; 5 more
+    Measured over all 194 anchors that land on a mapped pad (189 of them carry ground returns; 5 more
     anchors land in no ring and take the box) by running the shipped sampler; so the two rows either side
     of the line pin the constant into (2.13, 2.75] and this test fails if the gate is deleted, stubbed
     out, or the number is moved out of that band. It calls a PURE PREDICATE with recorded numbers -- it
@@ -22631,7 +22631,7 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
 
     The FALLBACK branch is asserted too, and asserted to be DIFFERENT: it gates on the count only,
     because there is no containment guarantee and the sampled disc legitimately reaches off a raised tee
-    onto the ground it sits above -- bay-view 16's disc spans 7.8 ft and is accepted on 1,129 returns.
+    onto the ground it sits above -- bay-view 16's disc spans 7.6 ft and is accepted on 1,073 returns.
     Applying the relief gate there would cost five more holes their height for a spread that is an
     artifact of the sampling region, not a property of the tee. What made that defensible rather than
     merely asserted is that the region was fixed instead: as a 15 m box that same sample spanned 31.9 ft
@@ -24184,16 +24184,20 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
     itself, and it is the wrong fix. The right one is to sample the fallback the way the pad branch is
     sampled: over a region the size of a teeing ground, centred on the anchor.
 
-    THE RADIUS IS MEASURED FROM THE CORPUS, not chosen. The pad branch samples the mapped ring
-    intersected with the window, and over all 177 mapped pads the median area of that region is about
-    113 m^2 (12.6% of the 900 m^2 box, which _tee_pads already publishes). A disc of the same area has
-    a radius of 6.0 m. That is the whole derivation, and this test re-runs it.
+    THE RADIUS IS MEASURED FROM THE CORPUS, not chosen, and it MOVES WITH IT. The pad branch samples
+    the mapped ring intersected with the window, and over all 194 mapped pads the median area of that
+    region is about 107 m^2 (11.9% of the 900 m^2 box, which _tee_pads already publishes). A disc of the
+    same area has a radius of 5.84 m. That is the whole derivation, and this test re-runs it. It read
+    177 pads, 113 m^2 and 6.0 m until a 13th course joined the median; the constant was re-typed with
+    it, which is what the failure text below asks for, and no printed integer moved.
 
     AND THE THRESHOLD IS SWEPT CONTINUOUSLY, because a discrete probe would have got this wrong. At
     {2.5, 5, 7.5, 10} m every one of the five looks settled; swept at 0.01 m, merion 9's printed
-    integer flips from 33 to 32 at 5.66 m -- 0.34 m below the shipped radius. That margin is published
+    integer flips from 33 to 32 at 5.66 m -- 0.18 m below the shipped radius. That margin is published
     and graded rather than left to be discovered, which is the same failure a headroom figure in this
     campaign already had (16x published against 10.5x measured, because the grader tested powers of two).
+    It is also the whole exposure of a corpus-derived radius: a 14th course that pulls the median below
+    5.66 m moves merion 9's printed height, and this is what makes that loud instead of silent.
 
     MEASURED COST: 2 of the 5 printed integers move. Both the value that leaves and the value that
     arrives are re-derived here from the point cloud -- neither is copied from the module or from the
@@ -24218,7 +24222,7 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
 
     # 1. THE RADIUS, re-derived from the pad branch's own sampled area. `share` is the fraction of the
     #    TEE_R_M box each mapped ring covers inside the window -- the same rasterisation _tee_pads
-    #    publishes 12.6% from -- so the area is share * the box's area, and no new measurement is needed.
+    #    publishes 11.9% from -- so the area is share * the box's area, and no new measurement is needed.
     box_area = (2 * fhe.TEE_R_M) ** 2
     areas = sorted(v * box_area for g in geom.values() for v in g["share"].values())
     want_r = math.sqrt(median(areas) / math.pi)
@@ -24250,7 +24254,7 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
     #    fallback row records `tee_points` and `tee_z_m`, and those are the producer's own outputs: a
     #    producer sampling the box would record the box's count and the box's median, and both are
     #    measured below and required to be the disc's. The count is the decisive discriminator -- the
-    #    disc holds 984-2211 returns against the box's 8384-17567, a 7.52-9.33x separation on all five --
+    #    disc holds 938-2102 returns against the box's 8384-17567, a 7.94-9.82x separation on all five --
     #    while the medians agree to within 0.01 m on 1 of the five (castlewood-hill 4, 0.0091 m) and to
     #    within 0.05 m on 3, so a z-only check would not have separated them on every hole. What this
     #    states is exactly what it checks: the region the producer SAMPLED, as recorded, is the disc. It
