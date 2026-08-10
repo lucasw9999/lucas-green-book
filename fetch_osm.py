@@ -294,8 +294,17 @@ VOLATILE_KINDS = frozenset({
 # `wetland_undrawn` -- the farmland/landcover tiles that merely carry the tag -- is volatile and NOT a
 # hazard kind, for `waterway_undrawn`'s reason exactly: no card draws it, nothing measures from it, and
 # a mapper re-classifying one is an OSM improvement that must not read as a lost hazard.
-HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water', 'waterway',
-                          'wetland'})
+#
+# `penalty_area` is here because it is `water_hazard` under its current name: the 2019 Rules of Golf
+# replaced "water hazard" and "lateral water hazard" with one term and OSM followed, and render_hole's
+# `waters` now draws all three in the same blue and counts them in the same footer W. It was STRUCTURAL
+# before -- not in either set, so it fell to the default-deny branch -- which is the right severity but
+# the wrong REASON: losing one of these removes drawn hazard ink from a card, so the message a human
+# reads has to say "hazard" and the waiver it prescribes has to be ALLOW_HAZARD_SHRINK, not
+# ALLOW_STRUCTURAL_SHRINK. The tolerance does not move: both branches give a zero-tolerance,
+# no-rarity-exemption comparison, and 2% of trump-national-los-angeles' 34 is 0.
+HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'penalty_area', 'water',
+                          'waterway', 'wetland'})
 
 # 2%, floor 1. Chosen from what these counts actually are on this corpus (the-reserve 2,462 trees and
 # 1,530 buildings, micke-grove 532 trees, the-reserve 49 waterway ways, merion 8 wood) against what the

@@ -742,7 +742,32 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # callippe, the course this omission was found on: 14 of 18 cards gain water (9 of them from 0W),
     # and nothing else on any card moves -- same bunkers, same trees, same yardage rows, same carries,
     # same from-tee gutters; only the water counts and the frames the new ink is fitted into.
-    waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
+    #
+    # AND SO DOES `golf=penalty_area`, FOR A STRICTER REASON THAN WETLAND'S: it is not a neighbouring
+    # class that deserves the same treatment, it is the SAME CLASS UNDER ITS CURRENT NAME. The 2019 Rules
+    # of Golf replaced "water hazard" and "lateral water hazard" with one term, "penalty area", and OSM
+    # followed; `golf=water_hazard` above is the pre-2019 spelling of exactly this tag. So it takes the
+    # same blue, the same footer W, the same 45 m corridor and the same OR, and nothing about it is a new
+    # decision -- printing it any other way would be printing the same hazard two ways depending on when
+    # its mapper last read the rule book.
+    #
+    # It had never appeared in this engine at all. trump-national-los-angeles is mapped entirely in the
+    # new vocabulary: 34 penalty areas, 185,918 m^2, 101-27,778 m^2 each, against 3 golf=water_hazard --
+    # so 92% of that course's hazards were a class `waters` could not see. Every one of the 34 also
+    # carries `natural=scrub`, so they fell through to `woods` below, were painted #9cbf86 at 0.6
+    # opacity and counted in info["trees"], under a legend that reads "bunkers (tan), water (blue),
+    # trees". Measured on the shipped cards: 120 penalty-area/hole pairs within 60 m of a played line,
+    # 83 of them admitted by this gate, 0 counted in any footer's W, and 58 of the 120 drawn as literally
+    # nothing -- the `woods` gate is a FRACTION, which the frac_in note above condemns in its own words
+    # for a hazard. On holes 2, 4, 6 and 9 the drawn playing line passes straight THROUGH a penalty area
+    # the card left blank; hole 6 printed "9B 0W" over 27,778 m^2 its own centreline crosses.
+    #
+    # Cost, measured over all 13 courses: only this one moves -- the other twelve render byte-identically,
+    # because no other course in the corpus carries the tag. Its 18 cards go from 8 W to 91 and from 6
+    # filled water polygons to 89 (11 of them from 0W), its OSM tree count from 62 to 0, and its bunker
+    # counts, carry windows and from-tee gutter rows do not move at all; 17 of the 18 frames refit around
+    # the new ink.
+    waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard','penalty_area')
              or g.get('tags',{}).get('natural')=='water'
              or is_drawn_wetland(g)) and g.get('geometry')
              and (frac_in(g, CORRIDOR_M['water'])>=0.35 or any_within(g, CORRIDOR_M['water']))]
@@ -751,7 +776,26 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g, CORRIDOR_M['tee'])]
     fairways=[g for g in course if g.get('tags',{}).get('golf')=='fairway' and g.get('geometry') and frac_in(g, CORRIDOR_M['fairway'])>=0.40]
     roughs  =[g for g in course if g.get('tags',{}).get('golf')=='rough' and g.get('geometry') and frac_in(g, CORRIDOR_M['rough'])>=0.40]
+    # ONE FEATURE, ONE CLASS. A penalty area is excluded here even though `natural=scrub` is true of it,
+    # or the same polygon would be drawn twice -- blue under green -- and counted twice, once as water
+    # and once in the tree total that decides the "no tree data" caveat. Keyed on the HAZARD TAG and not
+    # on membership of `waters` above, and that choice is NOT free: the two gates are measured
+    # differently -- 55 m of fraction only here, against 45 m of fraction OR reach up there, the reach
+    # half clipped to the PLAYED length -- so three penalty-area/hole pairs pass this one and fail that
+    # one, and by the tag they now get no ink at all. They are hole 7 way 1330719393, hole 14 way
+    # 1330769548 and hole 16 way 1330769549, and every one of the three is drawn as WATER on another card
+    # of the same book (way 1330719393 on hole 14; 1330769548 on 8, 15 and 16; 1330769549 on 13 and 17),
+    # so no polygon loses its ink book-wide -- only its appearances on the holes this engine judges it out
+    # of reach of.
+    #
+    # Keyed on the tag anyway, because the alternative is worse than losing background fill on three
+    # cards: painting a staked penalty area #9cbf86 tells a 12-year-old reading the legend beside it that
+    # the hazard is TREES, and it would say water on one card and trees on the next for the same ground.
+    # An out-of-reach feature drawn as nothing is what every other class here already does; an in-play
+    # hazard drawn as the wrong class is a false statement. What class a hazard is does not depend on
+    # which hole is being drawn.
     woods   =[g for g in course if (g.get('tags',{}).get('natural') in ('wood','scrub') or g.get('tags',{}).get('landuse')=='forest')
+              and g.get('tags',{}).get('golf')!='penalty_area'
               and g.get('geometry') and frac_in(g, CORRIDOR_M['wood'])>=0.35]
     treerows=[g for g in course if g.get('tags',{}).get('natural')=='tree_row' and g.get('geometry') and frac_in(g, CORRIDOR_M['treerow'])>=0.35]
     def in_corr_pt(lat, lon, buf):

@@ -29329,6 +29329,21 @@ def _renode_ring(pts, k, skew=False):
     return out
 
 
+def _drop_one(orig_load, way_id):
+    """A render_hole.load replacement that hides ONE way, for attributing ink to a single feature.
+
+    Per-feature attribution has to be behavioural or it is a second copy of the selector: `waters`'
+    reach half is clipped to the PLAYED length of the centreline (see render_hole._seg_near_played_line),
+    which is 30 lines of interval clipping, and the whole reason this suite grades penalty areas at all
+    is that a figure re-derived beside the engine drifted from it. Deleting the way and asking the card
+    what changed cannot drift.
+    """
+    def patched():
+        course, geom = orig_load()
+        return [g for g in course if g.get("id") != way_id], geom
+    return patched
+
+
 def _is_area_water(g, rh):
     """The tag half of the predicate render_hole's `waters` list uses -- wetland IMPORTED, not respelled.
 
@@ -29349,9 +29364,15 @@ def _is_area_water(g, rh):
     `waters` comprehension and there is no named function to borrow.
     test_a_re_noded_water_polygon_does_not_change_what_the_card_prints grades this against that
     comprehension's own source, so a FOURTH class added there fails here rather than narrowing a sweep.
+
+    `golf=penalty_area` IS THE FOURTH, and it is the post-2019 Rules of Golf name for what the two
+    hazard tags above spell in the pre-2019 vocabulary -- so it belongs in the same blue, the same footer
+    W and the same 45 m corridor, by the same OR. trump-national-los-angeles has 34 of them, 185,918 m^2,
+    101-27,778 m^2 each; the other twelve courses have none, so this class had never been drawn, counted
+    or graded anywhere.
     """
     t = g.get("tags") or {}
-    return (t.get("golf") in ("water_hazard", "lateral_water_hazard")
+    return (t.get("golf") in ("water_hazard", "lateral_water_hazard", "penalty_area")
             or t.get("natural") == "water"
             or rh.is_drawn_wetland(g))
 
@@ -29396,8 +29417,20 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     assert sel, ("render_hole.py no longer has a `waters = [...]` assignment, so this test cannot tell "
                  "whether _is_area_water still matches the selector it stands in for")
     helper = inspect.getsource(_is_area_water)
-    want_tags = sorted({m for m in re.findall(r"'([a-z_]+)'", sel)
-                        if m in ("water_hazard", "lateral_water_hazard", "water", "wetland")})
+    # DERIVED FROM THE SELECTOR'S OWN COMPARISONS, not filtered through a list of the tags that
+    # happened to exist when this was written. It read
+    #     if m in ("water_hazard", "lateral_water_hazard", "water", "wetland")
+    # which is the defect the docstring above claims to have closed, one level further out: a class
+    # added to render_hole's selector under a name not already in that tuple was dropped BEFORE the
+    # comparison below could miss it, so the sweep narrowed in silence exactly as it did for `wetland`.
+    # `golf=penalty_area` is the class that proved it -- 34 ways on one course, none of them ever
+    # perturbed here or compared below. The whitelist also existed to keep the non-tag literals out
+    # (`tags`, `geometry`, and CORRIDOR_M's own `water` key); anchoring on `get('golf')`/`get('natural')`
+    # does that structurally instead, and grows itself when a fifth class arrives.
+    want_tags = set()
+    for _cmp in re.finditer(r"get\('(?:golf|natural)'\)\s*(?:in\s*(\([^)]*\))|==\s*('[a-z_]+'))", sel):
+        want_tags |= set(re.findall(r"'([a-z_]+)'", _cmp.group(1) or _cmp.group(2)))
+    want_tags = sorted(want_tags)
     assert want_tags, f"no water tag literal found in render_hole's waters selector:\n{sel}"
     missing = [t for t in want_tags if f'"{t}"' not in helper and f"'{t}'" not in helper]
     # `wetland` is spelled in the helper as the CALL, not as a literal -- that is the point of importing
@@ -29622,6 +29655,195 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
         f"{len(omitted)} card(s) omit area water the played line reaches -- (course, hole, "
         f"[(way, metres from the played line)], counted area hazards, drawn water fills, printed W): "
         f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
+
+
+@needs_corpus
+def test_a_staked_penalty_area_is_inked_as_water_and_never_as_trees():
+    """A `golf=penalty_area` is a HAZARD. It must never reach the paper as the tree/scrub fill.
+
+    trump-national-los-angeles is mapped in the post-2019 vocabulary: 34 `golf=penalty_area` ways,
+    185,918 m^2, 101-27,778 m^2 each, and EVERY ONE of them also carries `natural=scrub`. They are also
+    that course's entire wood/scrub/forest population and it has no OSM tree node and no tree row at
+    all, so before this fix the whole class fell through `waters` -- which had never heard of the tag --
+    into `woods`, was painted #9cbf86 at 0.6 opacity and counted in `info["trees"]`. The guide's legend
+    reads "bunkers (tan), water (blue), trees", so a junior was told a staked penalty area is TREES:
+    120 penalty-area/hole pairs within 60 m of a played line, 83 of them admitted by the engine's own
+    water gate, 0 counted in any footer's W, 58 of the 120 drawn as literally nothing, and on holes 2, 4,
+    6 and 9 the drawn playing line passes straight THROUGH one the card leaves blank -- hole 6 printed
+    "9B 0W" over 27,778 m^2 its own centreline crosses. (83, not the 98 that lie within 45 m of the
+    centreline unclipped: `any_within` drops what projects behind the tee or past the green, and the
+    difference between those two figures is exactly that clipping.)
+
+    THE DISCRIMINATOR IS BEHAVIOURAL, not a second spelling of the selector. Each course renders three
+    ways: as mapped; with the `golf` key stripped from every penalty area, leaving the `natural=scrub`
+    that was doing all the work before; and with those ways deleted from the course outright. Then
+
+      * the hazard contributes NOTHING to the tree count or the scrub fill (as-mapped == deleted), which
+        is what fails on the unfixed engine;
+      * it DOES contribute water, on the strength of the golf tag alone (as-mapped > deleted for W and
+        for the blue fill, while stripped == deleted) -- so the class is drawn and counted, and it is
+        the hazard tag and not the landcover tag that earns the blue;
+      * the stripped pass reproduces the old behaviour (stripped > deleted for trees and scrub ink),
+        which is what stops the first bullet from passing vacuously on a course whose polygons would
+        not have been drawn as scrub anyway.
+
+    ONE FEATURE, ONE CLASS, and the tag is the key rather than membership of `waters`. That is not free:
+    the wood gate is 55 m of fraction only and the water gate is 45 m of fraction OR reach with the reach
+    half clipped to the played length, so the wood gate is NOT a subset of it. Three penalty-area/hole
+    pairs pass the wood gate and fail the water gate, and by the tag they now get no ink at all -- hole 7
+    way 1330719393, hole 14 way 1330769548, hole 16 way 1330769549 -- while every one of those three ways
+    is drawn as WATER on another card of the same book. Both halves of that are measured here, because
+    they are the measured COST of the decision and render_hole.py states them beside the code. Keyed on
+    the tag anyway: an out-of-reach feature drawn as nothing is what every other class already does, and
+    an in-play hazard drawn in the tree fill is a false statement to the reader of the legend.
+    """
+    WOOD, WATER = 'fill="#9cbf86"', 'fill="#a9d3ef"'
+    # (hole, way) pairs render_hole.py names as the ink this rule withdraws, and the holes each of those
+    # ways is still drawn as water on. Both are re-derived below; the literals are what the engine's own
+    # comment publishes, so a re-fetch that moves them fails here instead of making that comment false.
+    WITHDRAWN = {(7, 1330719393): [14],
+                 (14, 1330769548): [8, 15, 16],
+                 (16, 1330769549): [13, 17]}
+    tagged_courses, holes, errors = [], 0, []
+    as_trees, no_blue, dead_mutation, double_inked = [], [], [], []
+    earned_blue = 0
+    withdrawn = {}
+    elsewhere = {}
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, _geom = rh.load()
+        except Exception as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        pa_ids = {g.get("id") for g in course
+                  if (g.get("tags") or {}).get("golf") == "penalty_area" and g.get("geometry")}
+        orig_load = rh.load
+
+        def rendered(mode, _orig=orig_load, _ids=pa_ids):
+            """{hole: (trees, waters, water_hazards, scrub fills, water fills)} under one mutation."""
+            def patched():
+                c, geom = _orig()
+                out = []
+                for g in c:
+                    if g.get("id") in _ids:
+                        if mode == "deleted":
+                            continue
+                        if mode == "stripped":
+                            g = dict(g, tags={k: v for k, v in (g.get("tags") or {}).items()
+                                              if k != "golf"})
+                    out.append(g)
+                return out, geom
+            rh.load = _orig if mode == "as-mapped" else patched
+            got = {}
+            for hn in cfg.HOLE_NUMS:
+                svg, info = rh.render_hole(hn, cfg.HOLES)
+                got[hn] = (info["trees"], info["waters"], info["water_hazards"],
+                           svg.count(WOOD), svg.count(WATER))
+                # a feature drawn in two class fills at once is drawn twice -- the double-ink risk
+                # that comes with moving a class from one list to another
+                fills = {}
+                for d, fill in re.findall(r'<path d="([^"]+)" fill="(#[0-9a-f]{6})"', svg):
+                    if fill in (WOOD.split('"')[1], WATER.split('"')[1]):
+                        if fills.setdefault(d, fill) != fill:
+                            double_inked.append((slug, hn, mode, fills[d], fill))
+            return got
+
+        try:
+            base = rendered("as-mapped")
+            stripped = rendered("stripped") if pa_ids else base
+            deleted = rendered("deleted") if pa_ids else base
+        finally:
+            rh.load = orig_load
+        holes += len(base)
+        if pa_ids:
+            tagged_courses.append((slug, len(pa_ids)))
+        for hn in sorted(base):
+            b, s, d = base[hn], stripped[hn], deleted[hn]
+            if (b[0], b[3]) != (d[0], d[3]):
+                as_trees.append((slug, hn, f"trees {d[0]}->{b[0]}, scrub fills {d[3]}->{b[3]}"))
+            if b[1] < d[1] or b[4] < d[4]:
+                no_blue.append((slug, hn, f"W {d[1]}->{b[1]}, water fills {d[4]}->{b[4]}"))
+            if b[1] > d[1] or b[4] > d[4]:
+                earned_blue += 1
+            if s[1] != d[1] or s[4] != d[4]:
+                no_blue.append((slug, hn, f"stripping the golf tag left {s[1]}W / {s[4]} fills "
+                                          f"where deleting it gives {d[1]}W / {d[4]}"))
+        if pa_ids and not any((stripped[hn][0], stripped[hn][3]) > (deleted[hn][0], deleted[hn][3])
+                             for hn in base):
+            dead_mutation.append(slug)
+
+        # THE MEASURED COST. Which (hole, way) pairs the wood gate admits and the water gate does not --
+        # the ink the hazard tag withdraws. The wood gate is re-derived through the engine's OWN closed
+        # form (frac_len_within at CORRIDOR_M["wood"], which is what `woods` computes), because a second
+        # implementation of a length fraction is the drift this suite keeps removing; the water half is
+        # behavioural, one way deleted at a time, so the clipped reach rule is never re-spelled here.
+        if pa_ids:
+            import geo
+            pas = [g for g in course if g.get("id") in pa_ids]
+            loc = cfg.COURSE.get("location") or {}
+            lines = geo.hole_lines(_geom, loc.get("lat"), loc.get("lon"))
+            try:
+                for hn in sorted(base):
+                    line = lines[hn]["geometry"]
+                    la0 = sum(q["lat"] for q in line) / len(line)
+                    lo0 = sum(q["lon"] for q in line) / len(line)
+                    mo, mla = _mlon(la0), _mlat(la0)
+                    ring = {g["id"]: [((p["lon"] - lo0) * mo, (p["lat"] - la0) * mla)
+                                      for p in g["geometry"]] for g in pas}
+                    line_em = [((q["lon"] - lo0) * mo, (q["lat"] - la0) * mla) for q in line]
+                    for g in pas:
+                        if rh.frac_len_within(ring[g["id"]], line_em,
+                                              rh.CORRIDOR_M["wood"]) < 0.35:
+                            continue
+                        rh.load = _drop_one(orig_load, g["id"])
+                        if rh.render_hole(hn, cfg.HOLES)[1]["water_hazards"] \
+                                == base[hn][2]:
+                            withdrawn[(hn, g["id"])] = slug
+                for (hn, way) in sorted(withdrawn):
+                    seen = []
+                    for other in sorted(base):
+                        rh.load = _drop_one(orig_load, way)
+                        if rh.render_hole(other, cfg.HOLES)[1]["water_hazards"] < base[other][2]:
+                            seen.append(other)
+                    elsewhere[(hn, way)] = seen
+            finally:
+                rh.load = orig_load
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert holes == expected_geometry_holes(), \
+        f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
+    assert tagged_courses, (
+        "no course in the corpus carries a golf=penalty_area way, so this test proves nothing. It was "
+        "written for trump-national-los-angeles' 34 of them; if a re-fetch has dropped the class, that "
+        "is the finding")
+    assert not dead_mutation, (
+        f"on {dead_mutation} the penalty areas are not drawn as trees even with the golf tag stripped, "
+        f"so 'never inked as trees' below cannot fail and proves nothing -- re-aim it at a course whose "
+        f"penalty areas carry a landcover tag the engine draws")
+    assert not as_trees, (
+        f"{len(as_trees)} card(s) ink or count a staked penalty area as TREES -- the legend beside it "
+        f"reads \"water (blue), trees\": {as_trees[:8]}{' ...' if len(as_trees) > 8 else ''}")
+    assert not no_blue, (
+        f"{len(no_blue)} card(s) do not draw and count a penalty area as water: "
+        f"{no_blue[:8]}{' ...' if len(no_blue) > 8 else ''}")
+    assert not double_inked, (
+        f"{len(double_inked)} feature(s) are painted in TWO class fills on one card -- drawn, and "
+        f"counted, twice: {double_inked[:6]}")
+    assert earned_blue >= 10, (
+        f"only {earned_blue} card(s) in the corpus gain any water from a penalty area, over "
+        f"{sum(n for _s, n in tagged_courses)} tagged ways on {[s for s, _n in tagged_courses]}. The "
+        f"class is fetched and reachable on far more than that -- 83 penalty-area/hole pairs are "
+        f"admitted by the water gate on trump-national-los-angeles alone -- so the selector has stopped "
+        f"admitting it")
+    assert set(withdrawn) == set(WITHDRAWN), (
+        f"render_hole.py names {sorted(WITHDRAWN)} as the (hole, way) pairs whose background fill the "
+        f"hazard-tag exclusion withdraws -- the wood gate admits them and the water gate does not. "
+        f"Measured now: {sorted(withdrawn)}. Re-measure that comment rather than deleting this.")
+    assert elsewhere == WITHDRAWN, (
+        f"render_hole.py says each withdrawn polygon is still drawn as WATER on another card of the same "
+        f"book -- {WITHDRAWN} -- so no polygon loses its ink book-wide. Measured: {elsewhere}. A pair "
+        f"with an EMPTY list is a penalty area this engine now draws nowhere at all, which is the one "
+        f"outcome the exclusion may not have")
 
 
 SAND_CORRIDOR_M = _RH_CORRIDOR_M["bunker"]   # the corridor render_hole selects sand on, by nearest EDGE
@@ -35329,7 +35551,8 @@ def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_pa
             "callippe": "callippe-preserve-golf-course",
             "the-reserve": "the-reserve-at-spanos-park",
             "micke-grove": "micke-grove-golf-links",
-            "merion": "merion-golf-club"}
+            "merion": "merion-golf-club",
+            "trump-national-los-angeles": "trump-national-los-angeles"}
 
     def fetchable_census(short):
         slug = SLUG[short]
@@ -35353,6 +35576,10 @@ def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_pa
         (r"micke-grove ([\d,]+) trees", "micke-grove", "tree"),
         (r"the-reserve ([\d,]+) waterway ways", "the-reserve", "waterway"),
         (r"merion ([\d,]+) wood", "merion", "wood"),
+        # the figure that justifies calling penalty_area a hazard kind rather than a structural one:
+        # the tolerance argument is "2% of 34 is 0", so 34 has to be 34.
+        (r"2% of trump-national-los-angeles' ([\d,]+) is 0",
+         "trump-national-los-angeles", "penalty_area"),
     ]
     checked = 0
     for pat, short, kind in CLAIMS:
