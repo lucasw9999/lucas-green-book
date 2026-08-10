@@ -184,6 +184,52 @@ def _sand_the_engine_sees(rh, em, line, bunkers):
                                   line_em, buf) > 0.0]
 
 
+def _carry_frame(info, line, tend, gend):
+    """The ONE frame every "yd from the back tee" figure on a card is measured in.
+
+    Four tests in this file re-derive render_hole's carry and landing rules, and each carried its own
+    copy of this frame. When the engine put the carries on the card's own from-tee scale (see
+    render_hole's `carry_scale`), all four went on measuring in the frame it had left: they rebuilt the
+    tee shift from the ROUNDED `arc_yd`, which is up to 0.5 yd out and enough to move a rounded carry by
+    one, and they knew nothing of the scale at all. Both halves now come from what the engine published,
+    in one place, so a fifth copy cannot appear and this one cannot drift from the rule it grades.
+
+    Returns (em, raw_yd, from_tee_yd, off_m):
+
+      em           lat/lon -> local east/north metres, the projection render_hole builds its frame on
+      raw_yd       along-chord yards from where the LINE starts, before any tee model. The 80-300 reach
+                   window is applied to this FIRST, which is what stops the tee model conjuring a carry
+                   the drawn geometry does not support -- see render_hole's note at that gate.
+      from_tee_yd  the same point from the BACK tee: raw * carry_from_tee_scale + carry_tee_shift_yd
+      off_m        metres off the tee-to-green chord, unsigned
+
+    The chord basis, not the polyline, because that is the basis render_hole measures a carry on and the
+    inconsistency it documents as deliberate and conservative.
+    """
+    la0 = sum(q["lat"] for q in line) / len(line)
+    lo0 = sum(q["lon"] for q in line) / len(line)
+
+    def em(la, lo):
+        return ((lo - lo0) * _mlon(la0), (la - la0) * _mlat(la0))
+    tee = em(tend["lat"], tend["lon"])
+    gc = em(gend["lat"], gend["lon"])
+    L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+    ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+    scale, shift = info["carry_from_tee_scale"], info["carry_tee_shift_yd"]
+
+    def raw_yd(la, lo):
+        e, n = em(la, lo)
+        return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144
+
+    def from_tee_yd(la, lo):
+        return raw_yd(la, lo) * scale + shift
+
+    def off_m(la, lo):
+        e, n = em(la, lo)
+        return abs((e - tee[0]) * uy - (n - tee[1]) * ux)
+    return em, raw_yd, from_tee_yd, off_m
+
+
 def _dist_to_poly(pt, poly, em):
     """Metres from a projected point to a polygon: 0 inside, else nearest edge. Written here rather
     than imported so the test's model choice does not lean on the engine's own geometry code."""
@@ -8442,7 +8488,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     is nowhere to land, and the number invites a shot the hole does not have.
 
     render_hole had already made exactly this argument -- in the comment above its par-3 suppression,
-    about the-reserve 8 ("sand ending 2.24 yd short of the green front ... the near edge is the one
+    about the-reserve 8 ("sand ending 2.23 yd short of the green front ... the near edge is the one
     number on that card a player could act on and be wrong about") and merion 13. But it acted on PAR,
     and no part of that reasoning is a property of par. Re-measured over the 198 geometry cards after
     the WGS84 per-axis migration, SEVEN printed windows on seven PAR 4s had no landing area either --
@@ -8465,7 +8511,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to, which derives every one
     of them from the corpus and grades the prose in render_hole.py against them. By THIS test's measure
     the worst kept is 17.1187 yd (callippe 8) and the best dropped -0.8540 (monarch-bay 14); by the
-    rule's own, 8.8428 (castlewood-hill 10) and 6.1489 (micke-grove 13). Those read 8.4352 / -0.4795 and
+    rule's own, 8.8377 (castlewood-hill 10) and 6.1489 (micke-grove 13). Those read 8.4352 / -0.4795 and
     8.7456 / 3.4251 until micke-grove 13 stopped printing a carry -- it held BOTH worst-kept records.
 
     Only the FURTHEST printed window is checked here, because the merge already guarantees more than
@@ -8505,19 +8551,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
                 continue
             la0 = sum(q["lat"] for q in line) / len(line)
             lo0 = sum(q["lon"] for q in line) / len(line)
-            def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-            perp = (uy, -ux)
-            # The same signed tee-to-tee shift every printed carry is measured through -- derived from
-            # the card and the arc the engine published, not from a second copy of its rule.
-            shift = ((info["card_yd"] - info["arc_yd"])
-                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-            def along_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+            em, _raw_yd, along_yd, off_m = _carry_frame(info, line, tend, gend)
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             near, far = carries[-1]                    # the sand nearest the green
             # THE WHOLE OBSTACLE, not the part the carry filters happened to admit. `reach` used to grow
@@ -8532,8 +8566,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
             spans = []
             for g in _sand_the_engine_sees(rh, em, line, bunkers):
                 al = [along_yd(q["lat"], q["lon"]) for q in g["geometry"]]
-                of = [abs((em(q["lat"], q["lon"])[0] - tee[0]) * perp[0]
-                          + (em(q["lat"], q["lon"])[1] - tee[1]) * perp[1]) for q in g["geometry"]]
+                of = [off_m(q["lat"], q["lon"]) for q in g["geometry"]]
                 if not al or min(of) > 30.0:
                     continue
                 spans.append((min(al), max(al)))
@@ -8615,32 +8648,12 @@ def test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept():
                 continue          # the two gates that null the whole carry row
             la0 = sum(q["lat"] for q in line) / len(line)
             lo0 = sum(q["lon"] for q in line) / len(line)
-
-            def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-            perp = (uy, -ux)
-            # THE ENGINE'S FRAME, TAKEN FROM THE CARD. This re-derives the landing rule, so it has to
-            # measure in the same frame the rule measured in: the card's own yardage distributed along the
-            # drawn line, published as carry_from_tee_scale and carry_tee_shift_yd. Rebuilding either here
-            # is wrong twice over -- the shift was recomputed from the ROUNDED `arc_yd` and so was up to
-            # 0.5 yd out, and the scale did not exist here at all, which reported castlewood-valley 1 as a
-            # truncated card when the engine had refused its 82 yd window on the 80 yd floor.
-            scale = info["carry_from_tee_scale"]
-            shift = info["carry_tee_shift_yd"]
-
-            def raw_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144
-
-            def along_yd(la, lo):
-                return raw_yd(la, lo) * scale + shift
-
-            def off_m(la, lo):
-                e, n = em(la, lo)
-                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            # THE ENGINE'S FRAME, TAKEN FROM THE CARD -- see _carry_frame. This re-derives the landing
+            # rule, so it has to measure in the frame the rule measured in, and rebuilding that frame here
+            # was wrong twice over: the shift came from the ROUNDED `arc_yd` and so was up to 0.5 yd out,
+            # and the scale did not exist here at all, which reported castlewood-valley 1 as a truncated
+            # card when the engine had refused its 82 yd window on the 80 yd floor.
+            em, raw_yd, along_yd, off_m = _carry_frame(info, line, tend, gend)
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
             raw, greenside = [], []
@@ -8726,13 +8739,13 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         merion 1          277.97-306.66  front 298.66   -8.00   reach 333.39  -34.74   keeps 172/212/245
         merion 10         226.72-284.12  front 253.45  -30.67   reach 284.12  -30.67   keeps 95/164
         castlewood-v 8    286.65-309.74  front 311.61   +1.87   reach 346.85  -35.24   keeps 195/250
-        copper-valley 3   293.56-312.39  front 315.69   +3.31   reach 327.41  -11.71   keeps 178
+        copper-valley 3   290.87-309.52  front 312.80   +3.28   reach 324.40  -11.61   keeps 176
         monarch-bay 14    273.28-283.35  front 286.78   -6.06   reach 287.63   -0.85   keeps 226
         callippe 12       272.34-293.33  front 293.60   -0.88   reach 324.16  -30.56   keeps nothing
-        micke-grove 3     293.83-309.26  front 296.77  -12.49   reach 309.26  -12.49   keeps nothing
+        micke-grove 3     292.50-307.86  front 295.43  -12.44   reach 307.86  -12.44   keeps nothing
         micke-grove 13    206.71-289.69  front 298.44   +6.15   reach 306.14   -7.70   keeps nothing
-        philadelphia 1    212.11-306.99  front 299.42   -7.65   reach 328.90  -29.48   keeps nothing
-        trump-national 10 267.12-307.29  front 302.71   -4.58   reach 307.29   -4.58   keeps 221
+        philadelphia 1    204.71-296.28  front 288.98   -7.38   reach 317.44  -28.45   keeps nothing
+        trump-national 10 266.64-306.81  front 302.23   -4.58   reach 306.81   -4.58   keeps 220
 
     EVERY COLUMN OF THAT TABLE IS NOW DERIVED HERE, because six of the nine rows had gone stale and
     nothing read them. e0648c6 changed two of the metrics at once -- it bounded the landing area by the
@@ -8820,27 +8833,11 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 _svg, info = rh.render_hole(hn, cfg.HOLES)
             except Exception:
                 continue
-            la0 = sum(q["lat"] for q in line) / len(line)
-            lo0 = sum(q["lon"] for q in line) / len(line)
-
-            def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-            perp = (uy, -ux)
-            # The same signed shift every printed carry is measured through, taken from what the engine
-            # published rather than from a second copy of its rule.
-            shift = ((info["card_yd"] - info["arc_yd"])
-                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-
-            def along_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
-
-            def off_m(la, lo):
-                e, n = em(la, lo)
-                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            # The frame the engine published, in one place -- see _carry_frame. Both the tee shift and the
+            # from-tee SCALE come from the card; rebuilding either here left this loop grading a frame the
+            # engine had stopped using, which is how the table below came to record a "keeps" column the
+            # cards no longer print.
+            em, raw_yd, along_yd, off_m = _carry_frame(info, line, tend, gend)
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
             # The engine's own carry filters, re-derived from the OSM rings -- and from the engine's own
@@ -8853,7 +8850,8 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 if not al:
                     continue
                 near, far = min(al), max(al)
-                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                near_raw = min(raw_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or []))
+                if not (80.0 <= near_raw <= 300.0) or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 if near > total - 40:
                     greenside.append((near, far))
@@ -9064,12 +9062,12 @@ _STALE_RESERVE8_SHORTFALL = re.compile(r"\bfour" + r"\s+" + r"yards\b", re.I)
 
 @needs_corpus
 def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
-    """the-reserve 8's sand was said to end FOUR YD short of its green front. It is 2.24.
+    """the-reserve 8's sand was said to end FOUR YD short of its green front. It is 2.23.
 
     That hole is the worked example for BOTH carry suppressions -- the par-3 rule and the landing rule --
     so its shortfall is quoted in four passages across render_hole.py and this file. The figure was right
     before the WGS84 per-axis migration; the same commit that re-measured every other number on that card
-    recorded 2.24 (218.03 - 215.79) and then repeated the old one in a NEW comment beside it. A figure
+    recorded 2.23 (217.11 - 214.88) and then repeated the old one in a NEW comment beside it. A figure
     four passages quote and nothing grades goes stale once and then propagates.
 
     Re-derived here from the OSM rings through the engine's own frame -- and from the engine's own sand,
@@ -9078,8 +9076,8 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
     the card does not draw. Required in every passage that states it, so the next migration cannot leave
     one behind.
 
-    Note what the number is and is not: 215.79 is the far edge of the window the CARRY FILTERS keep, so
-    2.24 yd is the shortfall of the printed decision. The full waste complex reaches 234.83 -- 16.81 yd
+    Note what the number is and is not: 214.88 is the far edge of the window the CARRY FILTERS keep, so
+    2.23 yd is the shortfall of the printed decision. The full waste complex reaches 233.85 -- 16.73 yd
     PAST the green front -- once the greenside sand `near_yd > total_yd - 40` drops is counted. Both are
     true of that hole and they answer different questions; the passages quote the first.
     """
@@ -9101,22 +9099,8 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
     la0 = sum(q["lat"] for q in hole) / len(hole)
     lo0 = sum(q["lon"] for q in hole) / len(hole)
 
-    def em(la, lo):
-        return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-    tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-    L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-    ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-    perp = (uy, -ux)
-    shift = ((info["card_yd"] - info["arc_yd"])
-             if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-
-    def along_yd(la, lo):
-        e, n = em(la, lo)
-        return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
-
-    def off_m(la, lo):
-        e, n = em(la, lo)
-        return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+    # One frame, taken from the card -- see _carry_frame.
+    em, raw_yd, along_yd, off_m = _carry_frame(info, hole, tend, gend)
     front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
     total = info["card_yd"]
     raw = []
@@ -9126,7 +9110,8 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
         if not al:
             continue
         near, far = min(al), max(al)
-        if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+        near_raw = min(raw_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or []))
+        if not (80.0 <= near_raw <= 300.0) or not (80.0 <= near <= 300.0) or min(of) > 30.0:
             continue
         if near > total - 40:
             continue
@@ -9367,9 +9352,9 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     is still misleading, because there are TWO measures in play and it named neither:
 
       * THE RULE'S OWN -- `beyond = min(next merged window, greenside sand, green front)`, unrounded
-        edges. The worst kept window the rule can DECIDE is castlewood-hill 10 at 8.8428, bounded by
+        edges. The worst kept window the rule can DECIDE is castlewood-hill 10 at 8.8377, bounded by
         greenside sand, and the best dropped is micke-grove 13 at 6.1489. Margin over the 8.0 bound:
-        0.8428, and that is the thinner of the two, so it is the honest headline.
+        0.8377, and that is the thinner of the two, so it is the honest headline.
       * THE SUPPRESSION TEST'S -- last printed window only, `reach` seeded from the ROUNDED printed far
         edge and chained across strips of grass narrower than CARRY_MERGE_GAP_YD. Worst kept 17.1187
         (callippe 8), a margin of 9.1187.
@@ -9379,15 +9364,17 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     up to 290 costs 0.31 yd -- and that card stopped printing a carry when "the next sand" started
     counting the greenside sand `total_yd - 40` drops. The thinner measure changed hands with it.
 
-    AND THREE KEPT WINDOWS ARE TIGHTER THAN 8.8428, which the sentence's word "worst" denies:
-    copper-valley 17 (8.2538), merion 5 (8.5073), monarch-bay 2 (8.5827). All three are bounded by the
+    AND FOUR KEPT WINDOWS ARE TIGHTER THAN 8.8377, which the sentence's word "worst" denies:
+    copper-valley 17 (8.2538), merion 5 (8.5073), trump-national 14 (8.5661), monarch-bay 2 (8.5827).
+    All four are bounded by the
     NEXT MERGED WINDOW, and the merge guarantees a gap above CARRY_MERGE_GAP_YD between two merged
     windows by construction -- so they are tautological and can never be dropped. Greenside sand gets no
     such guarantee: it never entered the merge, which is why micke-grove 13 could sit at 6.1489. That is
-    exactly why the qualification matters: 8.8428 is the worst of the 82 KEPT windows the rule decides
-    and 8.2538 the worst of all 124 kept, and a reader cannot tell which claim was made.
+    exactly why the qualification matters: 8.8377 is the worst of the 92 KEPT windows the rule decides
+    and 8.2538 the worst of all 141 kept, and a reader cannot tell which claim was made.
 
-    IT SAID FOUR, AND THE FOURTH WAS A PHANTOM. This test used to take every `golf=bunker` way on the
+    IT ALSO SAID FOUR ONCE BEFORE, AND THAT FOURTH WAS A PHANTOM -- a different card from the real
+    trump-national 14 above, which is a 13th course this list predates. This test used to take every `golf=bunker` way on the
     course and apply only the along-line filters, skipping the corridor pre-filter that builds `bunkers`
     in render_hole -- so its population was a strict superset of the engine's, 144 merged windows against
     137, and micke-grove 11 grew a second window at 8.5031 out of two ways the engine never selects.
@@ -9409,10 +9396,11 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     a junior's tee shot", which needs dispersion data this project does not have; inventing a number for
     it would put a guess in charge of 135 printed figures, which is the move this codebase refuses
     everywhere else. What the corpus CAN say is that the decision is insensitive to the value: every
-    window the rule decides sits at 6.1489 or below, or 8.8428 or above, so any bound in that 2.6940 yd
+    window the rule decides sits at 6.1489 or below, or 8.8377 or above, so any bound in that 2.6889 yd
     gap produces the identical corpus outcome and 8.0 is not doing arithmetic anybody could tune. That
-    gap was 5.3205 yd wide before the greenside sand was counted, so the bound is MORE load-bearing than
-    it was, not less -- true either way, and it still decides no card. What
+    gap was WIDER before the greenside sand was counted as a bound, so the bound is MORE load-bearing
+    than it was, not less; that earlier width is not re-derivable from this tree and is left unstated
+    rather than restated. It still decides no card either way. What
     was missing was not a better number but a graded one -- so all of them are derived here, and a
     re-fetch that lands a window inside the gap fails HERE instead of quietly picking a side.
     """
@@ -9443,25 +9431,8 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                 _svg, info = rh.render_hole(hn, cfg.HOLES)
             except Exception:
                 continue
-            la0 = sum(q["lat"] for q in line) / len(line)
-            lo0 = sum(q["lon"] for q in line) / len(line)
-
-            def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-            perp = (uy, -ux)
-            shift = ((info["card_yd"] - info["arc_yd"])
-                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-
-            def along_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
-
-            def off_m(la, lo):
-                e, n = em(la, lo)
-                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            # One frame, taken from the card -- see _carry_frame.
+            em, raw_yd, along_yd, off_m = _carry_frame(info, line, tend, gend)
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
             in_corr = _sand_the_engine_sees(rh, em, line, bunkers)
@@ -9472,7 +9443,8 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                 if not al:
                     continue
                 near, far = min(al), max(al)
-                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                near_raw = min(raw_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or []))
+                if not (80.0 <= near_raw <= 300.0) or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 if near > total - 40:
                     greenside.append((near, far))   # not a tee carry; still a bound on a lay-up
@@ -27791,7 +27763,7 @@ def test_no_par_3_prints_a_carry():
     them the near edge was actively misleading:
 
       * the-reserve 8 printed "carry 90" for a waste complex running 90 to 216 yd on a 237 yd hole --
-        sand ending 2.24 yd short of the green front. Flying 90 clears nothing; the distance that
+        sand ending 2.23 yd short of the green front. Flying 90 clears nothing; the distance that
         matters is ~215. A 126 yd gap, eight or nine clubs.
       * merion 13 printed "carry 82" on a 128 yd hole for sand running 82 to 113 with the green front
         at 107 -- again no landing area beyond it.
