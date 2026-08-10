@@ -99,7 +99,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. It rebinds `COURSE` and
-drops modules from `sys.modules` at 109 sites — counted across `tests/*.py` with comments and string
+drops modules from `sys.modules` at 110 sites — counted across `tests/*.py` with comments and string
 literals stripped, so every one of them executes; a plain `grep -c` reads higher, because the suite's
 own comments discuss the idiom — so a test can silently reconfigure the next one, and file order alone
 will never show it: a real `IndexError` in `render_hole` hid behind that for its whole life and only
@@ -184,7 +184,9 @@ also the project's only measurement of how repeatable these surfaces are: see
 **Print in colour.** Colour is a real data channel here, not decoration: ground steeper than 10% is
 shown by colour *only* and deliberately carries no number, and a fairway bunker's sand sits within
 3% grey of the fairway it lies in, so on a mono printer the bunkers all but disappear. Both books say
-so on the guide card.
+so on the guide card — the pocket edition's colour row and the enlarged edition's about card carry the
+same line, and `tests/test_r17_print.py` measures the greyscale collapse off a rendered card rather
+than trusting this paragraph.
 
 ## What's in this repo
 - **Included:** the engine (Python), the build docs, `requirements.txt`, a documented

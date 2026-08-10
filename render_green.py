@@ -246,6 +246,32 @@ def point_in_poly(x, y, poly):
 # strength -- so the reddest cell any map can draw printed nearer the 2.5% swatch than the 5% one.
 HEAT_OPACITY = 0.62
 
+# Ink for the 5-yd DEPTH LADDER's numbers -- the yards-from-the-front-edge figures a player reads to
+# judge depth. Full opacity, so it is the ink that reaches paper and not a composite: 5.33:1 on white.
+#
+# It was #8a8a8a INSIDE the dashed-line group at opacity 0.7, which composites to grey 172-173 --
+# measured 2.24:1 at 600 dpi against WCAG's 4.5:1 -- printed at 4.09 pt (callippe hole 9) to 8.90 pt,
+# making the ladder the faintest data on the card. #767676 is the 4.54:1 grey this project adopted for
+# .foot / .yalt / .playline, and those print at 7.5 pt; #6b6b6b is the grey it uses for .abtxt at
+# 5.15 pt, which is the size class the ladder is actually in, so that is the one taken here.
+#
+# DARKENING ALONE WOULD HAVE MADE THE WORST CASE WORSE, which is why the halo went on in the same
+# change rather than later. 1081 of the 1104 rung labels a luma-190 core detector could even FIND
+# pre-fix were under 4.5:1 against the collar they sit on, and 243 had a quarter or more of that collar
+# filled by the green's own 1.3-unit #20402a outline or a #15271b arrow -- a stroke over three times the
+# width of a digit's stem at this size. Over that outline the old label composites to grey 112 and reads
+# 2.37:1 against it; an opaque #6b6b6b digit on the same outline reads 2.16:1. Grey on dark green is not
+# a problem a darker grey fixes. The slope numbers have had a white halo all along; the ladder had none.
+#
+# ONE CONSEQUENCE OUTSIDE THIS FILE, recorded because it is not obvious from here: a stroked glyph makes
+# Chrome emit a SECOND, white Type3 font run for the ladder in the exported PDF (measured: 'Type3 (13 0
+# R)' at 0xffffff carrying {5,10,...,35} beside the slope labels' own Type3 run). Two tests in
+# tests/test_phase1_regressions.py select the ladder by its old ink -- the HTML `fill="#8a8a8a"` and the
+# PDF `sp["color"] == 0x8a8a8a` -- and a third discriminates slope labels by "the ladder rungs are drawn
+# with stroke='none' and land in a Type0 font". All three need re-pointing at the next rebuild; each
+# fails loudly rather than silently.
+RUNG_INK = "#6b6b6b"
+
 def heat_color(slope_pct):
     """Green -> amber -> red by steepness, with LIGHTNESS that falls monotonically.
 
@@ -1120,17 +1146,30 @@ def render(hole, tournament=False):
         xs.sort()
         return [(xs[i], xs[i+1]) for i in range(0, len(xs)-1, 2)]
     step = 4.572/my                                       # 5 yards DOWN THE PLAY LINE, in pixels
-    glines=[]; k=1; yy=front_y-step
+    # The RUNG LINES and the RUNG NUMBERS are two groups, not one, and that split is the whole of the
+    # fix recorded at RUNG_INK. The numbers used to sit inside the dashed-line group, inheriting its
+    # fill="#8a8a8a" and its opacity="0.7" -- grey 172 composited, 2.24:1 on white paper against WCAG's
+    # 4.5 -- and inheriting its stroke, which is why they had to say stroke="none" and so could not
+    # carry the white halo the slope numbers get. The lines keep the old faint treatment: they are a
+    # 5-yard guide, and the printed depth ladder's DATA is the numbers.
+    glines=[]; glabels=[]; k=1; yy=front_y-step
     while yy>back_y:
         sps=xspans(yy)
         if sps:
             for a, b in sps:
                 glines.append(f'<line x1="{a:.1f}" y1="{yy:.1f}" x2="{b:.1f}" y2="{yy:.1f}"/>')
             # one label per rung, at the right-hand edge of the green -- not once per fragment
-            glines.append(f'<text x="{sps[-1][1]+1.5:.1f}" y="{yy+1.5:.1f}" font-size="3.4" '
-                          f'fill="#8a8a8a" stroke="none">{k*5}</text>')
+            glabels.append(f'<text x="{sps[-1][1]+1.5:.1f}" y="{yy+1.5:.1f}" '
+                           f'font-size="3.4">{k*5}</text>')
         yy-=step; k+=1
-    gridg=f'<g stroke="#9a9a9a" stroke-width="0.35" stroke-dasharray="2,2" opacity="0.7" fill="#8a8a8a">{"".join(glines)}</g>'
+    # paint-order + stroke on the GROUP, which every element inherits -- measured in the same
+    # chrome-headless-shell tools/export_pdf.py prints with, because an inherited paint-order is the one
+    # part of this that a browser could plausibly not implement. stroke-width 0.9 is the slope numbers'
+    # 1.2 scaled by 3.4/4.6, so both haloes are the same fraction of their glyph.
+    gridg=(f'<g stroke="#9a9a9a" stroke-width="0.35" stroke-dasharray="2,2" opacity="0.7">'
+           f'{"".join(glines)}</g>'
+           f'<g fill="{RUNG_INK}" paint-order="stroke" stroke="#fff" stroke-width="0.9" '
+           f'stroke-linejoin="round">{"".join(glabels)}</g>')
     # (front/center/back yardage tags removed by request -- declutter the green)
     fcb=""
     # pin ring the golfer marks on the day (pin moves daily -> not pre-printed).

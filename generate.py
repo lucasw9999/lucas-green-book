@@ -58,6 +58,15 @@ IG_QR = _data_uri(os.path.join(ROOT, "lucaswu.golf_qr_small.png"))
 
 DISTRIBUTABLE = distribution.is_distributable(config.COURSE)
 
+# THE COVER ADDRESS's fitting constants. Both covers draw the address through _addr_line(), which is
+# where every one of these is argued for; they are module-level so the estimator and the sizing rule
+# cannot end up with two copies of the same number.
+ADDR_CHAR_EM = 0.60          # advance per character, as a fraction of the font size (upper-case)
+ADDR_LETTER_SPACING = 1.0    # SVG adds this after EVERY character, so it is per-character too
+ADDR_USABLE_UNITS = 292.0    # 95% of the gold frame's 307.4-unit inner span
+ADDR_MAX_FS = 9.0            # what every cover printed before there was a rule; never enlarge past it
+ADDR_MIN_FS = 6.0            # the cover's own smallest type is the 6.2-unit copyright line
+
 # THE REASON A BOOK MAY NOT BE SHARED IS STATED IN TWO RECORDS, and nothing tied their WORDS together.
 # The left half of each pair is what the card prints; the right half is what distribution.py's own reason
 # for the SAME refusal has to claim -- that reason is what tools/gen_provenance.py writes into
@@ -792,6 +801,64 @@ def _title_lines(raw):
         lines.append(cur)
     return lines
 
+def _addr_width_units(addr, fs):
+    """How wide `addr` will print on the cover, in viewBox units, at font size `fs`.
+
+    One character costs `fs * ADDR_CHAR_EM` of advance plus the address line's own `letter-spacing="1"`,
+    which SVG adds after EVERY character. Measured in chrome-headless-shell over all thirteen covers,
+    the real per-character advance runs 0.575-0.590 of the font size for upper-case Helvetica, so 0.60
+    over-predicts every one of them by 1.4% (the widest, trump-national-los-angeles) to 8.2% (the
+    narrowest, bay-view). Over-prediction is the safe direction for a clipping guard and
+    tests/test_r17_print.py measures that it stays that way on every cover.
+
+    Counted on the RAW address, not on esc()'d output: `&` becomes five characters of markup and one
+    glyph, and the count wanted here is glyphs.
+    """
+    return len((addr or "").strip()) * (fs * ADDR_CHAR_EM + ADDR_LETTER_SPACING)
+
+
+def _addr_line(addr_y):
+    """The cover's address line, sized so it cannot cross the gold frame. Shared by BOTH covers.
+
+    THE SIZE WAS A FIXED 9 AND NOTHING MEASURED IT. Inside a 221.3 pt inner frame,
+    "1 OCEAN TRAILS DR, RANCHO PALOS VERDES, CA 90275" prints 2.965 in wide with 3.93 pt of clearance a
+    side -- next tightest Castlewood at 10.46 pt, median 24.85 -- so the first address a character or
+    two longer crosses the rule, on the first page anyone opening the book or the PDF sees. The TITLE
+    two lines above has had a width-aware estimator (`274.0 / (maxch * 0.52)`) since it was written;
+    the address had none.
+
+    A CLIPPING GUARD, NOT A LAYOUT CHANGE, and the bound is set so it stays one. ADDR_USABLE_UNITS is
+    95% of the frame's 307.4-unit inner span, which leaves 5.76 pt a side of the estimate and -- because
+    _addr_width_units over-predicts -- 7.0 pt of real clearance on the tightest address. Twelve of the
+    thirteen estimate at or under it and keep the 9.0 they already had; only the thirteenth shrinks, to
+    8.7. That the bound lands between Castlewood's estimate (288.0) and trump's (300.8) is deliberate
+    and is disclosed rather than dressed up as derivation: restyling twelve covers that already clear
+    the frame buys nothing, and the two figures are here so the next person can see how much room the
+    bound has on each side.
+
+    The 6.0 FLOOR is the cover's own smallest type: the copyright line prints at 6.2 units. Walked in
+    the browser, the guard holds the frame with 5 pt to spare out to 64 characters and keeps the address
+    inside it out to 67; the corpus's longest is 47. Past that the address crosses, and the test walks
+    that budget rather than trusting this paragraph -- so a 68-character address fails loudly there
+    instead of quietly on paper.
+
+    ONE IMPLEMENTATION, for the reason _title_lines gives for being shared: the two covers carried
+    identical copies of this line, and a fix applied to one of them leaves the enlarged edition -- the
+    one printed for a coach -- with the defect.
+    """
+    fs = max(ADDR_MIN_FS, min(ADDR_MAX_FS,
+                              (ADDR_USABLE_UNITS / max(1, len((ADDR or "").strip()))
+                               - ADDR_LETTER_SPACING) / ADDR_CHAR_EM))
+    # A tenth of a unit, rounded DOWN: rounding to nearest would put the estimate back over
+    # ADDR_USABLE_UNITS (8.68786 -> 8.7 costs 0.3 units more than the bound allows), and `:g` keeps the
+    # attribute the covers already emitted -- font-size="9", not font-size="9.0" -- so the twelve books
+    # that need no fitting are byte-identical to what they shipped.
+    fs = math.floor(fs * 10.0) / 10.0
+    return (f'<text x="175" y="{addr_y:.1f}" text-anchor="middle" '
+            f'font-family="Helvetica,Arial,sans-serif" font-size="{fs:g}" '
+            f'letter-spacing="{ADDR_LETTER_SPACING:g}" fill="#9fb4a3">{esc(ADDR).upper()}</text>')
+
+
 def cover_panel():
     parts = config.BRAND.split()
     btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
@@ -827,7 +894,7 @@ def cover_panel():
   <line x1="118" y1="244" x2="232" y2="244" stroke="{G}" stroke-width="0.9"/>
   <rect x="171" y="240.5" width="7" height="7" fill="{G}" transform="rotate(45 175 244)"/>
   <text x="175" y="{cy0:.1f}" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="{fst:.1f}" fill="#f5eddd">{tspans}</text>
-  <text x="175" y="{addr_y:.1f}" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" letter-spacing="1" fill="#9fb4a3">{esc(ADDR).upper()}</text>
+  {_addr_line(addr_y)}
   <rect x="70" y="426" width="210" height="18" rx="9" fill="none" stroke="{badge_stroke}" stroke-width="0.8"/>
   <text x="175" y="438" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="{badge_size}" letter-spacing="1.0" fill="{badge_fill}">{badge_text}</text>
   <text x="175" y="462" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="8" letter-spacing="3" fill="#7f9484">JUNIOR GOLF EDITION</text>
@@ -1138,6 +1205,35 @@ def _heat_swatches():
 
 
 def guide_panel():
+    """The pocket edition's legend card.
+
+    THE COLOUR ROW USED TO REASSURE A MONO PRINTER. It said "steeper is always darker, so it reads in
+    black and white too", which is true of the green's heat ramp -- HEAT_OPACITY over white is
+    monotone in slope -- and false of the HOLE map printed on the same card. render_hole fills a
+    fairway #cfe8b2 and a bunker #efe3b8; through Chrome's own grayscale filter those are greys 223 and
+    226, THREE levels of 255 apart, with nothing between them but the bunker's 0.8-unit #c9b477 edge at
+    grey 180. trump-national-los-angeles names 149 bunkers across its 18 footers and prints a `carry N`
+    per hole measured to where that sand starts. So the sentence sat in the row a reader consults while
+    choosing a printer and told him the wrong thing; the enlarged edition had carried "Print in colour
+    -- bunkers vanish in black & white" all along, and README claimed both books did.
+
+    THE WARNING REPLACED THE REASSURANCE RATHER THAN BEING ADDED UNDER IT, and that is a measurement.
+    This card is the tightest thing in the book: monarch-bay ships with 1.19 px of clearance to the
+    bottom of a 3.5x5in `overflow:hidden` box whose last block is the licence, the warranty disclaimer
+    and the contact address, and this project has clipped that block twice. Spliced into all twelve
+    shipped guide cards and laid out in chrome-headless-shell, a NEW legend row costs monarch-bay
+    12.36 px (it clips) and philadelphia 1.81 px (it clips); keeping the reassurance and scoping it to
+    the green costs monarch-bay 9.36 px (it clips); replacing it outright leaves every one of the twelve
+    at its existing slack to the hundredth of a pixel. Same wording as the enlarged edition, so the two
+    cards cannot drift and README's "both books" is true.
+
+    What is NOT lost: "steeper is always <b>darker</b>" stays, because the ordering IS a fact about the
+    ramp. It is the inference drawn from it -- that the card therefore works in mono -- that was false
+    beside a hole map.
+
+    See tests/test_r17_print.py, which measures the greyscale collapse off rendered cards and the
+    card's remaining headroom in a browser.
+    """
     return '''<div class="panel guide">
   <div class="gtitle">How to read a green</div>
   <div class="legrow"><svg width="28" height="14"><line x1="2" y1="7" x2="18" y2="7" stroke="#15271b" stroke-width="1.3"/><polygon points="18,7 14,4.5 14,9.5" fill="#15271b"/></svg>
@@ -1150,7 +1246,7 @@ def guide_panel():
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep. Bar = 5&nbsp;yd.</span></div>
   <div class="legrow"><svg width="28" height="14">''' + _heat_swatches() + '''</svg>
     <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; red (&ge;5%);
-    steeper is always <b>darker</b>, so it reads in black and white too.
+    steeper is always <b>darker</b>. <b>Print in colour</b> &mdash; bunkers vanish in black &amp; white.
     <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
   <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add up.</span></div>
   <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
@@ -1765,7 +1861,7 @@ def coach_cover_panel(coach_name):
   <line x1="118" y1="252" x2="232" y2="252" stroke="{G}" stroke-width="0.9"/>
   <rect x="171" y="248.5" width="7" height="7" fill="{G}" transform="rotate(45 175 252)"/>
   <text x="175" y="{cy0:.1f}" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="{fst:.1f}" fill="#f5eddd">{tspans}</text>
-  <text x="175" y="{addr_y:.1f}" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" letter-spacing="1" fill="#9fb4a3">{esc(ADDR).upper()}</text>
+  {_addr_line(addr_y)}
   {recipient}
   <rect x="60" y="446" width="230" height="18" rx="9" fill="none" stroke="#b9973f" stroke-width="0.8"/>
   <text x="175" y="458" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.6" letter-spacing="1.0" fill="#dcc27f">ENLARGED PRACTICE EDITION</text>{share_mark}
