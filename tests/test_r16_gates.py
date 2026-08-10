@@ -529,6 +529,19 @@ def test_a_typo_for_all_is_refused_rather_than_narrowing_the_run_to_one_course(m
     assert cb.main(["--all"]) == 0, "and the real flag must still work"
 
 
+def test_a_verdict_this_gate_cannot_place_stops_the_run_rather_than_being_dropped(monkeypatch, capsys):
+    """The shape that let `skip` reach exit 0: a verdict nothing classifies.
+
+    Refused rather than asserted, because `python3 -O` strips an assert and a partition that stops being
+    exhaustive under an optimisation flag is a waiver nobody granted. tools/export_pdf.py's own
+    freshness gate carries the same requirement in the other direction -- every tag it can return has to
+    be classified or the test fails rather than filing an unknown one under "cannot know".
+    """
+    cb = _stub_corpus(monkeypatch, {"good": ("ok", [], ""), "odd": ("something-new", [], "")})
+    assert cb.main(["--all"]) == 2, "an unplaced verdict must not be dropped"
+    assert "does not classify" in capsys.readouterr().out
+
+
 def test_the_short_corridor_verdict_is_still_the_specific_finding(monkeypatch, capsys):
     """Exit 1 is reserved for the actionable measurement: a corridor drawn from outside the box.
 

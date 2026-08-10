@@ -380,7 +380,15 @@ def main(argv=None):
     nocache, refused = sorted(by.get(NO_CACHE, [])), sorted(by.get(REFUSED, []))
     unverified = sorted(s for s, (_st, _b, why) in res.items() if why)
     unclassified = sorted(set(by) - {OK, SHORT, DRIFT, NO_CACHE, REFUSED})
-    assert not unclassified, f"check_course returned a verdict main() does not classify: {unclassified}"
+    if unclassified:
+        # A REFUSAL, not an `assert`. `python3 -O` strips an assert, and a partition that stops being
+        # exhaustive under an optimisation flag is a waiver granted by accident -- which is the whole
+        # family of defect this file was rewritten for. A verdict main() cannot place is the shape that
+        # let `skip` fall through to exit 0, so it stops the run and names itself.
+        print(f"check_course returned a verdict this gate does not classify: {unclassified}. Every "
+              f"verdict must be decided HERE as covered, actionable, or unchecked -- an unplaced one "
+              f"used to fall into 'not checked' and then into exit 0.")
+        return 2
 
     print(f"\n{len(oks)} course(s) fully covered, {len(shorts) + len(drifted)} with a corridor outside "
           f"the box that was fetched, {len(nocache)} with no cache, {len(refused)} refused, "
