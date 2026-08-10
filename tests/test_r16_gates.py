@@ -170,21 +170,73 @@ def test_an_unrecognised_argument_never_rewrites_a_legal_record(tool, flag):
         f"{printed}")
 
 
+def _has_what_it_compares(tool):
+    """Does this tree hold the artifacts `tool --check` compares its legal record against?
+
+    Asked through the enumerator each tool uses ITSELF, never through a second glob written here -- a
+    guard that asks a different question from the body is the fault 2d97cd5 fixed in gen_provenance and
+    the reason gen_disclaimers routes its own floor through `_books`. So this cannot drift from the floor
+    it is predicting: it is the same call.
+
+    It exists because both tools have a documented floor BEFORE the comparison, and on a fresh clone
+    every one of them fires -- courses/ is gitignored, so a stranger who clones this repo has neither a
+    course record nor a built book. gen_provenance refuses with "no course data present" (2) and
+    gen_disclaimers with "no built books found" (1). Those are the tools being right, and a test that
+    demands a staleness verdict there is testing the tree, not the tool.
+    """
+    if tool == "gen_provenance":
+        # build() enumerates through distribution.course_slugs, and main()'s floor asks the same thing.
+        import distribution
+        return bool(distribution.course_slugs(ROOT))
+    # gen_disclaimers quotes BOTH editions and refuses if either is missing, so both are the precondition.
+    mod = __import__("gen_disclaimers")
+    return bool(list(mod._books("greenbook.html"))) and bool(list(mod._books("greenbook_coach.html")))
+
+
 @pytest.mark.parametrize("tool", sorted(_LEGAL_WRITERS))
-def test_the_check_flag_still_reaches_the_comparison_and_writes_nothing(tool):
+def test_the_check_flag_writes_nothing_and_reaches_the_comparison_wherever_there_is_one(tool):
     """The other direction: refusing typos must not have refused the real flag too.
 
-    `--check` must still reach the staleness comparison, and must still write nothing -- the whole
-    point of the flag. Graded on the verdict the check branch prints, which is the only thing in either
-    tool that can say "up to date", "STALE" or "nothing to check against".
+    TWO PROPERTIES, and only one of them is about the corpus.
+
+    `--check` WRITES NOTHING is unconditional and is asserted first, in every tree there is. That is the
+    assertion that catches D-4 -- an argument that reads as a verification request selecting the branch
+    that rewrites a legal record -- and it must keep biting on a fresh clone, where a stranger running
+    the command README tells them to run is exactly who the destructive default would have hurt.
+
+    REACHING THE COMPARISON is corpus-dependent, and this test used to demand it everywhere. It graded
+    green on a tree with no courses/ for the wrong reason and red for the right one: `gen_provenance`
+    printed "no course data present ... nothing to check against" and the regex's own "nothing to check"
+    matched it, so a FLOOR message passed as a verdict; `gen_disclaimers` printed "no built books found"
+    and failed. Reproduced by extracting HEAD into an empty directory (`git archive HEAD | tar -x`) and
+    running this file there: 1 failed, 33 passed, and it took two tests in
+    tests/test_phase1_regressions.py down with it, because each spawns its own corpus-less child suite
+    and asserts it comes back green.
+
+    So the verdict is required only where the artifacts it compares are present, and where they are not
+    the floor still has to REFUSE -- rc non-zero, nothing written, and not a refusal of the flag itself.
+    Exit 0 there would mean "the legal record matches the books" over no books at all.
     """
     mod = __import__(tool)
     rc, printed, writes = _run_under_open_spy(mod, ["--check"])
-    assert writes == [], f"tools/{tool}.py --check wrote {[w[0] for w in writes]}"
-    assert re.search(r"up to date|STALE|is stale|nothing to check", printed), (
-        f"tools/{tool}.py --check printed no staleness verdict, so the check branch was not reached:\n"
-        f"{printed}")
-    assert rc in (0, 1, 2), f"tools/{tool}.py --check returned {rc}"
+    assert writes == [], (
+        f"tools/{tool}.py --check opened {[w[0] for w in writes]} for writing. --check must never "
+        f"write: {_LEGAL_WRITERS[tool]} is the record it is being asked to VERIFY.")
+    # and it must not have been refused AS AN ARGUMENT -- that would make the whole flag unreachable
+    assert "unknown argument" not in printed, (
+        f"tools/{tool}.py refused its own --check as unknown, so the comparison branch is now "
+        f"unreachable and only the destructive one is left:\n{printed}")
+    if re.search(r"up to date|STALE|is stale", printed):
+        assert rc in (0, 1), (
+            f"tools/{tool}.py --check printed a staleness verdict and returned {rc}; a verdict is 0 "
+            f"(matches) or 1 (STALE).\n{printed}")
+        return
+    assert not _has_what_it_compares(tool), (
+        f"tools/{tool}.py --check printed no staleness verdict in a tree that HOLDS the artifacts it "
+        f"compares, so the check branch was not reached at all:\n{printed}")
+    assert rc != 0, (
+        f"tools/{tool}.py --check compared nothing and returned {rc}. Exit 0 from this flag reads as "
+        f"'{_LEGAL_WRITERS[tool]} matches the artifacts', and there were none.\n{printed}")
 
 
 # --------------------------------------------------------------------------------------------------
