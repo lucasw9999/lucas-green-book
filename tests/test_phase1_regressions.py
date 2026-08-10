@@ -2967,6 +2967,66 @@ def test_a_dir_fd_deletion_inside_the_stand_down_is_judged_whenever_it_can_be(tm
         "to describe the code that shipped")
 
 
+def _config_import_closure(root=ROOT):
+    """Every first-party module at `root` that `import config` executes, transitively. Sorted names.
+
+    DERIVED, because the hand-typed version of this went stale exactly the way a hand-typed list does.
+    `_fresh_clone_probe` below copied `("config.py", "distribution.py")` into its mini-repo and its own
+    docstring called those "every file ... an `import config` touch" -- a UNIVERSAL claim about a set
+    the engine defines, typed out in a test. e5b99e7 then added `from lidar_coverage import _env_on` to
+    config.py:20, collapsing five hand-copied spellings of the off-vocabulary into one definition (a
+    good change, and it must stay), and the probe's child session began dying at that line with
+    `ModuleNotFoundError: No module named 'lidar_coverage'`. Two tests failed on it directly and
+    test_a_fresh_clone_gets_a_clean_suite failed transitively, all reporting nothing about the fixture
+    they grade. One more line in the tuple would have fixed today; this fixes the class.
+
+    MODULE LEVEL ONLY, and that is the definition of the question rather than a shortcut: `import
+    config` runs config.py's module body and nothing else, so a first-party import inside a FUNCTION is
+    not something the probe needs -- and copying it would make the mini-repo grow for no reason. Imports
+    nested in a module-scope `if`/`try`/`for` ARE collected, because those do execute.
+
+    TRANSITIVE, because the closure is not one deep: config imports lidar_coverage, which imports geo.
+    A copied module that imports another first-party module and does not find it fails in exactly the
+    way this helper exists to prevent.
+
+    Third-party and stdlib names are dropped by asking what `root` actually holds, so numpy and json
+    are correctly not copied. Only modules at the repo ROOT are candidates: the mini-repo is flat, so a
+    `tools/` module could not be imported there under its bare name anyway, and config imports none.
+
+    `root`-parameterised so the derivation itself is testable against a FAKE tree under tmp_path rather
+    than only against this repo -- see
+    test_the_fresh_clone_probes_file_list_is_derived_from_config_s_own_imports. A derivation whose only
+    test is "the real repo still works" is one repo layout away from being untested.
+    """
+    import ast
+
+    at_root = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(root, "*.py"))}
+    todo, seen = ["config"], set()
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in at_root:
+            continue
+        seen.add(name)
+        with open(os.path.join(root, name + ".py"), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read(), filename=name + ".py")
+        stack = list(tree.body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue                       # not executed by `import`; see the docstring
+            if isinstance(node, ast.Import):
+                todo += [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:      # a relative import cannot name a root module
+                    todo.append(node.module.split(".")[0])
+            else:
+                for field in ("body", "orelse", "finalbody"):
+                    stack += getattr(node, field, None) or []
+                for handler in getattr(node, "handlers", None) or []:
+                    stack += handler.body
+    return sorted(seen)
+
+
 def _fresh_clone_probe(tmp_path, probe_source, plant=None, name="probe"):
     """Run a CHILD pytest over a corpus-less mini-repo, and hand back what it printed.
 
@@ -2976,11 +3036,19 @@ def _fresh_clone_probe(tmp_path, probe_source, plant=None, name="probe"):
     inside a test at which its cleanup can be observed. A child session is therefore not a convenience,
     it is the only place the behaviour exists.
 
-    The mini-repo is deliberately not the whole repo: conftest.py, config.py, distribution.py and
-    examples/course.json are every file the fixture and an `import config` touch, so the child run is a
+    The mini-repo is deliberately not the whole repo: tests/conftest.py, examples/course.json and every
+    first-party module `import config` executes are what the fixture touches, so the child run is a
     fifth of a second rather than the eighteen seconds test_a_fresh_clone_gets_a_clean_suite pays for
     copying every tracked file. That test measures the WHOLE suite on a clean tree; this one measures
     one fixture on a tree somebody has already crashed on.
+
+    THAT MODULE LIST IS DERIVED, NOT TYPED, and it used to be typed: `("config.py",
+    "distribution.py")`, under a docstring claiming those were every file an `import config` touches.
+    The claim was true when written and false four commits later, the moment config.py gained
+    `from lidar_coverage import _env_on` -- and what the child then reported was a
+    ModuleNotFoundError, not one word about the fixture under test. `_config_import_closure` walks
+    config.py's own module-level imports transitively instead, so the next import added to config.py
+    cannot break this probe silently.
 
     `plant(courses_dir)` runs before the child starts, so a caller can leave the exact wreckage a
     half-finished run leaves behind. Everything lives under tmp_path -- the real courses/ is never on
@@ -2993,8 +3061,8 @@ def _fresh_clone_probe(tmp_path, probe_source, plant=None, name="probe"):
     (arch / "tests").mkdir(parents=True)
     (arch / "examples").mkdir()
     shutil.copyfile(os.path.join(ROOT, "examples", "course.json"), arch / "examples" / "course.json")
-    for mod in ("config.py", "distribution.py"):
-        shutil.copyfile(os.path.join(ROOT, mod), arch / mod)
+    for mod in _config_import_closure():
+        shutil.copyfile(os.path.join(ROOT, mod + ".py"), arch / (mod + ".py"))
     shutil.copyfile(os.path.join(ROOT, "tests", "conftest.py"), arch / "tests" / "conftest.py")
     (arch / "tests" / "fresh_clone_probe_test.py").write_text(probe_source, encoding="utf-8")
     courses = arch / "courses"
@@ -3007,6 +3075,99 @@ def _fresh_clone_probe(tmp_path, probe_source, plant=None, name="probe"):
     r = subprocess.run([sys.executable, "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider"],
                        cwd=str(arch), env=env, capture_output=True, text=True)
     return r, (r.stdout or "") + (r.stderr or ""), courses
+
+
+def test_the_fresh_clone_probes_file_list_is_derived_from_config_s_own_imports(tmp_path):
+    """The probe's mini-repo used to name its own modules, and a claim like that rots on someone else's
+    commit.
+
+    `_fresh_clone_probe` copied `("config.py", "distribution.py")` and its docstring called them "every
+    file the fixture and an `import config` touch". e5b99e7 added
+    `from lidar_coverage import _env_on` to config.py -- one definition replacing five hand-copied
+    spellings of the off-vocabulary, which is the right change -- and from then on the child session
+    died at that import instead of exercising the fixture:
+
+        config.py:20: ModuleNotFoundError: No module named 'lidar_coverage'
+
+    Two tests failed on it directly and test_a_fresh_clone_gets_a_clean_suite failed transitively, none
+    of them reporting anything about the fixture they exist to grade. Adding the one missing name would
+    have fixed the day; this grades the DERIVATION, so that the next import added to config.py cannot do
+    it again.
+
+    ATTACKED ON A FAKE TREE, not on this repo, and that distinction is the whole reason
+    _config_import_closure takes a root. "The real repo still works" is satisfied by a helper that
+    hardcodes today's four names, by one that returns every .py at the root, and by one that is
+    accidentally one level deep -- none of which would survive the next change. The tree below separates
+    all three: it is transitive (config -> alpha -> beta), it has a first-party module NOT reachable from
+    config (`unrelated`, which must not be copied -- otherwise the mini-repo grows with the repo and the
+    probe's fifth of a second goes with it), a third-party name (`numpy`), a stdlib name (`json`), a
+    module-scope `try`/`if` import that DOES execute, and a FUNCTION-level import that does not.
+    """
+    root = tmp_path / "fake-repo"
+    root.mkdir()
+    (root / "config.py").write_text(
+        "import json\n"
+        "import distribution\n"
+        "from alpha import thing\n"
+        "try:\n"
+        "    import guarded\n"
+        "except ImportError:\n"
+        "    guarded = None\n"
+        "if os.environ.get('X'):\n"
+        "    import conditional\n"
+        "def later():\n"
+        "    import lazy_only\n"
+        "    return lazy_only\n", encoding="utf-8")
+    (root / "alpha.py").write_text("import beta\n", encoding="utf-8")
+    (root / "beta.py").write_text("import numpy\nimport math\n", encoding="utf-8")
+    (root / "distribution.py").write_text("import os\n", encoding="utf-8")
+    (root / "guarded.py").write_text("", encoding="utf-8")
+    (root / "conditional.py").write_text("", encoding="utf-8")
+    (root / "lazy_only.py").write_text("import sys\n", encoding="utf-8")
+    (root / "unrelated.py").write_text("import config\n", encoding="utf-8")
+
+    got = _config_import_closure(str(root))
+    assert got == ["alpha", "beta", "conditional", "config", "distribution", "guarded"], (
+        f"the closure over the fake tree is {got}. It must be transitive (alpha pulls beta), include a "
+        f"module-scope try/if import (guarded, conditional), and exclude both a FUNCTION-level import "
+        f"(lazy_only -- `import config` never runs it) and a first-party module nothing reachable from "
+        f"config imports (unrelated).")
+    assert "lazy_only" not in got, (
+        "a function-level import was collected. Then the mini-repo grows with every lazy import anywhere "
+        "in the closure, and the probe stops being the cheap half of the fresh-clone check.")
+    assert "unrelated" not in got, (
+        "a first-party module that merely imports config was pulled in, so the closure is following "
+        "edges backwards -- on this repo that would copy most of the engine")
+    assert "numpy" not in got and "json" not in got and "math" not in got, (
+        f"a third-party or stdlib name reached the copy list: {got}. Only modules the root actually "
+        f"holds are candidates; numpy.py is not in the repo and must not be looked for.")
+
+    # ...and against the REAL tree it must reach the module that caused this, plus what that module
+    # itself needs. Asserted as membership rather than as an exact list: the point is that the set
+    # follows config.py, so pinning today's four names here would restore the defect one level up.
+    live = _config_import_closure()
+    assert "config" in live, "the closure must start from config"
+    import ast
+    with open(os.path.join(ROOT, "config.py"), encoding="utf-8") as fh:
+        cfg_tree = ast.parse(fh.read(), filename="config.py")
+    at_root = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "*.py"))}
+    direct = set()
+    for node in cfg_tree.body:
+        if isinstance(node, ast.Import):
+            direct |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            direct.add(node.module.split(".")[0])
+    want = sorted((direct & at_root) - {"config"})
+    assert want, ("config.py imports no first-party module at all any more, so this test cannot tell a "
+                  "working derivation from one that returns only ['config']")
+    assert set(want) <= set(live), (
+        f"config.py imports {want} at module level and the closure reached {live} -- the probe would "
+        f"copy a mini-repo that cannot import config, which is a ModuleNotFoundError where a fixture "
+        f"verdict should be")
+    for mod in live:
+        assert os.path.isfile(os.path.join(ROOT, mod + ".py")), (
+            f"the closure names {mod!r}, which is not a file at the repo root, so _fresh_clone_probe "
+            f"would fail copying it")
 
 
 def test_the_fresh_clone_fixture_deletes_through_the_guard_and_not_around_it(tmp_path):
