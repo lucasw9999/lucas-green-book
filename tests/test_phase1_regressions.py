@@ -331,6 +331,36 @@ def _elev_rows(slug):
         return {}
 
 
+def _numbers_a_refusal_adds(message, control, *strip):
+    """The integer tokens `message` names and a CONTROL refusal does not, with `strip` removed from both.
+
+    `assert "2" in str(e.value)` is the natural way to check that a refusal names the hole it lost, and
+    it is vacuous. Three sites in this file were proven so by mutation -- make the refusal name no hole
+    at all and they still pass:
+
+      * fetch_hole_elev.check_rows interpolates the FILE PATH into its message, and a tmpdir path
+        carries whatever digits the machine picked, so `"2" in ...` was reading the path.
+      * the same message quotes legal/03 as constant prose, so `"3" in ...` passed on that "3" and would
+        have passed on every machine forever, whatever the guard did.
+      * fetch_trees.check_layer interpolates the path AND the marker count, either of which can supply a
+        digit nobody asserted about.
+
+    The fix is a differential: run the same guard twice from the same file so that path and prose are
+    IDENTICAL in both messages, losing a different hole each time. Whatever tokens one message has and
+    the other lacks came from the part that names the loss -- and a refusal that names no hole produces
+    two equal messages and an empty answer, which is the mutation the plain `in` could not see. A
+    refusal that names a CONSTANT hole ("hole 1 was lost", always) cancels out too.
+
+    Tokenised with `\\d+` rather than searched as substrings, so a marker count of 12 does not satisfy a
+    question about hole 2.
+    """
+    def toks(s):
+        for t in strip:
+            s = s.replace(str(t), " ")
+        return set(re.findall(r"\d+", s))
+    return toks(message) - toks(control)
+
+
 def assert_no_course_skipped(seen, what, exempt=None, population=None):
     """Every course in the graded POPULATION must have CONTRIBUTED something -- not merely been visited.
 
@@ -20857,8 +20887,27 @@ def test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one(tmp_path)
         assert len(layer(half).get("2") or []) == n2, (
             f"hole 2 lost all {n2} of its markers to a re-run and the layer was written anyway: "
             f"that card now prints open ground where the survey found canopy")
-        assert exited and "2" in exited, \
-            f"a hole losing its whole canopy must be refused out loud, got exit {exited!r}"
+        assert exited, f"a hole losing its whole canopy must be refused out loud, got exit {exited!r}"
+        # `and "2" in exited` used to stand on that line and was vacuous: the message interpolates the
+        # tmpdir PATH and the stored MARKER COUNT, so a refusal that named no hole at all still carried
+        # a "2" on most machines. Located differentially instead -- a mirror course where the OTHER hole
+        # is the one that goes bare, so path and prose cancel and only the named hole is left. See
+        # _numbers_a_refusal_adds.
+        mirror = tmp_path / "mirror"
+        _tree_course_data(ft, str(mirror), canopy_on={2})
+        _sh.copy2(os.path.join(str(good), "trees_lidar.json"),
+                  os.path.join(str(mirror), "trees_lidar.json"))
+        mirrored = run(mirror)
+        assert mirrored, "the mirror run must be refused too, or it cannot isolate the hole name"
+        assert "2" in _numbers_a_refusal_adds(exited, mirrored, half, mirror), (
+            f"the refusal must NAME the hole that lost its canopy -- it says nothing about hole 2 that "
+            f"the same refusal about hole 1 does not also say:\n  hole 2 bare: {exited!r}\n"
+            f"  hole 1 bare: {mirrored!r}")
+        # The one direction is enough here and the other is not available: a refusal that named a
+        # CONSTANT hole fails the assertion above too (the constant cancels between the two messages),
+        # while asserting "1" the other way cannot work at all -- the message's own
+        # "Set ALLOW_TREE_LOSS=1" puts a 1 in BOTH, which is the same prose-satisfies-the-check trap
+        # this replacement exists to close. The fixture only has holes 1 and 2 to choose from.
         assert run(half, {"ALLOW_TREE_LOSS": "1"}) is None, \
             "ALLOW_TREE_LOSS must accept a deliberate per-hole loss"
         assert len(layer(half).get("2") or []) == 0 and len(layer(half).get("1") or []) == n1, \
@@ -21360,13 +21409,34 @@ def test_hole_elev_refuses_to_drop_a_hole_it_measured_before():
         # a hole that HAD a figure and now has none is refused, and the hole is NAMED
         prev = os.environ.pop("ALLOW_ELEV_LOSS", None)
         try:
-            with pytest.raises(SystemExit) as e:
-                fhe.check_rows(same(1, 3), p)
-            assert "2" in str(e.value), f"the refusal must name the hole that was lost: {e.value}"
+            # `assert "2" in str(e.value)` and `assert "3" in str(e2.value)` stood here and BOTH were
+            # vacuous: the message interpolates the tmpdir path (which supplied the "2") and quotes
+            # legal/03 as constant prose (which supplied the "3", on every machine, forever). Neither
+            # read the part of the refusal that names the loss, so a guard that refused without naming
+            # a hole passed them -- and "name the hole" is the whole reason this guard is per hole
+            # rather than a count. Located differentially instead: the same baseline file, the same
+            # path, the same prose, a DIFFERENT hole lost. See _numbers_a_refusal_adds.
+            def refusal(rows):
+                with pytest.raises(SystemExit) as exc:
+                    fhe.check_rows(rows, p)
+                return str(exc.value)
+
+            lost_2 = refusal(same(1, 3))
+            stored(td, [1, 3, 5])                    # rewrites the SAME path: only the loss differs
+            control = refusal(same(1, 3))            # ... which is hole 5 this time
+            stored(td, [1, 2, 3])
+            assert "2" in _numbers_a_refusal_adds(lost_2, control, p, td), (
+                f"the refusal must NAME the hole that was lost. It says nothing hole 2 specific that a "
+                f"refusal about hole 5 does not also say:\n  lost 2: {lost_2!r}\n  lost 5: {control!r}")
+
             # a swap that keeps the COUNT is still a loss, which is why the guard is per hole
-            with pytest.raises(SystemExit) as e2:
-                fhe.check_rows(same(1, 2, 9), p)
-            assert "3" in str(e2.value), f"a same-count swap must still be refused: {e2.value}"
+            lost_3 = refusal(same(1, 2, 9))
+            stored(td, [1, 2, 4])
+            control3 = refusal(same(1, 2, 9))        # same count, hole 4 lost instead of hole 3
+            stored(td, [1, 2, 3])
+            assert "3" in _numbers_a_refusal_adds(lost_3, control3, p, td), (
+                f"a same-count swap must be refused AND must name the hole it dropped:\n"
+                f"  lost 3: {lost_3!r}\n  lost 4: {control3!r}")
 
             # the waiver lets a real loss through, loudly, and =0 does not read as yes
             os.environ["ALLOW_ELEV_LOSS"] = "0"
