@@ -145,8 +145,12 @@ python3 tools/export_pdf.py --check                          # every PDF matches
 Most steps are generic; a few need per-course research/judgment (marked 🔎).
 
 1. **🔎 Identify the course & scorecard.** Geocode the address (OSM Nominatim).
-   Find the authoritative scorecard (NCGA/BlueGolf, state GA, or the club) and
-   record par, per-hole handicap, and yardages for every tee. These are *facts*.
+   Work from the **published scorecard** — the club's own card is the best one to
+   have — and record par, per-hole handicap, and yardages for every tee. These are
+   *facts*. Record in `sources.scorecard` what class of card each figure came from
+   and whether anything is single-source; check the tees against the card's own
+   printed out/in/total and the par against OSM's `golf=hole` tags, which is
+   arithmetic on our own open data rather than a second edition of anyone's card.
 2. Create `courses/<slug>/course.json` with name, address, lat/lon, tees, the
    `holes` table, `osm_bbox`, and the LiDAR project + tile IDs.
 3. **Geometry (OSM).** Query Overpass for `golf=green` (polygons + hole `ref`),
