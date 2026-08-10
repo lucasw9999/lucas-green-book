@@ -1302,14 +1302,82 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # Signed, and correct in both directions: positive where the line starts at a forward tee, negative
     # where it was traced past the back tee.
     tee_shift_yd = (total_yd - arc_yd) if (fwd_tee or past_tee) else 0.0
-    # Where the GREEN starts, along the same chord and through the same shift as every carry below.
+    # ONE ORIGIN PER CARD, AND IT IS THE FROM-TEE GUTTER'S.
+    #
+    # A card prints two things "from the back tee" and they were measured from two different tees. The
+    # gutter derives its number by distributing the card's own yardage along the drawn line
+    # (`ft_exact = total_yd * arc_from_tee / arc_m`); every carry above took the same kind of distance
+    # straight off the geometry with no correction at all, because `tee_shift_yd` is 0 for every hole that
+    # satisfies tee_ok -- and tee_ok's tolerance is max(15 yd, 5%). So up to 25 yd of origin disagreement
+    # passed while the carry printed to the yard, on a card whose legend reads "carry N = yd from the back
+    # tee" beside a gutter labelled "from the tee (walked)". On trump-national-los-angeles: hole 6 printed
+    # carry 269 where its own gutter scale gives 275.6, hole 18 172 against 177.7, hole 3 115 against
+    # 118.8, hole 5 245 against 240.9, hole 7 202 against 200.9. Hole 10 was the only card there that got a
+    # shift at all -- it runs from a forward tee -- and the only one internally consistent. Corpus-wide 125
+    # printed carries sit on tee_ok holes whose line disagrees with the card.
+    #
+    # THE GUTTER'S MODEL IS THE BETTER ONE for a tee_ok hole, which is why it is the one both figures now
+    # use. Both already start from the drawn line's own start; what differed is where the back tee is taken
+    # to be relative to it. On this course every hole's line starts INSIDE a mapped tee polygon
+    # (start_at_tee_m is 0.0 on all 18) with the back-tee complex reaching only 3.0-19.0 yd behind that
+    # start, while the card-versus-arc gap runs to 22 yd. So the gap is not AT the tee: it is the mapped
+    # centreline cutting a route the card's yardage follows, spread along the hole -- the castlewood-valley
+    # 10 case described below, and exactly what a proportional distribution models. An ADDITIVE shift is
+    # right only where the difference is known to sit at the tee end, which is what fwd_tee and past_tee
+    # establish and what tee_ok does not.
+    #
+    # CLAMPED AT 1.0, so it may only ever SHORTEN a carry. Too long is the dangerous direction -- it tells
+    # a player they have room they do not have, and a junior who believes an overstated carry aims at a
+    # hazard -- and this file already refused a card-derived origin for the carries in that direction, for
+    # this reason: see the merion 3 note above, where propagating par3_exact's origin would have printed 205
+    # for sand the mapped geometry puts at 184. Where the drawn line is SHORT of the card the scale would
+    # be above 1 and is refused, so those carries keep the conservative figure they printed; where the line
+    # is LONG of the card the scale is below 1 and the carry comes down. That is the half that was actually
+    # unsafe: 46 of those 125 windows sit on holes drawn longer than the card, where measuring straight off
+    # the geometry reads LONG.
+    #
+    # Measured cost over all 13 courses, no book rebuilt. The from-tee gutter is UNTOUCHED -- not one of its
+    # 889 printed numbers moves on any of the 216 cards -- and no hole SVG changes a byte, so this moves the
+    # figure that was wrong and leaves the one that was right alone. 38 printed carry figures come down, on
+    # 35 cards of 9 courses, every one of them DOWN, by a median 2 yd and at most 6 (philadelphia 2,
+    # 239 -> 233). On this course: hole 5's 245 -> 240 and hole 7's 202 -> 201, the two the audit found
+    # reading long, while holes 3, 6, 18 and 10 keep every figure they printed -- their lines are SHORT of
+    # the card, where the scale would be above 1 and is refused.
+    #
+    # ONE card changes structurally, 135 printed windows -> 134: castlewood-valley 1 loses "carry 82",
+    # because sand at raw 82.0 is 79.36 yd from the back tee on the card's own scale and the 80 yd floor
+    # this block applies to both measures refuses it. Nothing is hidden -- the bunker is still drawn and
+    # still counted in that footer's NB -- and 80 yd off the tee is not a driving decision, which is what
+    # the floor says. No card gains a window (see the reach-window note below, which is what stops the
+    # scale conjuring one) and no card's "sand to the green" mark moves.
+    #
+    # green_front_yd, which is published and not printed, moves on 90 cards because it now goes through the
+    # same frame -- which is the point: the landing rule has to compare a scaled window against a scaled
+    # green front, or the fix would introduce one level down the very mismatch it removes one level up.
+    #
+    # Published in `info` for the reason green_gap_yd and carry_origin_known are: the test that grades
+    # which origin a printed carry came from cannot re-derive this frame's chord basis and tee shift
+    # without becoming a second copy of them. Both halves are published, because both are built from the
+    # UNROUNDED arc and a test rebuilding either from the published integer `arc_yd` is up to 0.5 yd out --
+    # enough to move a rounded carry by one, which is the first thing that test got wrong. See
+    # test_both_yd_from_the_back_tee_figures_on_a_card_come_from_one_origin.
+    carry_scale = min(1.0, total_yd / arc_yd) if tee_ok else 1.0
+    def from_tee_yd(along_m):
+        """Along-chord metres from the LINE's start -> yd from the BACK tee, in this card's one frame.
+
+        Every figure the carry block measures goes through here -- the sand's two edges and the green
+        front alike -- so the landing rule below cannot end up comparing a scaled window against an
+        unscaled green front. That drift is the whole defect this frame exists to remove, one level down.
+        """
+        return along_m / 0.9144 * carry_scale + tee_shift_yd
+    # Where the GREEN starts, along the same chord and through the same frame as every carry below.
     # min() over the whole ring rather than only its near-the-chord part: a green offset from the chord
     # projects SHORT, which understates the landing area and so refuses more carries, not fewer. That is
     # the safe direction for a number a junior clubs against. Published in `info` for the same reason
     # green_gap_yd is -- a test that grades the landing decision needs it, and computing it there would
     # be a second copy of this frame's projection, chord basis and tee shift.
-    green_front_yd = min(((em(p['lat'], p['lon'])[0]-tee[0])*ux
-                          + (em(p['lat'], p['lon'])[1]-tee[1])*uy) / 0.9144 + tee_shift_yd
+    green_front_yd = min(from_tee_yd((em(p['lat'], p['lon'])[0]-tee[0])*ux
+                                     + (em(p['lat'], p['lon'])[1]-tee[1])*uy)
                          for p in green['geometry'])
     carries = []
     # ...and the sand the greenside filter drops, kept rather than thrown away. It is not a tee carry,
@@ -1334,16 +1402,30 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             offs.append(abs(dx*perp[0] + dy*perp[1]))
         if not alongs:
             continue
-        near_yd = min(alongs)/0.9144 + tee_shift_yd
-        far_yd  = max(alongs)/0.9144 + tee_shift_yd
+        near_yd = from_tee_yd(min(alongs))
+        far_yd  = from_tee_yd(max(alongs))
         if min(offs) <= CARRY_OFF_M:
             sand_spans.append((near_yd, far_yd))
-        # The shift is only trustworthy for sand well UP the hole, where the direction from the back
-        # tee is nearly the chord direction. Close to the tee the back tee's unknown lateral offset
-        # dominates, and shifting swept in bunkers lying BEHIND the forward tee: merion 5 grew a
-        # "carry 81" and "105" from sand at -22 and +2 yd along its own line. So the reach test must
-        # also pass on the UNSHIFTED distance -- a carry has to be a real carry from the mapped tee too.
-        if min(alongs)/0.9144 < CARRY_MIN_YD:
+        # THE 80-300 REACH WINDOW HAS TO PASS ON BOTH MEASURES: the raw distance along the drawn line and
+        # the modelled distance from the back tee. The tee model may shorten a printed carry or withdraw
+        # one; it may never conjure one the drawn geometry does not itself support.
+        #
+        # This end of that rule is the older half. The shift is only trustworthy for sand well UP the hole,
+        # where the direction from the back tee is nearly the chord direction; close to the tee the back
+        # tee's unknown lateral offset dominates, and shifting swept in bunkers lying BEHIND the forward
+        # tee -- merion 5 grew a "carry 81" and "105" from sand at -22 and +2 yd along its own line.
+        #
+        # The CEILING is the same principle at the far end, and it is what keeps the from-tee scale from
+        # inventing a figure. Two cards had sand just past CARRY_MAX_YD on the raw measure that the scale
+        # pulled back inside it: castlewood-valley 1 at raw 306.09 -> 296 and the-reserve 1 at raw 302.45
+        # -> 299. Both are true distances and both would have printed, and the second is why the bound is
+        # here rather than argued away: its window is kept by the landing rule on 0.07 yd of grass -- the
+        # next greenside sand starts 8.07 yd past its far edge against an 8.0 yd bar -- and the sand
+        # complex then chains 21.17 yd PAST the green front. "carry 299" on a 348 yd hole would have been
+        # an invitation to land in an 8 yd strip between two bunkers, which is the exact defect the
+        # landing rule exists to refuse. Neither card loses anything to this bound: those two are the only
+        # printed carries in the corpus whose raw near edge is past 300 at all.
+        if not (CARRY_MIN_YD <= min(alongs)/0.9144 <= CARRY_MAX_YD):
             continue
         if not (CARRY_MIN_YD <= near_yd <= CARRY_MAX_YD) or min(offs) > CARRY_OFF_M:
             continue
@@ -1657,6 +1739,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               tee_ticks=tee_ok or par3_straight or fwd_tee or past_tee,
               line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee, past_tee=past_tee,
               carry_origin_known=origin_known,
+              # The one frame every "yd from the back tee" figure on this card is measured in -- see
+              # carry_scale. 1.0 means "straight off the drawn geometry"; below 1.0 means the drawn line
+              # is longer than the card and the carry has been brought back on to the card's own scale.
+              # It can never exceed 1.0, which is the conservative direction stated as a value.
+              carry_from_tee_scale=carry_scale,
+              carry_tee_shift_yd=tee_shift_yd,
               start_at_tee_m=round(start_at_tee_m, 1),
               from_tee_rows=ft_rows,
               from_tee_floor_yd=ft_floor,

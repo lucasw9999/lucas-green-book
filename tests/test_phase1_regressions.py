@@ -8093,9 +8093,9 @@ def test_a_printed_carry_never_overstates_what_it_clears():
 
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
         "Clearing it needs more than N", which is false where the sand is long:
-        the-reserve 16 prints "carry 177" for sand occupying the line out to 322 yd, so clearing it
-        needs 322. Sand runs a
-        median 23 yd past the printed number and up to 145. The number is right -- it is where the sand
+        the-reserve 16 prints "carry 177" for sand occupying the line out to 321 yd, so clearing it
+        needs 321. Sand runs a
+        median 24 yd past the printed number and up to 144. The number is right -- it is where the sand
         starts -- so the sentence was corrected rather than the figure.
 
         THAT EXAMPLE HAS NOW GONE STALE THREE TIMES, AND IS NO LONGER WRITTEN DOWN. It was
@@ -8112,9 +8112,9 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         below. Nothing here has to be maintained: when the corpus moves, the failure names the card
         that replaced it.
 
-        THE 145 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
+        THE 144 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
         (see render_hole.edge_within) gave the-reserve 16 the 3,562 m^2 waste bunker it had been
-        printing blank ground over, and that card now prints "carry 177" for sand running to 322 -- 145
+        printing blank ground over, and that card now prints "carry 177" for sand running to 321 -- 144
         yd of it. The old worst was philadelphia 1's 95. A card that draws more of the sand it always
         had needs the hedge MORE, not less.
 
@@ -8141,7 +8141,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             html = fh.read()
         assert "where fairway sand <b>starts</b>" in html and "can run well past N" in html, (
             f"{ref}: the guide no longer says the sand can run past the printed carry -- "
-            f"on the-reserve 16 that is 145 yd of unstated sand")
+            f"on the-reserve 16 that is 144 yd of unstated sand")
         cfg, rh = _engine(ref)
         try:
             course, geom = rh.load()
@@ -8281,6 +8281,159 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         f"{wnear}, sand to {wfar}, {wpast} yd past.")
     assert not ill, ("a worked example of sand past a printed carry names the wrong card:\n  "
                      + "\n  ".join(ill))
+
+
+@needs_corpus
+def test_both_yd_from_the_back_tee_figures_on_a_card_come_from_one_origin():
+    """A card prints two things "from the back tee". They were measured from two different tees.
+
+    The FROM-TEE GUTTER derives its number by distributing the card's own yardage along the drawn line:
+    `ft_exact = total_yd * arc_from_tee / arc_m`. The CARRY measured the same kind of distance straight off
+    the drawn geometry with no such correction -- `tee_shift_yd` is 0 for every hole that satisfies
+    `tee_ok`, and tee_ok's tolerance is max(15 yd, 5%). So up to 25 yd of origin disagreement passed while
+    the carry printed to the yard, on cards whose legend says "carry N = yd from the back tee" and whose
+    right-hand gutter says "from the tee (walked)". Measured on trump-national-los-angeles: hole 6 printed
+    carry 269 where its own gutter scale gives 275.6, hole 18 172 against 177.7, hole 3 115 against 118.8,
+    hole 5 245 against 240.9 and hole 7 202 against 200.9. Hole 10 was the only card on that course that
+    got a shift at all -- it runs from a forward tee -- and the only one internally consistent.
+
+    Corpus-wide, 125 printed carries sit on tee_ok holes whose drawn line disagrees with the card, and 46
+    of them sit on holes drawn LONGER than the card, where measuring straight off the geometry reads LONG.
+    That is the direction test_a_printed_carry_never_overstates_what_it_clears exists to forbid, and no
+    test graded it, because that test's own ground truth is the same unshifted geometry the engine used.
+
+    THE ORIGIN THIS ASSERTS IS THE GUTTER'S, held to the conservative side. Both figures start from the
+    drawn line's own start; what differed was the model of where the back tee sits relative to it, and the
+    gutter's model is the better one for a tee_ok hole -- on this course every hole's line starts INSIDE a
+    mapped tee polygon (start_at_tee_m is 0.0 on all 18) with the back-tee complex reaching only 3.0-19.0
+    yd behind that start, while the card-versus-arc gap runs to 22 yd. The gap is therefore not AT the tee;
+    it is the mapped centreline cutting a route the card's yardage follows, spread along the hole, which is
+    the case render_hole already describes for castlewood-valley 10 and the case a proportional
+    distribution is the model for.
+
+    Held to the conservative side because too long is the dangerous direction: a junior who believes an
+    overstated carry aims at a hazard. So the scale a carry takes is `min(1, card/arc)` -- it may shorten a
+    carry and never lengthen one. render_hole had already refused a card-derived origin for the carries in
+    the other direction and for this exact reason (see its note on merion 3, where propagating par3_exact's
+    origin would have printed 205 for sand the mapped geometry puts at 184), and this keeps that refusal
+    while removing the two-origin card.
+
+    WHAT IS ASSERTED, per printed carry, in the engine's own frame:
+
+      * the published scale is the closed form `min(1, card/arc)` on a tee_ok hole and 1.0 otherwise, and
+        the published shift is `card - arc` on a forward/past-tee hole and 0.0 otherwise -- each to within
+        the 0.5 yd that `info["arc_yd"]`'s rounding can explain, since the engine builds both from the
+        unrounded arc. Graded the way `carry_origin_known` is, so neither field can drift from the rule it
+        names;
+      * the scale is never above 1.0, which IS the conservative direction stated as a value;
+      * every printed edge is that scale and that shift applied to the along-chord edge of a bunker the
+        engine actually selected. That is the frame check: a printed carry no selected sand reproduces
+        under the card's own frame is a figure from some other origin. Both fields have to come from the
+        card rather than be recomputed here -- rebuilding either from the published integer arc is up to
+        0.5 yd out, which is enough to move a rounded carry by one.
+    """
+    import math
+    problems, missing, checked, seen_courses = [], [], 0, collections.Counter()
+    for ref in CORPUS:
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                _green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            card, arc = info["card_yd"], info["arc_yd"]
+            spans = info["line_spans"]
+            scale = info.get("carry_from_tee_scale")
+            shift = info.get("carry_tee_shift_yd")
+            if scale is None or shift is None:
+                missing.append(f"{ref} hole {hn}")
+                continue
+            # BOTH halves of the frame come from the card, not from a reconstruction. `arc_yd` in `info`
+            # is ROUNDED, and the engine builds its scale and its shift from the unrounded arc, so a test
+            # that recomputes either from the published integer is up to 0.5 yd out -- which is exactly
+            # enough to move a rounded carry by one and was the first thing this test got wrong. The
+            # closed forms are still graded below, with that rounding as the stated allowance.
+            want_shift = (card - arc) if (info["fwd_tee"] or info["past_tee"]) else 0.0
+            want = min(1.0, card / (arc or 1)) if spans else 1.0
+            # d(card/arc)/d(arc) * 0.5 is the whole allowance, derived rather than picked.
+            allow = card * 0.5 / max((arc or 1) ** 2, 1) + 1e-9
+            if abs(shift - want_shift) > 0.5 + 1e-9:
+                problems.append(
+                    f"{ref} hole {hn}: carry_tee_shift_yd is {shift:+.3f} where the card ({card}) and the "
+                    f"drawn line ({arc}) give {want_shift:+.1f} (fwd={info['fwd_tee']}, "
+                    f"past={info['past_tee']}) -- beyond the 0.5 yd the arc rounding can explain")
+            if scale > 1.0 + 1e-12:
+                problems.append(
+                    f"{ref} hole {hn}: carry_from_tee_scale is {scale!r} -- above 1.0, so a printed "
+                    f"carry is being LENGTHENED off the drawn geometry. Too long is the dangerous "
+                    f"direction; the scale may only shorten")
+            if abs(scale - want) > allow:
+                problems.append(
+                    f"{ref} hole {hn}: carry_from_tee_scale is {scale:.6f} but the card ({card} yd) and "
+                    f"the drawn line ({arc} yd, spans={spans}) give min(1, card/arc) = {want:.6f} "
+                    f"(allowance {allow:.6f} for the arc rounding)")
+            carries = info.get("carries") or []
+            if not carries:
+                continue
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+            def em(la, lo, _a=la0, _o=lo0):
+                return ((lo - _o) * _mlon(_a), (la - _a) * _mlat(_a))
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            edges = []
+            for g in _sand_the_engine_sees(rh, em, line, bunkers):
+                al = [((em(q["lat"], q["lon"])[0] - tee[0]) * ux
+                       + (em(q["lat"], q["lon"])[1] - tee[1]) * uy) / 0.9144
+                      for q in g["geometry"]]
+                if al:
+                    edges.append((min(al), max(al)))
+            for near, far in carries:
+                checked += 1
+                seen_courses[ref] += 1
+                if not any(round(a * scale + shift) == near for a, _b in edges):
+                    problems.append(
+                        f"{ref} hole {hn}: prints carry {near}, which is not the along-chord near edge of "
+                        f"any sand this card selects put through the card's own from-tee scale "
+                        f"({scale:.5f}) and shift ({shift:+.1f}). Nearest candidates: "
+                        f"{sorted(round(a * scale + shift, 1) for a, _b in edges)[:6]} -- so the two "
+                        f"'yd from the back tee' figures on this card come from different origins")
+                if not any(round(b * scale + shift) == far for _a, b in edges):
+                    problems.append(
+                        f"{ref} hole {hn}: the far edge {far} of a printed carry window is not any "
+                        f"selected bunker's far edge under this card's scale ({scale:.5f}) and shift "
+                        f"({shift:+.1f}) -- the window's two ends are in different frames")
+    assert not missing, (
+        f"render_hole publishes no `carry_from_tee_scale` on {len(missing)} card(s) ({missing[:4]}), so "
+        f"nothing on the card can say which origin its printed carries were measured from. The scale a "
+        f"carry takes has to be published for the same reason green_gap_yd and carry_origin_known are: a "
+        f"test that grades the origin cannot re-derive this frame's chord basis and tee shift without "
+        f"becoming a second copy of them")
+    assert checked >= 50, f"only {checked} printed carries examined -- build the books first"
+    assert_no_course_skipped(
+        seen_courses, "test_both_yd_from_the_back_tee_figures_on_a_card_come_from_one_origin",
+        exempt={"bay-view-golf-club": "prints no carry on any hole -- nothing for this test to check"})
+    assert not problems, (
+        f"{len(problems)} card(s) measure their two 'from the back tee' figures from different "
+        f"origins:\n  " + "\n  ".join(problems[:8])
+        + (f"\n  ...and {len(problems) - 8} more" if len(problems) > 8 else ""))
 
 
 @needs_corpus
@@ -8469,12 +8622,21 @@ def test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept():
             L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
             ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
             perp = (uy, -ux)
-            shift = ((info["card_yd"] - info["arc_yd"])
-                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
+            # THE ENGINE'S FRAME, TAKEN FROM THE CARD. This re-derives the landing rule, so it has to
+            # measure in the same frame the rule measured in: the card's own yardage distributed along the
+            # drawn line, published as carry_from_tee_scale and carry_tee_shift_yd. Rebuilding either here
+            # is wrong twice over -- the shift was recomputed from the ROUNDED `arc_yd` and so was up to
+            # 0.5 yd out, and the scale did not exist here at all, which reported castlewood-valley 1 as a
+            # truncated card when the engine had refused its 82 yd window on the 80 yd floor.
+            scale = info["carry_from_tee_scale"]
+            shift = info["carry_tee_shift_yd"]
+
+            def raw_yd(la, lo):
+                e, n = em(la, lo)
+                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144
 
             def along_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+                return raw_yd(la, lo) * scale + shift
 
             def off_m(la, lo):
                 e, n = em(la, lo)
@@ -8488,7 +8650,9 @@ def test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept():
                 if not al:
                     continue
                 near, far = min(al), max(al)
-                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                # the 80-300 reach window on BOTH measures, as the engine applies it
+                near_raw = min(raw_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or []))
+                if not (80.0 <= near_raw <= 300.0) or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 (greenside if near > total - 40 else raw).append((near, far))
             raw.sort()
@@ -26687,8 +26851,8 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     wording is the load-bearing part, not the computation: it is the difference between an omission and
     an over-claim.
 
-    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 145 yards
-    of it, the-reserve 16 printing "carry 177" for sand reaching 322 -- so a bare "carry N" would read
+    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 144 yards
+    of it, the-reserve 16 printing "carry 177" for sand reaching 321 -- so a bare "carry N" would read
     as the whole obstacle rather than its near edge. (It read 126 until par-3 carries were suppressed,
     which removed the case it named, then 95 until the bunker selector was moved from a feature's
     centroid to its nearest edge and that waste bunker appeared on the card at all; the figure is
