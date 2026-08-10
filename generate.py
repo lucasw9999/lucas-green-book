@@ -1362,19 +1362,25 @@ def tees_panel():
 def _scorecard_claim():
     """How the tees card may describe where its yardages came from -- per course, not one boast.
 
-    The card said "Yardages from the official scorecard." on every book. Only 4 of 11 courses record an
-    official or printed club scorecard; the other 7 record third-party aggregators -- BlueGolf, NCGA,
-    GolfLink, Wikipedia, Golfify. For those, "official" is a claim about provenance the record does not
+    The card said "Yardages from the official scorecard." on every book, including every book whose
+    record does not evidence one. For those, "official" is a claim about PROVENANCE the record cannot
     support, printed beside the very numbers it is vouching for.
+
+    TWO CLASSES OF RECORD, and the class is the whole question. One evidences the club's own card -- an
+    official or printed club scorecard -- and may say so. The other evidences published scorecard data
+    without evidencing the club's card behind it, and may only say that. No figure moves between them: a
+    scorecard number is a fact wherever it is read, and the book prints the same yardages either way.
+    What the weaker wording withdraws is one sentence about where they were read.
 
     The same book already says the honest version two cards away: the guide card credits "facts from the
     PUBLISHED scorecard". So this is not a hard question about what is true, only about which of two
     wordings a given course has earned. Derived from sources.scorecard, which is the field the provenance
     record is built from, so the card and legal/03 cannot disagree.
 
-    Aggregator data is not less honest -- bay-view's own source note records that a third-party record
-    was WRONG and was corrected against the club's card -- which is exactly why the distinction is worth
-    printing rather than papering over.
+    The weaker wording is not a verdict on any record's quality. bay-view is the case that makes the
+    distinction worth printing: its own source note records a per-hole figure that was WRONG and had to
+    be corrected from the club's own card. A reader told the numbers came from the club cannot weigh
+    them; a reader told they came from published scorecard data can.
     """
     src = str((config.COURSE.get("sources") or {}).get("scorecard") or "").lower()
     official = ("official" in src) or ("printed scorecard" in src)
