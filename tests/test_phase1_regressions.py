@@ -29846,6 +29846,86 @@ def test_a_staked_penalty_area_is_inked_as_water_and_never_as_trees():
         f"outcome the exclusion may not have")
 
 
+@needs_corpus
+def test_out_of_bounds_is_fetched_and_deliberately_absent_from_every_card():
+    """`golf=out_of_bounds` is fetched, guarded and NOT drawn, and that has to be a decision on the record.
+
+    OB is stroke-and-distance -- strictly worse for a junior than the penalty areas the same fix put into
+    the blue -- so "the renderer has no concept of it" is not a reason, it is the finding. render_hole.py
+    now carries the argument for leaving it off the paper and this test is its tripwire, so nobody can
+    start drawing it without meeting the two conditions that argument names.
+
+    WHY IT IS NOT DRAWN, in one line each, and all of it re-measured here rather than trusted:
+
+      * Coverage, not geometry. There is ONE such way in the whole corpus -- trump-national-los-angeles
+        way 1330731228, a closed 22-node ring of 13,392 m^2, 140 x 169 m, nearest edge 10.3 m from hole
+        2's played line -- while every hole of all 13 courses has out of bounds, because a property line
+        is a fact of every golf course. Absence of a mark has to be distinguishable from absence of the
+        thing, and one fragment beside two holes cannot be.
+      * It is not the boundary. It contains no centreline vertex of any hole and overlaps no fairway,
+        rough, green, tee or bunker, so it says nothing about where the line runs on the other 16 holes.
+      * It has no ink it can honestly borrow. The legend names bunkers (tan), water (blue) and trees; OB
+        is none of the three, and putting it in the blue would state a penalty area's relief for a
+        stroke-and-distance boundary -- the same shape of false statement as painting a penalty area in
+        the tree fill.
+
+    WHAT IT DOES GET is the strictest fetch guard: census buckets it under its own key, which is in
+    neither VOLATILE_KINDS nor HAZARD_KINDS, so it takes zero tolerance and no rarity exemption by
+    default-deny (graded by test_the_shrink_guard_is_silent_on_every_layer_this_corpus_already_stores),
+    and it is NOT a hazard kind because no card draws it and no abort message should claim hazard ink left
+    one. Keeping a strict guard over a class we decline to draw is the point: when the boundary is one day
+    mapped completely enough to draw, the data must not have gone away in the meantime.
+
+    IF THIS TEST FAILS BECAUSE OB IS NOW BEING DRAWN, that is not a reason to delete it. It is a reason to
+    give the class a legend entry and an ink of its own in BOTH editions' guide cards first, and to be
+    able to say what the absence of the mark means on the holes that carry none.
+    """
+    src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
+    for needle, what in (("out_of_bounds", "the tag it is declining to draw"),
+                         ("1330731228", "the one way in the corpus that forced the decision"),
+                         ("stroke-and-distance", "why it is not a penalty area and cannot take the blue")):
+        assert needle in src, (
+            f"render_hole.py no longer names {what} ({needle!r}). A class that is guarded on the way in "
+            f"and silently dropped on the way out needs the decision written down beside the selectors, "
+            f"or the next reader has to rediscover it from an audit")
+    ways, courses, changed, errors = 0, 0, [], []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, _geom = rh.load()
+        except Exception as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        obs = [g for g in course
+               if (g.get("tags") or {}).get("golf") == "out_of_bounds" and g.get("geometry")]
+        if not obs:
+            continue
+        courses += 1
+        ways += len(obs)
+        orig_load = rh.load
+        try:
+            base = {hn: rh.render_hole(hn, cfg.HOLES) for hn in cfg.HOLE_NUMS}
+            for g in obs:
+                rh.load = _drop_one(orig_load, g["id"])
+                for hn in cfg.HOLE_NUMS:
+                    svg, info = rh.render_hole(hn, cfg.HOLES)
+                    if (svg, info) != base[hn]:
+                        changed.append((slug, hn, g["id"]))
+        finally:
+            rh.load = orig_load
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert ways >= 1 and courses >= 1, (
+        "no course in the corpus carries a golf=out_of_bounds way any more, so this decision has nothing "
+        "to stand on. It was written for trump-national-los-angeles way 1330731228; if a re-fetch has "
+        "dropped it, the shrink guard should have aborted -- that is the finding, not this skip")
+    assert not changed, (
+        f"{len(changed)} card(s) change when a golf=out_of_bounds way is deleted, so OB is reaching the "
+        f"paper: {changed[:8]}. Out of bounds is stroke-and-distance and it is NOT a penalty area, so it "
+        f"may not be drawn in the water blue, the sand tan or the tree green. Give it a legend entry and "
+        f"an ink of its own on BOTH editions' guide cards, and be able to say what a card with no OB mark "
+        f"means, before making this pass again -- see the note beside `treerows` in render_hole.py")
+
+
 SAND_CORRIDOR_M = _RH_CORRIDOR_M["bunker"]   # the corridor render_hole selects sand on, by nearest EDGE
 SAND_FILL = 'fill="#efe3b8"'  # one drawn bunker
 

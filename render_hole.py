@@ -798,6 +798,48 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               and g.get('tags',{}).get('golf')!='penalty_area'
               and g.get('geometry') and frac_in(g, CORRIDOR_M['wood'])>=0.35]
     treerows=[g for g in course if g.get('tags',{}).get('natural')=='tree_row' and g.get('geometry') and frac_in(g, CORRIDOR_M['treerow'])>=0.35]
+
+    # `golf=out_of_bounds` IS FETCHED AND IS DELIBERATELY NOT DRAWN. There is exactly one in this whole
+    # corpus -- trump-national-los-angeles way 1330731228, a closed 22-node ring of 13,392 m^2, 140 x 169
+    # m, whose nearest edge is 10.3 m from hole 2's played line and 30.9 m from hole 1's, and which
+    # overlaps no fairway, rough, green, tee or bunker and contains no centreline vertex of any hole. OB
+    # is stroke-and-distance, which is strictly worse for a junior than the penalty areas above, so the
+    # reason for leaving it off the paper has to be better than "nobody wrote the code".
+    #
+    # IT IS A COVERAGE PROBLEM, NOT A GEOMETRY ONE, and that is what settles it. Every hole of every one
+    # of the 13 courses has out of bounds: the property line is a fact of every golf course. OSM has
+    # mapped ONE fragment beside two holes of one of them. A hazard mark's meaning depends on the
+    # completeness of its source -- absence of the mark has to be distinguishable from absence of the
+    # thing -- and here it cannot be: drawing this one would tell a reader that this is the only place in
+    # 13 books where a ball can go OB, which is false on 233 of the 234 holes. That is the same reasoning
+    # the "no tree data" caveat exists for, and unlike the canopy there is no per-hole record of where the
+    # boundary was surveyed and where it was not, so the caveat cannot be written either.
+    #
+    # AND IT HAS NO INK IT CAN HONESTLY BORROW. The card's legend names three classes -- "bunkers (tan),
+    # water (blue), trees". OB is not sand, not landcover, and NOT a penalty area: the relief and the
+    # stroke count differ, so putting it in the blue would state the wrong rule as confidently as the
+    # scrub fill stated the wrong class. A fourth colour needs a fourth legend entry on both editions'
+    # guide cards (generate.py), and ink on the paper that the legend does not name is exactly the defect
+    # the penalty-area class above was: a reader is shown a hazard and told what it is not.
+    #
+    # NOR IS THIS POLYGON THE BOUNDARY. It is an area beside two holes, not a line around a course, so it
+    # says nothing about where the line is on the other 16 -- a boundary drawn on 2 of 18 cards is not a
+    # boundary.
+    #
+    # SO WHAT IT GETS IS THE STRICTEST FETCH GUARD AND NO PAPER, which is the right way round. fetch_osm's
+    # census buckets it as `out_of_bounds`, a kind in neither VOLATILE_KINDS nor HAZARD_KINDS, so it has
+    # zero tolerance and no rarity exemption by default-deny and losing it aborts a re-fetch. It is NOT a
+    # hazard kind, because nothing draws it and no message should tell a human that hazard ink left a
+    # card when none did. Keeping the strict guard over a class we decline to draw is deliberate: the day
+    # the boundary is mapped completely enough to draw, the data must not have quietly gone away in the
+    # meantime.
+    #
+    # REVISIT WHEN, and only when, both halves exist: a boundary complete enough that its absence on a
+    # card means something, and a legend entry and ink of its own on both editions.
+    # test_out_of_bounds_is_fetched_and_deliberately_absent_from_every_card is the tripwire -- it fails
+    # the moment any of this starts reaching the paper, and says to add the legend entry rather than to
+    # delete the test.
+
     def in_corr_pt(lat, lon, buf):
         pe, pn = em(lat, lon)
         return min(dist_pt_seg(pe, pn, line_em[i][0], line_em[i][1], line_em[i+1][0], line_em[i+1][1])
