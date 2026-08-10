@@ -621,9 +621,9 @@ def test_the_pipeline_does_not_claim_a_vocabulary_the_code_does_not_have():
 # walks straight through -- and because the fix belongs beside the vocabulary sweep, not in a file of
 # its own.
 
-# Every record that is NOT a parsed course.json, and what each one is in practice. `{}` is deliberately
-# absent: tests/test_phase1_regressions.py:19087 pins it as distributable, documenting "an ordinary
-# course with no build_mode", and that is the DEFAULT 11 corpus courses rely on.
+# Every record that is NOT a usable parsed course.json, and what each one is in practice. `{}` is not
+# in this table but is refused too -- it is graded separately below, because the argument for it is
+# different: it is a mapping, so it takes reading the file's CONTENT to see that there is none.
 UNREADABLE_RECORDS = (
     (None, "json.load never ran, or the file is missing"),
     ([], "course.json holds a LIST -- a truncated or wrongly-rooted document"),
@@ -638,11 +638,12 @@ UNREADABLE_RECORDS = (
 
 
 def test_the_distribution_rule_fails_closed_on_a_record_it_cannot_read():
-    """"Every uncertain input has to resolve to no" -- its own docstring. Four other spellings of an
-    unreadable record answered *publishable*, and a fifth crashed.
+    """"Every uncertain input has to resolve to no" -- its own docstring. Five other spellings of an
+    unreadable record answered *publishable*, and a sixth crashed.
 
     RED before the fix, measured:
         None       -> (False, 'Personal', ...)     the only one that was right
+        {}         -> (True, 'Distributed', '')
         []         -> (True, 'Distributed', '')
         0          -> (True, 'Distributed', '')
         False      -> (True, 'Distributed', '')
@@ -652,7 +653,8 @@ def test_the_distribution_rule_fails_closed_on_a_record_it_cannot_read():
     `(course or {})` laundered every falsy non-dict into an empty course and the only unknown-record
     test was `if course is None`. This is the shared rule for ANY publisher: tools/gen_provenance.py
     hands it JSON it loaded itself and writes the answer into the Status column of
-    legal/03_PROVENANCE_BY_COURSE.md, whose legend reads *"Distributed" = safe to hand out*.
+    legal/03_PROVENANCE_BY_COURSE.md, whose legend reads *"Distributed" = built from open,
+    public-domain and factual inputs only, and handed out on that basis*.
 
     An AttributeError is not the safe failure either -- gen_provenance catches broadly enough that a
     crash inside one course's row is not the same as a refusal, and a decision this file exists to make
@@ -675,9 +677,29 @@ def test_the_distribution_rule_fails_closed_on_a_record_it_cannot_read():
         assert distribution.is_yardage(record) is False, \
             "is_yardage(%r) must answer, not raise" % (record,)
 
-    # The documented default is untouched: an absent build_mode means full, and 11 of 12 corpus
-    # records carry no build_mode at all.
-    assert distribution.distribution_status({}) == (True, "Distributed", ""), \
-        "an ordinary course record with no build_mode is distributable -- this is the documented default"
-    assert distribution.distribution_status({"slug": "x"}) == (True, "Distributed", "")
+    # AN EMPTY RECORD IS NOT THE DOCUMENTED DEFAULT, and this line used to assert that it was:
+    # `distribution_status({}) == (True, "Distributed", "")` under the note "an ordinary course record
+    # with no build_mode is distributable". Two different inputs wear that one shape. The default is
+    # about an OPTIONAL FIELD missing from a record that has content -- pinned on the line below, and
+    # in the corpus by 11 records of 15-18 keys each. `{}` omits everything, including the four keys
+    # config.py declares required (`name`, `address`, `hole_cols`, `holes`), and `holes` IS the
+    # scorecard transcription. config.py refuses it outright, exit 1; tools/gen_provenance.py:_row
+    # loads the same file itself, asks here with no validation in between, and writes the answer into
+    # legal/03's Status column. So the fail-open lived only on the path that publishes a legal record.
+    ok, label, why = distribution.distribution_status({})
+    assert (ok, label) == (False, "Personal") and why, (
+        "an EMPTY course record answered (%r, %r) -- it is a course.json with no course in it, not the "
+        "'no build_mode means full' default, and the only caller that reaches it unvalidated is the one "
+        "that stamps legal/03" % (ok, label))
+    assert distribution.build_mode({}) == "" and distribution.is_yardage({}) is False, \
+        "the data readers must still answer plainly for an empty record, not raise"
+
+    # ...and the documented default itself is untouched, on records that HAVE content.
+    for record in ({"slug": "x"},
+                   {"slug": "x", "name": "X GC", "holes": {"1": [4, 1, 380]}},
+                   {"slug": "x", "build_mode": ""},
+                   {"slug": "x", "build_mode": None}):
+        assert distribution.distribution_status(record) == (True, "Distributed", ""), (
+            "%r has content and no build_mode, which is documented to mean 'full' and is what 11 of "
+            "the 12 corpus records do; that default must stay distributable" % (record,))
     assert distribution.distribution_status({"build_mode": "yardage"})[1] == "Personal"
