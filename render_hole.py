@@ -1355,13 +1355,16 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # same frame -- which is the point: the landing rule has to compare a scaled window against a scaled
     # green front, or the fix would introduce one level down the very mismatch it removes one level up.
     #
-    # THE THREE PUBLISHED COUNTS OF "how many printed figures CARRY_MERGE_GAP_YD governs" STILL READ 135,
-    # and that is deliberate rather than an oversight. They are graded against the SHIPPED pocket books --
-    # test_every_published_count_of_the_printed_carry_figures_is_what_the_books_print counts
-    # `carry <b>...</b>` out of the HTML, because the claim is about figures a READER CAN SEE -- and no
-    # book has been rebuilt for this change. The books print 135; this engine prints 134. At the next
-    # rebuild all three sentences, and the "Cost: ... 146 -> 135" line, become 134 in the same commit,
-    # and that test fails by name until they do rather than letting the pair drift apart in silence.
+    # THE THREE PUBLISHED COUNTS OF "how many printed figures CARRY_MERGE_GAP_YD governs" NOW READ 134,
+    # and the rebuild this note was waiting for is the reason. They are graded against the SHIPPED pocket
+    # books -- test_every_published_count_of_the_printed_carry_figures_is_what_the_books_print counts
+    # `carry <b>...</b>` out of the HTML, because the claim is about figures a READER CAN SEE -- so while
+    # the books still printed 135 and this engine printed 134, the four statements were deliberately left
+    # at 135 and that test held the pair together. The corpus has now been rebuilt on this engine and the
+    # books print 134, so all four moved with it in one commit: the two headline sentences, the
+    # "Cost: ... 146 -> 134" line, and the sibling in tests/test_phase1_regressions.py. Re-derived by
+    # counting the digits inside `carry <b>...</b>` across the thirteen rebuilt pocket books, never by
+    # subtracting one from the old figure.
     #
     # Published in `info` for the reason green_gap_yd and carry_origin_known are: the test that grades
     # which origin a printed carry came from cannot re-derive this frame's chord basis and tee shift
@@ -1487,7 +1490,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #   * by the RULE'S OWN measure -- `beyond = min(next merged window, greenside sand, green front)`,
     #     unrounded edges -- worst KEPT that the rule can decide 8.8377 (castlewood-hill 10, bounded by
     #     greenside sand), best DROPPED 6.1489 (micke-grove 13, likewise). Margin over the bound: 0.8377,
-    #     and that is the thinnest real margin, so it is the honest headline for a bound governing 135
+    #     and that is the thinnest real margin, so it is the honest headline for a bound governing 134
     #     printed figures.
     #   * by the SUPPRESSION TEST's measure -- last PRINTED window only, `reach` seeded from the ROUNDED
     #     far edge and then chained across any strip of grass narrower than CARRY_MERGE_GAP_YD, which is
@@ -1514,7 +1517,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # And the value is inherited rather than measured ON PURPOSE. The physical question -- "is N yards a
     # landing area for a junior's tee shot" -- needs dispersion data this project does not have, so a
-    # measured replacement would be a guess in charge of 135 figures. What the corpus can say is that the
+    # measured replacement would be a guess in charge of 134 figures. What the corpus can say is that the
     # decision is insensitive to the value: every window the rule decides is at 6.1489 or below or 8.8377
     # or above, so any bound inside that 2.6889 yd gap gives the identical outcome. That gap was WIDER
     # before the greenside sand was counted as a bound, so counting it has made the value more
@@ -1558,10 +1561,16 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # N (the-reserve 16 prints "carry 177" for sand reaching 321). Refusing there would withdraw a
     # correct carry, which is the one thing this rule must not do.
     #
-    # Cost: 11 figures across 11 of 216 cards, 146 -> 135; four cards lose their only carry row
+    # Cost: 11 figures across 11 of 216 cards, 145 -> 134; four cards lose their only carry row
     # (philadelphia 1, micke-grove 3 and 13, callippe 12) and no course loses all of them. Nothing is
     # hidden -- the bunkers stay drawn and stay counted in the footer's "NB". Only the false invitation
     # goes.
+    # BOTH SIDES OF THAT PAIR MOVED AT THE 2026-08-10 REBUILD, and only re-deriving both kept the
+    # arithmetic honest: it read 146 -> 135, and correcting the after-figure alone would have made the
+    # stated cost 12 while this filter still withdraws 11. The before-figure is the count with this
+    # filter's refusal disabled, measured on this engine, and it came down to 145 for the same reason the
+    # after-figure came down to 134 -- castlewood-valley 1's "carry 82" is refused by the 80 yd floor in
+    # the scaled frame, which happens upstream of here, so it never reaches either side of this pair.
     #
     # Of those 11 refusals, 10 print the mark. Those two counts were the same number for as long as
     # every refused window happened to have sand running on to its green, and they are NOT the same

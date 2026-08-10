@@ -9430,7 +9430,7 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     was never measured for this purpose -- and it should not now be replaced by a measured one, because
     there is nothing here to measure it against. The physical question is "is N yards a landing area for
     a junior's tee shot", which needs dispersion data this project does not have; inventing a number for
-    it would put a guess in charge of 135 printed figures, which is the move this codebase refuses
+    it would put a guess in charge of 134 printed figures, which is the move this codebase refuses
     everywhere else. What the corpus CAN say is that the decision is insensitive to the value: every
     window the rule decides sits at 6.1489 or below, or 8.8377 or above, so any bound in that 2.6889 yd
     gap produces the identical corpus outcome and 8.0 is not doing arithmetic anybody could tune. That
@@ -25518,11 +25518,11 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-10): micke-grove 4,326,017; castlewood-hill 4,477,027;
-    merion 5,870,647; monarch-bay 4,934,430; copper-valley 6,084,531; callippe 6,816,742;
-    castlewood-valley 5,836,326; philadelphia 4,604,765; the-reserve 5,110,199;
-    bay-view 4,243,411; valley-hi 4,698,534; poppy-ridge 341,146;
-    trump-national-los-angeles 6,126,408.
+    CURRENT SIZES (2026-08-10): micke-grove 4,325,056; castlewood-hill 4,476,153;
+    merion 5,868,961; monarch-bay 4,932,715; copper-valley 6,083,338; callippe 6,815,201;
+    castlewood-valley 5,834,925; philadelphia 4,603,601; the-reserve 5,109,035;
+    bay-view 4,242,595; valley-hi 4,697,660; poppy-ridge 341,146;
+    trump-national-los-angeles 6,187,455.
     (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
     rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
     net, those 121 less the 63 its conditional back-cover sentences added. micke-grove then gained 4
@@ -25533,9 +25533,17 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     water polygons to 31 and nine of its cards stopped printing "0W" over hand-mapped marsh 1.0-5.7 m
     off the played line. Then trump-national-los-angeles was ADDED on 2026-08-10 at 6,126,408 bytes,
     the corpus's largest book, and the date above moved with it -- a new course moves this date the
-    same way a rebuild does, because the date is graded against every book's own mtime. Eleven books
-    are still dated 2026-08-06 and are byte-identical; the DATE is
-    graded against every book's own mtime, so one course rebuilding moves it for the whole sentence.)
+    same way a rebuild does, because the date is graded against every book's own mtime.
+    THEN THE WHOLE CORPUS WAS REBUILT on 2026-08-10, which is why every figure above moved at once and
+    only one did not. A batch of engine fixes had landed and left all sixteen books stale: `golf=penalty_area`
+    is now drawn and counted, `golf=out_of_bounds` resolved, carries and the tick ladder unified on one
+    origin, the guide card asks for colour, and the depth ladder was re-inked for contrast. Twelve pocket
+    books and the three enlarged editions came DOWN by 816 to 1,747 bytes, all of it layout; the exception
+    is trump-national-los-angeles, which gained 61,047 because 34 of its hazards are penalty areas that
+    the renderer had been painting as trees and now draws and counts as water. poppy-ridge is the one book
+    whose bytes did not move AT ALL, and that is the honest answer rather than an oversight: it is yardage
+    mode with blank greens, so it has no drawn hazards, no depth ladder and no colour card for any of those
+    fixes to reach. Its 341,146 bytes are unchanged and its HTML is byte-identical.)
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a

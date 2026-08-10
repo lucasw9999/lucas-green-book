@@ -278,8 +278,24 @@ def test_site1_render_hole_output_is_byte_identical():
     """render_hole.render_hole() output for every hole of a real course, hashed and pinned.
 
     Deleting the orphaned `holes=` binding at render_hole.py cannot change what gets drawn -- nothing
-    else in render_hole() reads the name `holes`. The proof is this hash, captured by hand from the
-    unfixed tree, still matching after the line is gone.
+    else in render_hole() reads the name `holes`. The proof of THAT was this hash, captured by hand from
+    the unfixed tree at 0aef283 and unchanged across the deletion.
+
+    RE-PINNED at the 2026-08-10 corpus rebuild, and the value below is the CURRENT engine's render, not
+    the 0aef283 one. The deletion proof is historical: it was discharged at that commit and cannot be
+    re-run from here, because seven later commits deliberately moved this renderer's output. The cause is
+    not inferred -- 29d00ad ("a card measured its carries from one origin and its tick ladder from
+    another") ADDED `carry_origin_known`, `green_gap_yd` and `carry_tee_shift_yd` to the `info` dict that
+    is hashed here, so a digest taken before those keys existed cannot match one taken after, whatever
+    else is or is not equal. The others: fab663a resolved `golf=out_of_bounds`, 03541c8 made
+    `golf=penalty_area` a class the renderer draws, 91d30d0 and a7fc354 moved carry figures, 22d23bf and
+    89c265b changed what the query asks for.
+
+    WHAT THE CONSTANT STILL BUYS, which is why it is re-pinned rather than dropped: it catches a FUTURE
+    edit at this site that touches something live. That was always its forward-looking job -- the
+    docstring at the top of this file says a truly dead line cannot make this hash go red-then-green --
+    and it is undiminished by the pin having moved for a reason named above. Re-derived by running the
+    code below, never by copying the digest out of a failure message without asking what moved it.
     """
     slug = _a_course()
     cfg, rh = _bind(slug, "config", "render_hole")
@@ -289,9 +305,10 @@ def test_site1_render_hole_output_is_byte_identical():
         parts.append(svg)
         parts.append(json.dumps(info, sort_keys=True, default=repr))
     digest = _sha(*parts)
-    assert digest == "830da484225e1f46ffee15c879b735fea5e969f014d6ff75c4ab1d566980fbda", (
-        f"render_hole output for {slug} hashed to {digest!r}; expected the value captured by hand "
-        f"from the unfixed tree before deleting the dead `holes=` line at render_hole.py:~438")
+    assert digest == "d786e07749e9c02d4226bfd2594d4d7bf2490fcbf47f67cd67fb7dac62b93d4b", (
+        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned at the "
+        f"2026-08-10 corpus rebuild. If a deliberate engine change moved it, re-derive this digest and "
+        f"say in the docstring which commit moved it -- do not copy it out of this message blind")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -308,9 +325,21 @@ def test_site234_render_green_output_is_byte_identical():
     """render_green.render() output for every hole of a real course, hashed and pinned.
 
     Covers sites 2, 3 and 4 together since all three are unread bindings inside the same function
-    and none of them can change what render() draws. The proof is this hash, captured by hand from
-    the unfixed tree, still matching after all three lines are gone. Site 3 additionally gets its
-    own dedicated behavioural test below (test_site3_...), because it has a real callee to poison.
+    and none of them can change what render() draws. The proof of THAT was this hash, captured by hand
+    from the unfixed tree at 0aef283 and unchanged across all three deletions. Site 3 additionally gets
+    its own dedicated behavioural test below (test_site3_...), which reaches the same conclusion by
+    poisoning a real callee and so does not depend on this digest at all.
+
+    RE-PINNED at the 2026-08-10 corpus rebuild, and the value below is the CURRENT engine's render. The
+    cause is named and checked, not inferred: 30a324f ("the pocket book reassured a mono printer, and the
+    depth ladder was the faintest data on the card") re-inked the depth ladder from `fill="#8a8a8a"` at
+    opacity 0.7 to an opaque `RUNG_INK = "#6b6b6b"` with a white paint-order halo, because at 1,104 of
+    1,104 labels the old grey composited to 2.24:1 against WCAG's 4.5:1. That ink is written into the SVG
+    this digest is taken over -- the current render contains #6b6b6b and no #8a8a8a -- so the pre-30a324f
+    digest cannot match. Four further commits moved this renderer (171d978, fc9f3bc, e3e6bbb, 22d23bf).
+
+    The forward-looking job is unchanged: a future edit at sites 2 or 4 that touches something live moves
+    this digest. Re-derived by running the code below.
     """
     slug = _a_course()
     cfg, rg = _bind(slug, "config", "render_green")
@@ -320,9 +349,10 @@ def test_site234_render_green_output_is_byte_identical():
         parts.append(svg)
         parts.append(json.dumps(summary, sort_keys=True, default=repr))
     digest = _sha(*parts)
-    assert digest == "54103b304652e838c2792e5d963c42d55600c154f0c0685ad7965d45a94291a6", (
-        f"render_green output for {slug} hashed to {digest!r}; expected the value captured by hand "
-        f"from the unfixed tree before deleting the dead lines at render_green.py:~796,800,854")
+    assert digest == "f8d5a61214639afb3b6e8096e7ce578a60aa9b630a6b00df2274394762bd0aa0", (
+        f"render_green output for {slug} hashed to {digest!r}; expected the value re-pinned at the "
+        f"2026-08-10 corpus rebuild. If a deliberate engine change moved it, re-derive this digest and "
+        f"say in the docstring which commit moved it -- do not copy it out of this message blind")
 
 
 def test_site3_render_green_never_subscripts_np_mgrid(monkeypatch):
