@@ -31,6 +31,7 @@ through the predicate so that distinction is measured rather than asserted in a 
 Naming the compilations here is the same protective drafting as BRANDS: a guard cannot forbid what it
 cannot spell. This module is the one file the sweep skips, for that reason and no other.
 """
+import fnmatch
 import glob
 import io
 import json
@@ -187,19 +188,114 @@ def _quote(words, lo, hi):
     return " ".join(words[max(0, lo - 4):hi + 5])
 
 
-def _tracked():
-    """Every file git tracks, as repo-relative paths. Text only, and never this module.
+# Directories a plain walk must never descend into, beyond what .gitignore says. None of these can
+# appear on a git-tracked checkout at all -- they are VCS internals or tool caches that a pytest run
+# IN THIS SAME PROCESS TREE creates as a side effect of running (bytecode cache, lint/type caches,
+# pytest's own cache) -- so .gitignore, a promise about what a COMMIT may carry, has no occasion to
+# name them, and does not. Fed into the same matcher as .gitignore's own lines rather than checked
+# separately, so there is one filter, not two that can disagree.
+_IMPLICIT_IGNORES = (".git/", "__pycache__/", ".pytest_cache/", ".mypy_cache/", ".ruff_cache/",
+                     "*.egg-info/")
 
-    `git ls-files -z` rather than a walk: the question is what this repository PUBLISHES, and a walk
+
+def _ignore_patterns():
+    """[(pattern, anchored, dir_only)] from this repo's own .gitignore, plus `_IMPLICIT_IGNORES`.
+
+    `anchored` (the line contains a `/` before its end) means the pattern is matched against the
+    whole repo-relative path, the way git anchors any pattern with a slash in it to the directory the
+    .gitignore lives in; unanchored means it is matched against the basename alone, the way a bare
+    `*.pdf` or `courses` matches at any depth. `dir_only` (a trailing `/`) means the pattern applies
+    only when the target itself is a directory. This is not a full gitignore engine -- there is no
+    `!`-negation and no `**` -- but this repository's own .gitignore uses neither, and `_walk_publishable`
+    is proven against `git ls-files` on the live tree in
+    test_the_walk_fallback_matches_git_ls_files_on_this_tree so a real divergence would be caught.
+    """
+    lines = list(_IMPLICIT_IGNORES)
+    gi = os.path.join(ROOT, ".gitignore")
+    try:
+        with io.open(gi, encoding="utf-8") as fh:
+            lines += fh.readlines()
+    except OSError:
+        pass
+    out = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("!"):
+            continue
+        dir_only = stripped.endswith("/")
+        pat = stripped[:-1] if dir_only else stripped
+        pat = pat.lstrip("/")
+        if not pat:
+            continue
+        out.append((pat, "/" in pat, dir_only))
+    return out
+
+
+def _gitignore_ignored(relpath, is_dir, patterns):
+    """Would git ignore `relpath` (repo-relative, `/`-separated), given `patterns` from `_ignore_patterns`?"""
+    name = relpath.rsplit("/", 1)[-1]
+    for pat, anchored, dir_only in patterns:
+        if dir_only and not is_dir:
+            continue
+        target = relpath if anchored else name
+        if fnmatch.fnmatch(target, pat):
+            return True
+    return False
+
+
+def _walk_publishable(root):
+    """Every file under `root` a git checkout of this tree would track, found by walking instead of
+    asking git -- for the one place git cannot answer: a plain directory of files with no `.git` at
+    all, which is exactly what `git archive` produces and what the fresh-clone gate's temp trees are.
+
+    Pruned against `_ignore_patterns()` while walking, so `courses/` -- gitignored, the only copy of
+    thirteen courses of hand-transcribed scorecards, and enormous -- is never descended into rather
+    than read and then discarded. Walking into it would also make this sweep slow enough to matter and
+    would grade local notes this project deliberately allows to exist outside version control.
+    """
+    patterns = _ignore_patterns()
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        rel_dir = "" if rel_dir == "." else rel_dir.replace(os.sep, "/")
+        kept = []
+        for d in dirnames:
+            rel = f"{rel_dir}/{d}" if rel_dir else d
+            if not _gitignore_ignored(rel, True, patterns):
+                kept.append(d)
+        dirnames[:] = kept
+        for f in filenames:
+            rel = f"{rel_dir}/{f}" if rel_dir else f
+            if not _gitignore_ignored(rel, False, patterns):
+                out.append(rel)
+    return sorted(out)
+
+
+def _tracked():
+    """Every file this repository PUBLISHES, as repo-relative paths. Text only, and never this module.
+
+    `git ls-files -z` where this is a real checkout: the question is what gets published, and a walk
     would read the gitignored corpus, the build outputs and __pycache__ -- none of which are the public
     record. courses/*/course.json is graded separately, by
     test_no_course_record_cites_a_third_party_compilation, because it is the upstream of legal/03 and
     the place a name has to be stopped rather than the place it shows up.
+
+    FALLS BACK TO A WALK where git cannot answer -- `git ls-files` fails with "not a git repository" in
+    every corpus-less child the fresh-clone gate spawns (test_a_fresh_clone_gets_a_clean_suite copies
+    tracked files into a bare temp directory; two sibling probes in tests/test_phase1_regressions.py do
+    the same), and `git archive | tar -x` produces the identical situation for a stranger who downloads
+    a release tarball instead of cloning. Skipping the sweep there -- the shape this project keeps
+    finding under the name "vacuous" -- would mean the one guard built to keep a third-party name out of
+    a PUBLIC release does nothing in the exact release a stranger receives. The walk excludes what
+    .gitignore excludes (see `_walk_publishable`), so it grades the same population git would have, not
+    a wider one that includes local scratch.
     """
     out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True)
-    assert out.returncode == 0, f"git ls-files failed: {out.stderr[-400:]}"
-    return [p for p in out.stdout.split("\0")
-            if p and p != SELF and not p.lower().endswith(SKIP_SUFFIX)]
+    if out.returncode == 0:
+        files = [p for p in out.stdout.split("\0") if p]
+    else:
+        files = _walk_publishable(ROOT)
+    return [p for p in files if p and p != SELF and not p.lower().endswith(SKIP_SUFFIX)]
 
 
 def _read(rel):
@@ -208,6 +304,72 @@ def _read(rel):
             return fh.read()
     except (OSError, UnicodeDecodeError):
         return None
+
+
+def test_the_walk_fallback_matches_git_ls_files_on_this_tree():
+    """`_walk_publishable` is the untested half of `_tracked` on every machine that has a `.git` --
+    the branch that runs there is always `git ls-files`, so nothing would ever exercise the walk unless
+    it is checked directly, against the one tree where the right answer is independently known.
+
+    Pinned to the exact population `git ls-files` returns (after the same trailing filters `_tracked`
+    applies), not to a looser superset -- a walk that swept extra files would still pass a "does it find
+    everything" check while grading files nobody publishes, which is the opposite of this guard's job.
+    """
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True)
+    if out.returncode != 0:
+        pytest.skip("not a git checkout; nothing to compare the walk against")
+    tracked = {p for p in out.stdout.split("\0") if p and p != SELF and not p.lower().endswith(SKIP_SUFFIX)}
+    walked = {p for p in _walk_publishable(ROOT) if p != SELF and not p.lower().endswith(SKIP_SUFFIX)}
+    assert len(tracked) >= 40, f"only {len(tracked)} tracked file(s); this comparison would prove nothing"
+    assert walked == tracked, (
+        f"the walk fallback disagrees with git on this checkout -- only in walk: "
+        f"{sorted(walked - tracked)[:10]}; only in git: {sorted(tracked - walked)[:10]}. A fallback "
+        f"that reads a different population than git would grade a fresh clone by different rules than "
+        f"the ones this repository is actually tested under.")
+
+
+def test_the_walk_fallback_still_bites_with_no_git_repository_present(tmp_path, monkeypatch):
+    """The regression this whole fix exists for, driven through `_tracked()` itself -- the function
+    `test_no_tracked_file_says_the_data_was_checked_against_a_third_party_compilation` actually calls
+    -- not only through `_walk_publishable` in isolation.
+
+    A fallback that goes quiet in exactly the environment a stranger's clone (or a `git archive`
+    tarball) produces is worse than the original bug -- it would look green while checking nothing,
+    which is the vacuity pattern this project keeps re-discovering. So this copies the repository's own
+    publishable `.md` files into a bare directory with NO `.git` anywhere on the path, points `ROOT` at
+    it so `_tracked()` takes the walk branch exactly as it would for a real stranger, doctors one copy
+    with a violation, and asserts the sweep still reports it -- and that the untouched copies stay
+    clean, so the proof is the violation and not an over-eager matcher.
+    """
+    import shutil
+
+    dest = tmp_path / "no_git_here"
+    for rel in _tracked():
+        if rel.endswith(".md"):
+            src = os.path.join(ROOT, rel)
+            dst = dest / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+    assert not os.path.exists(dest / ".git"), "the probe tree must not contain a .git directory"
+
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", str(dest))
+    swept = _tracked()
+    assert swept, "_tracked() found nothing under the doctored git-less tree; this proves nothing"
+
+    clean_hits = [f for rel in swept for f in findings(_read(rel) or "")]
+    assert not clean_hits, f"the untouched copies are not clean to begin with: {clean_hits}"
+
+    target = next((rel for rel in swept if rel.endswith(".md")), None)
+    assert target is not None, "no .md file was swept from the probe tree"
+    p = dest / target
+    p.write_text(p.read_text(encoding="utf-8") + (
+        "\n\nSources (cross-checked): official course sites, GolfLink — used only to verify the "
+        "numbers.\n"), encoding="utf-8")
+
+    got = findings(_read(target))
+    assert got and any(g[1].lower() == "golflink" for g in got), (
+        f"a planted violation in {target}, swept from a directory with no .git anywhere on its path, "
+        f"was not found by _tracked()/_read()/findings(): {got}")
 
 
 def test_no_tracked_file_says_the_data_was_checked_against_a_third_party_compilation():
