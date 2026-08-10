@@ -4,9 +4,10 @@
     "PIPELINE.md. courses/ is gitignored, so your course data stays local and is never pushed.",
     "",
     "The numbers in 'holes' and 'tees' are FACTS from the club's published scorecard -- transcribe",
-    "them, do not estimate. Cross-check against a second source: aggregator sites swap the nines,",
-    "misstate par, and (seen in practice) list a WOMEN'S rating in a men's column. Leave a value",
-    "null rather than guess; the book prints an em-dash for null.",
+    "them, do not estimate. Cross-check against a second copy of the card: a published card's front",
+    "and back nine can be transposed relative to another printing, so check the out/in totals; a",
+    "copy can also misstate par, or (seen in practice) list a WOMEN'S rating in a men's column.",
+    "Leave a value null rather than guess; the book prints an em-dash for null.",
     "",
     "Keys the engine actually reads are marked REQUIRED / OPTIONAL below. Any key starting with",
     "an underscore is ignored, so this block is safe to keep."

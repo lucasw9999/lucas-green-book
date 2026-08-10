@@ -193,15 +193,16 @@ if _BAD_TEES:
 # nothing inspected the slope column, so the class was invisible to the tests AND to the reader.
 #
 # THE ESCAPE HATCH IS A SOURCE, NOT A FLAG. If a men's slope for that tee really is published
-# somewhere, record where: "slope_source": "NCGA course-rating DB, men's Red 5286 -> 112". A bare
-# boolean would let the next person silence this by asserting the thing the check is asking them to
-# evidence. Same shape as `rating_is_womens` on the rating side, one level stricter.
+# somewhere, record where: "slope_source": "<publication, tee and value>". A bare boolean would let
+# the next person silence this by asserting the thing the check is asking them to evidence. Same shape
+# as `rating_is_womens` on the rating side, one level stricter.
 #
 # ...and that argument was made and then not enforced. The first version read
 # `not str(t.get("slope_source") or "").strip()`, and `str(True)` is "True": non-empty, therefore a
-# "source". Measured, every one of `True`, `1`, `"x"`, `"true"`, `["NCGA"]`, `{"db": "NCGA"}` and `3.14`
-# silenced the check -- so the hatch WAS the bare boolean this comment says it must not be, and the test
-# named test_the_escape_hatch_demands_a_source_and_not_a_flag graded only "", "   ", "\n" and None.
+# "source". Measured, every one of `True`, `1`, `"x"`, `"true"`, `["a publication"]`,
+# `{"db": "a publication"}` and `3.14` silenced the check -- so the hatch WAS the bare boolean this
+# comment says it must not be, and the test named test_the_escape_hatch_demands_a_source_and_not_a_flag
+# graded only "", "   ", "\n" and None.
 _SLOPE_SOURCE_MIN_CHARS = 8
 
 
@@ -211,14 +212,15 @@ def _is_a_recorded_source(value):
     Two bars, and both of them are about shape -- no check here can tell a true citation from a typed
     one, and it is not trying to. What it can refuse is the two ways this hatch stops being evidence:
 
-      * NOT A STRING. `True`, `1`, `["NCGA"]` and `{"db": "NCGA"}` are assertions that a source exists,
-        which is precisely the claim the hatch asks the author to replace with the source itself. A
-        non-string cannot be read by the human auditing legal/03, so it cannot be a source.
+      * NOT A STRING. `True`, `1`, `["a publication"]` and `{"db": "a publication"}` are assertions that
+        a source exists, which is precisely the claim the hatch asks the author to replace with the
+        source itself. A non-string cannot be read by the human auditing legal/03, so it cannot be a
+        source.
       * TOO SHORT TO BE ONE. config.py's own refusal asks for "<publication, tee and value>"; the bar is
         deliberately low, and set below anything real rather than above anything imaginable. It admits
-        a bare URL ("https://ncga.org/..." -- one token, no prose, and a perfectly good answer) and
-        rejects the placeholders a hurried edit leaves instead: "x", "?", "-", "n/a", "TBD", "ok",
-        "yes", "true", "unknown".
+        a bare URL ("https://example.org/course-rating?id=1234" -- one token, no prose, and a perfectly
+        good answer) and rejects the placeholders a hurried edit leaves instead: "x", "?", "-", "n/a",
+        "TBD", "ok", "yes", "true", "unknown".
 
     A LONG string that names nothing still passes, and a human reading legal/03 is the only check on
     that. This exists so the hatch cannot be opened WITHOUT WRITING ANYTHING, which is what it was.
