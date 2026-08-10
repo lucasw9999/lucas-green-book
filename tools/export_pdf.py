@@ -371,7 +371,7 @@ def main():
         # The message above is right for an empty tree and WRONG here: books are built and only the
         # slug matched nothing (`--check merion` for merion-golf-club). It sent the reader off to
         # rebuild a corpus that was already on disk, at up to 4.1 GB of LiDAR a course -- the worst of
-        # the twelve here is callippe-preserve-golf-course. It quoted "~300 MB", which is the SMALLEST
+        # the thirteen here is callippe-preserve-golf-course. It quoted "~300 MB", which is the SMALLEST
         # non-zero course in this corpus offered as the typical one, the same median-quoted-as-worst
         # shape 8869583 fixed at the tee-pad end. Both figures are derived by
         # test_the_export_tools_account_of_what_a_rebuild_costs_is_the_corpus_on_disk.

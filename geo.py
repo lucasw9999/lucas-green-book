@@ -66,23 +66,23 @@ import math
 # The hole map gained more than the green card did, and here the measurement has to match the question a
 # tick asks. A to-green tick is not drawn at a mapped point: render_hole places it where the drawn
 # centreline crosses the circle of that radius about the green centroid. So the honest figure is the
-# printed radius against the TRUE WGS84 geodesic to the point the tick lands on. Over the 861 radius
-# crossings the 198 drawn centrelines have, the retired model was out by up to 0.2962 yd at the 100 yd
-# tick, 0.4426 at the 150 yd tick, 0.5931 at the 200 yd tick, 0.7421 at the 250 yd tick and 0.8891 at the
+# printed radius against the TRUE WGS84 geodesic to the point the tick lands on. Over the 938 radius
+# crossings the 216 drawn centrelines have, the retired model was out by up to 0.3035 yd at the 100 yd
+# tick, 0.4592 at the 150 yd tick, 0.6149 at the 200 yd tick, 0.7421 at the 250 yd tick and 0.8891 at the
 # 300 yd tick; on these scales the worst at those same five radii is 0.0013, 0.0018, 0.0021, 0.0022 and
 # 0.0019 yd. Out to the furthest point any centreline reaches, 595.8 yd, the retired model's worst over
-# all 589 hole-line vertices -- 598 counting the duplicate refs hole_lines() resolves -- was 1.5502 yd
+# all 643 hole-line vertices -- 652 counting the duplicate refs hole_lines() resolves -- was 1.5502 yd
 # against 0.0023 yd now.
 #
 # THE FIGURES THIS NOTE CARRIED UNTIL 2026-08-04 WERE WRONG IN BOTH DIRECTIONS, and the correction is
 # recorded because nothing re-derived them. It said 0.43 yd at 100, 0.73 at 200, 0.99 at 300, and
 # "the same 391 vertices" out by 0.0003/0.0013/0.0027/0.0077. The retired figures were impossible: this
 # pair scaled both axes off one constant, so any length it measured was out by a fraction between its two
-# axis errors -- at worst +0.2975% over these vertices -- and 0.43 yd at a 100 yd radius needs 0.43%. So
+# axis errors -- at worst +0.3393% over these vertices -- and 0.43 yd at a 100 yd radius needs 0.43%. So
 # none of the four was an error AT its tick. WHERE they came from was published wrong too: this note said
 # they were "the worst error anywhere in the 50-yard BAND above each tick", and three of the four are --
 # measured to the green END, 0.4334 in [100,150), 0.9855 in [300,350) and 1.5535 over every vertex. The
-# 200 yd row's 0.73 is in no band of that population (0.6804 there); it reproduces only as the worst
+# 200 yd row's 0.73 is in no band of that population (0.69898 there); it reproduces only as the worst
 # consecutive-vertex SEGMENT length in [200,250), 0.72683, whose own global worst is 0.9714 rather than
 # 1.55. No single population reproduces all four, and legal/11_HORIZONTAL_EARTH_MODEL.md carries the
 # derivation. The new figures were measured with the scales anchored at the GREEN rather than at the line

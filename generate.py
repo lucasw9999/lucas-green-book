@@ -487,14 +487,14 @@ def green_honesty(hole, s):
     # "overall" is doing real work, not decoration. The ONLY definition of a slope percentage in any
     # of the 15 books is the legend's "Black numbers = slope % there" -- per-cell slope, drawn by
     # render_green's slope labels -- and this figure is a DIFFERENT quantity: a least-squares plane over
-    # the whole putting surface (render_green.green_summary). Measured over all 198 greens by parsing
-    # the shipped SVGs, it prints below every black number on the same card on 134 of them, median
-    # 0.5 pp over all 198 and worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black
+    # the whole putting surface (render_green.green_summary). Measured over all 216 greens by parsing
+    # the shipped SVGs, it prints below every black number on the same card on 149 of them, median
+    # 0.6 pp over all 216 and worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black
     # numbers 6,7,8,8,10,10,10, on a green whose median local slope is 4.8% over the whole surface
     # (those seven labelled points median 8). The 4.8% belongs to the SURFACE, not to those labels: this
     # sentence hung it off "black numbers ... whose own", which reads as though the labels themselves
     # average 4.8 and so understates the very gap the example exists to show.
-    # On 106 of the 170 greens that carry
+    # On 119 of the 186 greens that carry
     # no (faint) and no no-clear-fall qualifier, so nothing on the card warns the reader either. A
     # junior applying the card's only definition reads copper-valley 6 as dead flat. One word
     # distinguishes the two and adds no legend row -- card space is the binding constraint here, with
@@ -568,22 +568,22 @@ def elev_phrase(hole):
     DEM -- a different product, delivered in metres, fetched over the network rather than read off
     disk. It reads the green POLYGON this pipeline reads; at the tee it reads the whole mapped tee ring
     where this pipeline reads the pad inside a 15 m window, so at the tee the comparison carries a
-    region difference too, on 55 of 177 pads. That inflates the spread rather than hiding it, which
+    region difference too, on 55 of 194 pads. That inflates the spread rather than hiding it, which
     makes every figure below an upper bound and this floor conservative -- the reason for trusting the
     spread, not a reason to lower the floor.
 
-    MEASURED by `python3 tools/verify_elevation.py --all` on 2026-08-05, all 171 holes reached, 11
-    courses, printed by that tool's own `_print_corpus`: across 171 holes the two disagree by a corpus
-    median 0.067 ft, a corpus mean 0.201 ft and a worst 2.46 ft (philadelphia 5). The worst any single
-    course medians is 0.62 ft (philadelphia), and the median of the 11 per-course medians is 0.069 ft --
+    MEASURED by `python3 tools/verify_elevation.py --all` on 2026-08-10, all 186 holes reached, 12
+    courses, printed by that tool's own `_print_corpus`: across 186 holes the two disagree by a corpus
+    median 0.065 ft, a corpus mean 0.189 ft and a worst 2.46 ft (philadelphia 5). The worst any single
+    course medians is 0.62 ft (philadelphia), and the median of the 12 per-course medians is 0.068 ft --
     quoted to three decimals because at two they both read 0.07 and the whole point of naming both is
     that they are not one figure. Two holes exceed 2 ft and none exceeds 3. So a
     printed "green 2 ft above" would still sit inside the spread between two honest sources on those
-    holes, and 22 of the 171 fall in the 2-4 ft band where that spread decides whether anything prints
+    holes, and 23 of the 186 fall in the 2-4 ft band where that spread decides whether anything prints
     at all -- which is why the floor is not lowered to look more precise.
 
     A CORPUS MEDIAN AND A MEDIAN OF PER-COURSE MEDIANS ARE DIFFERENT FIGURES, and this paragraph
-    presented one as the other: its "median 0.09 ft" was described as a median across 171 holes and was
+    presented one as the other: its "median 0.09 ft" was described as a median across all holes and was
     in fact the median of eleven per-course medians. Both are named above now, and both are printed by
     the tool. So was every other figure here re-derived, because the set that stood here reproduced
     nowhere: "mean 0.27 ft" was produced by NO CODE PATH in this project -- a grep found this sentence
@@ -611,16 +611,18 @@ def carry_phrase(info):
     """"carry 172 / 212 / 245" -- the near edge of each bunker window a tee shot must clear.
 
     Plus the one thing the list could not say by ending: render_hole withdraws a carry wherever the sand
-    leaves no room to land short of the green (see its `no_landing` block), and on five of the nine
+    leaves no room to land short of the green (see its `no_landing` block), and on six of the ten
     cards that fires on, an EARLIER carry survives -- so "carry 95 / 164" read as the whole story while a
     closer, uncarryable cluster went unnamed. The mark states that refusal and prints NO number, because
     both edges of the refused window are numbers a player would club against and be wrong: the near one
     invites the lay-up the rule just withdrew, and the far one is
-    at or past the green front on four of the nine and short of it by up to 8.75 yd on the other five,
+    at or past the green front on five of the ten and short of it by up to 8.75 yd on the other five,
     while the sand COMPLEX behind it -- the greenside sand the carry filter drops, chained across any
-    strip of grass narrower than CARRY_MERGE_GAP_YD -- means every one of the nine REACHES at or past
-    the green front. The "all nine" belongs to the complex, not to the window edge; this sentence used
-    to attach it to the edge, where it was false on five of the nine cards it named. Both figures are
+    strip of grass narrower than CARRY_MERGE_GAP_YD -- means every one of the ten REACHES at or past
+    the green front. That reach is now a CONDITION of printing the mark and not merely a property of
+    the set: a refused window whose sand stops short of the green is refused silently (see
+    render_hole's reach gate). The "all of them" belongs to the complex, not to the window edge; this
+    sentence used to attach it to the edge, where it was false on five of the cards it named. Both figures are
     graded against the corpus by
     test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green.
 
@@ -1026,17 +1028,18 @@ def _no_tree_note():
     the bunker/water key.
 
     Enlarged only, deliberately, and this is the honest scope: the POCKET edition defines it inline on
-    the colour row, unconditionally, so 10 of the 12 pocket books carry six words for a mark they never
+    the colour row, unconditionally, so 11 of the 13 pocket books carry six words for a mark they never
     print. Moving that to a conditional row of its own was tried and overflowed monarch-bay's guide
     card -- the book with 1.19 px of clearance and the only book that prints the mark. Six wasted words
-    on ten cards is the cheaper error than a clipped licence line, so the pocket half stays inline.
+    on eleven cards is the cheaper error than a clipped licence line, so the pocket half stays inline.
     An earlier draft of this docstring claimed both editions were gated; they are not.
 
-    THE COUNT IS 10, NOT 11, AND IT WAS PUBLISHED WRONG TWICE HERE. Measured over the built corpus: 11
-    of the 12 pocket books carry the inline definition -- poppy-ridge's yardage guide card has no colour
-    row and carries none -- and exactly 1 of those 11 (monarch-bay) PRINTS the mark. A book that prints
-    it is not wasting the words on it, so the waste falls on ten books, and this paragraph named
-    monarch-bay as that one book in the same breath as counting it among the eleven. Both figures are
+    THE WASTE COUNT IS ONE BELOW THE CARRY COUNT, AND IT WAS PUBLISHED WRONG TWICE HERE. Measured over
+    the built corpus: 12
+    of the 13 pocket books carry the inline definition -- poppy-ridge's yardage guide card has no colour
+    row and carries none -- and exactly 1 of those 12 (monarch-bay) PRINTS the mark. A book that prints
+    it is not wasting the words on it, so the waste falls on eleven books, and this paragraph named
+    monarch-bay as that one book in the same breath as counting it among the twelve. Both figures are
     re-derived from the shipped books by
     test_the_wasted_words_note_counts_the_books_that_actually_waste_them.
 

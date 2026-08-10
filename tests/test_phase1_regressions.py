@@ -4446,7 +4446,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
     Three placements, each meaningless or misleading if it strays outside the outline:
       * downhill ARROWS. One poking past the edge says the ball rolls that way off a surface that is
         not green -- a bank or a bunker face. render_green already tests the tip plus a forward head
-        allowance, so this re-tests the ARTIFACT: 12,146 drawn arrows, tips and all three arrowhead
+        allowance, so this re-tests the ARTIFACT: 13,378 drawn arrows, tips and all three arrowhead
         vertices, against the outline drawn beside them.
       * the HOLE map's pin ring, placed at the green's CENTROID. A centroid is not guaranteed to lie
         inside its own polygon -- a strongly kidney-shaped green can put it on the apron -- so this is
@@ -4681,7 +4681,7 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
 
     NOT asserted, having measured it: that "longer = steeper" holds for every arrow. Length is
     2.2 + 3.4*min(slope/smax, 1) against a 92nd-percentile smax, so the steepest arrows share one
-    length -- 7.4% of 12,146 arrows sit at their green's cap, median 7.6% per green, worst per green
+    length -- 7.3% of 13,378 arrows sit at their green's cap, median 7.3% per green, worst per green
     14.9% (monarch-bay 9). The cap
     is right rather than wrong: without it a single outlier pixel would shrink every other arrow to
     nothing. The card also carries slope numbers and colour, so the tail is not unreadable -- just not
@@ -5063,16 +5063,16 @@ def test_the_gutter_legend_does_not_deny_a_sum_the_engine_computes_exactly():
     (card - to_green) would mix a walked measure with a straight-line one."
 
     Measured off the shipped SVGs against each course's card yardage for the tee the book is built on:
-    72 of the 74 printed par-3 gutter pairs sum exactly to the card, on 43 of 44 holes, across 11 of 11
+    81 of the 83 printed par-3 gutter pairs sum exactly to the card, on 48 of 49 holes, across 12 of 12
     slope courses. The two that do not are both on copper-valley 13, the corpus's one non-straight par 3
     (arc/chord 1.0237), which `par3_exact_from_tee`'s straightness guard refuses on purpose -- so the
-    exceptions are the guard working, not the claim holding. Of the 743 par-4 and par-5 pairs the sum
+    exceptions are the guard working, not the claim holding. Of the 806 par-4 and par-5 pairs the sum
     runs card-54 to card+12, median -3. The warning was right on the rows the engine scales
     proportionally and wrong on exactly the rows it computes exactly.
 
     Scoped rather than deleted, and the scoped sentence is SHORTER than the one it replaces: "on a par 4
-    or 5 they need not add up". "need not" rather than "do not" because 62 sum exactly by coincidence on
-    those 743, and a card should not make a claim about its own arithmetic that its own arithmetic
+    or 5 they need not add up". "need not" rather than "do not" because 64 sum exactly by coincidence on
+    those 806, and a card should not make a claim about its own arithmetic that its own arithmetic
     breaks.
     """
     p3, p3_exact, p3_holes, courses, other, other_exact = 0, 0, set(), set(), [], 0
@@ -5256,7 +5256,7 @@ def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
 
         smax runs 2.885% (philadelphia 16) to 9.028% (bay-view 8), a 3.13x range
         EVERY book has an internal spread: 1.50x (monarch-bay) ... 3.13x (philadelphia); merion 2.93x
-        193 of 198 greens draw an arrow within 0.05 view units of the 5.6 cap, 190 exactly at it
+        211 of 216 greens draw an arrow within 0.05 view units of the 5.6 cap, 208 exactly at it
         the printed tilt barely tracks it, r = 0.658 over 198 greens: philadelphia 18 prints 2.6%
         with its arrows calibrated to 9.03%, philadelphia 6 prints 4.9% with 7.64% -- the graphic and
         the number rank those two greens OPPOSITELY, in the same book
@@ -5526,7 +5526,7 @@ def test_the_contour_interval_is_the_one_the_legend_states():
             f"edition's '15 cm each' legend is wrong")
 
 
-TREE_BEARING_COURSES = 11    # corpus courses carrying BOTH trees_lidar.json and osm_course.json
+TREE_BEARING_COURSES = 12    # corpus courses carrying BOTH trees_lidar.json and osm_course.json
 
 
 def tree_marker_prose_verdict(quoted, total, n_courses, full_n=None):
@@ -5568,23 +5568,30 @@ def tree_marker_prose_verdict(quoted, total, n_courses, full_n=None):
 # (label, quoted, total, n_courses, must_complain). Figures written with _ separators on purpose: the
 # watcher this table is about greps its two target docstrings for a comma-formatted 6x,xxx literal, and
 # a table full of those would be noise if the regex ever widened to the module.
+# The "full corpus" rows are written at TREE_BEARING_COURSES rather than at a literal count: that
+# constant is what tree_marker_prose_verdict compares against, and the rows exist to exercise the
+# branch on EITHER side of it. Hard-coding 11 made every one of them a partial-corpus row the moment a
+# 12th tree-bearing course was added, which silently retired the full-corpus half of this table --
+# including the stale-HIGH row, the one the water filter actually caused.
 TREE_PROSE_VERDICT_TABLE = [
-    ("the full corpus, prose agrees", {66_123}, 66_123, 11, False),
-    ("the full corpus, prose stale HIGH -- what the water filter caused", {66_738}, 66_123, 11, True),
-    ("the full corpus, prose stale LOW", {66_000}, 66_123, 11, True),
-    ("more courses than the census expects, prose agrees", {66_123}, 66_123, 12, False),
+    ("the full corpus, prose agrees", {66_123}, 66_123, TREE_BEARING_COURSES, False),
+    ("the full corpus, prose stale HIGH -- what the water filter caused", {66_738}, 66_123,
+     TREE_BEARING_COURSES, True),
+    ("the full corpus, prose stale LOW", {66_000}, 66_123, TREE_BEARING_COURSES, True),
+    ("more courses than the census expects, prose agrees", {66_123}, 66_123,
+     TREE_BEARING_COURSES + 1, False),
     ("a partial sweep the prose could still be right about", {66_123}, 40_000, 7, False),
     ("a partial sweep already PAST the published figure -- unwatched before", {66_123}, 66_500, 7,
      True),
     ("a partial sweep exactly at the published figure", {66_123}, 66_123, 7, False),
-    ("no figure quoted at all, full corpus", set(), 66_123, 11, True),
+    ("no figure quoted at all, full corpus", set(), 66_123, TREE_BEARING_COURSES, True),
     ("no figure quoted at all, partial corpus -- unwatched before", set(), 40_000, 7, True),
-    ("two different figures quoted", {66_123, 66_500}, 66_123, 11, True),
+    ("two different figures quoted", {66_123, 66_500}, 66_123, TREE_BEARING_COURSES, True),
 ]
 
 
 def test_the_tree_marker_prose_watcher_is_not_asleep_on_a_partial_corpus():
-    """The watcher over the corpus-wide tree-marker figure ran only when all 11 courses were present.
+    """The watcher over the corpus-wide tree-marker figure ran only when every course was present.
 
     Everywhere else in this suite a corpus-dependent check is marked @needs_corpus so a partial run
     SKIPS visibly. This one was an `if` in the middle of a test that keeps running, so on a partial
@@ -5667,7 +5674,7 @@ def test_no_tree_marker_sits_on_a_playing_surface():
     independently, with a fresh point-in-polygon over osm_course.json rather than by calling the
     function that did the filtering, so a fault in that function cannot vouch for itself.
 
-    68,257 markers across 11 courses, zero on a green, fairway, tee or bunker.
+    75,840 markers across 12 courses, zero on a green, fairway, tee or bunker.
     """
     def inside(px, py, poly):
         c, n = False, len(poly)
@@ -5746,7 +5753,19 @@ def test_no_tree_marker_sits_on_a_playing_surface():
     for fn in ("test_no_tree_marker_sits_on_a_playing_surface",
                "test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one"):
         prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
-        quoted = {int(x.replace(",", "")) for x in re.findall(r"\b(6[0-9],[0-9]{3})\b", prose)}
+        # The corpus-wide marker figure, as a comma-formatted five-digit literal. The pattern used
+        # to be `6[0-9],[0-9]{3}` -- pinned to the sixty-thousands the corpus happened to hold -- so a
+        # 13th course carrying the sweep into the seventy-thousands made it match NOTHING, and the
+        # watcher's own "exactly one figure" arity check fired instead of the staleness it exists to
+        # report. A number the prose cannot state is not a number this can grade. Widened to any
+        # five-digit comma literal, the shape this figure has had in every round, which stays clear of
+        # the four-digit per-course counts quoted beside it (Merion's own marker total).
+        #
+        # NO COMMA-FORMATTED LITERAL MAY APPEAR IN THIS COMMENT: `prose` is the whole docstring of the
+        # function being graded, and any example written here in that form would be read as a second
+        # quoted figure and trip the arity check. That is not hypothetical -- it happened while this
+        # comment was being written.
+        quoted = {int(x.replace(",", "")) for x in re.findall(r"\b([1-9][0-9],[0-9]{3})\b", prose)}
         complaint = tree_marker_prose_verdict(quoted, total, len(seen))
         assert complaint is None, f"{fn} {complaint}"
 
@@ -8520,8 +8539,11 @@ _REFUSED_TABLE_ROW = re.compile(
 # identically in the two files so one pattern reads both. The far edge and the CHAINED REACH are
 # different measurements: the reach is at or past the green front on all nine, the window's own far
 # edge on only four, and a sentence that named neither attached the reach's property to the edge.
+# The COUNT WORD after "of the" is read, not pinned: it moves with the corpus, and pinning it made a
+# 13th course report these claims MISSING rather than stale -- the reading that sends an editor looking
+# for a deleted sentence that is still on the page.
 _FAR_EDGE_CLAIM = re.compile(
-    r"at or past the green front on ([a-z]+) of the nine and short of it by up to "
+    r"at or past the green front on ([a-z]+) of the \w+ and short of it by up to "
     r"(\d+\.\d\d) yd on the other ([a-z]+)")
 _REACH_CLAIM = re.compile(r"every one of the ([a-z]+) REACHES at or past the green front")
 
@@ -8546,6 +8568,7 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         micke-grove 3     293.83-309.26  front 296.77  -12.49   reach 309.26  -12.49   keeps nothing
         micke-grove 13    206.71-289.69  front 298.44   +6.15   reach 306.14   -7.70   keeps nothing
         philadelphia 1    212.11-306.99  front 299.42   -7.65   reach 328.90  -29.48   keeps nothing
+        trump-national 10 267.12-307.29  front 302.71   -4.58   reach 307.29   -4.58   keeps 221
 
     EVERY COLUMN OF THAT TABLE IS NOW DERIVED HERE, because six of the nine rows had gone stale and
     nothing read them. e0648c6 changed two of the metrics at once -- it bounded the landing area by the
@@ -8695,10 +8718,36 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 else:
                     keeps.append(a)
             par = cfg.HOLES[hn][0] if hn in cfg.HOLES else None
+            # THE SAND HAS TO ACTUALLY REACH THE GREEN, which is a second condition and not the one
+            # that refuses the window. `beyond - b <= CARRY_MERGE_GAP_YD` says there is nowhere to
+            # land; it does NOT say the sand runs on to the putting surface, and where the thing that
+            # comes next is more SAND rather than the green front the two part company. This test
+            # demanded the mark on every refusal and separately asserted the words were true, so on
+            # trump-national-los-angeles 16 -- refused on 5.13 yd of room, its sand stopping 5.13 yd
+            # short of the front -- it demanded a claim and then failed the same card for making it.
+            # Both halves are now the same condition, computed with the same chain the reach assertion
+            # below uses, over the same sand.
+            reach_to_green = False
+            if refused:
+                spans_all = []
+                for g in _sand_the_engine_sees(rh, em, line, bunkers):
+                    al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    if not al or min(of) > 30.0:
+                        continue
+                    spans_all.append((min(al), max(al)))
+                r, grew = max(b for _a, b in refused), True
+                while grew:
+                    grew = False
+                    for a0, b0 in spans_all:
+                        if a0 <= r + rh.CARRY_MERGE_GAP_YD and b0 > r:
+                            r, grew = b0, True
+                reach_to_green = r >= front
             # The two gates that already null the carries null the mark too: with no corroborated
             # origin the whole along-line frame is untrustworthy, and a par 3 has no lay-up decision
             # to refuse in the first place.
-            want = bool(refused) and bool(info.get("carry_origin_known")) and par != 3
+            want = (bool(refused) and reach_to_green
+                    and bool(info.get("carry_origin_known")) and par != 3)
             checked += 1
             seen_courses[ref] += 1
             for ed, byhole in editions.items():
@@ -8955,7 +9004,10 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
 _CARRY_FIGURE_COUNT_CLAIMS = (
     r"governing\s+(\d+)\s+printed figures",
     r"in charge of\s+(\d+)(?:\s+printed)?\s+figures",
-    r"\b128\s*->\s*(\d+)\b",
+    # The BEFORE side is not pinned: it is the pre-filter figure count, which moves with the corpus,
+    # and pinning 128 made this pattern match nothing once a 13th course moved it -- so the claim went
+    # UNCOUNTED and the arity floor below reported it deleted rather than stale.
+    r"\bCost: \d+ figures across \d+ of \d+ cards, \d+\s*->\s*(\d+)\b",
 )
 
 
@@ -9191,7 +9243,7 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     was never measured for this purpose -- and it should not now be replaced by a measured one, because
     there is nothing here to measure it against. The physical question is "is N yards a landing area for
     a junior's tee shot", which needs dispersion data this project does not have; inventing a number for
-    it would put a guess in charge of 119 printed figures, which is the move this codebase refuses
+    it would put a guess in charge of 135 printed figures, which is the move this codebase refuses
     everywhere else. What the corpus CAN say is that the decision is insensitive to the value: every
     window the rule decides sits at 6.1489 or below, or 8.8428 or above, so any bound in that 2.6940 yd
     gap produces the identical corpus outcome and 8.0 is not doing arithmetic anybody could tune. That
@@ -9863,14 +9915,14 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     Left is the STRAIGHT distance to the green centre -- the shot you actually have to hit. Right is
     the distance from the tee WALKED along the centreline, which is how a scorecard measures. Two
     different measures, so their sum is not the card. philadelphia 17 is the extreme: card 472, drawn
-    arc 441, and its 300-yd row reads 300 + 118 = 418. Both numbers are individually true. 65 of 252
+    arc 441, and its 300-yd row reads 300 + 118 = 418. Both numbers are individually true. 68 of 270
     cards have a row off by 10 yd or more.
 
     THE PRINTED LEGEND BLAMED THE DOGLEG, AND THE DATA SAYS OTHERWISE. It read "on a dogleg they do
     not add up", which tells a reader on a straight hole that their card should add up. Measured over
     the shipped books with the engine's own straightness rule (arc/chord <= 1.02, render_hole's
-    PAR3_STRAIGHT_MAX and WANDER_MAX): of the 809 printed pairs on STRAIGHT holes, 653 -- 81% -- do
-    not add up, by a median 3 yd, 214 of them by 5 or more and 62 by 10 or more. The worst is 28 yd on
+    PAR3_STRAIGHT_MAX and WANDER_MAX): of the 868 printed pairs on STRAIGHT holes, 701 -- 81% -- do
+    not add up, by a median 3 yd, 242 of them by 5 or more and 65 by 10 or more. The worst is 28 yd on
     philadelphia 12, whose arc/chord is 1.0015 AS PUBLISHED, and which is as straight as a traced
     centreline gets: 300 + 252 = 552 against a 580 card.
 
@@ -9888,10 +9940,10 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     this docstring nothing asserted.) It is not a dogleg phenomenon at all. The legend named the cause
     instead -- two different measures -- and that was the SECOND wrong version of one sentence: on a
     straight par 3 render_hole computes the from-tee number AS card minus to-green, so those two are the
-    same measure and DO sum exactly, on 72 of the 74 printed par-3 pairs. It is now scoped to a par 4 or
+    same measure and DO sum exactly, on 81 of the 83 printed par-3 pairs. It is now scoped to a par 4 or
     5, where the two measures really do differ, and is shorter than either version it replaces. (The
-    mismatch is not even one-signed -- 125 of 1046 rows
-    sum HIGH, 750 low, 171 exactly. 18 of the 125 high rows sit on holes bent past 1.02, including
+    mismatch is not even one-signed -- 136 of 1118 rows
+    sum HIGH, 800 low, 182 exactly. 20 of the 136 high rows sit on holes bent past 1.02, including
     philadelphia 17 above, so "straight holes overshoot" is false too.)
 
     THE WORKED EXAMPLE READ "300 + 102 = 402" over a card that prints 118, and the count read 196
@@ -10054,7 +10106,7 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                 # the card by ~12), and bounding on the ARC failed too because the from-tee figure is
                 # scaled to the CARD, so on a hole drawn shorter than its card the pair exceeds the
                 # arc. Only the larger of the two is a real ceiling, and against it the whole corpus
-                # fits inside +4 yd.
+                # fits inside +9 yd.
                 #
                 # What was fitted was the slack beside it. The bound read `limit + 4`, and the 4 was
                 # the largest excess this corpus happens to realise -- callippe 1's +4 -- so the bound
@@ -10415,15 +10467,15 @@ def test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth():
     already disclosing its 1.13 yd front bank while saying nothing about 3.06 yd at the back.
 
     THE DATUM IS NOT MOVED, and that is a measured decision rather than a preference. Three candidates,
-    all measured over the 198 shipped greens:
+    all measured over the 216 shipped greens:
 
-      * re-base on `S['putt']` (the natural suggestion): moves ALL 198 printed depths, median 2.74 yd,
+      * re-base on `S['putt']` (the natural suggestion): moves ALL 216 printed depths, median 2.75 yd,
         worst 9.64 (copper-valley 3, 30 -> 20). Most of that is not bank at all -- `putt` is
         `erode(mask, 3) & (slope <= 10)`, so it also trims 1.2 m of collar off BOTH ends of every
         green, which is a statistical device for fitting a plane and not a claim about where the green
         stops.
-      * trim only the leading steep run: moves 12 printed depths, worst 5.33.
-      * trim both ends: moves 28, worst 6.51.
+      * trim only the leading steep run: moves 17 printed depths, worst 5.33.
+      * trim both ends: moves 35, worst 6.51.
 
     ALL FOUR OF THOSE FIGURES ARE DERIVED BELOW, because two of them were wrong in both records at
     once. The median re-basing shift was published as 2.75; it is 2.7399. The both-ends trim was
@@ -21295,7 +21347,7 @@ def test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one(tmp_path)
     """A tree fetch that comes back with NOTHING overwrote the stored layer and said nothing a book
     could see.
 
-    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 68,257 project-wide.
+    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 75,840 project-wide.
     A re-run can legitimately return zero for reasons that have nothing to do with the trees being
     gone -- a wrong "lidar_crs" projects every point out of its corridor, an osm_geom.json that lost
     its golf=hole ways leaves `hlines` empty, tiles that carry no class-2 return are skipped one by
@@ -25038,7 +25090,7 @@ def test_tee_anchor_locates_the_back_tee_or_refuses():
       itself and printed an elevation change of about zero -- plausible-looking, not obviously wrong.
       No course exercises this, so the reversed line is built here explicitly.
 
-    * The mapped line stops short of the back tee on 19 of 198 holes, by up to 103 yd. Sampling there
+    * The mapped line stops short of the back tee on 20 of 216 holes, by up to 103 yd. Sampling there
       measures the fairway. A straight par 3 is recoverable by collinearity; a par 4/5 is not and must
       refuse. Merion 9 moved 11.5 ft (23.0 -> 34.5 ft below) once measured at the real tee, so this is
       not a rounding concern. (Was 22 holes and 138 yd, before valley-hi 17's 220 yd stub was replaced
@@ -25190,10 +25242,11 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-09): micke-grove 4,326,017; castlewood-hill 4,477,027;
+    CURRENT SIZES (2026-08-10): micke-grove 4,326,017; castlewood-hill 4,477,027;
     merion 5,870,647; monarch-bay 4,934,430; copper-valley 6,084,531; callippe 6,816,742;
     castlewood-valley 5,836,326; philadelphia 4,604,765; the-reserve 5,110,199;
-    bay-view 4,243,411; valley-hi 4,698,534; poppy-ridge 341,146.
+    bay-view 4,243,411; valley-hi 4,698,534; poppy-ridge 341,146;
+    trump-national-los-angeles 6,126,408.
     (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
     rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
     net, those 121 less the 63 its conditional back-cover sentences added. micke-grove then gained 4
@@ -25202,7 +25255,10 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     Then callippe alone gained 18,480 on 2026-08-09 and the date above moved with it: 89c265b made
     `natural=wetland` a thing the query asks for and the map draws, so its book went from 2 filled
     water polygons to 31 and nine of its cards stopped printing "0W" over hand-mapped marsh 1.0-5.7 m
-    off the played line. Eleven books are still dated 2026-08-06 and are byte-identical; the DATE is
+    off the played line. Then trump-national-los-angeles was ADDED on 2026-08-10 at 6,126,408 bytes,
+    the corpus's largest book, and the date above moved with it -- a new course moves this date the
+    same way a rebuild does, because the date is graded against every book's own mtime. Eleven books
+    are still dated 2026-08-06 and are byte-identical; the DATE is
     graded against every book's own mtime, so one course rebuilding moves it for the whole sentence.)
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
@@ -25812,7 +25868,7 @@ def test_the_geometry_counts_the_comments_quote_are_still_true():
     Pinned as exact values on purpose. If a course is added or a centreline re-traced these SHOULD
     fail, because that is the moment the comments need rewriting; the failure message says so.
     """
-    SHORT, SHORT_YD, OVER, OVER_YD = 19, 103, 2, 36
+    SHORT, SHORT_YD, OVER, OVER_YD = 20, 103, 2, 36
     short, over, total = [], [], 0
     for slug in geometry_courses():
         os.environ["COURSE"] = slug
@@ -28363,7 +28419,12 @@ _ELEV_BOUND_FIGS = (
     # carries the same sentence and has since the tool's own range was repaired.
     ("chg_pc_raw", r"worst per.course median\s+measures ([\d.]+) ft",
      "the raw worst per-course median the range's upper end is rounded outward from"),
-    ("chg_pc_med", r"median of those eleven course medians is ([\d.]+) ft",
+    # The COUNT WORD here is not pinned: this read "those eleven course medians", so a 12th verified
+    # course made the pattern match nothing and the grader reported the figure MISSING rather than
+    # stale -- the one reading that sends an editor looking for a deleted sentence that is still there.
+    # The count itself is graded by the "courses" row above, against the corpus, which is where a
+    # wrong one should fail.
+    ("chg_pc_med", r"median of those \w+ course medians is ([\d.]+) ft",
      "the median of the per-course medians"),
     ("chg_med", r"median over all \d+ holes is ([\d.]+) ft", "the corpus median"),
     ("chg_mean", r"the mean ([\d.]+) ft", "the corpus mean"),
@@ -32078,7 +32139,7 @@ _TICK_BANDS = {}
 # input to that ceiling, so a record stating "20.0000 deg N" would compute a 0.5562% ceiling and wave
 # through the whole impossible retired column it exists to refuse. Re-derived off the corpus below
 # whenever the corpus is present, so this literal cannot drift from the ground either.
-_TICK_SOUTHMOST_LAT = 37.4529
+_TICK_SOUTHMOST_LAT = 33.7264
 
 # A latitude NORTH OF EVERY COURSE this corpus holds, used to bound the LIVE column on a clone. That
 # column had no clone-side bound at all: 0.9999 yd in both records passed at every row. The live pair is
@@ -32843,17 +32904,17 @@ def test_the_tick_error_tables_grader_refuses_the_four_edits_it_used_to_wave_thr
 
     # (a) a last-digit step in both records at once
     last_digit = [("0.0013", "0.0014"), ("0.0019", "0.0020"), ("0.0023", "0.0024"),
-                  ("0.2962", "0.2963")]
+                  ("0.3035", "0.3036")]
     # (b) the impossible retired column restored with a latitude that admits it
-    southern = [("at most +0.3008% at the corpus's southernmost hole (37.4529 deg N)",
+    southern = [("at most +0.3629% at the corpus's southernmost hole (33.7264 deg N)",
                  "at most +0.5562% at the corpus's southernmost hole (20.0000 deg N)"),
-                ("| 100 yd tick | 0.2962 yd", "| 100 yd tick | 0.43 yd"),
-                ("| 200 yd tick | 0.5931 yd", "| 200 yd tick | 0.73 yd"),
+                ("| 100 yd tick | 0.3035 yd", "| 100 yd tick | 0.43 yd"),
+                ("| 200 yd tick | 0.6149 yd", "| 200 yd tick | 0.73 yd"),
                 ("| 300 yd tick | 0.8891 yd", "| 300 yd tick | 0.99 yd")]
     # (c) populations, and (d) the forensic figures
-    populations = [("861 radius crossings", "1234 radius crossings"),
-                   ("198 drawn centrelines", "400 drawn centrelines"),
-                   ("over all 589 centreline vertices", "over all 777 centreline vertices")]
+    populations = [("938 radius crossings", "1234 radius crossings"),
+                   ("216 drawn centrelines", "400 drawn centrelines"),
+                   ("over all 643 centreline vertices", "over all 777 centreline vertices")]
     # Each case carries whether it needs the corpus to be refused. (b) does NOT -- being refusable on a
     # clone is the whole point of it, since a clone is where the ungraded latitude let the impossible
     # column back in. The other three are refused by the re-derivation, so on a clone they are skipped
@@ -32864,7 +32925,7 @@ def test_the_tick_error_tables_grader_refuses_the_four_edits_it_used_to_wave_thr
                  southern, [], False)]
              + [(f"a mutated population figure {a!r} -> {b!r} in legal/11", [(a, b)], [], True)
                 for a, b in populations]
-             + [("a mutated population figure in geo.py's note", [], [("861 radius crossings",
+             + [("a mutated population figure in geo.py's note", [], [("938 radius crossings",
                                                                        "999 radius crossings")], True)]
              + [("a forensic figure that is not the measurement", [("0.4334 yd in [100,150)",
                                                                     "0.5000 yd in [100,150)")], [], True),
@@ -32913,7 +32974,7 @@ def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed
     editor gets the note, and they have to be the same measurement" -- and then applied the forensic
     regexes, and the retired pair's relative offset, to `legal/11` ALONE. `geo.py` carries its own copies
     of every one of those figures, so the half of the pair aimed at the next editor was the ungraded half:
-    0.4334 -> 0.9999, 0.72683 -> 0.99999, 0.9714 -> 0.1111 and "+0.2975%" -> "+0.9999%" in `geo.py` all
+    0.4334 -> 0.9999, 0.72683 -> 0.99999, 0.9714 -> 0.1111 and "+0.3393%" -> "+0.9999%" in `geo.py` all
     passed the whole suite. That is the same defect the commit closed, one file over.
 
     And the table's rows were read into a dict comprehension, so a DUPLICATE row won the wrong way round:
@@ -32946,10 +33007,10 @@ def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed
     # legal/11 quotes the same figure and the two have to agree -- so none of them is skipped on a clone.
     cases = [
         ("a duplicate 100 yd row ABOVE the real one, which the dict comprehension let the real one hide",
-         [("| 100 yd tick | 0.2962 yd",
-           "| 100 yd tick | 0.9999 yd | 0.9999 yd | | 100 yd tick | 0.2962 yd")], [], False),
+         [("| 100 yd tick | 0.3035 yd",
+           "| 100 yd tick | 0.9999 yd | 0.9999 yd | | 100 yd tick | 0.3035 yd")], [], False),
         ("legal/11's derived per-radius bounds inflated to admit the impossible retired column",
-         [("cannot be out by more than 0.30 yd, 200 by more than 0.60, or 300 by more than 0.90",
+         [("cannot be out by more than 0.36 yd, 200 by more than 0.73, or 300 by more than 1.09",
            "cannot be out by more than 0.90 yd, 200 by more than 1.60, or 300 by more than 2.90")],
          [], False),
         ("geo.py's copy of the [100,150) green-end forensic figure",
@@ -32959,7 +33020,7 @@ def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed
         ("geo.py's copy of the segment population's global worst",
          [], [("own global worst is 0.9714", "own global worst is 0.1111")], False),
         ("geo.py's copy of the retired pair's worst relative offset",
-         [], [("+0.2975% over these vertices", "+0.9999% over these vertices")], False),
+         [], [("+0.3393% over these vertices", "+0.9999% over these vertices")], False),
     ]
     waved, ran = [], 0
     for what, rec_edits, note_edits, needs_corpus in cases:
@@ -33005,7 +33066,7 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
           calls arithmetically impossible. The reach is stated by the row, so closing it needed no new
           input at all.
 
-      (2) THE PUBLISHED WORST OFFSET WAS COMPARED TO THE CEILING ONLY WITH A CORPUS. "+0.2975%" is the
+      (2) THE PUBLISHED WORST OFFSET WAS COMPARED TO THE CEILING ONLY WITH A CORPUS. "+0.3393%" is the
           figure the impossibility argument is stated in, and the same paragraph derives a ceiling of
           "+0.3008%" for it -- so a worst above its own bound is a contradiction inside one paragraph,
           visible without measuring anything. On a clone "+0.9999%" passed, three and a third times the
@@ -33062,15 +33123,15 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
          [(f"out to {reach} yd | {retired_far} yd", f"out to {reach} yd | 9.9999 yd")],
          [(f"was {retired_far} yd against", "was 9.9999 yd against")]),
         ("the published worst relative offset above the ceiling the same paragraph derives for it",
-         [("worst relative offset over these 589 vertices is +0.2975%",
-           "worst relative offset over these 589 vertices is +0.9999%")],
-         [("at worst +0.2975% over these vertices", "at worst +0.9999% over these vertices")]),
+         [("worst relative offset over these 643 vertices is +0.3393%",
+           "worst relative offset over these 643 vertices is +0.9999%")],
+         [("at worst +0.3393% over these vertices", "at worst +0.9999% over these vertices")]),
         ("the closing row's LIVE figure at 0.9999 yd, in both records at once",
          [(f"out to {reach} yd | {retired_far} yd | {live_far} yd",
            f"out to {reach} yd | {retired_far} yd | 0.9999 yd")],
          [(f"against {live_far} yd now", "against 0.9999 yd now")]),
         ("the 100 yd tick's LIVE figure at 0.9999 yd, in both records at once",
-         [("| 100 yd tick | 0.2962 yd | 0.0013 yd |", "| 100 yd tick | 0.2962 yd | 0.9999 yd |")],
+         [("| 100 yd tick | 0.3035 yd | 0.0013 yd |", "| 100 yd tick | 0.3035 yd | 0.9999 yd |")],
          [("radii is 0.0013,", "radii is 0.9999,")]),
         ("the 300 yd tick's LIVE figure at 0.9999 yd, in both records at once",
          [("| 300 yd tick | 0.8891 yd | 0.0019 yd |", "| 300 yd tick | 0.8891 yd | 0.9999 yd |")],
@@ -33906,11 +33967,13 @@ def _word_to_int(w):
 def test_the_summary_verdict_counts_books_and_courses_as_different_things():
     """legal/00 is the document a lawyer reads FIRST, and its headline conflated two counts.
 
-    "### All ELEVEN distributed books are CLEAN" -- then eleven COURSE names. There are eleven
+    "### All ELEVEN distributed books are CLEAN" -- then eleven COURSE names. There were eleven
     distributed courses and FOURTEEN distributed books: eleven pocket plus three enlarged coach
     editions (merion, monarch-bay, philadelphia). legal/README.md gets this right in as many words --
-    "All eleven distributed courses - fourteen books to give away (eleven pocket, three enlarged)" --
+    "All <N> distributed courses - <M> books to give away (<N> pocket, three enlarged)" --
     so the two front-door documents disagreed on how many things this project hands out.
+    (The figures above are the ones the defect was found at; every count this test compares is read
+    out of the two documents and off the corpus, so none of them is pinned to that round.)
 
     The only test that read legal/00's list checked its MEMBERSHIP against distribution.py and never
     read the count word, which is exactly the gap legal/00:22's own parenthetical records having been
@@ -33958,10 +34021,17 @@ def test_the_summary_verdict_counts_books_and_courses_as_different_things():
     else:
         assert n_head == len(listed), (
             f"legal/00's heading says {head.group(1)} distributed {noun} and lists {len(listed)}")
-    # and it must not leave the OTHER count unsaid
-    assert re.search(r"\b(fourteen|14)\b", s), (
+    # and it must not leave the OTHER count unsaid. DERIVED from rm_books, not spelled: this read
+    # `\b(fourteen|14)\b` -- the book count of the day, frozen into the probe -- so a 13th course
+    # made legal/00 fail for stating the RIGHT number ("fifteen") while a stale "fourteen" left
+    # anywhere on the page would have satisfied it. The question is whether the reader can learn the
+    # book count, so it has to be asked about the book count there actually is.
+    _book_word = {v: k for k, v in _count_words().items()}.get(rm_books)
+    _spellings = [str(rm_books)] + ([_book_word] if _book_word else [])
+    assert re.search(r"\b(%s)\b" % "|".join(_spellings), s, re.I), (
         f"legal/00 states a course count but never the book count. There are {rm_books} distributed "
-        f"books and the reader of the verdict page cannot learn that")
+        f"books and the reader of the verdict page cannot learn that (looked for any of "
+        f"{_spellings})")
 
     if not CORPUS:
         return
@@ -35613,7 +35683,7 @@ def test_a_resampled_dem_patch_gives_up_its_own_source_grid_with_no_network():
       * against GROUND TRUTH -- a patch this test builds at a cell size it chose (`_resampled_patch`),
         so a detector that merely agreed with the corpus could not pass;
       * against the CORPUS -- the six seamless greens must come back resampled from a grid several
-        pixels wide, and the 192 LiDAR greens must NOT, or the discriminator is decoration.
+        pixels wide, and the 210 LiDAR greens must NOT, or the discriminator is decoration.
 
     The 0.4 m greens are interpolated from a dense point cloud over a Delaunay triangulation, which
     has no rectangular lattice at all: measured, 0.2-19.8% of their second differences land at the
@@ -35921,7 +35991,10 @@ def test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_
     # (a) the constant's own comment, and this file's detector test, publish the same four figures
     for where, text, pat in (
             ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
-             r"six seamless greens sit at ([\d.]+)-([\d.]+)% \(measured per axis\) and the 192 LiDAR "
+             # The LiDAR-green COUNT is not pinned in this pattern: it moves with the corpus, and pinning
+             # it made a 13th course report the figure MISSING rather than stale. The count itself is
+             # graded on the next line, against the arrays.
+             r"six seamless greens sit at ([\d.]+)-([\d.]+)% \(measured per axis\) and the \d+ LiDAR "
              r"ones at ([\d.]+)-([\d.]+)%"),
             ("this file's detector test", here,
              r"measured, ([\d.]+)-([\d.]+)% of their second differences land at the float32 floor "

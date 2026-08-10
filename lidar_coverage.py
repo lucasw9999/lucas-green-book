@@ -295,8 +295,8 @@ def uncovered_holes(course_dir, boxes=None, els=None, lines=None):
     The greens check alone is not enough. At Castlewood Hill it flagged holes 14 and 16 but not 15
     and 17, whose centrelines also run through the same gap -- and the centreline is where
     fetch_trees.py looks for canopy returns, so those holes silently lose their trees too. Measured
-    across the corpus: of the 11 courses that have tiles on disk (12 are built; poppy-ridge has no
-    LAZ at all, so nothing is checked there), 10 have every centreline node inside the data;
+    across the corpus: of the 12 courses that have tiles on disk (13 are built; poppy-ridge has no
+    LAZ at all, so nothing is checked there), 11 have every centreline node inside the data;
     Castlewood Hill had 5 of 52 outside (holes 14, 15, 16, 17) until its missing tile copy arrived
     and is now 0 of 52; Monarch Bay has 5 of 52 (holes 1, 17, 18, which are over the bay).
     """
@@ -523,7 +523,7 @@ def report(course_dir):
         # Say what a rectangle can support and no more. This used to read "all N green(s) sit inside
         # the downloaded tiles' DATA", which is a claim about the points; the test behind it is
         # point-in-header-BBOX, and a green in a hole inside that rectangle reads as covered. It is
-        # printed for 10 of the 11 courses that have tiles on disk (12 are built; poppy-ridge has no
+        # printed for 11 of the 12 courses that have tiles on disk (13 are built; poppy-ridge has no
         # LAZ at all, so it never reaches this line).
         print(f"  coverage: all {len(rings)} green(s) fall inside the downloaded tiles' header\n"
               f"     bounding boxes ({ntiles} tile(s) checked). That is a RECTANGLE per tile, not the\n"

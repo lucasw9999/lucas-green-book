@@ -36,7 +36,7 @@ the evidence. The reasoning is recorded at `.gitignore:58‑68` and under **Risk
 `00_SUMMARY_AND_VERDICT.md`. Nothing else in the index is missing.
 
 ## One‑line verdict
-**All eleven distributed courses — fourteen books to give away (eleven pocket, three enlarged)**, are clean, and Poppy Ridge (yardage‑mode, personal)
+**All twelve distributed courses — fifteen books to give away (twelve pocket, three enlarged)**, are clean, and Poppy Ridge (yardage‑mode, personal)
 is clean too. The project contains **no Esri/Maxar, Google, Apple or Bing imagery anywhere** — the
 one such file, the Poppy Ridge aerial, was **rebuilt from public‑domain USDA NAIP on 2026‑07‑13**
 and the Esri‑derived originals were deleted (see `07_...`). Every book is built only from

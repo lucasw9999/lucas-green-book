@@ -164,7 +164,7 @@ UNVERIFIED_ACK = "ALLOW_UNVERIFIED_COURSES"
 # THE MAPPED-PAD BRANCH does not sample the producer's region, and a note here used to say it did. The
 # GREEN side matches -- both read the green polygon. The TEE side does not: 9cc3bce established that the
 # PRODUCER samples the mapped pad INTERSECTED with a 15 m window at the anchor, while this tool samples
-# the WHOLE mapped ring (see check_course). That is a real difference on 55 of 177 mapped pads whose ring
+# the WHOLE mapped ring (see check_course). That is a real difference on 55 of 194 mapped pads whose ring
 # reaches past that window on an axis -- up to 63.0 m, micke-grove 17 -- and the producer's own
 # derivation measures the median shift between the two regions at up to 1.87 ft, over 0.5 ft on 10 pads.
 # TOL_FT is 10 ft, so this tool can never flag it: the disagreement it reports at those tees is partly a
@@ -178,7 +178,7 @@ UNVERIFIED_ACK = "ALLOW_UNVERIFIED_COURSES"
 # graded by test_the_independent_checker_says_which_region_each_side_of_it_samples, which fails if the
 # code starts clipping or if these counts drift.
 #
-# THE FALLBACK BRANCH -- the anchors that land in NO mapped ring, 5 of 182 in this corpus -- is the
+# THE FALLBACK BRANCH -- the anchors that land in NO mapped ring, 5 of 199 in this corpus -- is the
 # opposite case, and it was a 15 m box here for a reason that stopped being true. There is no OSM ring to
 # be independent ABOUT on this branch: the region is chosen on BOTH sides, and this side's 15.0 was a
 # copy of `fetch_hole_elev.TEE_R_M`, the producer's own fallback box. fd39647 measured that box wrong --

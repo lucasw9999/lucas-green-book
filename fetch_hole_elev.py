@@ -23,7 +23,7 @@ Method, per hole:
            tee_elevations, which measures both.
   green -- median Z of the GREEN INTERIOR of its own built surface (dem_hd/holeNN.npy, masked by the
            same polygon render_green draws the card from), which is already gated for density and
-           coverage, so it inherits that honesty check for free. Six of the corpus's 198 surfaces come
+           coverage, so it inherits that honesty check for free. Six of the corpus's 216 surfaces come
            from the 3DEP seamless mosaic rather than from LiDAR, because no tile covers those greens;
            each row records WHICH, because the payload used to claim 0.4 m LiDAR for all of them.
 Both are medians, not means: a mean is dragged by a single mis-classified return, and a tee box is
@@ -39,7 +39,7 @@ guessed one, and the card simply omits the line, when ANY of these holds:
   * the tee sample holds too few ground returns (MIN_RING_PTS on a mapped pad, MIN_TEE_PTS in the
     fallback disc);
   * the sampled tee ground spans more height than MAX_TEE_RELIEF_FT, so a median over it does not stand
-    for a tee height -- 6 of the 172 sampled pads, and a cause of its own rather than a variant of the
+    for a tee height -- 8 of the 189 sampled pads, and a cause of its own rather than a variant of the
     two above it: merion h1 holds 3851 ground returns on a pad it fails by relief, over a usable green
     surface;
   * the change exceeds MAX_PLAUSIBLE_FT and can only be a units or datum fault.
@@ -54,7 +54,7 @@ recoverable from the artifact -- holes on the card minus rows written -- and the
 now claims.
 
 A row written here is also not the same thing as a height printed. generate.py suppresses any measured
-change under 3 ft as level (elev_phrase), so the corpus's 171 measured holes print on 114 cards.
+change under 3 ft as level (elev_phrase), so the corpus's 186 measured holes print on 126 cards.
 
 Run:  COURSE=<slug> python3 fetch_hole_elev.py [--write]
       --write records hole_elev.json in COURSE_DIR.
@@ -145,12 +145,15 @@ MIN_TEE_PTS = 25        # fallback disc only: below this the disc barely reached
 # 2.5 ft, tied to the thing it protects: the card suppresses any height under 3 ft as level, so ground
 # whose own spread is MORE than that cannot anchor a figure quoted to the nearest foot -- the datum would
 # be ambiguous by more than the smallest quantity the book is willing to print. Costs
-# 6 of the 172 sampled pads their printed height (bay-view h3, castlewood-hill h9 and h18,
-# merion h1 and h11, philadelphia h18). Printing nothing is the honest outcome for those.
+# 8 of the 189 sampled pads their printed height (bay-view h3, castlewood-hill h9 and h18,
+# merion h1 and h11, philadelphia h18, trump-national-los-angeles h5 and h18). Printing nothing is the
+# honest outcome for those.
 # The corpus leaves an EMPTY BAND around the threshold, which is the evidence that it separates two
-# populations rather than cutting through one: the flattest pad it refuses is castlewood-hill 9 at
-# 2.75 ft and the steepest it accepts is philadelphia 3 at 2.13 ft, so 2.5 sits inside a 0.62 ft gap
-# that no hole occupies. Both ends are pinned by
+# populations rather than cutting through one: the flattest pad it refuses is trump-national-los-angeles 18 at
+# 2.57 ft and the steepest it accepts is philadelphia 3 at 2.13 ft, so 2.5 sits inside a 0.43 ft gap
+# that no hole occupies. That band has NARROWED with the corpus -- it was 0.62 ft over 12 courses --
+# which is worth watching rather than smoothing: the threshold still separates two populations, but a
+# 13th course put a pad 0.07 ft inside the refusal side of it. Both ends are pinned by
 # test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height, which is where to look before
 # moving this number: the gate itself was exercised by NOTHING for as long as it existed, and deleting
 # it left the whole suite green while merion h11 started printing "green 35.3 ft below the tee" off a
@@ -201,7 +204,7 @@ def tee_anchor(hnum, line, greens):
         as plausible rather than as obviously broken, which is the worst kind of wrong. geo.match_green
         decides which end is which.
 
-      * The line may STOP SHORT of the back tee -- 19 of the 198 holes do, by up to 103 yd. (Was 22
+      * The line may STOP SHORT of the back tee -- 20 of the 216 holes do, by up to 103 yd. (Was 22
         holes and 138 yd; valley-hi 17's 220 yd stub was replaced by its real 360 yd centreline when
         that course's osm_bbox was widened, which removed both the count and the worst case.) Sampling
         there measures the ground somewhere up the fairway and labels it the tee, and on a climbing
@@ -302,20 +305,22 @@ def _tee_pads(anchors, crs):
 
     The tee height was a median over an AXIS-ALIGNED BOX of half-width TEE_R_M around the anchor, and
     that box is mostly not tee. Measured over the corpus by rasterising every ring against its own box,
-    a mapped tee covers a median 12.6% and a mean 13.6% of it across all 177 mapped pads (per-course
-    medians 4.9% on valley-hi to 23.6% on merion) -- the same pathology as the green end, pointing the
+    a mapped tee covers a median 11.9% and a mean 13.0% of it across all 194 mapped pads (per-course
+    medians 4.4% on trump-national to 23.6% on merion) -- the same pathology as the green end, pointing the
     other way, because a box centred on a raised tee pad reaches down the surrounding ground and reads
     LOW. The two errors partly cancel in the printed CHANGE, which is why neither was visible in the
-    figure: correcting only the green end would have shifted every height in the book by +0.45 ft.
+    figure: correcting only the green end would have shifted every height in the book by +0.47 ft.
 
     That share was published as "about 13% on the six metric courses", and the qualifier was a leftover:
     it dates from when TEE_R_M was applied in raw CRS units and the box really was 9.1 m square on the
-    five US-survey-foot courses, so only the metric six had a 30 m box to compare against.
-    _crs_units_per_m fixed that, and a corpus figure printed under a six-course label is a figure nobody
-    can check -- the six-metric-course median is 9.8%, not 13%.
+    US-survey-foot courses, so only the metric ones had a 30 m box to compare against.
+    _crs_units_per_m fixed that, and a corpus figure printed under a metric-only label is a figure nobody
+    can check -- the six-metric-course median is 8.0%, not 13%. ("six" is kept as the NAME of that
+    superseded figure, which is what it is: the metric set is seven courses now, and the point of the
+    sentence is that the corpus figure above does not need the qualifier at all.)
 
     The rings are in osm_course.json and were never loaded. Refusing to guess when the anchor lands in
-    none of them (5 of the 182 anchors this corpus resolves -- bay-view 16, castlewood-hill 4, merion 3,
+    none of them (5 of the 199 anchors this corpus resolves -- bay-view 16, castlewood-hill 4, merion 3,
     merion 9 and merion 15): those fall back to a TEE_FALLBACK_R_M disc at the anchor, sized to the
     median mapped pad, which is the nearest thing to a pad that can be had without a polygon.
 
@@ -435,8 +440,9 @@ def tee_elevations(anchors):
     they are independent:
 
       * the RING, not a box. A box centred on a raised tee pad also samples the ground it is raised
-        above, so it reads the tee low -- measured at a median 1.00 ft and a mean 1.10 ft low over the
-        172 mapped pads that carry ground returns, worst 5.45 ft (philadelphia 16). Copper Valley is the
+        above, so it reads the tee low -- measured at a median 1.02 ft and a mean 1.30 ft low over the
+        189 mapped pads that carry ground returns, worst 12.01 ft (trump-national-los-angeles 18).
+        Copper Valley is the
         worst course at a median 1.90 ft and a worst 3.43 ft (hole 6). (Published as a median 0.20 and a
         mean 0.72 ft over 169 holes, and "up to 1.90 ft on copper-valley" -- which was that course's
         MEDIAN quoted as a worst case, the same mistake this project has already fixed once elsewhere.
@@ -444,7 +450,7 @@ def tee_elevations(anchors):
         and so pulled their box medians further down.) How little of the box is tee at all is in
         _tee_pads.
       * the WINDOW. The box is applied BEFORE the ring test, so the accumulated sample is ring INTERSECT
-        window wherever the ring reaches past the window ON AN AXIS -- 55 of the 177 mapped pads, the
+        window wherever the ring reaches past the window ON AN AXIS -- 55 of the 194 mapped pads, the
         farthest reaching 63.0 m from its anchor (micke-grove 17) -- and 51 of those actually lose
         ground returns to it.
         THE AXIS COUNT IS THE ONE THAT CLIPS, and this sentence used to quote the RADIAL one against it:
@@ -459,7 +465,7 @@ def tee_elevations(anchors):
         over the whole ring while the sampled window is level.
         The window is nonetheless the RIGHT sample, and that is measured rather than asserted. Widening
         it from 10 m to 15 m moves the median by a corpus median 0.000 ft (mean 0.035, worst 0.89 ft on
-        micke-grove 8, over 0.5 ft on 2 of the 172): it has converged. Going on to the WHOLE ring
+        micke-grove 8, over 0.5 ft on 2 of the 189): it has converged. Going on to the WHOLE ring
         moves it by up to 1.87 ft
         (philadelphia 4), over 0.5 ft on 10 of them -- because a `golf=tee` polygon is not reliably one
         teeing ground. This corpus maps 28 rings over bay-view's 18 holes and 83 over copper-valley's,
@@ -636,8 +642,8 @@ def green_elevation(hole):
     box padded by fetch_dem_hd.MARGIN_M = 12 m on all four sides -- so the "measured height of the green"
     was a median over a region a corpus-median 5.5x the green's area, of which a corpus-median 82% is
     not green. It is fairway, bunker and rough surrounding a green that is usually a raised pad, so the
-    figure read LOW: substituting the interior moves 171 holes by a mean +0.4527 ft, positive on 137 of
-    them, which a one-sided sign test puts at p = 3.7e-16. (Published here as "+0.478 ft, positive on
+    figure read LOW: substituting the interior moves 186 holes by a mean +0.4672 ft, positive on 150 of
+    them, which a one-sided sign test puts at p = 4.8e-18. (Published here as "+0.478 ft, positive on
     140" of 177 holes, which was the corpus before fd39647; as "+0.47 ft" in _tee_pads and "+0.46 ft" in
     legal/09 -- four values for one quantity, none of them measured by anything. All three records are
     now graded against this corpus by
@@ -665,12 +671,12 @@ def green_elevation(hole):
     hole at render time, but its remedy named only the surface rebuild, after which the render succeeds
     and hole_elev.json still holds the figure measured through the tear.
 
-    WHAT A TEAR COSTS, measured over the real 198 pairs, for the tear the fixture in
+    WHAT A TEAR COSTS, measured over the real 216 pairs, for the tear the fixture in
     tests/test_r14_pair.py actually commits -- a torn bbox 5.0 m on EACH axis, i.e. a north-east
-    displacement of 7.07 m: it moves the height by a median 0.27 ft, p95 1.19 ft, worst 1.89 ft
+    displacement of 7.07 m: it moves the height by a median 0.28 ft, p95 1.19 ft, worst 1.89 ft
     (castlewood-valley-course 12), and bay-view 4 moves 1.39 ft, which is the hole 171d978's message
     quotes as its reproduction. A NORTH-ONLY 5.0 m shift is the cheaper half of the same experiment --
-    median 0.18 ft, p95 0.60 ft, worst 1.04 ft -- and that north-only triple is what this docstring used
+    median 0.18 ft, p95 0.61 ft, worst 1.04 ft -- and that north-only triple is what this docstring used
     to publish about a fixture displacing both axes, which is how the "worst" case published here came
     out SMALLER than the single hole cited three sentences later. One experiment cannot do that, so both
     triples are now stated with the shift each belongs to and both are recomputed from this corpus by
@@ -721,7 +727,7 @@ def green_elevation(hole):
 def green_source(hole):
     """The dem_hd patch's OWN `source` for this hole, or None -- what the green height was measured on.
 
-    Read here rather than assumed, because it is not one thing. 192 of the corpus's 198 surfaces are 0.4 m
+    Read here rather than assumed, because it is not one thing. 210 of the corpus's 216 surfaces are 0.4 m
     LiDAR ground returns; 6 come from the 3DEP seamless mosaic, because no LAZ tile covers those greens
     (monarch-bay 1, 9, 10, 16, 17 and 18). What is recorded is the patch's OWN `source` verbatim, not a
     reading of it -- fetch_dem.py has since stopped asserting a resolution it did not measure and now
@@ -907,7 +913,7 @@ def write_hole_elev(path, payload):
     A `.part` is never valid data, because it is only renamed into place after the write returns, so
     anything still wearing the staged name is by construction incomplete. And under courses/ -- the one
     directory nothing sweeps, holding the only copy of these measurements -- a stray hole_elev.json.part
-    beside hole_elev.json reads as an interrupted rewrite of the heights 114 cards print from.
+    beside hole_elev.json reads as an interrupted rewrite of the heights 126 cards print from.
 
     Staged rather than written in place for the reason lidar_dates gives about course.json, one notch
     weaker: this file IS derived and a re-run rebuilds it, but json.dump truncates on open and then

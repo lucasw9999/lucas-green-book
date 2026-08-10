@@ -954,7 +954,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
            for i in range(len(pts_em)-1)]
     arc_m = sum(seg) or 1.0
     arc_yd = arc_m / 0.9144
-    # Does the drawn line actually span the hole? On 21 of 198 holes it does not: 19 stop short of
+    # Does the drawn line actually span the hole? On 22 of 216 holes it does not: 20 stop short of
     # the back tee and 2 OVERSHOOT it (OSM traced past the tee). Was 22/20/2 until valley-hi 17's
     # too-tight osm_bbox was widened on 2026-07-31 and the re-fetch replaced a hand-drawn 220 yd stub
     # with the real 360 yd centreline, moving that hole into the spanning set. Either way no from-tee distance
@@ -1230,6 +1230,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # which is all `near_yd > total_yd - 40` establishes, but it is still ground a lay-up has to land
     # short of. See the landing block below for what it is used for and why it is not simply excluded.
     greenside = []
+    # EVERY span of sand near the chord, before ANY of the carry filters. The two lists above answer
+    # "is this a tee carry?" and "is this greenside sand?", and both drop sand for reasons that are
+    # about the CARRY DECISION -- too near the tee to club against, past CARRY_MAX_YD, behind a forward
+    # tee. None of those reasons bear on the different question the `sand to the green` mark asks,
+    # which is simply "does the sand run on to the putting surface from here". Answering that off the
+    # filtered lists understates the reach and would withdraw the mark from cards that have earned it.
+    # Kept to the same 30 m off-chord bound the carry frame uses, because that is the frame this whole
+    # block measures in.
+    sand_spans = []
     for g in bunkers:
         alongs, offs = [], []
         for p in (g.get('geometry') or []):
@@ -1241,6 +1250,8 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             continue
         near_yd = min(alongs)/0.9144 + tee_shift_yd
         far_yd  = max(alongs)/0.9144 + tee_shift_yd
+        if min(offs) <= CARRY_OFF_M:
+            sand_spans.append((near_yd, far_yd))
         # The shift is only trustworthy for sand well UP the hole, where the direction from the back
         # tee is nearly the chord direction. Close to the tee the back tee's unknown lateral offset
         # dominates, and shifting swept in bunkers lying BEHIND the forward tee: merion 5 grew a
@@ -1300,7 +1311,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #   * by the RULE'S OWN measure -- `beyond = min(next merged window, greenside sand, green front)`,
     #     unrounded edges -- worst KEPT that the rule can decide 8.8428 (castlewood-hill 10, bounded by
     #     greenside sand), best DROPPED 6.1489 (micke-grove 13, likewise). Margin over the bound: 0.8428,
-    #     and that is the thinnest real margin, so it is the honest headline for a bound governing 119
+    #     and that is the thinnest real margin, so it is the honest headline for a bound governing 135
     #     printed figures.
     #   * by the SUPPRESSION TEST's measure -- last PRINTED window only, `reach` seeded from the ROUNDED
     #     far edge and then chained across any strip of grass narrower than CARRY_MERGE_GAP_YD, which is
@@ -1312,12 +1323,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # a carry at all -- see the greenside paragraph below -- so both figures are history, and it is the
     # thinner of the two measures that changed hands: it is now the rule's own.
     #
-    # "worst KEPT" also needed qualifying: 3 kept windows are tighter than 8.8428 -- copper-valley 17 at
-    # 8.2538, merion 5 at 8.5073, monarch-bay 2 at 8.5827. Every one is bounded
+    # "worst KEPT" also needed qualifying: 4 kept windows are tighter than 8.8428 -- copper-valley 17 at
+    # 8.2538, merion 5 at 8.5073, trump-national 14 at 8.5661, monarch-bay 2 at 8.5827. Every one is bounded
     # by the NEXT MERGED WINDOW, and the merge guarantees a gap above CARRY_MERGE_GAP_YD between two
     # merged windows by construction, so those are TAUTOLOGICAL and can never be dropped. 8.8428 is
-    # the worst of the 82 KEPT windows the rule decides, and 8.2538 the worst of all 124 kept;
-    # 95 of the corpus's 137 windows are decidable at all. (That list said FOUR,
+    # the worst of the 92 KEPT windows the rule decides, and 8.2538 the worst of all 142 kept;
+    # 109 of the corpus's 159 windows are decidable at all. (That list said FOUR,
     # naming micke-grove 11 at 8.5031, and the counts said 86 and 132. All three came from a test that
     # re-derived the rule over every golf=bunker way on the course, skipping the corridor pre-filter
     # `bunkers` is built with -- so micke-grove 11's second window is sand this engine never selects,
@@ -1327,7 +1338,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # And the value is inherited rather than measured ON PURPOSE. The physical question -- "is N yards a
     # landing area for a junior's tee shot" -- needs dispersion data this project does not have, so a
-    # measured replacement would be a guess in charge of 119 figures. What the corpus can say is that the
+    # measured replacement would be a guess in charge of 135 figures. What the corpus can say is that the
     # decision is insensitive to the value: every window the rule decides is at 6.1489 or below or 8.8428
     # or above, so any bound inside that 2.6940 yd gap gives the identical outcome. That gap USED to be
     # 5.3205 yd wide, so counting the greenside sand has made the bound more load-bearing, not less --
@@ -1370,30 +1381,35 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # N (the-reserve 16 prints "carry 177" for sand reaching 322). Refusing there would withdraw a
     # correct carry, which is the one thing this rule must not do.
     #
-    # Cost: 9 figures across 9 of 198 cards, 128 -> 119; four cards lose their only carry row
+    # Cost: 11 figures across 11 of 216 cards, 146 -> 135; four cards lose their only carry row
     # (philadelphia 1, micke-grove 3 and 13, callippe 12) and no course loses all of them. Nothing is
     # hidden -- the bunkers stay drawn and stay counted in the footer's "NB". Only the false invitation
     # goes.
     #
-    # AND THE CARD SAYS SO, because withdrawing the figure silently left a different fault. Nine windows
-    # in this corpus have no landing area: merion 1 is one of them -- its fourth merged window is the
-    # refused one, and the three it keeps (172, 212, 245) are the three it prints. On five of the nine
-    # (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14) an EARLIER carry
+    # Of those 11 refusals, 10 print the mark. Those two counts were the same number for as long as
+    # every refused window happened to have sand running on to its green, and they are NOT the same
+    # question -- see the reach gate below, and trump-national-los-angeles 16, the one card that is
+    # refused and silent.
+    #
+    # AND THE CARD SAYS SO, because withdrawing the figure silently left a different fault. Ten windows
+    # in this corpus have no landing area AND sand that reaches the green: merion 1 is one of them -- its fourth merged window is the
+    # refused one, and the three it keeps (172, 212, 245) are the three it prints. On six of the ten
+    # (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14, trump-national 10) an EARLIER carry
     # survives, so the printed list just ended before the sand did and nothing distinguished "no more
     # sand" from "sand we declined to number".
     #
     # `sand_to_green` is that statement, and it carries no digit ON PURPOSE. Both edges are supported
     # numbers and both are wrong to print: the near edge is the lay-up invitation this rule exists to
     # withdraw, and the far edge of the refused WINDOW is
-    # at or past the green front on four of the nine and short of it by up to 8.75 yd on the other five
+    # at or past the green front on five of the ten and short of it by up to 8.75 yd on the other five
     # -- merion 10's is 284 with the front at 253, philadelphia 1's is 307 with the front at 299 -- so
     # clubbing to "clear" it either flies the green or lands in the sand that carries on past it.
     # Too long is the direction this file already calls the dangerous one (see the par3_straight
     # note below).
     #
     # THAT SENTENCE USED TO SAY "on all nine", WHICH IS THE OTHER METRIC'S PROPERTY. "at or past on all
-    # nine" is true of the chained REACH below and false of the window's own far edge, which falls SHORT
-    # on five of the nine -- callippe 12 by 0.27, castlewood-valley 8 by 1.87, monarch-bay 14 by 3.43,
+    # of them" is true of the chained REACH below and false of the window's own far edge, which falls SHORT
+    # on five of the ten -- callippe 12 by 0.27, castlewood-valley 8 by 1.87, monarch-bay 14 by 3.43,
     # copper-valley 3 by 3.31 and micke-grove 13 by 8.75. e0648c6 grew this set from eight cards to nine
     # and the card it added was that worst counter-example, so the sentence became false on the majority
     # of the cases it names while reading as though it had been re-checked. Which is why the reason for
@@ -1402,13 +1418,56 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # Measured with the greenside sand the `total_yd - 40` filter drops, and across a strip of
     # grass narrower than CARRY_MERGE_GAP_YD where there is one (micke-grove 13's 6.15 yd),
-    # every one of the nine REACHES at or past the green front, which makes the wording true
+    # every one of the ten REACHES at or past the green front, which makes the wording true
     # rather than a hedge.
+    #
+    # ...AND ON ONE CARD IT DID NOT, WHICH IS WHY THE MARK IS NOW GATED ON THAT REACH RATHER THAN
+    # INHERITING IT. Refusing a window and SAYING "sand to the green" are two claims, and only the
+    # first one follows from `beyond - b <= CARRY_MERGE_GAP_YD`: that test says the window has no
+    # LANDING AREA, i.e. that whatever comes next comes within 8 yd of it -- and "whatever comes next"
+    # is `min(next window, next greenside sand, green front)`. Where the thing that comes next is the
+    # GREEN FRONT, the two claims coincide and the words are true. Where it is more SAND, they do not:
+    # the chain has to actually run on to the green, and nothing checked that it did.
+    #
+    # trump-national-los-angeles 16 is the case. Its three windows are 120.06-198.26, 246.80-259.23
+    # and 275.98-288.51 against a green front at 293.64, so the last one is refused on 5.13 yd of room
+    # -- correctly, there is nowhere to land -- and the card said "sand to the green" over sand that
+    # STOPS 5.13 yd short of it. The bunker that would have closed the gap (way 759031458, 278.48-297.73,
+    # which does straddle the front) lies 42.8 m off the CHORD against CARRY_OFF_M's 30, so the carry
+    # frame never sees it; it IS drawn on the card, because the drawing corridor is measured off the
+    # polyline instead. So the map showed sand running to the green while the only thing that could
+    # justify the words was outside the frame that had to justify them.
+    #
+    # THE GATE IS THE SAME CHAIN THE TEST SUITE ALREADY MEASURES, and it is deliberately computed from
+    # this frame's own windows -- no new corridor, no new constant. A refused window earns the mark only
+    # if the sand from its far edge reaches green_front_yd, chaining across gaps no wider than
+    # CARRY_MERGE_GAP_YD, which is the constant that already declares a gap that narrow to be one
+    # obstacle. Where it does not reach, the window is still REFUSED -- the carry figure is still
+    # withheld, which is the safe half -- and the card simply says nothing, which is what it did before
+    # the mark existed. Withholding a figure needs no justification on the card; asserting where the
+    # sand goes does.
+    #
+    # Cost, measured: one card in the corpus loses the phrase (trump-national-los-angeles 16), no card
+    # gains one, and no carry figure moves anywhere. The other ten refusals all reach their green front
+    # and are unaffected.
     kept, no_landing = [], []
     for i, (a, b) in enumerate(merged):
         nxt = ([merged[i+1][0]] if i+1 < len(merged) else []) + [n for n, f in greenside if f > b]
         beyond = min(nxt + [green_front_yd])
-        (kept if beyond - b > CARRY_MERGE_GAP_YD else no_landing).append((a, b))
+        if beyond - b > CARRY_MERGE_GAP_YD:
+            kept.append((a, b))
+            continue
+        # Refused. Does the sand actually run ON to the green from here? Chain forward over every
+        # window this frame holds -- the tee-carry ones and the greenside ones alike -- across gaps no
+        # wider than CARRY_MERGE_GAP_YD, and require the reach to make the green front.
+        reach, grew = b, True
+        while grew:
+            grew = False
+            for a0, b0 in sand_spans:
+                if a0 <= reach + CARRY_MERGE_GAP_YD and b0 > reach:
+                    reach, grew = b0, True
+        if reach >= green_front_yd:
+            no_landing.append((a, b))
     carries = [(round(a), round(b)) for a, b in kept]
     # A CARRY NEEDS AN ORIGIN THE GEOMETRY CORROBORATES. Every distance above is measured along the line
     # from where the line STARTS, shifted by tee_shift_yd. That shift only exists when tee_ok, fwd_tee or

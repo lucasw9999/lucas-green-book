@@ -23,7 +23,7 @@ than one -- the smoothing AND the grid the surface was sampled from -- which is 
 cannot stand for all 198 greens. The smoothing is a Gaussian of sigma 3 PIXELS: 1.20 m on a 0.4 m LiDAR
 grid, 1.51 m on the six 0.5 m seamless greens. What it erases is set by its measured amplitude
 response, not by that sigma.
-On the 192 LiDAR greens the Gaussian IS the whole limit, because the point cloud is finer than the
+On the 210 LiDAR greens the Gaussian IS the whole limit, because the point cloud is finer than the
 pixel: it keeps 0.0002 at 1.5 m, 0.17 at 4 m, 0.32 at 5 m and 0.50 at 6.4 m, so the half-amplitude
 wavelength is 6.39 m. A 5 m hollow is drawn a third as deep as it is, and anything much under 6 m
 across is gone. This paragraph understated that as "about a metre and a half" for a long time --
@@ -58,15 +58,15 @@ def gauss(a, sig_px):
 
 # --- the SOURCE grid a surface was resampled from, measured from the array alone ---------------
 # Fraction of second differences that must land at the float32 floor before a surface is called a
-# resample of something coarser. Set from the corpus, not guessed: across the 198 built surfaces the
-# six seamless greens sit at 49.5-72.3% (measured per axis) and the 192 LiDAR ones at 0.2-19.8%,
+# resample of something coarser. Set from the corpus, not guessed: across the 216 built surfaces the
+# six seamless greens sit at 49.5-72.3% (measured per axis) and the 210 LiDAR ones at 0.2-19.8%,
 # because a LiDAR green is interpolated from a dense point cloud over a Delaunay triangulation and
 # has no rectangular lattice at all. So the gap the threshold sits in is 2.51x: 0.25 is 1.27x above the
 # worst LiDAR green (the-reserve 18, N-S) and 1.98x below the weakest seamless one (monarch-bay 10,
 # E-W).
 #
-# THAT UPPER FIGURE WAS PUBLISHED HERE AS 6.1% AND IT IS 19.8%. 11 LiDAR greens carry an axis above
-# 6.1%, and the gap was published as 8x. The margin is REAL -- 0 false positives over the 192 and 6 of
+# THAT UPPER FIGURE WAS PUBLISHED HERE AS 6.1% AND IT IS 19.8%. 14 LiDAR greens carry an axis above
+# 6.1%, and the gap was published as 8x. The margin is REAL -- 0 false positives over the 210 and 6 of
 # 6 true positives, re-measured every run -- but it is about three times thinner than this paragraph
 # claimed, and this paragraph is the only recorded derivation of the constant, so it is what anyone
 # retuning it would work from. Every figure in it is now re-derived from the arrays by
@@ -118,7 +118,7 @@ def _flat_fraction(d2, scale):
     docstring offered the second reading -- "nothing at all between 5e-7 and 1e-4 ... a gap two orders
     of magnitude wide" -- and 0.6% of the values lie in that band, with the tolerance this actually
     uses INSIDE it, 4.79e-6 on that green. The insensitivity is real, and it is what was worth writing
-    down: the corpus verdict is unchanged for every multiplier from 0.5 to 80.8 times eps -- 0 of 192
+    down: the corpus verdict is unchanged for every multiplier from 0.5 to 80.8 times eps -- 0 of 210
     LiDAR greens called resampled, 6 of 6 seamless found -- and first breaks at 80.8514, which is 10.11x
     the 8.0 used here, where copper-valley 4 becomes the first LiDAR green called resampled.
 
@@ -426,10 +426,10 @@ def bank_run_yd(from_y, to_y, midx, cx, cy, theta, slope, my, step=0.01):
     hold. Two of the 21 affected greens have BOTH (copper-valley 6, bay-view 5).
 
     THIS DOES NOT MOVE THE DATUM, and that is measured rather than preferred. Re-basing depth on
-    S['putt'] -- the obvious fix -- moves all 198 printed depths by a median 2.74 yd and up to 9.64,
+    S['putt'] -- the obvious fix -- moves all 216 printed depths by a median 2.75 yd and up to 9.64,
     because `putt` is `erode(mask, 3) & (slope <= 10)` and the erosion trims 1.2 m of collar off BOTH
     ends of every green: a device for fitting a plane, not a statement about where the green stops.
-    Trimming just the leading steep run moves 12 depths, both ends 28. Either would put the printed
+    Trimming just the leading steep run moves 17 depths, both ends 35. Either would put the printed
     depth off the drawn OUTLINE, which runs through that same bank because it IS the polygon, and would
     cost the depth its independent check -- tests grade every printed depth against the true WGS84
     geodesic of its own chord to 1e-4 yd, and that only works while depth is a pure function of the
@@ -730,9 +730,10 @@ def green_summary(arr, mask, px_x, px_y, putt=None):
     # widened the band by one step: measured off the shipped books, the ambiguity is confined to
     # whether a 1.2% or 1.3% green carries "(faint)". 1.2% prints three marked (castlewood-valley 14,
     # copper-valley 17, valley-hi 14) against three unmarked (castlewood-valley 8, the-reserve 5,
-    # valley-hi 11), and 1.3% one marked (the-reserve 10) against two unmarked (micke-grove 1,
-    # monarch-bay 2) -- the-reserve 10 being a green that clears 1.2% of tilt and fails the 0.8 ft
-    # fall. Two of the 54 distinct percentages the books print, 9 of 198 greens; the reasoning below
+    # valley-hi 11), and 1.3% one marked (the-reserve 10) against three unmarked (micke-grove 1,
+    # monarch-bay 2, trump-national-los-angeles 17) -- the-reserve 10 being a green that clears 1.2% of
+    # tilt and fails the 0.8 ft
+    # fall. Two of the 54 distinct percentages the books print, 10 of 216 greens; the reasoning below
     # is unchanged.
     #
     # Do NOT "fix" that by comparing round(tilt_pct, 1) >= 1.2. It looks like consistency and is a
