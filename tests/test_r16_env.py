@@ -52,6 +52,10 @@ NOTHING HERE WRITES ANYTHING. Every test is an AST read plus a call to a pure pa
 module in this file is dropped from sys.modules -- see
 tests/test_r15_osm_keys.py::test_this_file_drops_no_module_from_sys_modules for why dropping
 `lidar_coverage`, whose helper this file drives, would fork the very function being graded.
+
+The last test is about `distribution.py` rather than the environment: it is the same class one layer
+over -- a fail-closed guard whose "uncertain input" test recognised ONE spelling of uncertainty, so
+four others walked through it -- and it belongs beside the sweep rather than in a file of its own.
 """
 import ast
 import contextlib
@@ -609,3 +613,71 @@ def test_the_pipeline_does_not_claim_a_vocabulary_the_code_does_not_have():
                 "%s is read as a raw environment value -- `=0` turns it ON -- and PIPELINE.md "
                 "describes it without saying so. An operator reading only the recipe cannot know "
                 "which of these keys the off-vocabulary covers." % key)
+
+
+# ---------------------------------------------------------------------------------------------------
+# The same defect one layer over: a guard whose "uncertain input" test recognises ONE spelling of
+# uncertainty. Here because it is the same class as everything above -- a refusal that a falsy value
+# walks straight through -- and because the fix belongs beside the vocabulary sweep, not in a file of
+# its own.
+
+# Every record that is NOT a parsed course.json, and what each one is in practice. `{}` is deliberately
+# absent: tests/test_phase1_regressions.py:19087 pins it as distributable, documenting "an ordinary
+# course with no build_mode", and that is the DEFAULT 11 corpus courses rely on.
+UNREADABLE_RECORDS = (
+    (None, "json.load never ran, or the file is missing"),
+    ([], "course.json holds a LIST -- a truncated or wrongly-rooted document"),
+    ((), "the same, as a tuple"),
+    (0, "course.json holds a bare number"),
+    (False, "course.json holds `false`"),
+    ("", "course.json is empty, or a reader handed back the empty string"),
+    ("yardage", "someone passed the MODE where the record goes -- and this raised AttributeError"),
+    (0.0, "course.json holds a bare float"),
+    (set(), "not JSON at all, but reachable from Python"),
+)
+
+
+def test_the_distribution_rule_fails_closed_on_a_record_it_cannot_read():
+    """"Every uncertain input has to resolve to no" -- its own docstring. Four other spellings of an
+    unreadable record answered *publishable*, and a fifth crashed.
+
+    RED before the fix, measured:
+        None       -> (False, 'Personal', ...)     the only one that was right
+        []         -> (True, 'Distributed', '')
+        0          -> (True, 'Distributed', '')
+        False      -> (True, 'Distributed', '')
+        ''         -> (True, 'Distributed', '')
+        'yardage'  -> AttributeError: 'str' object has no attribute 'get'
+
+    `(course or {})` laundered every falsy non-dict into an empty course and the only unknown-record
+    test was `if course is None`. This is the shared rule for ANY publisher: tools/gen_provenance.py
+    hands it JSON it loaded itself and writes the answer into the Status column of
+    legal/03_PROVENANCE_BY_COURSE.md, whose legend reads *"Distributed" = safe to hand out*.
+
+    An AttributeError is not the safe failure either -- gen_provenance catches broadly enough that a
+    crash inside one course's row is not the same as a refusal, and a decision this file exists to make
+    must be MADE, not raised.
+    """
+    import distribution
+
+    for record, what in UNREADABLE_RECORDS:
+        ok, label, why = distribution.distribution_status(record)
+        assert ok is False and label == "Personal", (
+            "distribution_status(%r) answered (%r, %r) -- %s. This decides whether a book may be "
+            "handed out; an input it cannot read has to resolve to no."
+            % (record, ok, label, what))
+        assert why, "a Personal verdict needs a stated reason; %r got none" % (record,)
+        assert distribution.is_distributable(record) is False, \
+            "is_distributable(%r) disagrees with distribution_status" % (record,)
+        # ...and no reader of the same record may crash instead of answering.
+        assert distribution.build_mode(record) == "", \
+            "build_mode(%r) must answer, not raise or invent a mode" % (record,)
+        assert distribution.is_yardage(record) is False, \
+            "is_yardage(%r) must answer, not raise" % (record,)
+
+    # The documented default is untouched: an absent build_mode means full, and 11 of 12 corpus
+    # records carry no build_mode at all.
+    assert distribution.distribution_status({}) == (True, "Distributed", ""), \
+        "an ordinary course record with no build_mode is distributable -- this is the documented default"
+    assert distribution.distribution_status({"slug": "x"}) == (True, "Distributed", "")
+    assert distribution.distribution_status({"build_mode": "yardage"})[1] == "Personal"
