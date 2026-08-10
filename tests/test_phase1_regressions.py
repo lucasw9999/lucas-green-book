@@ -18629,12 +18629,30 @@ def test_the_two_osm_cache_writes_sweep_up_after_a_failure(tmp_path, monkeypatch
 
     Both failures are induced between the staged open and the rename, which is the whole window a
     `finally` exists for:
-      * fetch() -- the stubbed reply hands back str where Overpass hands back bytes, so json.loads
-        and _check_response both pass and `f.write(data)` on the BINARY staging handle raises. Same
-        trick as the Unencodable objects the sibling staged-write tests use: what matters is an
-        exception after the .part exists, not which one.
+      * fetch() -- os.replace is made to raise at the commit, with the staged path asserted to be on
+        disk at that instant. Same principle as the Unencodable objects the sibling staged-write tests
+        use: what matters is an exception after the .part exists, not which one.
       * main() -- _flatten_relations is stubbed to return something json.dump cannot encode, so the
         text staging handle takes partial content and then raises.
+
+    ARM (1)'s INJECTION HAD STOPPED INJECTING ANYTHING, and the arm passed while testing nothing. It
+    handed back a `str` where Overpass hands back bytes, which used to break `f.write(data)` on the
+    binary staging handle. 89c265b's sibling change made the commit path RE-ENCODE from the parsed
+    reply -- it has to, because the committed cache now carries a top-level `query_bbox` and a key
+    cannot be added to bytes this module never decoded -- so `json.loads` accepts the str,
+    `json.dumps(...).encode()` produces real bytes, the write succeeds, and the whole arm became
+    `Failed: DID NOT RAISE`. That is the loud version; the quiet version is what this file keeps
+    finding, so the replacement is asserted rather than assumed.
+
+    AND NOT AT `json.dumps`, which is the obvious next reach and is wrong here: that call sits BEFORE
+    `open(tmp, "wb")`, so raising there never creates a `.part` at all and the `finally` this arm
+    exists for is never entered -- a green arm exercising nothing, one door down from the one just
+    fixed. The failure has to land inside the window between the staged open and the rename, and the
+    LAST instant of that window is the rename itself: a cross-device link, a read-only filesystem, a
+    full disk, a vanished parent. So os.replace raises ENOSPC, and the injection asserts the staged
+    file is on disk when it does -- positive proof the window was open, rather than an inference from
+    a clean directory afterwards. The injection is also COUNTED, so a commit path that stops calling
+    os.replace fails here instead of passing with nothing induced.
 
     Never touches courses/: _osm_fetch_harness repoints config.COURSE_DIR at tmp_path, so the real
     caches are not readable or writable from here.
@@ -18651,30 +18669,42 @@ def test_the_two_osm_cache_writes_sweep_up_after_a_failure(tmp_path, monkeypatch
 
     # (1) fetch()'s cache write, inside the retry loop that swallows the exception
     fetch_osm, queries = _osm_fetch_harness(tmp_path, monkeypatch, {'way["golf"="green"]': greens})
-
-    class _StrResp:
-        """Overpass's bytes, handed back as str -- parses fine, then fails the binary write."""
-
-        def read(self):
-            return json.dumps(greens)
-
-    import urllib.parse
     import urllib.request
     real_urlopen = urllib.request.urlopen
-
-    def _str_urlopen(req, timeout=None):
-        queries.append(urllib.parse.unquote(getattr(req, "full_url", None) or str(req)))
-        return _StrResp()
-
-    monkeypatch.setattr(urllib.request, "urlopen", _str_urlopen)
     # four attempts sleep 5 s each; the retry loop is the subject, not the wall clock
     monkeypatch.setattr(time, "sleep", lambda *a, **k: None)
 
-    with pytest.raises(SystemExit) as ei:
-        fetch_osm.fetch('way["golf"="green"](0,0,1,1);out geom tags;', "osm_geom.json")
+    # The failure lands at the LAST instant of the staged window -- the rename -- and records what was
+    # on disk when it did. Restored in a `finally` rather than by monkeypatch, so os.replace is broken
+    # for exactly one call and nothing else in the session can trip over it.
+    staged = []
+    real_replace = fetch_osm.os.replace
+
+    def _replace_boom(src, dst, *a, **k):
+        staged.append((os.path.basename(str(src)), os.path.exists(src)))
+        raise OSError(28, "no space left on device")
+
+    fetch_osm.os.replace = _replace_boom
+    try:
+        with pytest.raises(SystemExit) as ei:
+            fetch_osm.fetch('way["golf"="green"](0,0,1,1);out geom tags;', "osm_geom.json")
+    finally:
+        fetch_osm.os.replace = real_replace
     assert "FAILED to fetch" in str(ei.value), (
         f"the write was supposed to fail four times and exhaust the retry loop: {ei.value}")
     assert len(queries) == 4, f"the retry loop must have run 4 attempts, ran {len(queries)}"
+    # THE INJECTION FIRED, four times, and each time the staged file really existed. Without this the
+    # arm would pass on a commit path that never staged anything -- which is precisely how its previous
+    # injection went inert.
+    assert len(staged) == 4, (
+        f"the induced failure was raised {len(staged)} time(s), not once per attempt: {staged}. If the "
+        f"commit path no longer calls os.replace, this arm is inducing nothing and the `finally` it "
+        f"grades is untested -- fix the injection, do not delete the assertion.")
+    assert all(name.endswith(".part") for name, _ok in staged), \
+        f"the rename this arm broke is not the staged commit: {staged}"
+    assert all(ok for _name, ok in staged), (
+        f"the staged file was NOT on disk when the failure was raised: {staged}. Then the exception "
+        f"lands outside the window the `finally` exists for and this arm proves nothing about it.")
     left = sorted(os.listdir(str(tmp_path)))
     assert left == [], (
         f"a failed osm cache write left staging litter beside the only copy of the green polygons: "
@@ -24999,15 +25029,20 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-06): micke-grove 4,326,017; castlewood-hill 4,477,027;
-    merion 5,870,647; monarch-bay 4,934,430; copper-valley 6,084,531; callippe 6,798,262;
+    CURRENT SIZES (2026-08-09): micke-grove 4,326,017; castlewood-hill 4,477,027;
+    merion 5,870,647; monarch-bay 4,934,430; copper-valley 6,084,531; callippe 6,816,742;
     castlewood-valley 5,836,326; philadelphia 4,604,765; the-reserve 5,110,199;
     bay-view 4,243,411; valley-hi 4,698,534; poppy-ridge 341,146.
     (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
     rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
     net, those 121 less the 63 its conditional back-cover sentences added. micke-grove then gained 4
     on the same day, alone: legal/03 records that its Red 70.0/116 is the WOMEN'S pair, and blanking
-    the 116 that had been printing in a men's slope column turned that cell into `&mdash;`.)
+    the 116 that had been printing in a men's slope column turned that cell into `&mdash;`.
+    Then callippe alone gained 18,480 on 2026-08-09 and the date above moved with it: 89c265b made
+    `natural=wetland` a thing the query asks for and the map draws, so its book went from 2 filled
+    water polygons to 31 and nine of its cards stopped printing "0W" over hand-mapped marsh 1.0-5.7 m
+    off the played line. Eleven books are still dated 2026-08-06 and are byte-identical; the DATE is
+    graded against every book's own mtime, so one course rebuilding moves it for the whole sentence.)
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -29072,11 +29107,31 @@ def _renode_ring(pts, k, skew=False):
     return out
 
 
-def _is_area_water(g):
-    """The predicate render_hole's `waters` list uses."""
+def _is_area_water(g, rh):
+    """The tag half of the predicate render_hole's `waters` list uses -- wetland IMPORTED, not respelled.
+
+    This said "the predicate render_hole's `waters` list uses" and then listed two tag tests. 89c265b
+    added a third -- `natural=wetland` a card should draw -- and the claim went false without any test
+    failing, because omitting a class only NARROWS the sweep here: the re-noding test perturbed fewer
+    polygons and the coverage test compared fewer, so both stayed green while the wetland ink they now
+    exist to cover was invisible to them. That is the shape this campaign keeps finding, one level up
+    from the code: a helper that re-implements the rule it grades.
+
+    So the wetland half comes from render_hole.is_drawn_wetland, which is pure and tag-only precisely so
+    that fetch_osm.py's census and the renderer cannot disagree about it -- the same arrangement
+    is_visible_watercourse has. `rh` is passed rather than imported here because both callers already
+    hold the module bound to the course under test, and a second `import render_hole` inside a helper
+    would resolve against whatever COURSE happened to be in the environment.
+
+    The two tag tests above it are still spelled out, because render_hole spells them inline inside the
+    `waters` comprehension and there is no named function to borrow.
+    test_a_re_noded_water_polygon_does_not_change_what_the_card_prints grades this against that
+    comprehension's own source, so a FOURTH class added there fails here rather than narrowing a sweep.
+    """
     t = g.get("tags") or {}
     return (t.get("golf") in ("water_hazard", "lateral_water_hazard")
-            or t.get("natural") == "water")
+            or t.get("natural") == "water"
+            or rh.is_drawn_wetland(g))
 
 
 @needs_corpus
@@ -29102,7 +29157,45 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     form (render_hole.frac_len_within). This test re-nodes every area water polygon in the corpus at
     four densities, evenly and unevenly, and requires every card's water numbers and drawn water
     areas to be identical -- which is the property, not a spot check on one pond.
+
+    WHICH POLYGONS COUNT AS AREA WATER IS GRADED AGAINST render_hole'S OWN SELECTOR, first, because
+    _is_area_water is a second spelling of it and a second spelling went stale the moment a third class
+    was added: 89c265b made `natural=wetland` drawable, the helper did not follow, and NOTHING failed --
+    a class the helper omits is simply a class this test stops perturbing. Narrowing a sweep is the
+    quiet failure, so the tag literals and the named predicate are read out of the `waters`
+    comprehension in render_hole.py and required to appear in the helper.
     """
+    import ast
+    import inspect
+    rh_src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
+    sel = next((ast.get_source_segment(rh_src, n.value) for n in ast.walk(ast.parse(rh_src))
+                if isinstance(n, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "waters" for t in n.targets)), None)
+    assert sel, ("render_hole.py no longer has a `waters = [...]` assignment, so this test cannot tell "
+                 "whether _is_area_water still matches the selector it stands in for")
+    helper = inspect.getsource(_is_area_water)
+    want_tags = sorted({m for m in re.findall(r"'([a-z_]+)'", sel)
+                        if m in ("water_hazard", "lateral_water_hazard", "water", "wetland")})
+    assert want_tags, f"no water tag literal found in render_hole's waters selector:\n{sel}"
+    missing = [t for t in want_tags if f'"{t}"' not in helper and f"'{t}'" not in helper]
+    # `wetland` is spelled in the helper as the CALL, not as a literal -- that is the point of importing
+    # the real predicate rather than re-deriving its tag rules, which run to twenty lines in
+    # render_hole.is_drawn_wetland and refuse a 431-acre farmland-classification tile on its own tags.
+    if "wetland" in missing and _in_code("rh.is_drawn_wetland(g)", helper):
+        missing.remove("wetland")
+    assert not missing, (
+        f"render_hole's `waters` selector tests tag(s) {missing} that _is_area_water does not, so this "
+        f"test silently stops re-noding a whole class of drawn water -- which is exactly how the "
+        f"wetland class went unperturbed here for the life of 89c265b. The selector reads:\n{sel}")
+    called = sorted({m for m in re.findall(r"\bis_[a-z_]+(?=\()", sel)})
+    assert called, f"render_hole's `waters` selector no longer calls a named predicate:\n{sel}"
+    for named in called:
+        assert _in_code(named + "(", helper), (
+            f"render_hole's `waters` selector calls {named}() and _is_area_water does not, so this test "
+            f"re-nodes a narrower set of polygons than the card actually draws. Import the real "
+            f"predicate rather than re-implementing it -- render_hole.{named} is pure and tag-only for "
+            f"exactly that reason. The selector reads:\n{sel}")
+
     holes = inserted = pairs = 0
     counts = 0
     moved, errors = [], []
@@ -29124,7 +29217,7 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
                     out = []
                     for g in course:
                         pts = g.get("geometry") or []
-                        if _is_area_water(g) and len(pts) > 1:
+                        if _is_area_water(g, rh) and len(pts) > 1:
                             new = _renode_ring(pts, _k, skew=_skew)
                             _added[0] += len(new) - len(pts)
                             g = dict(g, geometry=new)
@@ -29240,7 +29333,7 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
         except SystemExit as e:
             errors.append((slug, repr(e)[:100]))
             continue
-        areas = [g for g in course if _is_area_water(g) and (g.get("geometry") or [])]
+        areas = [g for g in course if _is_area_water(g, rh) and (g.get("geometry") or [])]
         for hn in cfg.HOLE_NUMS:
             hole = lines.get(hn)
             if hole is None:
@@ -35062,6 +35155,24 @@ def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_pa
     assert checked >= 6, f"only {checked} of fetch_osm.py's published corpus figures were graded"
 
 
+# (course, drawn class) -> (count in the preserved 2026-08-03 book, count now, why it went UP).
+# A gain is the right direction for rule 2 -- it means the map draws a hazard it used to omit -- but it
+# has to be accounted for, and the pair of figures is what makes a later PARTIAL loss visible: the >= rule
+# below compares against the frozen baseline, so callippe falling 31 -> 20 would pass it and fails here.
+WATER_INK_GAINED_DELIBERATELY = {
+    ("callippe-preserve-golf-course", "water polygon"): (
+        2, 31,
+        "89c265b: `natural=wetland` was fetched by nothing and drawn by nothing, so nine of callippe's "
+        "shipped cards printed `0W` over hand-mapped seasonal wetland 1.0-5.7 m off the played line -- "
+        "a rule 2 violation in a built book. The query now asks for it and render_hole.is_drawn_wetland "
+        "decides which ones a card draws, filled in the same blue as a pond and counted in the same "
+        "footer W. Its watercourse polylines are unchanged at 8, and no other course moved in either "
+        "class; callippe was never one of febbbba's four re-fetched courses, so its old equality was a "
+        "coincidence of the frozen baseline rather than evidence.",
+    ),
+}
+
+
 def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     """fetch_osm.py disclaimed a question that has since been ANSWERED, and left it as unanswerable.
 
@@ -35078,7 +35189,29 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
 
     So no water was lost, and the module must say that rather than leaving a reader to conclude the
     opposite from a comment that only says the caches are gone. The evidence is named by path because
-    a claim whose evidence is not locatable is the thing this whole comment was written about."""
+    a claim whose evidence is not locatable is the thing this whole comment was written about.
+
+    THE COMPARISON WAS AN EQUALITY AND THE QUESTION IS A DIRECTION. `o.count == n.count` on each drawn
+    water class froze the 2026-08-03 evidence as the answer to a different question -- "has any count
+    changed?" -- and the question this test names is "did that re-fetch DROP a hazard the book draws?".
+    Gaining ink is the FIX for rule 2; losing it is the defect. 89c265b proved the difference: it made
+    `natural=wetland` something the query asks for and the map draws, callippe went from 2 filled water
+    polygons to 31, and NINE of its shipped cards stopped printing "0W" over hand-mapped marsh 1.0-5.7 m
+    off the played line. An equality pin called that regression. It was never load-bearing on callippe
+    either -- callippe was not one of the four courses febbbba re-fetched, so its equality was a
+    coincidence of the frozen baseline and not evidence about anything.
+
+    Re-based as a RULE plus a RECORD, not as a new snapshot:
+
+      * the rule, over all 12 courses and both classes, with no waiver: the drawn count may not FALL
+        below the preserved book's. A loss fails and names the class and both counts.
+      * the record: a pair that GAINED must be named in WATER_INK_GAINED_DELIBERATELY with the two
+        figures and why. That is what keeps `>=` from becoming a licence to accumulate ink nobody
+        looked at -- and, because the recorded figure is exact, it also catches a PARTIAL loss the bare
+        rule cannot: callippe falling 31 -> 20 still satisfies `20 >= 2` and fails the record.
+
+    Measured over all 12 preserved books for this change: callippe's water polygons 2 -> 31, its
+    watercourse polylines 8 -> 8, and NO other course moved in either class."""
     src = open(os.path.join(ROOT, "fetch_osm.py"), encoding="utf-8").read()
     EV = "greenbook-prefetch-evidence-2026-08-03"
     assert EV in src, (
@@ -35097,7 +35230,16 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
                       "lines are different lists in render_hole and the card footer prints them "
                       "separately"),
                      (r"no water was lost", "state the conclusion the counts support, or a reader takes "
-                      "the surrounding note about the lost caches for the answer")):
+                      "the surrounding note about the lost caches for the answer"),
+                     # The DIRECTION, because the equality below was re-based to it. If the module goes
+                     # back to claiming nothing moved, its comment and this test disagree about which
+                     # invariant the evidence supports -- and the module's comment is what a reader
+                     # deciding whether to trust a re-fetch actually reads.
+                     (r"no drawn water class lost ink",
+                      "state the invariant as a DIRECTION rather than an equality. One course has moved "
+                      "UPWARD since the evidence was taken, deliberately (89c265b's wetland fix), so "
+                      "'no count changed' is false while 'nothing lost ink' is the property that "
+                      "answers the hazard question")):
         assert re.search(pat, flowed), (
             f"fetch_osm.py must {why}. Its pre-re-fetch paragraph reads:\n  "
             + flowed[max(0, flowed.find("pre-re-fetch") - 200):flowed.find("pre-re-fetch") + 400])
@@ -35118,13 +35260,49 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
             new = os.path.join(ROOT, "courses", slug, "greenbook.html")
             if os.path.exists(old) and os.path.exists(new):
                 have.append((slug, old, new))
+    lost, unrecorded, mismatched = [], [], []
+    measured = {}
     for slug, old, new in have:
         o = open(old, encoding="utf-8").read()
         n = open(new, encoding="utf-8").read()
         for what, needle in PAT.items():
-            assert o.count(needle) == n.count(needle), (
-                f"{slug}: drawn {what} count {o.count(needle)} before the re-fetch, "
-                f"{n.count(needle)} now -- fetch_osm.py claims these are identical")
+            before, now = o.count(needle), n.count(needle)
+            measured[(slug, what)] = (before, now)
+            if now < before:
+                lost.append(f"{slug}: drawn {what} count {before} before the re-fetch, {now} now")
+            elif now > before:
+                said = WATER_INK_GAINED_DELIBERATELY.get((slug, what))
+                if said is None:
+                    unrecorded.append(f"{slug}: drawn {what} count {before} -> {now}")
+                elif (said[0], said[1]) != (before, now):
+                    mismatched.append(f"{slug} {what}: recorded {said[0]} -> {said[1]}, "
+                                      f"measured {before} -> {now}")
+    # THE RULE. No waiver, and it is the whole question this test's name asks.
+    assert not lost, (
+        "a re-fetch DROPPED drawn water ink a shipped book used to carry, which is the loss this "
+        "test exists to detect -- a hazard the card no longer draws is a hazard the golfer cannot "
+        "see:\n  " + "\n  ".join(lost))
+    # THE RECORD. A gain is the fix, but an UNEXAMINED gain is not: every one has to be accounted for,
+    # with the figures, so `>=` cannot quietly become "anything upward is fine forever".
+    assert not unrecorded, (
+        "a drawn water count GAINED ink against the preserved book and nothing here says why. Gaining "
+        "is the right direction -- 89c265b's wetland fix is why this comparison is a direction at all "
+        "-- but an unexplained gain is a re-fetch nobody looked at:\n  " + "\n  ".join(unrecorded)
+        + "\n  Add it to WATER_INK_GAINED_DELIBERATELY with both figures and the reason.")
+    assert not mismatched, (
+        "a recorded deliberate gain no longer measures what it records. If the figure FELL, ink was "
+        "lost from a course that had already gained it -- which the >= rule above cannot see, because "
+        "it compares against the 2026-08-03 baseline and not against what the book carries today:\n  "
+        + "\n  ".join(mismatched))
+    stale = sorted(k for k in WATER_INK_GAINED_DELIBERATELY
+                   if k in measured and measured[k][0] >= measured[k][1])
+    assert not stale, (
+        f"WATER_INK_GAINED_DELIBERATELY records {stale}, which no longer gains anything. Drop the "
+        f"entry rather than leave a record that would account for the next gain on its own.")
+    for key, (before, now, why) in WATER_INK_GAINED_DELIBERATELY.items():
+        assert isinstance(why, str) and len(why) > 40, f"{key} needs a real reason, got {why!r}"
+        assert now > before, f"{key} records a gain that is not one: {before} -> {now}"
+        assert key[1] in PAT, f"{key} names a drawn class this test does not count: {sorted(PAT)}"
     # anti-vacuous, but only where the corpus that backs the claim is actually built
     # DERIVED: every course in the corpus, not a hard 11. The gate stays because the preserved books
     # live outside the repo and a stranger has none of them; what it must not do is publish a figure
