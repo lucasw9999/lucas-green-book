@@ -19556,8 +19556,36 @@ def test_one_shared_rule_decides_what_may_be_distributed():
     assert ok2 is False and label2 == "Personal" and why2, "a Personal course needs a stated reason"
     assert distribution.is_distributable({"slug": "x"}) is True
     assert distribution.is_distributable({"slug": "y", "build_mode": "yardage"}) is False
-    assert distribution.is_distributable({}) is True, \
-        "an ordinary course with no build_mode is distributable; this documents the default"
+
+    # THE DOCUMENTED DEFAULT, and it is about a record that HAS something in it. "No build_mode means
+    # full" is stated in examples/course.json and 11 of the 12 corpus records rely on it, so it is
+    # pinned on a real-shaped record and on the empty-FIELD spelling of the same thing.
+    for record in ({"slug": "x"},
+                   {"slug": "x", "name": "X GC", "holes": {"1": [4, 1, 380]}},
+                   {"slug": "x", "build_mode": ""},
+                   {"slug": "x", "build_mode": None}):
+        assert distribution.is_distributable(record) is True, (
+            f"{record!r} has no build_mode, which is documented to mean 'full' and is what 11 of the 12 "
+            f"corpus records do; that default must stay distributable")
+
+    # AN EMPTY DICT IS NOT THAT RECORD, and this line used to say it was: `is_distributable({}) is True`
+    # sat here justified as "an ordinary course with no build_mode ... this documents the default", which
+    # conflated two inputs wearing one shape. A record with keys and no build_mode is an ordinary course.
+    # `{}` is a course.json that says nothing at all -- no slug, no name, no holes, no scorecard -- and
+    # the scorecard is the whole file. It is the shape a truncated or reset file has, and it is reachable
+    # without going through config.py's import-time validation: tools/gen_provenance.py loads
+    # courses/<slug>/course.json itself and writes this verdict straight into the Status column of
+    # legal/03_PROVENANCE_BY_COURSE.md, whose legend reads "Distributed" = safe to hand out. So an empty
+    # file published a book as shareable on no information whatever -- which is precisely what
+    # distribution.py's own docstring forbids: "every uncertain input has to resolve to no".
+    assert distribution.is_distributable({}) is False, (
+        "an EMPTY course record must not resolve to publishable. It is not the documented "
+        "'no build_mode means full' default -- that is pinned just above on records that have "
+        "content -- it is a course.json with no scorecard in it, and tools/gen_provenance.py stamps "
+        "whatever this answers into legal/03's Status column without any validation in between")
+    ok0, label0, why0 = distribution.distribution_status({})
+    assert ok0 is False and label0 == "Personal" and why0, \
+        "an empty course record must be refused WITH a stated reason, like every other refusal here"
 
     # It must FAIL CLOSED, because this decides whether a book may be handed out.
     # None means the course record could not be read -- an exact == "yardage" test answered
