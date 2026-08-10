@@ -99,7 +99,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. It rebinds `COURSE` and
-drops modules from `sys.modules` at 106 sites — counted across `tests/*.py` with comments and string
+drops modules from `sys.modules` at 109 sites — counted across `tests/*.py` with comments and string
 literals stripped, so every one of them executes; a plain `grep -c` reads higher, because the suite's
 own comments discuss the idiom — so a test can silently reconfigure the next one, and file order alone
 will never show it: a real `IndexError` in `render_hole` hid behind that for its whole life and only
