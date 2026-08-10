@@ -15,13 +15,14 @@ import urllib.parse, urllib.request, json, time, os, math
 from collections import Counter
 import config
 import geo
-# ONE definition of "a watercourse a card draws", and it lives with the renderer that draws it. The
-# census below counts water so the shrink guard can tell a lost hazard from churn; if it counted a
-# WIDER set than the map draws, a reply could lose a real stream and gain a culvert without moving the
+# ONE definition of "a watercourse a card draws", and of "a wetland a card draws", and both live with
+# the renderer that draws them. The census below counts water so the shrink guard can tell a lost
+# hazard from churn; if it counted a WIDER set than the map draws, a reply could lose a real stream and
+# gain a culvert -- or lose a real marsh and gain a farmland-classification tile -- without moving the
 # number. Importing render_hole for a predicate is this project's existing pattern -- fetch_hole_elev
 # does it for par3_exact_from_tee ("one definition of 'straight par 3'") and tools/check_osm_bbox.py
 # for DRAW_CORRIDOR_M -- and the module is import-safe: constants and functions only.
-from render_hole import is_visible_watercourse
+from render_hole import is_visible_watercourse, is_drawn_wetland
 # ONE spelling of "off" for this module's four acknowledgement keys, IMPORTED rather than re-written.
 # The four reads here were bare `os.environ.get("ALLOW_X")`, and a non-empty string is truthy -- so
 # ALLOW_HAZARD_SHRINK=0, =false and =no, every spelling a person reaches for to explicitly DISABLE the
@@ -40,6 +41,46 @@ from lidar_coverage import _env_on
 
 S, W, N, E = config.COURSE["osm_bbox"]   # [south, west, north, east]
 BB = f"{S},{W},{N},{E}"
+
+# THE BOX A CACHE WAS ACTUALLY FETCHED WITH, recorded IN the cache.
+#
+# tools/check_osm_bbox.py asks whether every hole's drawing corridor lies inside the fetch box, and it
+# had no way to know what that box was: it read `osm_bbox` out of course.json, which is a number a
+# person can edit. Reproduced when that gate was fixed: a narrow declaration reported
+# "15 hole(s) draw from outside the fetched box (worst 164 m short at hole 17)" and exit 1, then
+# WIDENING ONLY course.json -- osm_geom.json byte-identical, not re-fetched -- turned the same gate
+# green over the same narrow cache. The declaration is half the remedy and it is the free half; the
+# re-fetch is the half that matters, and nothing recorded whether it had happened.
+#
+# So every cache this module commits carries the box the query was built from. Written on the COMMIT
+# path (see _stamped), never separately, so a cache is never left half-annotated -- the same reason
+# every staged writer in this project writes to a `.part` and renames rather than editing in place.
+#
+# THE SHAPE IS THE GATE'S CONTRACT: a top-level `"query_bbox": [south, west, north, east]`, beside
+# Overpass's own version/generator/osm3s keys so that nothing reading ["elements"] notices it. That is
+# course.json's own order, Overpass's `(S,W,N,E)` bbox-filter order, and the order the `S, W, N, E =`
+# unpacking above already reads it in -- there is no re-ordering step anywhere for a reader to get
+# wrong. The gate reads it through `recorded_query_bbox`, which returns None for anything that is not
+# four numbers, and a recorded box that DISAGREES with the declaration is exit 1 with no waiver: that
+# is exactly the widened-but-never-re-fetched state.
+#
+# The literal is spelled in two files today -- here and as the gate's own `QUERY_BBOX_KEY` -- because
+# tools/ imports the engine and not the other way round, so the gate cannot yet read this name. The
+# engine is the right home for it (it is the writer); collapsing the two wants an edit to
+# tools/check_osm_bbox.py, which is not this change's to make.
+QUERY_BBOX_KEY = "query_bbox"
+
+
+def _stamped(j):
+    """`j` with the fetch box recorded in it, for the caller about to commit it. Mutates and returns.
+
+    ONE spelling, called from both commit paths -- fetch()'s and main()'s -- because two would drift,
+    and a cache carrying the key in one file and not the other is a cache whose fetch box is half
+    established. A re-run overwrites the value rather than accumulating: the box is a property of the
+    query that produced these bytes, not a history.
+    """
+    j[QUERY_BBOX_KEY] = [S, W, N, E]
+    return j
 
 def _digitized_of(path):
     """Hand-added elements in an existing cache file, tagged _digitized.
@@ -168,6 +209,17 @@ def census(elements):
     filled-in culvert a STRUCTURAL abort, which is the wrong severity for something no card draws. It
     is listed as volatile and not as a hazard for the same reason: it churns like the drawn lines do,
     and nothing is drawn or measured from it.
+
+    `natural=wetland` gets the SAME TREATMENT ONE CLASS OVER, and until this round it had none: the
+    query never asked for it, so this key was unreachable and `VOLATILE_KINDS` carried a dead entry for
+    it. The map now draws the wetland a card should draw (render_hole.is_drawn_wetland) in the same
+    filled blue as a pond and counts it in the same footer W, so the drawn ones are a HAZARD kind here,
+    exactly as `water` is -- callippe alone has 12 of them, one within 45 m of the played line on 16 of
+    its 18 holes, and nine of its cards printed "0W" over one. The ones the predicate refuses -- a
+    farmland-classification tile that merely carries the tag -- go in `wetland_undrawn`, which is
+    volatile and not a hazard, because a mapper re-classifying a landcover polygon is an OSM
+    improvement and nothing draws or measures it. Splitting them is what stops the swap this bucket's
+    neighbour already had to be split for: lose a real marsh, gain a tile, count unmoved, guard silent.
     """
     c = Counter()
     for e in elements:
@@ -180,6 +232,10 @@ def census(elements):
             c['water'] += 1
         elif t.get('waterway'):
             c['waterway' if is_visible_watercourse(e) else 'waterway_undrawn'] += 1
+        elif t.get('natural') == 'wetland':
+            # AFTER `waterway`, deliberately: a way carrying both keys is drawn by `creeks` as a line,
+            # so the line bucket is the one whose loss would remove its ink.
+            c['wetland' if is_drawn_wetland(e) else 'wetland_undrawn'] += 1
         elif t.get('natural') or t.get('landuse'):
             c[t.get('natural') or t.get('landuse')] += 1
         else:
@@ -197,8 +253,9 @@ def census(elements):
 VOLATILE_KINDS = frozenset({
     # observed in this corpus' caches: tree, tree_row, wood, waterway, building, rock
     # ...plus the other landcover kinds main()'s own queries ask for
-    'tree', 'tree_row', 'wood', 'forest', 'scrub', 'wetland',
-    'waterway', 'waterway_undrawn', 'building', 'bare_rock', 'rock', 'stone',
+    'tree', 'tree_row', 'wood', 'forest', 'scrub',
+    'waterway', 'waterway_undrawn', 'wetland_undrawn',
+    'building', 'bare_rock', 'rock', 'stone',
 })
 
 # Kinds whose loss removes drawn HAZARD ink from a card: sand and water, the tan and the blue, the two
@@ -225,7 +282,20 @@ VOLATILE_KINDS = frozenset({
 # golf=water_hazard, and they now get exactly what golf=water_hazard already got: nothing. That costs
 # this corpus no silence -- the largest fetchable pond count in it is 6 (the-reserve), and 2% of 6 was
 # already 0 -- and it stops a course that maps 50 ponds from being handed a free one.
-HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water', 'waterway'})
+#
+# `wetland` -- the natural=wetland AREAS a card draws -- is here for every one of `water`'s reasons and
+# was in VOLATILE_KINDS for none of them: it sat in that set as a DEAD ENTRY, for a key the query could
+# not produce, and the comment above that set claims the exemption is confined to kinds nothing a card
+# measures comes from. Now that the map draws them, an area is an area: no re-segmentation, no rarity
+# exemption, no floor. Callippe has 12 and nine of its cards printed 0W over one, which is precisely
+# what "a course with one wetland is the course where losing it is invisible" looks like when the
+# count starts at 12 and the guard has never seen a single one of them.
+#
+# `wetland_undrawn` -- the farmland/landcover tiles that merely carry the tag -- is volatile and NOT a
+# hazard kind, for `waterway_undrawn`'s reason exactly: no card draws it, nothing measures from it, and
+# a mapper re-classifying one is an OSM improvement that must not read as a lost hazard.
+HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water', 'waterway',
+                          'wetland'})
 
 # 2%, floor 1. Chosen from what these counts actually are on this corpus (the-reserve 2,462 trees and
 # 1,530 buildings, micke-grove 532 trees, the-reserve 49 waterway ways, merion 8 wood) against what the
@@ -383,6 +453,15 @@ def _check_response(j, path, out):
         # IDENTICAL on all 12, and the "NB NW" footer sequence is unchanged on hill, valley and copper.
         # No water was lost. Read the cache-level zero as unchecked, read the hazard question as
         # closed, and do not let the baseline go a second time -- which is what HAZARD_KINDS is for.
+        #
+        # THAT EQUALITY IS DATED 2026-08-03 AND ONE COURSE HAS SINCE MOVED, deliberately and UPWARD.
+        # Adding `natural=wetland` to the query and to `waters` took callippe from 2 drawn water
+        # polygons to 31 across its 18 cards, on 14 of them, 9 of those from 0W -- the hand-mapped
+        # seasonal wetland the fetch had never asked for. So the invariant the evidence supports is
+        # "no drawn water class LOST ink", not "no count changed": callippe was never one of febbbba's
+        # four re-fetched courses, and an equality frozen over the whole corpus cannot tell a lost
+        # hazard from a found one. Its watercourse polylines are unchanged, and no other course's
+        # counts moved in either class.
         lost, churn, hazard = {}, {}, {}
         for k in oc:
             if nc[k] >= oc[k]:
@@ -600,11 +679,17 @@ def fetch(query, out, write=True):
                                 f"  most likely mapped it for real. Keeping both would give one hole two\n"
                                 f"  greens. Delete the digitized copy and rebuild that hole's DEM.")
                 j.setdefault('elements', []).extend(add)
-                data = json.dumps(j, indent=2).encode()
                 print(f"  {out}: preserved {len(add)} of {len(kept)} digitized feature(s)")
             # Last gate before the bytes land: would this cache bind a hole to the wrong green?
             _check_bindings(j.get('elements') or [], out, prev)
             if write:
+                # RE-ENCODED FROM THE PARSED REPLY, always -- not the wire bytes. The committed file has
+                # to carry `query_bbox` (see _stamped), and a top-level key cannot be added to bytes
+                # this module never decoded. This used to write the wire bytes straight through except
+                # when digitized features had to be merged in, which is where the one re-encoding
+                # already lived; there is now one path instead of two. Overpass's own output is
+                # 2-space-indented, so `indent=2` keeps the file looking as it always has.
+                data = json.dumps(_stamped(j), indent=2).encode()
                 # write atomically: a crash or a full disk must not leave a half-written cache behind
                 tmp = path + ".part"
                 try:
@@ -641,6 +726,7 @@ def main():
  way["building"]({BB});
  way["natural"="water"]({BB});
  way["waterway"]({BB});
+ way["natural"="wetland"]({BB});
  way["natural"="wood"]({BB});
  way["landuse"="forest"]({BB});
  way["natural"="scrub"]({BB});
@@ -662,10 +748,17 @@ out geom tags;''', "osm_course.json", write=False)
     # The obvious alternative, `(._;>;); out geom;`, recurses down to every member NODE and does not
     # complete: four attempts against valley-hi returned 504, 504, 429, 504. This form answers the
     # same bbox in 1.3 s.
+    #
+    # `relation["natural"="wetland"]` is here for the reason the fairway relations are: a wetland mapped
+    # as a MULTIPOLYGON is invisible to a way-only query, and the class is now drawn hazard ink. Zero
+    # such relations exist across all twelve fetch boxes today (measured live, 2026-08-09, one union
+    # query over every box), so this clause costs no cache a single element and buys the class the same
+    # cover golf and water already have.
     rel = fetch(f'''[out:json][timeout:180];
 (
  relation["golf"]({BB});
  relation["natural"="water"]({BB});
+ relation["natural"="wetland"]({BB});
  relation["building"]({BB});
 );
 out body;
@@ -683,7 +776,7 @@ out geom;''', "osm_relations.json")
     tmp = cpath + ".part"
     try:
         with open(tmp, "w") as f:
-            json.dump(course, f, indent=2)
+            json.dump(_stamped(course), f, indent=2)
         os.replace(tmp, cpath)
     finally:
         # json.dump streams, so a value it cannot encode leaves PARTIAL json in the staged file, and

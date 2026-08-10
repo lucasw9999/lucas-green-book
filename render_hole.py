@@ -17,6 +17,24 @@ import json, math, os
 import config
 import geo
 from geo import mlat, mlon   # the project's ONE figure of the Earth -- never re-declare these
+# ONE spelling of "off" for this module's acknowledgement key, IMPORTED rather than re-written -- the
+# precedent fetch_osm.py and tools/verify_elevation.py already set. The read below was a bare
+# `os.environ.get("ALLOW_OSM_TREES")`, and a non-empty string is truthy, so `=0`, `=false` and `=no`
+# -- every spelling a person reaches for to explicitly DISABLE the waiver -- WAIVED the guard, and
+# then the NOTE beside it printed "ALLOW_OSM_TREES set" over an operator who had written 0.
+#
+# Safe in this direction, and checked rather than assumed: lidar_coverage imports only the standard
+# library and geo, so it cannot reach back to config, render_hole or fetch_osm -- see
+# tests/test_r16_wetland.py::test_render_hole_reads_its_tree_waiver_through_the_shared_env_on, which
+# pins both the identity and the absence of a cycle.
+#
+# IMPORTED AND NOT COPIED, which is the whole point: whatever spellings that one vocabulary comes to
+# recognise as off, this key recognises the same ones on the same day -- `off` and a trailing newline
+# out of a file read were added to it during this same session, and a hand-written copy here would have
+# had to be found again by that edit. The vocabulary is SPECIFIED at lidar_coverage._env_on and is
+# deliberately not restated here: five hand-copied restatements is what that edit had to collapse, and
+# a sixth in prose would be the same mistake in a form no test can run.
+from lidar_coverage import _env_on
 DIR = config.COURSE_DIR
 
 _LIDAR_TREES = None
@@ -30,12 +48,15 @@ def _lidar_trees():
     the tree stage, and generate.py would still produce a clean-looking 18-hole book).
 
     A missing file when there is no LiDAR at all is fine -- OSM trees are then the honest best
-    available. Refusing only when the tiles EXIST keeps that distinction."""
+    available. Refusing only when the tiles EXIST keeps that distinction.
+
+    The waiver is read through the shared `_env_on` (see the import), so an explicit off does not
+    waive it and the NOTE cannot claim it was set when it was not."""
     global _LIDAR_TREES
     if _LIDAR_TREES is None:
         p = os.path.join(config.COURSE_DIR, "trees_lidar.json")
         if not os.path.exists(p) and glob.glob(os.path.join(config.COURSE_DIR, "laz", "*.laz")):
-            if not os.environ.get("ALLOW_OSM_TREES"):
+            if not _env_on("ALLOW_OSM_TREES"):
                 raise SystemExit(
                     "this course has LiDAR tiles but no trees_lidar.json, so the hole maps would\n"
                     "  show only the handful of trees OSM happens to have (25 vs 5086 on Merion)\n"
@@ -136,6 +157,78 @@ def is_visible_watercourse(feature):
     if t.get('tunnel') in PIPED or t.get('covered') in PIPED:
         return False
     return t.get('location') not in HIDDEN_LOCATION
+
+
+# A LAND-CLASSIFICATION DATASET'S OWN LABEL FOR THE SAME POLYGON, on a way that also carries
+# natural=wetland. Any one of these means the outline came out of a bulk import of land COVER or land
+# USE classes -- `description` and `landuse` are the class itself, `attribution` names the programme,
+# `acres` is the source table's own area column -- rather than out of somebody mapping wet ground.
+#
+# At module scope beside PIPED/NOT_WATER so the predicate below can be graded by truth table rather
+# than through a whole rendered card.
+WETLAND_LAND_CLASS = ('description', 'landuse', 'attribution', 'acres')
+
+
+def is_drawn_wetland(feature):
+    """True when this OSM feature is wet ground a card should draw in the same blue as a pond.
+
+    WHY THIS CLASS IS DRAWN AT ALL. `natural=wetland` was fetched by nothing and drawn by nothing:
+    main()'s course query never asked for it, so `census` could not bucket it and the `waters`
+    selector below could not see it. Callippe Preserve is built on hand-mapped seasonal wetland -- 12
+    ways in its fetch box, 1,812-10,866 m^2, one within 45 m of the played line on 16 of its 18 holes
+    -- and NINE shipped cards printed "0W" over one, at 0.0-5.1 m off the played line, while the
+    nearest blue the map did draw on those holes was 66-216 m away. Marsh is not open water, but a
+    ball that finds it is lost or unplayable and the legend calls all of it "water (blue)"; the book's
+    second rule is never omit a hazard the golfer can reach.
+
+    ONE definition, here with the renderer that draws it, imported by fetch_osm.py for its census --
+    the same arrangement is_visible_watercourse has, and for the same reason: if the guard's unit were
+    wider than the drawn class, a reply could lose a real marsh and gain a landcover tile without
+    moving a number.
+
+    A BLANKET ADMIT IS WRONG, and one polygon in this corpus proves it. monarch-bay way 114224114 is
+    1,745,827 m^2 -- 431.46 acres by its own `acres` tag, 90.9% of monarch-bay's whole fetch box and
+    12.9x the area of the course's greens, fairways and tees put together -- imported from
+    California's Farmland Mapping and Monitoring Program, and it carries that programme's own label
+    for itself: `description=other land`, FMMP's residual category. It comes 23.5 m from hole 15's
+    centreline, 30.9 from 14's and 33.2 from 13's, so admitting it paints three cards blue over dry
+    shoreline. Its tags say it is not wetland, so it is refused on its tags.
+
+    THE THREE OTHER DISCRIMINATORS WERE MEASURED FIRST, and two of them do not work:
+      * `wetland=*` SUBTYPE is ANTI-CORRELATED with the admit set. None of callippe's twelve carries
+        one; the FMMP tile's neighbours in the refusal argument -- merion way 675572836 and
+        the-reserve way 82590918 -- both do (`wetland=marsh`). A subtype test refuses the twelve.
+      * OVERLAP WITH A GREEN OR FAIRWAY separates nothing: all 15 wetlands in this corpus overlap
+        0.0 m^2 of green and 0.0 m^2 of fairway, the tile included -- it lies BESIDE monarch-bay.
+      * AREA separates the tile and nothing else, and a cap would contradict what this engine already
+        does with water: it draws natural=water polygons of 327,633 m^2 (copper-valley) and
+        1,655,248 m^2 (the-reserve) because those are water. Size is a SYMPTOM of a landcover tile,
+        not the reason it is wrong, and a cap would omit a genuine 100-acre tidal marsh -- the
+        omission direction.
+
+    So the test is the provenance label, with one escape: a polygon a dataset positively classified AS
+    wet (`wetland=marsh`, `swamp`, `bog`...) keeps its subtype's word over its class label, because
+    refusing that would turn a hazard into an omission on the strength of a note.
+
+    WHAT IT CANNOT DECIDE, said plainly. A mis-tagged SMALL wetland with no import provenance is
+    indistinguishable from a real one and is drawn -- including merion way 675572836, a 151 m^2
+    `wetland=marsh` 2.48 m from a green and 9.6 m from hole 17's played line, which will take merion
+    14, 16 and 17 from 0W to 1W the next time that course is fetched. (It was offered as a second
+    counter-example on the grounds that its centroid sits inside a green. The two polygons do not
+    intersect: 0.0 m^2 of overlap, 2.48 m apart. What falls inside the green is the MEAN OF ITS
+    VERTICES, which is not a property of the shape -- re-noding the ring moves it, which is exactly
+    why frac_len_within replaced a vertex fraction on this same path.) Drawing a greenside wet hollow
+    a junior can reach is the side of that doubt this book takes, the same side it already takes for
+    `intermittent=yes`: PIPED, NOT_WATER and HIDDEN_LOCATION deliberately omit it, so a channel that
+    is dry in August still prints blue and counts W -- 34 of the 43 ways carrying that tag in this
+    corpus are drawn today, on 5 of the 12 courses.
+    """
+    t = feature.get('tags') or {}
+    if t.get('natural') != 'wetland':
+        return False
+    if any(k in t for k in WETLAND_LAND_CLASS):
+        return bool(t.get('wetland'))
+    return True
 
 
 def par3_exact_from_tee(par, arc_m, chord_m):
@@ -639,8 +732,19 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # card is admitted by the fraction half alone through those caps: copper-valley 15 counts way
     # 775614088, whose nearest approach over the played length is 255.4 m (16.1 m unclipped). That is
     # the over-report direction and it predates this gate.
+    #
+    # WETLAND JOINS THIS LIST RATHER THAN GETTING ITS OWN. `natural=wetland` a card should draw (see
+    # is_drawn_wetland) is selected by the same OR, at the same 45 m, filled in the same blue and
+    # counted in the same footer W as a pond -- because the legend a 12-year-old reads says "water
+    # (blue)" for all of it, and a ball in marsh is lost or unplayable exactly as a ball in a pond is.
+    # Giving it a class of its own would mean a new legend entry, a second corridor to justify and a
+    # second number on the card; giving it this one costs nothing but the ink it owes. Measured on
+    # callippe, the course this omission was found on: 14 of 18 cards gain water (9 of them from 0W),
+    # and nothing else on any card moves -- same bunkers, same trees, same yardage rows, same carries,
+    # same from-tee gutters; only the water counts and the frames the new ink is fitted into.
     waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
-             or g.get('tags',{}).get('natural')=='water') and g.get('geometry')
+             or g.get('tags',{}).get('natural')=='water'
+             or is_drawn_wetland(g)) and g.get('geometry')
              and (frac_in(g, CORRIDOR_M['water'])>=0.35 or any_within(g, CORRIDOR_M['water']))]
 
     creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g, CORRIDOR_M['water'])]
