@@ -311,6 +311,19 @@ def test_site1_render_hole_output_is_byte_identical():
     Separately, hashing the SVGs ALONE with and without the two keys gives identical digests on all twelve
     geometry courses. No card's bytes moved.
 
+    RE-PINNED A FOURTH TIME, and this is the first re-pin where a CARD really did change: the tee mark no
+    longer names the back tee on a card whose drawn centreline does not span that tee's yardage (see
+    render_hole's note beside `labels`, and tests/test_r18_tee_mark.py). The course this digest hashes,
+    bay-view-golf-club, has 7 such cards -- holes 2, 6, 7, 12, 14, 15 and 16 -- and each of them loses
+    exactly one `<text ... fill="#20402a">BLA</text>`, the label that stood at a pad the Black tee is 21 to
+    89 yd behind.
+
+    Measured rather than assumed, the same way the three re-pins above were: re-inserting that one element
+    into those 7 SVGs -- taking them from the shipped book, which was built by the previous engine -- and
+    hashing them with the NEW `info` reproduces the previous pin,
+    b4ce00b406d01035dbb906bf68ca6cb95af351e1ed9d2c5dd10bbd2907f850b5, exactly. So no `info` value moved,
+    the other 11 cards are byte-identical, and on those 7 the whole difference is the withdrawn label.
+
     WHAT THE CONSTANT STILL BUYS, which is why it is re-pinned rather than dropped: it catches a FUTURE
     edit at this site that touches something live. That was always its forward-looking job -- the
     docstring at the top of this file says a truly dead line cannot make this hash go red-then-green --
@@ -325,11 +338,11 @@ def test_site1_render_hole_output_is_byte_identical():
         parts.append(svg)
         parts.append(json.dumps(info, sort_keys=True, default=repr))
     digest = _sha(*parts)
-    assert digest == "b4ce00b406d01035dbb906bf68ca6cb95af351e1ed9d2c5dd10bbd2907f850b5", (
-        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned when `info` "
-        f"gained water_ids/creek_ids. If a deliberate engine change moved it, "
-        f"re-derive this digest and say in the docstring which commit moved it -- do not copy it out of "
-        f"this message blind")
+    assert digest == "8da5717cd04fd50d71180db15b24aaa720a2cb95d45e9b3a4325cc9aa830e128", (
+        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned when the tee "
+        f"mark stopped naming a tee the drawn line does not run from. If a deliberate engine change moved "
+        f"it, re-derive this digest and say in the docstring which commit moved it -- do not copy it out "
+        f"of this message blind")
 
 
 # ---------------------------------------------------------------------------------------------

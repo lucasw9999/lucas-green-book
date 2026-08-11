@@ -53,10 +53,24 @@ than quoted at them.
      Exactly one course reaches that branch, so a smarter `_title_lines` would rewrap ZERO of the
      other twelve and could not be exercised. The durable guard is the test below.
 
+  5. THE PENALTY-AREA INK COLLAPSES ON A MONO PRINTER, AND render_hole SAID IT DID NOT. `PENALTY_FILL`
+     was retuned from grey 188 to #f2f2f2 (242) at the owner's instruction -- near white, deliberately
+     faint, which is what the page needs -- with no test, and the note above it kept the RETIRED value's
+     derivation and measurement table while adding a second, wrong one for the new value: "107 off the
+     rough" against a real **5.08** levels, "the fairway pairing is the tightest" when the rough pairing
+     is four times tighter, and "the fill clears the mono bar everywhere" when it does not clear it at
+     all on rough. Measured through Chrome's own grayscale matrix on a rendered card: the fill reads
+     grey **242** against rough **237**, **5 levels of 255 (1.96%)** -- tighter than the **3.00 level**
+     bunker/fairway collapse in defect 1 that the whole PRINT IN COLOUR warning exists for, on a hazard
+     that costs a stroke under Rule 17. The colour is not the defect and is not changed; the false
+     clearance claim and the missing measurement were, and section 5 below is the measurement.
+
 WHAT IS DELIBERATELY NOT HERE. Nothing in this module re-asserts a hex string out of the engine's
-source. Defects 1 and 2 are graded off pixels sampled from a rendered card, and 3 off glyph boxes
-measured in a browser, because "the fill is still #efe3b8" is true of both the broken book and the
-fixed one.
+source as EVIDENCE. Defects 1 and 2 are graded off pixels sampled from a rendered card, and 3 off glyph
+boxes measured in a browser, because "the fill is still #efe3b8" is true of both the broken book and the
+fixed one. Section 5 does read render_hole's own published separations, and that is the opposite
+direction rather than an exception: there the source is the CLAIM under test and the luma computed here
+and the pixels sampled from a card are what it is tested against.
 """
 import glob
 import math
@@ -907,3 +921,229 @@ def test_no_course_name_over_thirty_characters_lacks_an_em_dash():
         f"_title_lines({probe!r}) now returns {lines}, which no longer splits 'Golf Club'. If it has "
         f"learned to wrap on phrase boundaries, the data rule above may no longer be needed -- decide "
         f"that deliberately rather than leaving both in place.")
+
+
+# ===========================================================================
+# 5. the penalty-area ink
+# ===========================================================================
+RENDER_HOLE = os.path.join(ROOT, "render_hole.py")
+
+# The whole ink list is taken from render_hole's own source, so a SIXTH ink cannot be added to the hole
+# map without joining the table this section grades. Every hex literal in that module is an ink -- there
+# is no other use of the notation there -- and the two penalty inks are the reference, not rows.
+def _hole_map_inks():
+    with open(RENDER_HOLE, encoding="utf-8") as fh:
+        src = fh.read()
+    return set(re.findall(r'"(#[0-9a-fA-F]{3,6})"', src))
+
+
+def _luma709(rgb):
+    """Rec.709 luminance -- the matrix `filter: grayscale(1)` applies, and so the quantity a mono
+    printer's conversion approximates. Written out here for the reason _rel_lum and _luma601 are."""
+    return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+
+
+def _rgb(spec):
+    """A table key -> the 8-bit sRGB it puts on white paper.
+
+    `#abc` is expanded the way a browser does. `#xxxxxx@0.6/#yyyyyy` is the wood fill's case: it is the
+    one fill render_hole draws with fill-opacity, so its own hex is not what reaches the page and the
+    composite over what lies under it is.
+    """
+    def one(h):
+        h = h.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+    if "@" in spec:
+        fg, rest = spec.split("@", 1)
+        alpha, bg = rest.split("/", 1)
+        f, b, a = one(fg), one(bg), float(alpha)
+        return tuple(f[i] * a + b[i] * (1 - a) for i in range(3))
+    return one(spec)
+
+
+def _penalty_note():
+    """render_hole.py's comment block above PENALTY_FILL -- the claim this section grades.
+
+    Delimited by the assignment itself and by the preceding blank-line-separated paragraph start, so it
+    is the note a reader of that constant actually reads and not the whole file.
+    """
+    with open(RENDER_HOLE, encoding="utf-8") as fh:
+        src = fh.read()
+    head, sep, _tail = src.partition('PENALTY_FILL = "')
+    assert sep, "render_hole.py no longer assigns PENALTY_FILL as a literal; this section cannot read it"
+    block = head.rsplit("\n\n", 1)[-1]
+    assert block.count("#") > 10, "the note above PENALTY_FILL is gone, so nothing publishes its ink"
+    return block
+
+
+# One row per ink, parsed out of that note:  #e9f0da 236.92 fill 5.08 (1.99%) edge 36.92
+_ROW = re.compile(r"(#[0-9a-f]{3,6}(?:@[\d.]+/#[0-9a-f]{3,6})?)\s+(\d+\.\d\d)\s+"
+                  r"fill\s+(\d+\.\d\d)\s+\(\s*(\d+\.\d\d)%\)\s+edge\s+(\d+\.\d\d)"
+                  r"((?:\s+(?:FILL|EDGE)-UNDER-BAR)*)")
+
+
+@needs_geom
+def test_render_hole_publishes_the_penalty_inks_real_separation_from_every_ink_it_touches():
+    """Every greyscale figure the PENALTY_FILL note publishes must fall out of the live constants.
+
+    THE DEFECT THIS REPLACES. That note carried two derivations at once -- the retired grey 188's, with
+    its own measurement table, and a second set of figures for the value that actually ships -- and every
+    figure in the second set was wrong: 25.6 levels off the fairway (really 19.21), 107 off the rough
+    (really 5.08), 151 off the trees (really 139.00), and the conclusion drawn from them, "the fairway
+    pairing is the tightest and is the one that matters", inverted the two closest pairs on the card.
+    Nothing measured any of it. A retune with no test is how a fill arrives 21x nearer its neighbour than
+    the file says it is.
+
+    SO THE TABLE IS GRADED, NOT THE PROSE AROUND IT. Each row names an ink, its Rec.709 luma over white,
+    and its distance from the penalty fill and from the penalty edge; all four numbers are recomputed
+    here from render_hole's own two constants. A retune moves 23 rows at once and the file cannot ship
+    until they all move with it, which is the property the missing test would have given.
+
+    AND THE ROWS THAT FAIL THE MONO BAR ARE MARKED, so a clearance cannot be claimed by omission. The
+    bar is `_GREY_TOL`, the same 12 levels defect 1 uses for "these two would tell apart in mono".
+    """
+    inks = _hole_map_inks()
+    import render_hole as _rh_probe                                   # noqa: F401  (import guard only)
+    fill, edge = "#f2f2f2", "#c8c8c8"
+    assert {fill, edge} <= inks, (
+        f"render_hole no longer draws {fill}/{edge}; this section grades those two constants and must "
+        f"be re-pointed at whatever replaced them")
+    # The composited wood fill is the only ink whose hex is not what reaches the page.
+    want = (inks - {fill, edge}) | {"#9cbf86@0.6/#ffffff", "#9cbf86@0.6/#e9f0da"}
+    note = _penalty_note()
+    rows = {m.group(1): m.groups()[1:] for m in _ROW.finditer(note)}
+    assert set(rows) == want, (
+        f"the note above PENALTY_FILL publishes separations for {len(rows)} ink(s) and the hole map "
+        f"draws {len(want)}. Missing: {sorted(want - set(rows))}. Not drawn: {sorted(set(rows) - want)}. "
+        f"Every ink the map draws is an ink this fill can lie beside, so the record is the whole set or "
+        f"it is a spot check -- which is how 'nothing it touches is within the bar' got published.")
+    fl, el = _luma709(_rgb(fill)), _luma709(_rgb(edge))
+    wrong, marked_fill, marked_edge, under_fill, under_edge = [], set(), set(), set(), set()
+    for key, (said_luma, said_fill, said_pct, said_edge, marks) in sorted(rows.items()):
+        y = _luma709(_rgb(key))
+        df, de = abs(y - fl), abs(y - el)
+        for what, said, real in (("luma", said_luma, y), ("off the fill", said_fill, df),
+                                 ("%", said_pct, df / 255 * 100), ("off the edge", said_edge, de)):
+            if abs(float(said) - real) > 0.005:
+                wrong.append(f"{key}: says {said} {what}, measures {real:.2f}")
+        if "FILL-UNDER-BAR" in marks:
+            marked_fill.add(key)
+        if "EDGE-UNDER-BAR" in marks:
+            marked_edge.add(key)
+        if df <= _GREY_TOL:
+            under_fill.add(key)
+        if de <= _GREY_TOL:
+            under_edge.add(key)
+    assert not wrong, (
+        f"{len(wrong)} published greyscale figure(s) in render_hole's penalty note are not what the live "
+        f"constants give:\n  " + "\n  ".join(wrong)
+        + "\n  Re-derive them from the constants; a figure typed beside a value that has moved is the "
+          "second copy this file keeps removing.")
+    assert marked_fill == under_fill, (
+        f"the note marks {sorted(marked_fill)} as failing the {_GREY_TOL:.0f}-level mono bar against the "
+        f"FILL; measured, the pairs that fail are {sorted(under_fill)}. An unmarked failure is a "
+        f"clearance claimed by omission on a hazard that costs a stroke under Rule 17.")
+    assert marked_edge == under_edge, (
+        f"the note marks {sorted(marked_edge)} as failing the {_GREY_TOL:.0f}-level bar against the "
+        f"EDGE; measured, the pairs that fail are {sorted(under_edge)}")
+    assert under_fill, (
+        "no ink is within the mono bar of the penalty fill any more. If that is real the note's account "
+        "of what carries this class on a mono print -- the edge and the footer's words, not the fill -- "
+        "is overstated and wants re-reading; re-measure before relaxing anything.")
+    # ONE VALUE PER CONSTANT. The retired derivation named its own grey in prose ("PENALTY_FILL sits at
+    # its midpoint, grey 188") and outlived the retune, so the note held two answers to one question. A
+    # grey level named in this note may only be one of the two live constants or one of the inks in the
+    # table above -- anything else is a value that has been retired and not removed.
+    allowed = {int(_luma709(_rgb(h))) for h in (fill, edge)}
+    allowed |= {round(_luma709(_rgb(h))) for h in (fill, edge)}
+    for key in rows:
+        allowed |= {int(_luma709(_rgb(key))), round(_luma709(_rgb(key)))}
+    stale = sorted({int(g) for g in re.findall(r"grey (\d{1,3})\b", note)} - allowed)
+    assert not stale, (
+        f"the note names grey level(s) {stale}, which are neither of this constant's own "
+        f"({sorted({int(_luma709(_rgb(h))) for h in (fill, edge)})}) nor any ink in its table. A retired "
+        f"value left in place beside the live one is where two figures for one ink start.")
+
+
+@pytest.mark.slow          # renders one hole card in a browser, twice
+@needs_geom
+def test_a_mono_print_cannot_tell_a_penalty_area_from_the_rough_it_lies_on():
+    """Measured on the page, not computed: what a black-and-white print does to a penalty area.
+
+    Same instrument as defect 1 -- a rendered card, Chrome's `filter: grayscale(1)`, both fills located
+    by COLOUR in the unfiltered screenshot so only ink that actually reached the page is sampled.
+
+    The fill loses nothing to the conversion (a pure grey is its own luma, which is checked here rather
+    than assumed) and its CONTRAST loses almost everything: 242 against the rough's 237. What a mono
+    reader gets instead is the boundary -- the #c8c8c8 edge, 37 levels off the same rough -- and the
+    footer's words, which name the class in text on every card that draws one.
+
+    Asserted in the direction the page is in, exactly as defect 1 is: if these two ever DO tell apart in
+    mono, this assertion fails and sends the next reader to the note it is grading rather than letting a
+    stale claim stand.
+    """
+    import numpy as np
+    # The two penalty inks are located through the ENGINE's own constants, not through a hex typed here:
+    # a retune has to be measured on the ink that actually reaches the page, and a stale mask would find
+    # antialiasing around the old value instead and measure nothing. The rough is written inline in
+    # render_hole and has no constant to read, so it is named -- as defect 1 names its two fills, and for
+    # the same reason: to FIND the ink in a screenshot. Neither is evidence of anything by itself.
+    rough = _hex("#e9f0da")
+
+    def near(a, rgb, tol=4):
+        return np.all(np.abs(a.astype(int) - np.array(rgb)) <= tol, axis=-1)
+
+    drew, rows = [], []
+    with _Browser(scale=6.25) as page:                       # 600 dpi
+        for slug in GEOM:
+            cfg, _gen, rh, _rg = _engine(slug)
+            best = None
+            for h in cfg.HOLE_NUMS:
+                svg, info = rh.render_hole(h, cfg.HOLES)
+                if info["penalty_areas"] and (best is None
+                                              or info["penalty_areas"] > best[1]["penalty_areas"]):
+                    best = (h, info, svg)
+            if best is None:
+                continue                                     # no penalty area on this course at all
+            drew.append(slug)
+            h, info, svg = best
+            shots = {}
+            for grey in (False, True):
+                css = "#w{filter:grayscale(1)}" if grey else ""
+                page.set_content(_wrap(svg, extra_css=css, box="width:1.29in;height:2.5in")
+                                 + "<style>#w svg{width:100%;height:100%}</style>")
+                shots[grey] = _shot(page)
+            C, G = shots[False], shots[True]
+            pen_f, pen_e = _hex(rh.PENALTY_FILL), _hex(rh.PENALTY_EDGE)
+            mp, me, mr = near(C, pen_f), near(C, pen_e), near(C, rough)
+            assert mp.any() and mr.any(), (
+                f"{slug} hole {h} reports {info['penalty_areas']} penalty area(s) and the sampled card "
+                f"shows {int(mp.sum())} px of the fill over {int(mr.sum())} px of rough")
+            rows.append((slug, h, info["penalty_areas"],
+                         float(np.median(C[..., 0][mp])), float(np.median(G[..., 0][mp])),
+                         float(np.median(G[..., 0][mr])),
+                         float(np.median(G[..., 0][me])) if me.any() else None))
+    assert drew, ("no course in this tree draws a penalty area, so the ink this section grades is not on "
+                  "any card here")
+    for slug, h, n, colour_pen, grey_pen, grey_rough, grey_edge in rows:
+        assert abs(colour_pen - grey_pen) < 1.0, (
+            f"{slug} hole {h}: the penalty fill reads {colour_pen:.0f} in colour and {grey_pen:.0f} "
+            f"through grayscale(1). A pure grey cannot move; this one did, so the fill is no longer "
+            f"R=G=B and the note's claim that it loses nothing to the conversion is false")
+        sep = abs(grey_pen - grey_rough)
+        assert sep <= _GREY_TOL, (
+            f"{slug} hole {h}: a mono print now separates the penalty fill ({grey_pen:.0f}) from the "
+            f"rough it lies on ({grey_rough:.0f}) by {sep:.2f} levels of 255. It was 5.00. If the two "
+            f"really do tell apart now, render_hole's PENALTY_FILL note and the guide card's PRINT IN "
+            f"COLOUR line are both understated and want re-reading -- this test is the record of why "
+            f"they were written")
+        assert grey_edge is not None, (
+            f"{slug} hole {h}: no penalty EDGE was sampled, so 'the boundary is what a mono reader gets "
+            f"instead' measures nothing")
+        assert abs(grey_edge - grey_rough) > _GREY_TOL, (
+            f"{slug} hole {h}: the penalty edge ({grey_edge:.0f}) is only "
+            f"{abs(grey_edge - grey_rough):.2f} levels off the rough ({grey_rough:.0f}), so nothing at "
+            f"all marks this hazard on a mono print -- the fill was already inside the bar")
+        assert n >= 1

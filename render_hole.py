@@ -522,48 +522,85 @@ def is_land_penalty_area(feature):
 # here, and it is not turf" without competing with them. Two louder versions were built first and both
 # failed for the same reason in different directions: violet was unreadable (a reader who knows this
 # course asked "what is the purple?"), and the Rules' own red -- Rule 17 marks a penalty area with red or
-# yellow stakes -- was legible but dominated all eighteen cards. Understated is the point; INVISIBLE is
-# not, so the value below is derived, not chosen for taste.
+# yellow stakes -- was legible but dominated all eighteen cards. Understated is the point, and what
+# "understated" costs on a black-and-white printer is measured below rather than assumed.
 #
-# THE VALUE, DERIVED. The guide card tells the reader to print in colour precisely BECAUSE this map's greys
-# collapse: a bunker and the fairway it lies in differ by 3.00 levels of 255, 2.87% in Rec.601 luma, and
-# tests/test_r17_print.py measures the sand vanishing off rendered cards. So a grey fill has to be placed
-# in that ladder, not dropped into it. Every fill the hole map draws, as Rec.709 grey over white -- which
-# is what Chrome's `filter: grayscale(1)`, and a mono printer after it, actually produce: white paper 255,
-# rough 236.9, bunker 226.4, fairway 222.8, water 204.1, the putting surface 173.0, a tee 144.2. The
-# widest gap in that ladder is the 31.1 levels between the putting surface and the water, so PENALTY_FILL
-# sits at its midpoint, grey 188. Measured against every ink it can touch, as (Rec.709 / Rec.601) levels
-# of 255:
+# THE VALUE IS THE OWNER'S INSTRUCTION AND NOT A DERIVATION: near white, "just a tiny grey", asked for
+# twice. #f2f2f2 is grey 242, thirteen levels off white paper. This constant was ONCE derived instead --
+# placed at the midpoint of the widest gap in the card's own grey ladder -- and that derivation is gone
+# from here along with the value it produced, because a constant carrying two derivations carries two
+# values as far as the next reader is concerned. Git holds the retired one; this note holds the live one.
 #
-#     white paper 67.0 / 67.0      rough 48.9 / 47.4       bunker 38.4 / 37.7     fairway 34.8 / 30.4
-#     water 16.1 / 13.6            putting surface 15.0 / 25.6                    tee 43.8 / 51.5
-#     tree marker 85.0 / 94.9      green outline 111 / 117    centre line 50.0 / 50.0
+# AND IT DOES NOT SURVIVE A MONO PRINTER. That is the plain statement, and it is not the one this note
+# used to make. In Rec.709 luma over white -- the matrix `filter: grayscale(1)` applies, and the one a
+# printer's mono conversion approximates -- the fill sits 5.08 levels of 255 from the rough it most often
+# lies on, 1.99%, and 5 levels as the page rounds them (242 against 237, sampled off a rendered card).
+# The bunker-in-fairway collapse the guide card's PRINT IN COLOUR line exists for is 3.66 levels in that
+# same matrix, 3.00 as the page rounds it (7.32 levels and 2.87% in Rec.601). So this pair is TIGHTER
+# than the one that warning was written for, on a hazard that costs a stroke under Rule 17. Three
+# sentences that stood here are withdrawn as false: "107 off the rough" (it is 5.08), "the fairway
+# pairing is the tightest and is the one that matters" (the rough pairing is nearly four times tighter),
+# and "the fill clears the mono bar everywhere" (on rough it clears nothing). None of them was measured,
+# and the retune that introduced them shipped with no test.
 #
-# The tightest of those, water at 6.3% of 255, is five times the 2.87% collapse the print warning exists
-# for, and it is a blue against a grey in colour. Nothing it touches is within the 12-level bar
-# test_r17_print uses for "these two would tell apart in mono".
+# EVERY PAIR THIS INK TOUCHES, so the record is complete rather than spot-checked -- a spot check is how
+# a 21x error survived. Each row is an ink's Rec.709 luma over white and its distance from this FILL and
+# from the EDGE below, in levels of 255. UNDER-BAR marks a pair inside the 12 levels
+# tests/test_r17_print.py takes as "these two would tell apart in mono". Every figure here is re-derived
+# from the two constants by that file's
+# test_render_hole_publishes_the_penalty_inks_real_separation_from_every_ink_it_touches, and the marks
+# with them, so a retune cannot leave one behind or claim a clearance by leaving a row unmarked:
 #
-# IT IS THE ONE INK ON THIS CARD THAT CANNOT LOSE ANYTHING TO A MONO PRINTER, because a pure grey is its
-# own luma under every matrix: R=G=B means the colour and greyscale renderings are identical by
-# construction, not by measurement. Verified rather than assumed -- the card is rendered through
-# `filter: grayscale(1)` and the fill sampled on both sides.
+#     rough                     #e9f0da             236.92  fill   5.08 ( 1.99%)  edge  36.92  FILL-UNDER-BAR
+#     white paper, every halo   #fff                255.00  fill  13.00 ( 5.10%)  edge  55.00
+#     bunker                    #efe3b8             226.45  fill  15.55 ( 6.10%)  edge  26.45
+#     fairway                   #cfe8b2             222.79  fill  19.21 ( 7.53%)  edge  22.79
+#     rough edge                #cdd9b4             211.78  fill  30.22 (11.85%)  edge  11.78  EDGE-UNDER-BAR
+#     wood over paper           #9cbf86@0.6/#ffffff 209.67  fill  32.33 (12.68%)  edge   9.67  EDGE-UNDER-BAR
+#     water                     #a9d3ef             204.09  fill  37.91 (14.87%)  edge   4.09  EDGE-UNDER-BAR
+#     wood over rough           #9cbf86@0.6/#e9f0da 202.44  fill  39.56 (15.52%)  edge   2.44  EDGE-UNDER-BAR
+#     bunker edge               #c9b477             180.06  fill  61.94 (24.29%)  edge  19.94
+#     tick ring                 #b4b4b4             180.00  fill  62.00 (24.31%)  edge  20.00
+#     wood fill, raw            #9cbf86             179.44  fill  62.56 (24.53%)  edge  20.56
+#     putting surface           #7cc45a             173.04  fill  68.96 (27.04%)  edge  26.96
+#     fairway edge              #79b356             159.95  fill  82.05 (32.17%)  edge  40.05
+#     wood edge                 #7ea36a             151.02  fill  90.98 (35.68%)  edge  48.98
+#     water edge, creek         #5b9bd0             145.22  fill  96.78 (37.95%)  edge  54.78
+#     tee                       #6aa15a             144.18  fill  97.82 (38.36%)  edge  55.82
+#     centre line               #8a8a8a             138.00  fill 104.00 (40.78%)  edge  62.00
+#     tree, tree row            #2f7d32             103.00  fill 139.00 (54.51%)  edge  97.00
+#     tee edge                  #3f6b34              93.67  fill 148.33 (58.17%)  edge 106.33
+#     pin                       #c0392b              84.69  fill 157.31 (61.69%)  edge 115.31
+#     from-tee number           #7a4a12              80.16  fill 161.84 (63.47%)  edge 119.84
+#     green outline / to-green  #2f5a26              77.10  fill 164.90 (64.67%)  edge 122.90
+#     tee label                 #20402a              55.61  fill 186.39 (73.09%)  edge 144.39
 #
-# DELIBERATELY THE QUIETEST INK ON THE CARD, at the owner's instruction: near white, "just a tiny grey".
-# These areas cover ground on 16 of this course's 18 holes, so an ink loud enough to read in isolation
-# buries what a player actually aims at -- the sand, the water and the line. The fill is grey 242, which
-# sits 25.6 levels (10.1%) off the fairway it most often lies on, 107 off the rough and 151 off the trees.
-# The fairway pairing is the tightest and is the one that matters: 10.1% is still 3.5x the 2.87% collapse
-# the print warning exists for, so it survives the page. Anything lighter would not.
+# SO WHAT CARRIES THIS CLASS IN BLACK AND WHITE IS NOT THE FILL, and rule 2 rests on those things rather
+# than on the ink. Two of them: the EDGE below, 36.92 levels off the rough and 22.79 off the fairway, and
+# the card's own WORDS -- the footer prints "penalty area" on every hole that has one, and both editions'
+# legends name the class and its colour (generate.penalty_mark, generate._penalty_note). The fill is what
+# a colour reader sees; the boundary and the words are what a mono reader is left with. That makes the
+# guide card's instruction to print in colour load-bearing on this class rather than advisory, which is
+# the honest way to state a near-white hazard fill and was the sentence this note was missing.
 #
-# THE EDGE is #c8c8c8 (grey 200), 42 levels below its own fill, because the BOUNDARY is the part a player
+# THE FILL ITSELF LOSES NOTHING TO THE CONVERSION, which is a different claim and is the one that is
+# true: a pure grey is its own luma under every matrix -- R=G=B means the colour and greyscale renderings
+# of this ink are identical by construction. Its CONTRAST is what collapses. Both halves are sampled off
+# a rendered card by test_a_mono_print_cannot_tell_a_penalty_area_from_the_rough_it_lies_on.
+#
+# THE EDGE is #c8c8c8, grey 200, 42 levels below its own fill, because the BOUNDARY is the part a player
 # acts on: relief is measured from where the ball last crossed it. It reads against the fill it encloses
-# rather than against the turf, which is what lets it stay quiet. It is 62 levels off the dashed centre
-# line (grey 138) and 120 off the brown cart path, so it cannot be mistaken for either.
+# rather than against the turf, which is what lets it stay quiet, and it is 62 levels off the dashed
+# centre line. Where the EDGE does not carry is in the table too: 4.09 levels off area water and 2.44 off
+# the wood fill composited over rough. Neither costs a warning -- water is drawn OVER this class in its
+# own blue and counted in the footer's W, and no card in the corpus draws the wood fill at all -- but
+# neither is a separation, and they are marked rather than left out. An earlier version of this
+# paragraph claimed 120 levels against "the brown cart path": this module draws no cart path, and the
+# only brown on a hole map is the from-tee gutter NUMBER.
 #
-# The cost is stated rather than hidden: on fairway this region is found by its FILL, not its edge -- the
-# edge is 18 levels off fairway and will not carry the boundary on its own there. On rough and trees both
-# carry easily. That is the trade the instruction asks for, and rule 2 still holds because the fill clears
-# the mono bar everywhere.
+# The trade the instruction asks for, the right way round: on ROUGH this region is found by its EDGE,
+# because its fill is 5.08 levels off the turf beneath it; on fairway both carry (fill 19.21, edge
+# 22.79). The wording here had those two reversed, and reversed the conclusion with them.
 #
 # FLAT AND OPAQUE, not hatched or translucent, and that is measured too. A hatch would say "staked" more
 # literally, and on this course it would also invent structure: 44 of its same-card penalty pairs OVERLAP
@@ -1620,11 +1657,11 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         y=min(max(y, fs), VBH-3)
         return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{fs:.1f}" text-anchor="middle" '
                 f'paint-order="stroke" stroke="#fff" stroke-width="{fs*0.24:.1f}" fill="{fill}" font-weight="700">{sn}</text>')
-    # place labels CLEAR of the features: GRN above the green top, BLA below the tee box,
+    # place labels CLEAR of the features: GRN above the green top, the tee name below the tee box,
     # so neither covers the green or the tee.
     grn_y = gtop - FS*0.35 if gtop - FS*0.35 > FS else gbot + FS
     bla_y = ty + FS*1.1 if ty + FS*1.1 < VBH-2 else ty - FS*0.6
-    labels=txt(tx, bla_y, back_tee, "#20402a") + txt(gcx, grn_y, "GRN", "#2f5a26")
+    grn_label = txt(gcx, grn_y, "GRN", "#2f5a26")
 
     # Distance ticks. LEFT number (green) = yds to the GREEN, the straight-line distance a
     # rangefinder reads. RIGHT number (brown) = yds from the BACK tee, measured ALONG the drawn
@@ -1672,6 +1709,37 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # The mirror case: a line traced PAST the tee. Same conclusion -- the length difference is at the
     # tee end -- so the same signed shift and the same from-tee derivation apply.
     past_tee = not tee_ok and line_traced_past_the_tee(arc_yd, total_yd, L/0.9144)
+
+    # THE TEE MARK NAMES THE BACK TEE ONLY WHERE THE LINE RUNS FROM IT, which is `tee_ok` and nothing
+    # weaker. The mark is drawn at the DRAWN LINE's start, and the label asserted that pad IS the tee
+    # the card headlines -- on all 216 cards, including the 22 where the line's own length says it
+    # cannot be. Merion 5 is the case: the card headlines 501 Championship, the traced centreline walks
+    # 397.9 yd (the Middle tee's 394 yd route), the line starts INSIDE mapped tee way 285155689, and
+    # the card put "CHA" on that pad -- telling a junior standing on it that they were on a tee that is
+    # 103 yd behind them, beside carries this file measures correctly FROM that real tee (276 / 297,
+    # through tee_shift_yd below). Two claims 103 yd apart on one card.
+    #
+    # WHY THE NAME IS DROPPED RATHER THAN MOVED OR CHANGED, each alternative measured:
+    #   * MARKING THE TRUE BACK TEE needs a position no source gives. On merion 5 the shortfall wants a
+    #     pad 94.5 m behind the line's start along the hole axis; the nearest candidates sit 57.8 m and
+    #     84.9 m back by centroid and the closer one carries `ref=2` -- it is hole 2's tee. The frame is
+    #     also fitted to the features it draws, so a mark 94 m outside it would rescale every card.
+    #   * NAMING THE PAD THE LINE STARTS ON rests on the forward-tee yardage match alone, which
+    #     line_runs_from_a_forward_tee's own measurement calls weak (it fires on 41% of decoys). This
+    #     course's hole 10 is the counter-example: its line starts on the REAR-MOST of the hole's pads
+    #     (the other four lie +18 to +98 m DOWN the hole) while the yardage match names Blue, so naming
+    #     the nearest pad would print a second wrong name.
+    #   * A GENERIC WORD would still be a claim, because the POSITION is the claim: the label points at
+    #     one of the 2 to 5 tee pads these cards draw, beside a headline naming one tee, so any word
+    #     pinned there says "this pad is the one". Only removing it removes that.
+    # Nothing else about the tee end changes: the pads keep their tee ink, the dashed line still starts
+    # on the one the route runs from, and the green stays at the top of the frame with GRN on it. What a
+    # reader loses on those 22 cards is a sentence the data never supported. par3_straight is
+    # deliberately NOT an alternative licence -- it recovers the tee's DISTANCE by collinearity, not the
+    # mark's position, and merion 9's mark would still stand 70 yd in front of the tee it named.
+    # Graded by tests/test_r18_tee_mark.py, which measures the pad against the tee rather than the
+    # label against a string.
+    labels = (txt(tx, bla_y, back_tee, "#20402a") if tee_ok else "") + grn_label
 
     # A PAR 3 is the one case where the from-tee distance needs no model at all -- see
     # par3_exact_from_tee for why, and why par 4/5 are excluded. This also CORRECTS the 64 par-3 rows
