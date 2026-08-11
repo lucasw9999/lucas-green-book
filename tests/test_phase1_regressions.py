@@ -36651,6 +36651,39 @@ WATER_INK_REMOVED_DELIBERATELY = {
 }
 
 
+# (course, drawn class) -> (count in the BUILT book, count the ENGINE draws, why they differ).
+#
+# THE BOOK-SIDE AXIS, restored. 39169b9 moved the "now" side of the comparison below off
+# courses/<slug>/greenbook.html and on to what render_hole draws, because a built book is a cached render
+# and the test's verdict was depending on when generate.py last ran. That motivation was right -- merion's
+# own book proves it -- but the commit also claimed the change was "no less strict", and that was FALSE:
+# it dropped the book entirely as an axis. Reproduced by an independent verifier: stripping ONE
+# `fill="#a9d3ef"` from one panel of a copy of copper-valley's book, with the engine untouched, passed both
+# this test and the footer-vs-map test, while the pre-39169b9 basis caught it (25 -> 24).
+#
+# So both axes are graded now. The engine answers "does the map draw this hazard"; the book answers "did
+# the ink survive being written", and ink can be lost between render_hole and the file -- a panel dropped, a
+# card not emitted, a template branch not taken. The bridge assertion is that the two AGREE, and a
+# divergence has to be declared here with both figures rather than reported in a message nobody asserts.
+#
+# EVERY ENTRY IS SELF-CLEARING. A stale book is a build that has not happened yet, so the moment the corpus
+# is rebuilt these figures become equal and the test says to delete the entry. That is deliberate: the
+# allowance is a note about work in flight, not a permanent exemption.
+BOOK_PREDATES_THE_ENGINE = {
+    ("copper-valley-golf-club", "watercourse line"): (
+        10, 9,
+        "This book predates 871070c. NHD way 83565232 is an `ArtificialPath` -- the synthetic line NHD "
+        "threads through a lake to keep its flow network connected -- lying 0.948 of its length inside "
+        "lake way 775614086, and the book still draws it as a creek across that lake. Rebuild clears this.",
+    ),
+    ("merion-golf-club", "water polygon"): (
+        5, 4,
+        "This book predates c506b3b. Way 225722025 is `natural=water NHD:FTYPE=LakePond` with a house "
+        "inside it, and hole 10's card in this book still fills it blue. Rebuild clears this.",
+    ),
+}
+
+
 def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     """fetch_osm.py disclaimed a question that has since been ANSWERED, and left it as unanswerable.
 
@@ -36751,6 +36784,7 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     # a hazard that stops being drawn now fails here on the commit that stops drawing it. The built
     # figure is carried into the messages so a reader can see whether the book is also behind.
     lost, unrecorded, mismatched = [], [], []
+    book_gap, book_settled = [], []
     measured = {}
     nogeom = []
     for slug, old, new in have:
@@ -36770,6 +36804,18 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
             measured[(slug, what)] = (before, now)
             built = book.count(needle)
             where = f" (the built book holds {built})" if built != now else ""
+            # THE BOOK-SIDE AXIS. The engine says what the map draws; the book says what got written, and
+            # ink can be lost between the two. Any divergence must be DECLARED, with both figures.
+            said_stale = BOOK_PREDATES_THE_ENGINE.get((slug, what))
+            if built != now:
+                if said_stale is None:
+                    book_gap.append(f"{slug}: drawn {what} -- the engine draws {now}, the built book "
+                                    f"holds {built}")
+                elif (said_stale[0], said_stale[1]) != (built, now):
+                    book_gap.append(f"{slug} {what}: BOOK_PREDATES_THE_ENGINE records book {said_stale[0]} "
+                                    f"vs engine {said_stale[1]}, measured book {built} vs engine {now}")
+            elif said_stale is not None:
+                book_settled.append(f"{slug} {what}: book and engine now agree at {built}")
             if now < before:
                 said = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
                 if said is None:
@@ -36785,27 +36831,109 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
                 elif (said[0], said[1]) != (before, now):
                     mismatched.append(f"{slug} {what}: recorded {said[0]} -> {said[1]}, "
                                       f"measured {before} -> {now}{where}")
-    # A RECORDED REMOVAL HAS TO NAME THE FEATURES IT REMOVED, AND THE ENGINE HAS TO AGREE IT REFUSES
-    # THEM. This is the extra bar the removal record carries and the gain record does not, because losing
-    # ink is the dangerous direction: without it, "we meant to remove that" is an assertion, and the one
-    # thing a reader cannot check from a count is WHICH mark went.
+    # A RECORDED REMOVAL HAS TO ACCOUNT FOR THE WHOLE DROP, BEHAVIOURALLY. This is the extra bar the
+    # removal record carries and the gain record does not, because losing ink is the dangerous direction.
+    #
+    # THE FIRST VERSION OF THIS WAS INVERTIBLE AND IT HID A REAL LOSS. It asserted
+    # `getattr(rh, predicate)(byid[wid])` -- "some named attribute of render_hole is TRUTHY for some named
+    # way" -- which says nothing about whether that way's ink left, whether the named attribute is a
+    # REFUSAL at all, or whether the named ways explain the count. Four wrong records passed it:
+    #
+    #     {83566408: "is_synthetic_flowline"}   a DIFFERENT flowline, inked on no card
+    #     {83565232: "is_visible_watercourse"}  INVERTED -- its truth means the way IS DRAWN
+    #     {83565232: "water_identity"}          not a predicate; returns a truthy tuple
+    #     {83565232: "centroid"}                a plain helper; returns a truthy tuple
+    #
+    # And with the engine patched so the synthetic flowline got its blue back (lake 775614086 dropped from
+    # `water_rings`) while genuine NHD StreamRiver way 83563564 -- reach 18040051002060 -- was silently
+    # dropped from `creeks`, the net stayed 9, the record's (10, 9) still matched, and the waiver excused a
+    # real creek losing its ink. Reproduced: 1 passed.
+    #
+    # SO THE TEST IS NOW BEHAVIOURAL, in two halves that fail for different reasons:
+    #
+    #   MUTED: deleting each named way from the cache must change NO card. Its ink is already absent, so
+    #   removing the feature can have no further effect. Catches a record naming a way that is still drawn.
+    #
+    #   RESTORED: lifting the named refusal for EXACTLY the named ways -- patching render_hole.<predicate>
+    #   to return False for those ids and delegate for everything else -- must bring the count back to
+    #   `before`. This is the half that cannot be faked. It proves the named refusal is (a) a refusal, since
+    #   making it False ADMITS ink rather than removing it, and (b) the WHOLE reason the count fell, since
+    #   any other loss leaves `restored` short of `before`.
+    #
+    # WHY NOT `len(ways) == before - now`, which is the obvious identity: it is FALSE in general and would
+    # have to be waived immediately. `before`/`now` count INK APPEARANCES across every card of the course,
+    # and one way is inked on as many cards as reach it -- merion way 675572836 is a single polygon drawn on
+    # holes 14, 16 and 17, so one way moves the count by three. A multipolygon is worse: philadelphia
+    # relation 16617182 arrives as FOUR ring elements with four ids, each inked wherever it reaches. The
+    # restoration identity above counts appearances on both sides and so holds for every shape.
+    #
+    # WHAT THIS STILL CANNOT SEE, stated rather than left to be found. Both figures in the record are
+    # pinned -- rec[0] against the preserved book and rec[1] against the engine, by the `mismatched`
+    # branch above -- and RESTORED pins that lifting the named refusal recovers all of rec[0]. What
+    # survives is a loss that is exactly offset by an unrecorded GAIN somewhere else on the same course
+    # and the same drawn class, leaving the net at rec[1] with the named way genuinely still refused.
+    # Attributing every appearance would need the previous engine, which a test cannot run. The threat
+    # actually demonstrated -- a silent loss with the net preserved by the named mark coming BACK -- is
+    # closed by MUTED, because a way that is drawn again cannot pass a deletion that changes no card.
     for (slug, what), rec in sorted(WATER_INK_REMOVED_DELIBERATELY.items()):
         assert len(rec) == 4 and len(rec[2]) > 200 and rec[3], (
             f"{slug} {what}: a removal record needs both figures, a reason, and the way ids it removed")
+        assert rec[1] < rec[0], f"{slug} {what}: records a removal that is not one: {rec[0]} -> {rec[1]}"
+        assert what in PAT, f"{slug} {what}: names a drawn class this test does not count: {sorted(PAT)}"
         if slug not in CORPUS:
             continue
         cfg, rh = _engine(slug)
+        needle = PAT[what]
         byid = {e["id"]: e for e in
                 json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]}
-        for wid, predicate in rec[3].items():
+        base = {hn: rh.render_hole(hn, cfg.HOLES) for hn in cfg.HOLE_NUMS}
+        for wid, predicate in sorted(rec[3].items()):
             assert wid in byid, (
                 f"{slug} {what}: the removal record names way {wid}, which is no longer in the cache. "
                 f"If OSM deleted it the record is dead and should GO -- do not leave it excusing a "
                 f"count it no longer explains")
-            assert getattr(rh, predicate)(byid[wid]), (
-                f"{slug} {what}: the record says way {wid} is removed because render_hole.{predicate} "
-                f"refuses it, and it does not. The count is being excused by a reason that is no "
-                f"longer true")
+            assert callable(getattr(rh, predicate, None)), (
+                f"{slug} {what}: render_hole.{predicate} is not a callable, so it cannot be the reason "
+                f"way {wid} is refused")
+            orig_load = rh.load
+            try:
+                rh.load = _drop_one(orig_load, wid)
+                moved = [hn for hn in cfg.HOLE_NUMS if rh.render_hole(hn, cfg.HOLES) != base[hn]]
+            finally:
+                rh.load = orig_load
+            assert not moved, (
+                f"{slug} {what}: the record says way {wid}'s ink was removed, but DELETING that way from "
+                f"the cache still changes card(s) {moved} -- so it is still being drawn and this record "
+                f"is excusing a loss somewhere else")
+        # RESTORED: lift the named refusals for the named ways only, and require the full count back.
+        by_pred = {}
+        for wid, predicate in rec[3].items():
+            by_pred.setdefault(predicate, set()).add(wid)
+        held = {p: getattr(rh, p) for p in by_pred}
+        try:
+            for predicate, ids in by_pred.items():
+                def lifted(feature, _base=held[predicate], _ids=ids):
+                    return False if feature.get("id") in _ids else _base(feature)
+                setattr(rh, predicate, lifted)
+            try:
+                restored = sum(rh.render_hole(hn, cfg.HOLES)[0].count(needle)
+                               for hn in cfg.HOLE_NUMS)
+            except Exception as e:
+                raise AssertionError(
+                    f"{slug} {what}: making render_hole.{sorted(by_pred)} return False for "
+                    f"{sorted(rec[3])} broke the render ({type(e).__name__}: {e}). A refusal predicate "
+                    f"returning False must simply ADMIT the feature; something that cannot be turned off "
+                    f"is not the reason this ink left") from None
+        finally:
+            for predicate, fn in held.items():
+                setattr(rh, predicate, fn)
+        assert restored == rec[0], (
+            f"{slug} {what}: lifting render_hole.{sorted(by_pred)} for ways {sorted(rec[3])} brings the "
+            f"drawn count to {restored}, not the {rec[0]} the preserved book carried. The named refusal "
+            f"is therefore NOT the whole reason the count fell to {rec[1]} -- either it is not a refusal "
+            f"at all (making it False would then remove ink, not restore it), or the ways named do not "
+            f"account for the drop and something else lost ink unrecorded. Name every way whose mark "
+            f"went, with the predicate that refuses it.")
     # THE RULE. No waiver, and it is the whole question this test's name asks.
     assert not lost, (
         "drawn water ink a shipped book used to carry is no longer drawn, which is the loss this "
@@ -36837,6 +36965,30 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     assert not stale, (
         f"WATER_INK_GAINED_DELIBERATELY records {stale}, which no longer gains anything. Drop the "
         f"entry rather than leave a record that would account for the next gain on its own.")
+    # ...and the same staleness rule for the removal record, which had none. A removal that has STOPPED
+    # happening is a standing pre-authorisation to lose ink of that exact magnitude for any reason at all.
+    assert not book_gap, (
+        "the built book and the engine disagree about how much water ink a course carries, and nothing "
+        "declares it:\n  " + "\n  ".join(book_gap)
+        + "\n  This is the axis 39169b9 dropped. The engine says what the map DRAWS; the book says what "
+          "was WRITTEN, and ink can be lost between them -- a panel dropped, a card not emitted, a "
+          "template branch not taken -- which no engine-side count can see. If the book is simply behind "
+          "the engine, record it in BOOK_PREDATES_THE_ENGINE with both figures and the fix it predates; "
+          "rebuilding clears the entry. If the book is behind for any OTHER reason, that is the finding.")
+    assert not book_settled, (
+        "BOOK_PREDATES_THE_ENGINE still records a divergence that has been resolved:\n  "
+        + "\n  ".join(book_settled)
+        + "\n  The corpus has been rebuilt; drop the entry. Left in place it would excuse the next "
+          "book-versus-engine gap on that course and class without anyone looking at it.")
+    for key, (bk, eng, why) in BOOK_PREDATES_THE_ENGINE.items():
+        assert isinstance(why, str) and len(why) > 60, f"{key} needs a real reason, got {why!r}"
+        assert key[1] in PAT, f"{key} names a drawn class this test does not count: {sorted(PAT)}"
+    stale_rm = sorted(k for k in WATER_INK_REMOVED_DELIBERATELY
+                      if k in measured and measured[k][0] <= measured[k][1])
+    assert not stale_rm, (
+        f"WATER_INK_REMOVED_DELIBERATELY records {stale_rm}, which no longer removes anything -- the "
+        f"count is back at or above the preserved book's. Drop the entry: left in place it would excuse "
+        f"the next loss of that size, whatever caused it.")
     for key, (before, now, why) in WATER_INK_GAINED_DELIBERATELY.items():
         assert isinstance(why, str) and len(why) > 40, f"{key} needs a real reason, got {why!r}"
         assert now > before, f"{key} records a gain that is not one: {before} -> {now}"
