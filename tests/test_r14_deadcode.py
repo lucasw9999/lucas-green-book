@@ -299,6 +299,18 @@ def test_site1_render_hole_output_is_byte_identical():
     other `info` value moved on this course; a dict with a new key serialises differently, and that is
     all this digest is reporting.
 
+    RE-PINNED A THIRD TIME for the same kind of reason, measured the same way: the `info` dict gained
+    `water_ids` and `creek_ids`, the ids of the features each card inked as water. They exist because rule 2
+    was being checked by COUNT and a count cannot see a swap -- a genuine `waterway=stream` was made to lose
+    its blue on copper-valley 3 with an offsetting mark on copper-valley 1, and every water test in the
+    suite passed. The two positive guards now check by IDENTITY instead
+    (test_no_card_omits_a_watercourse_the_played_line_reaches and its area sibling), which needs the ids.
+
+    Proved to be the whole cause, not assumed: stripping those two keys from the dict before hashing
+    reproduces the previous pin, 7ae3e441eb8d2529e3420559d8d25823efb7e85b0814287fab53aa69590eb773, exactly.
+    Separately, hashing the SVGs ALONE with and without the two keys gives identical digests on all twelve
+    geometry courses. No card's bytes moved.
+
     WHAT THE CONSTANT STILL BUYS, which is why it is re-pinned rather than dropped: it catches a FUTURE
     edit at this site that touches something live. That was always its forward-looking job -- the
     docstring at the top of this file says a truly dead line cannot make this hash go red-then-green --
@@ -313,9 +325,9 @@ def test_site1_render_hole_output_is_byte_identical():
         parts.append(svg)
         parts.append(json.dumps(info, sort_keys=True, default=repr))
     digest = _sha(*parts)
-    assert digest == "7ae3e441eb8d2529e3420559d8d25823efb7e85b0814287fab53aa69590eb773", (
-        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned when the "
-        f"penalty-area class was split out of the water class. If a deliberate engine change moved it, "
+    assert digest == "b4ce00b406d01035dbb906bf68ca6cb95af351e1ed9d2c5dd10bbd2907f850b5", (
+        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned when `info` "
+        f"gained water_ids/creek_ids. If a deliberate engine change moved it, "
         f"re-derive this digest and say in the docstring which commit moved it -- do not copy it out of "
         f"this message blind")
 

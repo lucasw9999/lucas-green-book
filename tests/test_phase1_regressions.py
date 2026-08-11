@@ -29955,8 +29955,16 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
                                           dict(near).get(named[(slug, hn)]),
                                           info["water_hazards"], info["waters"],
                                           svg.count('fill="#a9d3ef"'))
-            # every reachable area water must be among the ones the card counts AND fills
-            if info["water_hazards"] < len(near) or svg.count('fill="#a9d3ef"') < len(near):
+            # EVERY REACHABLE AREA WATER MUST BE AMONG THE ONES THIS CARD INKED, BY IDENTITY. This was a
+            # count comparison -- "at least as many fills as reachable waters" -- and a lower bound cannot
+            # see a SWAP: a card that stops filling a reachable pond and starts filling an unreachable one
+            # keeps its count and loses a hazard. The line sibling
+            # (test_no_card_omits_a_watercourse_the_played_line_reaches) was written for a DEMONSTRATED
+            # instance of that class, so the same strengthening belongs here rather than waiting for one.
+            # The counts are kept alongside, because a count that disagrees with the ids is its own defect.
+            if ([w for w, _d in near if w not in info["water_ids"]]
+                    or info["water_hazards"] < len(near)
+                    or svg.count('fill="#a9d3ef"') < len(near)):
                 omitted.append((slug, hn, sorted(near, key=lambda r: r[1]),
                                 info["water_hazards"], svg.count('fill="#a9d3ef"'),
                                 info["waters"]))
@@ -36684,6 +36692,46 @@ BOOK_PREDATES_THE_ENGINE = {
 }
 
 
+def water_ink_book_findings(before, now, built, has_removal, removal_now, allowance):
+    """Findings for ONE (course, drawn class) on the BOOK side. Pure, so the rules can be graded directly.
+
+    Three numbers: `before` from the preserved 2026-08-03 book, `now` from what the engine draws, `built`
+    from courses/<slug>/greenbook.html. The engine axis is graded by the caller; this is the book's.
+
+    `bk > eng` WAS PROPOSED AS THE INVARIANT AND IT IS NOT SOUND. The record means "this book is stale", and
+    a stale book can legitimately hold FEWER marks than the engine as well as more -- if the engine has
+    GAINED ink since the build, a book from before that gain is short of it. callippe is the standing
+    example in the other direction: preserved 2, engine 31 after the wetland fix, so a book built before it
+    would hold 2 against 31 and be perfectly honest. Both of today's entries happen to be book > engine,
+    which is exactly the coincidence that would make the wrong rule look right.
+
+    So the two rules that ARE sound:
+
+      BOOK_LOST_INK. The book may not hold FEWER marks than the PRESERVED book unless a removal is recorded
+      whose engine-side figure it matches. This is the laundering that has to be impossible: ink lost
+      between render_hole and the written file, excused as "the book predates the engine". A stale book
+      cannot explain a deficit against the baseline -- staleness explains a difference from the engine NOW,
+      never from what was already on paper in 2026-08-03.
+
+      ALLOWANCE_DIRECTION. An allowance whose book is SHORT of the engine is only possible when the engine
+      has gained against the baseline. If the engine drew a mark then and draws it now, a book written in
+      between cannot be missing it, and "stale" is not the explanation for why it is.
+    """
+    out = []
+    if built < before and not (has_removal and removal_now == built):
+        out.append(("BOOK_LOST_INK", before, now, built))
+    if allowance is None:
+        if built != now:
+            out.append(("UNDECLARED_GAP", before, now, built))
+    elif built == now:
+        out.append(("ALLOWANCE_SETTLED", before, now, built))
+    elif (built, now) != tuple(allowance):
+        out.append(("ALLOWANCE_FIGURES", before, now, built))
+    elif allowance[0] < allowance[1] and now <= before:
+        out.append(("ALLOWANCE_DIRECTION", before, now, built))
+    return out
+
+
 def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     """fetch_osm.py disclaimed a question that has since been ANSWERED, and left it as unanswerable.
 
@@ -36784,7 +36832,7 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     # a hazard that stops being drawn now fails here on the commit that stops drawing it. The built
     # figure is carried into the messages so a reader can see whether the book is also behind.
     lost, unrecorded, mismatched = [], [], []
-    book_gap, book_settled = [], []
+    book_gap, book_settled, book_lost = [], [], []
     measured = {}
     nogeom = []
     for slug, old, new in have:
@@ -36804,18 +36852,25 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
             measured[(slug, what)] = (before, now)
             built = book.count(needle)
             where = f" (the built book holds {built})" if built != now else ""
-            # THE BOOK-SIDE AXIS. The engine says what the map draws; the book says what got written, and
-            # ink can be lost between the two. Any divergence must be DECLARED, with both figures.
+            # THE BOOK-SIDE AXIS, in water_ink_book_findings so the rules can be graded directly. The
+            # engine says what the map draws; the book says what got written, and ink can be lost between
+            # the two. See that function for why "the book must hold MORE than the engine" is NOT the
+            # invariant, and what the two sound ones are.
             said_stale = BOOK_PREDATES_THE_ENGINE.get((slug, what))
-            if built != now:
-                if said_stale is None:
-                    book_gap.append(f"{slug}: drawn {what} -- the engine draws {now}, the built book "
-                                    f"holds {built}")
-                elif (said_stale[0], said_stale[1]) != (built, now):
-                    book_gap.append(f"{slug} {what}: BOOK_PREDATES_THE_ENGINE records book {said_stale[0]} "
-                                    f"vs engine {said_stale[1]}, measured book {built} vs engine {now}")
-            elif said_stale is not None:
-                book_settled.append(f"{slug} {what}: book and engine now agree at {built}")
+            rm = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
+            for kind, bf, nw, bt in water_ink_book_findings(
+                    before, now, built, rm is not None, rm[1] if rm else None,
+                    (said_stale[0], said_stale[1]) if said_stale else None):
+                msg = (f"{slug} {what}: preserved book {bf}, engine {nw}, built book {bt}")
+                if kind == "ALLOWANCE_SETTLED":
+                    book_settled.append(msg)
+                elif kind == "BOOK_LOST_INK":
+                    book_lost.append(msg + " -- the BUILT book holds fewer marks than the PRESERVED one")
+                elif kind == "ALLOWANCE_DIRECTION":
+                    book_gap.append(msg + " -- the allowance says the book is short of the engine while "
+                                          "the engine has not gained against the baseline")
+                else:
+                    book_gap.append(msg + f" -- {kind}")
             if now < before:
                 said = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
                 if said is None:
@@ -36867,14 +36922,22 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     # relation 16617182 arrives as FOUR ring elements with four ids, each inked wherever it reaches. The
     # restoration identity above counts appearances on both sides and so holds for every shape.
     #
-    # WHAT THIS STILL CANNOT SEE, stated rather than left to be found. Both figures in the record are
-    # pinned -- rec[0] against the preserved book and rec[1] against the engine, by the `mismatched`
-    # branch above -- and RESTORED pins that lifting the named refusal recovers all of rec[0]. What
-    # survives is a loss that is exactly offset by an unrecorded GAIN somewhere else on the same course
-    # and the same drawn class, leaving the net at rec[1] with the named way genuinely still refused.
-    # Attributing every appearance would need the previous engine, which a test cannot run. The threat
-    # actually demonstrated -- a silent loss with the net preserved by the named mark coming BACK -- is
-    # closed by MUTED, because a way that is drawn again cannot pass a deletion that changes no card.
+    # WHAT THIS CANNOT SEE, AND WHERE IT IS CAUGHT INSTEAD. These are COURSE-LEVEL TOTALS, so a loss on
+    # one card offset by a gain on another -- same course, same drawn class -- cancels and leaves every
+    # figure here matching. That is not hypothetical: genuine `waterway=stream` way 83563564 was made to
+    # lose its blue on copper-valley card 3 with an offsetting mark on card 1, and all 24 water-related
+    # tests passed. A delta against a baseline can never close that, because the baseline is a count and
+    # the previous engine is gone.
+    #
+    # So it is closed somewhere else, by a POSITIVE invariant that needs no baseline:
+    # test_no_card_omits_a_watercourse_the_played_line_reaches and its area sibling
+    # test_area_water_the_played_line_reaches_is_never_printed_as_no_water require, per card and BY
+    # IDENTITY, that every water the played line reaches is among the features that card inked. An
+    # offsetting gain elsewhere cannot satisfy those, and neither can a swap within one card.
+    #
+    # This test's job is therefore the narrower one it can actually do: notice that a course's totals moved
+    # at all, and refuse to let a move go unaccounted for. Do not widen it to carry rule 2 -- that is what
+    # the two positive guards are for, and a waiver here must never be the reason a card may lose ink.
     for (slug, what), rec in sorted(WATER_INK_REMOVED_DELIBERATELY.items()):
         assert len(rec) == 4 and len(rec[2]) > 200 and rec[3], (
             f"{slug} {what}: a removal record needs both figures, a reason, and the way ids it removed")
@@ -36967,6 +37030,13 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
         f"entry rather than leave a record that would account for the next gain on its own.")
     # ...and the same staleness rule for the removal record, which had none. A removal that has STOPPED
     # happening is a standing pre-authorisation to lose ink of that exact magnitude for any reason at all.
+    assert not book_lost, (
+        "the BUILT book carries less water ink than the preserved 2026-08-03 book, and no removal record "
+        "accounts for it:\n  " + "\n  ".join(book_lost)
+        + "\n  This is ink lost between render_hole and the written file, and it CANNOT be excused as a "
+          "stale book: staleness explains a difference from what the engine draws NOW, never a deficit "
+          "against what was already on paper. Either a removal record must name what went, with the way "
+          "ids and the predicate that refuses each, or a card has quietly stopped printing a hazard.")
     assert not book_gap, (
         "the built book and the engine disagree about how much water ink a course carries, and nothing "
         "declares it:\n  " + "\n  ".join(book_gap)
@@ -40893,3 +40963,317 @@ def test_the_containment_that_licenses_the_flowline_rule_is_measured_on_the_proj
     assert uncontained == [0.0, 0.0], (
         f"the uncontained flowlines measure {uncontained}, not [0.0, 0.0]. The rule rests on there being "
         f"NOTHING near the bar; a value between 0 and 0.90 is a new case to measure, not a value to record")
+
+
+@needs_corpus
+def test_no_card_omits_a_watercourse_the_played_line_reaches():
+    """The line-water sibling of test_area_water_the_played_line_reaches_is_never_printed_as_no_water.
+
+    THE HOLE THIS CLOSES, and it was a demonstrated omitted hazard. Every water check in the suite
+    compared COURSE-LEVEL TOTALS against the preserved books, so any loss and gain within one course and
+    one drawn class cancelled. Patching the engine so genuine `waterway=stream` way 83563564 lost its blue
+    on copper-valley card 3, offset by one extra polyline on copper-valley card 1, left the total at 9, the
+    removal record's (10, 9) still matching, MUTED still passing and RESTORED still returning 10 -- and all
+    24 water-related tests passed. A real creek's ink was gone from a shipped card and nothing saw it.
+
+    A delta against a baseline can never close that, at any granularity, because the baseline is a count.
+    So this is the POSITIVE INVARIANT instead: for every card, every visible watercourse the played line
+    reaches must be among the features that card inked. Stated per card and BY IDENTITY, so neither an
+    offsetting gain on another card, nor a swap within one card, nor a swap for an unreachable feature of
+    the same class can satisfy it.
+
+    REACHABILITY IS MEASURED HERE, NOT ASKED OF THE ENGINE, exactly as the area sibling does it: the hole
+    line comes from geo.hole_lines and the distance from `_dist_to_played_line`, which is a VERTEX witness
+    and so can only OVER-state how far a feature is. That direction is what makes it safe -- it can lose
+    this test power, never manufacture a failure. The engine's own reach test walks SEGMENTS, so the set it
+    selects is a superset of the set demanded here.
+
+    THE TWO NAMED REFUSALS ARE SUBTRACTED, because they are the two reasons a reachable watercourse may
+    legitimately carry no blue, and both are recorded rules rather than accidents: a channel 0.90+ contained
+    in a non-water `golf=penalty_area` is that area's drainage path and takes its ink, and a synthetic NHD
+    flowline 0.90+ contained in mapped water is redundant with the water it threads. Both are measured with
+    render_hole.frac_len_inside_rings -- the engine's own function, not a copy.
+    """
+    import geo
+    omitted, holes, reachable, errors = [], 0, 0, []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, geom = rh.load()
+            loc = cfg.COURSE.get("location") or {}
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except (Exception, SystemExit) as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        streams = [g for g in course if rh.is_visible_watercourse(g) and (g.get("geometry") or [])]
+        pa_src = [g for g in course if rh.is_land_penalty_area(g) and (g.get("geometry") or [])]
+        wr_src = [g for g in course if (g.get("geometry") or []) and len(g["geometry"]) > 2
+                  and ((g.get("tags") or {}).get("natural") == "water"
+                       or (g.get("tags") or {}).get("water"))]
+        for hn in cfg.HOLE_NUMS:
+            hole = lines.get(hn)
+            if hole is None:
+                errors.append((slug, hn, "geo.hole_lines has no line for this hole"))
+                continue
+            line = hole["geometry"]
+            try:
+                svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:100]))
+                continue
+            holes += 1
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+            mo, ml = _mlon(la0), _mlat(la0)
+
+            def em(la, lo, _mo=mo, _ml=ml, _la0=la0, _lo0=lo0):
+                return ((lo - _lo0) * _mo, (la - _la0) * _ml)
+            line_em = [em(q["lat"], q["lon"]) for q in line]
+            pa_rings = [[em(q["lat"], q["lon"]) for q in g["geometry"]] for g in pa_src]
+            wr_rings = [[em(q["lat"], q["lon"]) for q in g["geometry"]] for g in wr_src]
+            want = []
+            for g in streams:
+                d = min(_dist_to_played_line(em(p["lat"], p["lon"]), line_em) for p in g["geometry"])
+                if d >= WATER_CORRIDOR_M:
+                    continue
+                pts = [em(p["lat"], p["lon"]) for p in g["geometry"]]
+                if rh.frac_len_inside_rings(pts, pa_rings) >= rh.PENALTY_CONTAINMENT_MIN:
+                    continue                      # that penalty area's drainage path -- its ink, its mark
+                if (rh.is_synthetic_flowline(g)
+                        and rh.frac_len_inside_rings(pts, wr_rings) >= rh.PENALTY_CONTAINMENT_MIN):
+                    continue                      # a synthetic flowline over the water it threads
+                want.append((g["id"], round(d, 2)))
+            reachable += len(want)
+            missing = [w for w in want if w[0] not in info["creek_ids"]]
+            if missing:
+                omitted.append((slug, hn, sorted(missing, key=lambda r: r[1]),
+                                info["watercourses"],
+                                svg.count('stroke="#5b9bd0" stroke-width="1.8"')))
+            # ...and every id the card claims to have inked must actually have a polyline on it.
+            elif svg.count('stroke="#5b9bd0" stroke-width="1.8"') < len(info["creek_ids"]):
+                omitted.append((slug, hn, "counted watercourses without ink",
+                                info["watercourses"],
+                                svg.count('stroke="#5b9bd0" stroke-width="1.8"')))
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert holes == expected_geometry_holes(), \
+        f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
+    assert reachable >= 20, (
+        f"only {reachable} watercourse/hole pairs come within {WATER_CORRIDOR_M:g} m of a played line in "
+        f"the whole corpus -- the witness found nothing to check, so this test proves nothing")
+    assert not omitted, (
+        f"{len(omitted)} card(s) omit a watercourse the played line reaches -- (course, hole, [(way, "
+        f"metres from the played line)], counted watercourses, drawn polylines): "
+        f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}. A ball in a creek the card does not draw is "
+        f"the omission rule 2 forbids. If one of these is refused for a REASON, the reason has to be a "
+        f"named rule this test subtracts -- penalty-area containment or a synthetic NHD flowline over "
+        f"mapped water -- not a count that happens to balance somewhere else")
+
+
+def test_a_stale_book_cannot_launder_ink_that_went_missing_after_the_engine_drew_it():
+    """The book-side rules, graded on water_ink_book_findings directly.
+
+    THE HOLE THIS CLOSES. BOOK_PREDATES_THE_ENGINE accepted ("copper-valley", "water polygon"): (24, 25) --
+    the built book MISSING one fill relative to the engine -- and passed. That is the omitted-hazard
+    direction: a real ink loss between render_hole and the written file, laundered as "the book predates the
+    engine". Graded here rather than through the artifacts, because making it fail through them would mean
+    editing a built book or the preserved evidence, and both are read-only records.
+
+    `bk > eng` was proposed as the one-line fix and is NOT sound -- see water_ink_book_findings. A stale book
+    can honestly hold FEWER marks than the engine when the engine has GAINED since the build. The rules that
+    hold are that the book may not be short of the PRESERVED book without a recorded removal, and that an
+    allowance claiming the book is short of the engine needs the engine to have gained against the baseline.
+    """
+    def kinds(**kw):
+        args = dict(before=10, now=10, built=10, has_removal=False, removal_now=None, allowance=None)
+        args.update(kw)
+        return [k for k, *_ in water_ink_book_findings(**args)]
+
+    # THE VERIFIER'S CASE, exactly: book short of the engine, declared as stale, engine not gained. BOTH
+    # rules catch it, which is the right answer -- it is a deficit against the baseline AND an allowance
+    # pointing the wrong way -- so the assertion is that both fire, not that one does.
+    got = kinds(before=25, now=25, built=24, allowance=(24, 25))
+    assert set(got) == {"BOOK_LOST_INK", "ALLOWANCE_DIRECTION"}, (
+        f"a built book missing a mark the engine draws, declared as 'the book predates the engine', gives "
+        f"{got}. That is ink lost between the renderer and the file and it must be refused")
+    # The DIRECTION rule on its own: the book is short of the engine and the engine has NOT gained against
+    # the baseline, so staleness cannot be the explanation -- even where the baseline itself is that low.
+    assert kinds(before=24, now=25, built=24, allowance=(24, 25)) == [], (
+        "a book short of the engine where the engine HAS gained against the baseline is refused; that is "
+        "the honest stale-book case")
+    assert kinds(before=25, now=25, built=25, allowance=(25, 25)) == ["ALLOWANCE_SETTLED"]
+
+    # TODAY'S TWO REAL ENTRIES must both pass.
+    assert kinds(before=10, now=9, built=10, has_removal=True, removal_now=9,
+                 allowance=(10, 9)) == [], "copper-valley's real stale-book entry is refused"
+    assert kinds(before=2, now=4, built=5, allowance=(5, 4)) == [], \
+        "merion's real stale-book entry is refused"
+    # AFTER THE REBUILD both must settle, and the record must then be demanded gone.
+    assert kinds(before=10, now=9, built=9, has_removal=True, removal_now=9,
+                 allowance=(10, 9)) == ["ALLOWANCE_SETTLED"], \
+        "a rebuilt book that now agrees with the engine does not demand its allowance be dropped"
+    assert kinds(before=10, now=9, built=9, has_removal=True, removal_now=9) == [], \
+        "a rebuilt copper-valley with its allowance dropped and its removal recorded is refused"
+    assert kinds(before=2, now=4, built=4, allowance=(4, 4)) == ["ALLOWANCE_SETTLED"], \
+        "an allowance left behind after the book and engine agree is not reported as settled"
+
+    # A STALE BOOK SHORT OF THE ENGINE IS LEGITIMATE WHEN THE ENGINE HAS GAINED -- callippe's shape, a book
+    # written before the wetland fix. This is why `bk > eng` would have been the wrong rule.
+    assert kinds(before=2, now=31, built=2, allowance=(2, 31)) == [], (
+        "a book written before a deliberate GAIN is refused for holding less than the engine. That is the "
+        "honest stale-book case in the other direction, and the reason `bk > eng` is not the invariant")
+    # An undeclared divergence in either direction is still a finding.
+    assert kinds(before=10, now=9, built=10) == ["UNDECLARED_GAP"]
+    assert kinds(before=10, now=11, built=10) == ["UNDECLARED_GAP"]
+    # And a loss the removal record DOES account for is allowed, in the one shape that means.
+    assert kinds(before=10, now=9, built=9, has_removal=True, removal_now=9) == []
+    assert kinds(before=10, now=9, built=8, has_removal=True, removal_now=9) == \
+        ["BOOK_LOST_INK", "UNDECLARED_GAP"], "a book below even the recorded removal figure is accepted"
+
+
+# `intermittent=yes` is DELIBERATELY not a reason to refuse a watercourse -- a channel dry in August still
+# prints blue and counts W, because rule 2 says over-warn. The figures that sentence quotes are graded here,
+# because it published "34 of the 43 ways carrying that tag in this corpus are drawn today, on 5 of the 12
+# courses", which conflated the courses that CARRY the tag with the courses that DRAW one.
+INTERMITTENT = {"carried": 43, "carried_courses": 5, "drawn_ways": 13, "drawn_courses": 3,
+                "appearances": 29}
+
+
+@needs_corpus
+def test_the_intermittent_figures_the_wetland_prose_quotes_are_the_measured_ones():
+    """Four numbers in one sentence, each read off the corpus rather than remembered."""
+    carried, carried_courses = 0, set()
+    drawn_ways, drawn_courses, appearances = set(), set(), 0
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+        ids = {e["id"] for e in els if (e.get("tags") or {}).get("intermittent") == "yes"}
+        carried += len(ids)
+        if ids:
+            carried_courses.add(slug)
+        for hn in cfg.HOLE_NUMS:
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            hit = ids & (set(info["creek_ids"]) | set(info["water_ids"]))
+            if hit:
+                drawn_ways |= hit
+                drawn_courses.add(slug)
+                appearances += len(hit)
+    got = {"carried": carried, "carried_courses": len(carried_courses),
+           "drawn_ways": len(drawn_ways), "drawn_courses": len(drawn_courses),
+           "appearances": appearances}
+    assert got == INTERMITTENT, (
+        f"the intermittent figures measure {got}, recorded as {INTERMITTENT}. Re-measure the sentence in "
+        f"render_hole.is_drawn_wetland rather than the record -- and keep the four quantities distinct: "
+        f"ways that CARRY the tag, courses that carry it, ways DRAWN, courses that draw one")
+    assert drawn_ways, "no intermittent watercourse is drawn anywhere, so the over-warn claim is vacuous"
+
+
+# The two bay-view ways proposed for removal as "lines of blue over flat ground", and the measurement that
+# refused the proposal. DETRENDED incision: fit a plane to the bank ground returns and measure how far the
+# bed sits BELOW it. A bed-vs-bank ANNULUS must not be used -- a transect across either way falls 5-6 m over
+# 80 m, so an annulus averages the up-slope and down-slope sides and reads ~0 whatever the channel does.
+# Controls from the SAME chain that nobody proposes removing are in the table, and they are what settle it.
+BAY_VIEW_DETRENDED_INCISION_M = {
+    50256874: 0.509,     # proposed for removal -- 8 stations, min +0.090
+    50256875: 0.863,     # proposed for removal -- 2 stations, min +0.709
+    50256873: 2.389,     # control, kept -- 12 stations, min +1.018
+    50256813: 0.955,     # control, kept -- 18 stations, min +0.491
+}
+BAY_VIEW_PROPOSED_FOR_REMOVAL = (50256874, 50256875)
+
+
+@needs_corpus
+@pytest.mark.slow
+def test_the_two_bay_view_channels_proposed_for_removal_are_depressions_and_keep_their_ink():
+    """A refusal to refuse, with the measurement that justifies it, so it cannot be re-proposed blind.
+
+    Both ways were reported as having median incision -0.10 m and -0.11 m -- no channel, flat ground -- and
+    proposed for removal from the map. Measured here from class-2 GROUND returns, in true metres (bay-view's
+    tiles are ftUS on all three axes), with the bank surface FITTED and the bed's residual taken below it:
+    both are depressions, at every scale, and way 50256875's 0.94 m is indistinguishable from control way
+    50256813's 1.00 m -- a feature that stays. No measurement separates the proposed pair from a kept one.
+
+    Removing them would take hazard ink off bay-view 14 and 15, so the ink stays: rule 2's direction is
+    over-warn, and it is not close.
+    """
+    import laspy
+    from pyproj import CRS, Transformer
+    import geo
+    if "bay-view-golf-club" not in CORPUS:
+        pytest.skip("bay-view not built")
+    cfg, rh = _engine("bay-view-golf-club")
+    tiles = sorted(glob.glob(os.path.join(cfg.COURSE_DIR, "laz", "*.laz")))
+    if not tiles:
+        pytest.skip("bay-view has no LiDAR tiles here")
+    src = None
+    for t in tiles:
+        with laspy.open(t) as f:
+            src = f.header.parse_crs()
+            if src:
+                break
+    crs = src if hasattr(src, "axis_info") else CRS.from_user_input(src)
+    hf = crs.axis_info[0].unit_conversion_factor
+    vf = geo.vertical_scale(src)
+    assert abs(hf - 0.3048006096) < 1e-9 and abs(vf - hf) < 1e-9, (
+        f"bay-view's tiles are {crs.name!r} with factors h={hf} v={vf}; every figure below is in metres "
+        f"and depends on that conversion")
+    fwd = Transformer.from_crs("EPSG:4326", src, always_xy=True)
+    hdrs = []
+    for t in tiles:
+        with laspy.open(t) as f:
+            hdrs.append((t, f.header.mins[:2], f.header.maxs[:2]))
+    cache, HALF, BED = {}, 30.0 / hf, 5.0 / hf
+    els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    byid = {e["id"]: e for e in els}
+    import numpy as np
+    measured = {}
+    for wid, want in sorted(BAY_VIEW_DETRENDED_INCISION_M.items()):
+        g = byid[wid]["geometry"]
+        la0 = sum(q["lat"] for q in g) / len(g)
+        ml, mo = _mlat(la0), _mlon(la0)
+        st = [(g[0]["lat"], g[0]["lon"])]
+        for i in range(len(g) - 1):
+            seg = math.hypot((g[i+1]["lon"] - g[i]["lon"]) * mo, (g[i+1]["lat"] - g[i]["lat"]) * ml)
+            for k in range(1, max(1, int(seg / 20.0)) + 1):
+                t = k / max(1, int(seg / 20.0))
+                st.append((g[i]["lat"] + (g[i+1]["lat"] - g[i]["lat"]) * t,
+                           g[i]["lon"] + (g[i+1]["lon"] - g[i]["lon"]) * t))
+        res = []
+        for la, lo in st:
+            cx, cy = fwd.transform(lo, la)
+            got = []
+            for tp, mn, mx in hdrs:
+                if mx[0] < cx - HALF or mn[0] > cx + HALF or mx[1] < cy - HALF or mn[1] > cy + HALF:
+                    continue
+                if tp not in cache:
+                    las = laspy.read(tp)
+                    cache[tp] = (np.asarray(las.x), np.asarray(las.y), np.asarray(las.z),
+                                 np.asarray(las.classification))
+                px, py, pz, cl = cache[tp]
+                m = ((px >= cx - HALF) & (px <= cx + HALF) & (py >= cy - HALF) & (py <= cy + HALF)
+                     & (cl == 2))
+                if m.any():
+                    got.append((px[m], py[m], pz[m]))
+            if not got:
+                continue
+            px, py, pz = (np.concatenate([o[i] for o in got]) for i in range(3))
+            d2 = (px - cx) ** 2 + (py - cy) ** 2
+            bed, fit = d2 <= BED * BED, (d2 > BED * BED) & (d2 <= HALF * HALF)
+            if bed.sum() < 20 or fit.sum() < 50:
+                continue
+            X = np.column_stack([(px[fit] - cx) * hf, (py[fit] - cy) * hf, np.ones(int(fit.sum()))])
+            coef, *_ = np.linalg.lstsq(X, pz[fit] * vf, rcond=None)
+            res.append(float(coef[2]) - float(np.median(pz[bed]) * vf))
+        assert res, f"way {wid}: no station had enough class-2 ground to fit a surface"
+        measured[wid] = float(np.median(res))
+        assert abs(measured[wid] - want) < 0.06, (
+            f"way {wid}'s detrended incision measures {measured[wid]:+.2f} m, recorded as {want:+.2f}. "
+            f"Re-measure the note in render_hole beside `creeks` rather than the record")
+    for wid in BAY_VIEW_PROPOSED_FOR_REMOVAL:
+        assert measured[wid] > 0.0, (
+            f"way {wid} is no longer a depression ({measured[wid]:+.2f} m below the fitted bank surface). "
+            f"That was the whole basis for keeping its ink; re-open the question rather than acting on "
+            f"either the old claim or this record")
+    kept = min(measured[w] for w in measured if w not in BAY_VIEW_PROPOSED_FOR_REMOVAL)
+    assert max(measured[w] for w in BAY_VIEW_PROPOSED_FOR_REMOVAL) >= kept - 0.10, (
+        f"the proposed pair now measure clearly shallower than the shallowest KEPT way of the same chain "
+        f"({measured}). The refusal rested on there being no measurement that separates them")

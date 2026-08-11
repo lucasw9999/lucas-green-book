@@ -280,11 +280,19 @@ def is_synthetic_flowline(feature):
 # their surroundings. This ring returns essentially all of it -- there is no water surface in it.
 #
 # AND WHAT IS THERE INSTEAD. Of the 6277 returns inside, 4510 are class 2 (ground) confined to
-# 89.42-90.57 m, so dry mapped ground runs through the whole ring; there are ZERO class 9 (water)
-# returns. The other 1743 stand more than 2 m above that ground (median 89.61 m) in a rigid
+# 89.42-90.57 m, so dry mapped ground runs through the whole ring. The other 1743 stand more than 2 m
+# above that ground (median 89.61 m) in a rigid
 # 11.5 x 12.2 m footprint occupying 147 m^2 of the 456 m^2 ring, rising to 7.18 m with a single linear
 # ridge along its centre -- read off a 1.2 m height-above-ground raster. A water surface is flat and
 # 456 m^2 of it does not contain a 12 m pitched roof.
+#
+# "NO CLASS 9 (WATER) RETURNS" IS NOT PART OF THIS EVIDENCE, and an earlier version of this note offered
+# it as if it were. Measured: merion's delivery assigns NO class 9 anywhere -- an 805,499-point sample
+# across four of its tiles yields classes {1, 2, 7, 17, 18} only -- so the absence of a water class at
+# this ring says nothing that could have come out differently. A clause that cannot fail is worse than no
+# clause. The classification IS informative on the deliveries that use it (monarch-bay's carries class 9),
+# and this one does not, which is itself worth knowing about the method's limits: on merion the answer has
+# to come from return DENSITY and from the shape of what returned, and it does.
 #
 # THE RECORD EXPIRES WITH THE SHAPE IT DESCRIBES. The value is (node count when measured, the
 # measurement), and is_measured_not_water below matches on the node count: a ring somebody re-traces or
@@ -300,9 +308,10 @@ MEASURED_NOT_WATER = {
                 "computed here: the ring returns 13.77 pt/m^2 against 15.58 in a 45 m collar (0.884), "
                 "where merion's three genuine waters on the same tiles return 0.209, 0.240 and 0.371 of "
                 "theirs -- open water absorbs the pulse and this ring does not. 4510 of its 6277 returns "
-                "are class 2 ground at 89.42-90.57 m and none is class 9 water; the remaining 1743 stand "
-                "over 2 m above that ground in a rigid 11.5 x 12.2 m footprint covering 147 m^2 and "
-                "rising to 7.18 m with one linear ridge. The card printed a water hazard on hole 10 that "
+                "are class 2 ground at 89.42-90.57 m; the remaining 1743 stand "
+                "over 2 m above that ground in a rigid 11.5 x 12.2 m footprint covering 147 m^2 "
+                "and rising to 7.18 m with one linear ridge. Classification is NOT evidence here: "
+                "this delivery assigns no class 9 anywhere. The card printed a water hazard on hole 10 that "
                 "is a house."),
 }
 
@@ -378,8 +387,10 @@ def is_drawn_wetland(feature):
     why frac_len_within replaced a vertex fraction on this same path.) Drawing a greenside wet hollow
     a junior can reach is the side of that doubt this book takes, the same side it already takes for
     `intermittent=yes`: PIPED, NOT_WATER and HIDDEN_LOCATION deliberately omit it, so a channel that
-    is dry in August still prints blue and counts W -- 34 of the 43 ways carrying that tag in this
-    corpus are drawn today, on 5 of the 12 courses.
+    is dry in August still prints blue and counts W. Measured: 43 ways carry that tag, on 5 of the 12
+    courses, and 13 of them are DRAWN today on 3 courses -- bay-view, copper-valley and micke-grove --
+    over 29 way/hole appearances. (This read "34 of the 43 ... on 5 of the 12 courses", which conflated
+    the courses that CARRY the tag with the courses that draw one.)
 
     HOLE 15 IS NOT IN THAT LIST AND MUST NOT BE ADDED, and the trap is worth writing down because two
     readings of this marsh have now fallen into it. The marsh is 34.57 m from hole 15's OSM centreline --
@@ -1271,6 +1282,34 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         return (is_synthetic_flowline(g)
                 and frac_len_inside_rings([em(p['lat'], p['lon']) for p in g['geometry']],
                                           water_rings) >= PENALTY_CONTAINMENT_MIN)
+    # A THIRD REFUSAL WAS PROPOSED FOR THIS LIST AND IS REFUSED, because the measurement does not support
+    # it. bay-view ways 50256874 (165 m, holes 14-15) and 50256875 (30 m, holes 14-15) were put forward as
+    # "lines of blue over flat ground" -- mapped watercourses with no channel, median incision -0.10 m and
+    # -0.11 m, negative at p90 as well -- and proposed for removal.
+    #
+    # Measured here from class-2 GROUND returns, in true metres (bay-view's tiles are ftUS), three ways:
+    #
+    #   * bed-vs-bank ANNULUS is confounded by regional slope and must not be used: a transect across
+    #     either way shows a monotonic fall of 5-6 m over 80 m, so an annulus averages the up-slope and
+    #     down-slope sides and returns roughly zero whatever the channel does. That measure is the only
+    #     one that yields a negative number here, and only at its 10th percentile on 50256874.
+    #   * DETRENDED -- fit a plane to the bank ground returns and ask how far the bed sits BELOW it, which
+    #     is the measure that separates a channel from a hillside -- gives, at three scales:
+    #         way 50256874   +0.29 / +0.51 / +0.98 m     (min over stations +0.09)
+    #         way 50256875   +0.58 / +0.86 / +1.53 m     (min over stations +0.71)
+    #     Both are depressions below the surrounding surface at every scale, not flat ground.
+    #   * AND THE CONTROLS SETTLE IT. On the same measure at the same scale, two ways of the SAME chain
+    #     that nobody proposes removing read +2.39 m (50256873) and +0.96 m (50256813). 50256875's +0.86 m
+    #     is indistinguishable from 50256813's +0.96 m, so no measurement separates the proposed pair from
+    #     a feature that stays.
+    #
+    # AND THE ROUTE CARRIES WATER. Both are part of `scvwd:ROUTEID` 490036, and way 50256839 of that same
+    # route returns 3 of 5 stations as a TOTAL LiDAR void -- in-disc 7.24 / 0.30 / 6.49 pt/m^2 against
+    # reference 25.11 / 27.31 / 30.03, ratios 0.288 / 0.011 / 0.216 -- which is open water. A route that
+    # holds water 300 m downstream is not flat ground upstream.
+    #
+    # So the ink stays. Removing it would take a hazard off bay-view 14 and 15, which is the omission
+    # direction, and rule 2 says over-warn when the evidence is this far from agreeing.
     creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry')
              and any_within(g, CORRIDOR_M['water']) and not runs_inside_a_penalty_area(g)
              and not runs_inside_drawn_water(g)]
@@ -1530,8 +1569,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #     -35 are multi-return vegetation, not water. That is consistent with a tidal bed exposed at low
     #     water, which is when a coastal delivery is flown, and it means the flight cannot measure the
     #     wetted width either.
-    #   * THE HOLE 18 CROSSING HAS NO RETURNS AT ALL over the same +/-100 m window -- one tile's bounding
-    #     box overlaps it and the tile holds no points there -- so it cannot be measured.
+    #   * THE HOLE 18 CROSSING HAS NO COVERAGE AT ALL, so it cannot be measured. The 3000-ft cell
+    #     containing it, w6072n2076, is not one of the seven tiles on disk, and the transect returns ZERO
+    #     points. (An earlier wording here said a tile's bounding box overlaps it and holds no points
+    #     there. That is misleading: w6075n2076's bbox does overlap the axis-aligned window and does hold
+    #     16,249 points inside it, all of them 58+ m east of the 20 m along-channel strip. The coverage
+    #     claim is about the cell that was never fetched, not about a neighbour's bounding box.)
     #
     # THE CORRECTED TROUGH IS WIDER THAN THE ERRONEOUS ONE AND CLOSER TO THE CLAIM IT REFUSES, said plainly
     # rather than left for the next reader to notice: 42 m against the 25 m first published, against a
@@ -2318,6 +2361,22 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               # deduplicate separately cannot notice it.
               waters=len({water_identity(g) for g in waters + creeks}),
               water_hazards=len(waters), watercourses=len(creeks),
+              # WHICH FEATURES THIS CARD INKED AS WATER. Nothing prints these and nothing may: the card
+              # names classes, not OSM ids. They exist so the suite can check rule 2 by IDENTITY instead
+              # of by COUNT, which is the difference between catching an omission and missing it.
+              #
+              # A count-based rule-2 check is a LOWER BOUND -- "at least as many marks as reachable
+              # waters" -- and a lower bound cannot see a SWAP. A card that stops drawing a reachable
+              # creek and starts drawing an unreachable one has the same count and one hazard fewer on
+              # the page. Worse, a course-level total cannot even see a swap between two CARDS: a genuine
+              # `waterway=stream` was made to lose its blue on copper-valley 3 while an offsetting mark
+              # appeared on copper-valley 1, and every water test in the suite passed. These two keys are
+              # what closed that, so they are part of the safety argument and not debug residue.
+              #
+              # Sorted tuples so a card's record is stable and comparable; ids only, because the suite
+              # already holds the cache and can look up anything else it needs.
+              water_ids=tuple(sorted(g['id'] for g in waters)),
+              creek_ids=tuple(sorted(g['id'] for g in creeks)),
               # Non-water penalty areas this card DRAWS. The card prints no number for them and must not
               # -- see the `penalty_areas` selector for why 28 contiguous ways are not 28 places -- so
               # this key exists for two consumers only: generate.penalty_mark, which asks whether the
