@@ -95,7 +95,13 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   (`RULE_4_3_SCALE_CAP_IN_PER_5YD` — the same number `tools/check_scale.py` gates every green
   against), so a card‑size or cap change cannot leave the printed claim behind without
   `tests/test_r18_scale.py` catching it. It does not print on Poppy Ridge: that book is
-  non‑distributable and prints no green image, so it has no scale to disclose.
+  non‑distributable and prints no green image, so it has no scale to disclose. Nor does it print on
+  the **enlarged (COACH=1) edition** — the one edition built deliberately past this cap (see below)
+  — though not because of DISTRIBUTABLE: every enlarged book in the corpus is distributable too. It
+  is architectural: this line is emitted only inside `cover_panel()`, which the enlarged build never
+  calls (it calls a separate `coach_cover_panel()` instead), confirmed by rendering both in memory
+  and pinned by a mutation test in `tests/test_r18_scale.py` that splices the claim into the
+  enlarged cover and proves the check catches it before trusting it clean on the real function.
 - **Which books this covers, and the one it does not.** Everything above is about the **standard
   pocket edition**, the book meant for competition. The **enlarged edition**
   (`COACH=1`) deliberately breaks the scale cap so the greens read at arm's length: measured off its

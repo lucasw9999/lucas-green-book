@@ -977,6 +977,17 @@ def _scale_size_line():
 
     Gated on DISTRIBUTABLE, the same flag `_cover_badge()` uses for the "DESIGNED TO CONFORM" claim
     itself: a blank-green book (Poppy Ridge) prints no green image, so it has no scale to disclose.
+
+    DISTRIBUTABLE IS NOT WHAT KEEPS THIS OFF THE ENLARGED (COACH=1) EDITION -- that edition is
+    DELIBERATELY past the scale cap (tools/check_scale.py measures it up to 0.599 in : 5 yd, 1:301,
+    against the 0.375 in / 1:480 this line would claim) and every enlarged book in the corpus is
+    DISTRIBUTABLE=True, same as any pocket book. What actually keeps this claim off it is that this
+    function is called ONLY from `cover_panel()`, which `build_coach()` never calls -- it calls
+    `coach_cover_panel()` instead, a separate function that does not reference this one. Do not
+    "simplify" the two cover functions into one without re-reading this paragraph: doing so could
+    put Rule 4.3 words on the one edition engineered to break Rule 4.3. See
+    tests/test_r18_scale.py::test_the_conforming_scale_claim_never_appears_on_the_enlarged_non_conforming_edition,
+    which pins this with a mutation test.
     """
     if not DISTRIBUTABLE:
         return ""

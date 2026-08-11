@@ -44,6 +44,17 @@ size; the scale is Rule 4.3's own ceiling, `generate.RULE_4_3_SCALE_CAP_IN_PER_5
 pins against `tools/check_scale.py`'s independently-defined `LIMIT_IN_PER_5YD` so the two copies (one
 per module, because neither module may import the other without inverting an existing dependency
 direction) cannot silently drift apart.
+
+DISTRIBUTABLE IS NOT THE GATE THAT SEPARATES THE TWO EDITIONS. It gates SHARING, and the enlarged
+(COACH=1) edition is deliberately NON-conforming -- past the scale cap on purpose -- yet all three
+built enlarged books (merion, monarch-bay, philadelphia) are DISTRIBUTABLE=True, same as every
+pocket book. Measured off generate.py's own source and off its output: `build_coach()` calls
+`coach_cover_panel()`, never `cover_panel()`, and `coach_cover_panel()`'s compiled bytecode names
+neither `cover_panel` nor `_scale_size_line` -- so the claim is architecturally unreachable from the
+enlarged build, not merely unlikely under today's flags.
+`test_the_conforming_scale_claim_never_appears_on_the_enlarged_non_conforming_edition` pins this
+with a mutation: it splices `_scale_size_line()`'s own output into `coach_cover_panel()`'s real
+output, proving the check fails against that BEFORE trusting it to pass against the real function.
 """
 import glob
 import json
@@ -417,6 +428,68 @@ def test_the_scale_size_line_is_absent_from_a_non_distributable_book():
     with mock.patch.object(generate, "DISTRIBUTABLE", False):
         assert _scale_size_text(generate.cover_panel()) is None, (
             "with DISTRIBUTABLE patched False, cover_panel() still states a Rule 4.3 scale cap.")
+
+
+def _enlarged_courses():
+    """Slugs with an enlarged (COACH=1) edition already built. Read-only glob, same shape as
+    tools/check_scale.py's `enlarged_courses`."""
+    return sorted(os.path.basename(os.path.dirname(p))
+                  for p in glob.glob(os.path.join(ROOT, "courses", "*", "greenbook_coach.html"))
+                  if not os.path.basename(os.path.dirname(p)).startswith("_"))
+
+
+def _assert_no_scale_claim(html, where):
+    m = _scale_size_text(html)
+    assert m is None, (
+        f"{where} states a Rule 4.3 scale cap (\"SCALE 1:{m.group(1)} OR SMALLER\") -- that claim "
+        f"is FALSE on the enlarged edition, which is built past the cap on purpose.")
+
+
+@pytest.mark.skipif(not _enlarged_courses(), reason="no enlarged (COACH=1) edition built here")
+def test_the_conforming_scale_claim_never_appears_on_the_enlarged_non_conforming_edition():
+    """The enlarged/COACH edition is deliberately NON-conforming, and DISTRIBUTABLE does not know it.
+
+    `_scale_size_line()` is gated on DISTRIBUTABLE because that is the flag `_cover_badge()` already
+    uses to decide whether a book carries the "DESIGNED TO CONFORM" claim at all -- but DISTRIBUTABLE
+    answers "may this book be shared", not "does this book conform". All three enlarged books built in
+    this corpus (merion, monarch-bay, philadelphia) are DISTRIBUTABLE=True, exactly like every pocket
+    book, so a regression that routed cover_panel()'s output (or just `_scale_size_line()`'s) into the
+    enlarged build would sail past that flag and print "SCALE 1:480 OR SMALLER" on a cover whose
+    greens tools/check_scale.py measures at up to 0.599 in : 5 yd (1:301, philadelphia-country-club)
+    -- 60% past the very cap the line would claim, on 53 of that measurement's 54 enlarged greens.
+    Its card is genuinely the same physical 3.5 x 5.0 in as the pocket book (`build_coach`'s own
+    `CW, CH = config.CARD_W_IN, config.CARD_H_IN`), so only the SCALE half of a leaked claim would be
+    false -- which is exactly why gating on card size, or on DISTRIBUTABLE, could not have caught
+    this. What actually keeps the claim off this cover today is architectural, not a flag: build_coach
+    calls `coach_cover_panel()`, main()/build_deck() calls `cover_panel()`, and neither function is
+    reachable from the other's build path -- read directly off generate.py, not assumed.
+
+    THE MUTATION, so this test is shown catching the regression it exists for before it is trusted to
+    clear the real code: `coach_cover_panel()`'s own output is spliced with `_scale_size_line()`'s
+    output -- simulating the exact leak the paragraph above describes -- and `_assert_no_scale_claim`
+    is proven to raise against that BEFORE it is asked to pass against the unmutated function.
+    """
+    checked = []
+    for slug in _enlarged_courses():
+        cfg, generate, _dist = _engine(slug)
+        assert generate.DISTRIBUTABLE, (
+            f"{slug}'s enlarged edition is not DISTRIBUTABLE -- this test needs at least one "
+            f"DISTRIBUTABLE=True enlarged course to prove that flag is not what keeps the scale "
+            f"claim off its cover; every enlarged book in this corpus was expected to be one")
+        coach_html = generate.coach_cover_panel("")
+
+        leaked = coach_html.replace("</svg></div>", generate._scale_size_line() + "</svg></div>", 1)
+        assert "SCALE 1:" in leaked, (
+            f"{slug}: the simulated leak did not actually insert a scale claim -- "
+            f"coach_cover_panel()'s closing tag no longer matches what this splice expects")
+        with pytest.raises(AssertionError):
+            _assert_no_scale_claim(leaked, f"{slug} (simulated leak)")
+
+        _assert_no_scale_claim(coach_html, slug)
+        checked.append(slug)
+
+    assert checked, "no enlarged edition was checked"
+
 
 
 def _shell():
