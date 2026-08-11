@@ -30463,6 +30463,235 @@ def test_out_of_bounds_is_fetched_and_deliberately_absent_from_every_card():
         f"means, before making this pass again -- see the note beside `treerows` in render_hole.py")
 
 
+# Every fill render_hole.render_hole() can put on a hole map, the word a card's LEGEND has to use for it,
+# and the COLOUR WORD the legend has to identify it by -- or None with the reason it needs none. Keyed by
+# the token as it is SPELLED in the renderer, so a named constant is resolved through the module and a hex
+# is taken as written; the completeness of this table against the renderer's own source is the first thing
+# asserted below, which is what makes a fifth ink fail here instead of shipping unexplained.
+#
+# The exemptions are all one thing: TURF. Fairway, rough, the putting surface and a tee box are the
+# ground the hole is made of, they are what a golfer is aiming AT, and the card's legend has never named
+# them -- a green drawn green needs no key. Every HAZARD, and the one landcover class that hides a ball,
+# has to be named, because those are the marks a reader has to decode before deciding where to aim.
+#
+# THE COLOUR WORD IS A SEPARATE COLUMN because naming the class is not the same as naming the mark. The
+# penalty class shipped for one build as "penalty areas" in a list whose other entries read "(tan)" and
+# "(blue)": the class was named and the reader still had no way in from the page, and someone who knows
+# the course asked "what is the purple?". A legend a reader cannot enter from the mark is not a legend.
+HOLE_MAP_FILL = {
+    '#efe3b8': ("bunkers", "tan", "sand, the tan the legend names first"),
+    '#a9d3ef': ("water", "blue", "ponds, drawn wetland and water penalty areas"),
+    '#9cbf86': ("trees", None, "the wood/scrub background fill -- see LEGEND_NAMES_NO_COLOUR"),
+    '#2f7d32': ("trees", None, "tree markers and tree rows -- the same class the wood fill belongs to"),
+    'PENALTY_FILL': ("penalty area", "grey",
+                     "a golf=penalty_area that is not water: brush, canyon, waste. A quiet grey because "
+                     "the class covers ground on 16 of this course's 18 holes, so a loud ink would bury "
+                     "the sand, the water and the line -- see render_hole.PENALTY_FILL for the value and "
+                     "the luma deltas that keep quiet from becoming invisible"),
+    '#cfe8b2': (None, None, "fairway -- TURF, the ground the hole is made of and what a player aims at"),
+    '#e9f0da': (None, None, "rough -- TURF"),
+    '#7cc45a': (None, None, "the putting surface -- TURF, and the card is turned around it"),
+    '#6aa15a': (None, None, "a tee box -- TURF, and the card labels it with the tee's own name"),
+}
+
+# A drawn class the legend NAMES but gives no colour for, and why that is not fixed here. Recorded rather
+# than waived silently: the rule below is that a reader must be able to get from the mark to the meaning,
+# and one class in the corpus cannot.
+#
+# "trees" is that class. The HOLE-map row reads "bunkers (tan), water (blue), penalty areas (red),
+# **trees**", and the word "green" appears nowhere on the card in connection with the tree marks -- the
+# only "green" in the colour rows is the steepness ramp on the GREEN panel, which is a different thing.
+# It is left alone because the row is shared by all 13 books and both editions, so rewording it moves
+# every one of them, and the tree marks are the one class here that is not a hazard: the mark is a dot in
+# the shape of a tree canopy on a map full of them, which is a weaker failure than an unexplained hazard
+# fill. It is a real gap, it is sequenced separately, and this record is what stops it being forgotten.
+LEGEND_NAMES_NO_COLOUR = {
+    "trees": ("the HOLE-map row names the class in bold and gives no colour for it, while its siblings "
+              "read (tan), (blue) and (red). Not a hazard fill, and the row is shared by 13 books and "
+              "both editions, so the wording change belongs with a corpus-wide pass, not with this one."),
+}
+
+# A named ink that NO card in the built corpus carries, and why -- so "the legend explains every ink
+# this book draws" cannot pass by an ink quietly leaving the paper.
+#
+# The `woods` background fill is drawn on 0 of the corpus's 234 cards, and was before this class was
+# split out too. Measured over all 12 geometry courses: 17 non-penalty `natural=wood`/`scrub` /
+# `landuse=forest` ways exist in the caches (merion 8, philadelphia 4, callippe 3, castlewood-hill 2, and
+# none at all on the other eight), and not one of them reaches the 0.35 of its own boundary length inside
+# any hole's 55 m corridor that `woods` requires -- the largest fraction anywhere is merion's 0.245. So
+# the only cards that have ever carried this fill are trump-national-los-angeles', and they carried it
+# for 34 features that are `golf=penalty_area` and now have ink of their own. The legend's word for it,
+# "trees", is still exercised on 12 books through the tree markers and tree rows (#2f7d32), which is why
+# this is a record and not a hole in the test.
+INK_DRAWN_NOWHERE = {
+    '#9cbf86': ("the wood/scrub background fill. 17 non-penalty wood/scrub/forest ways exist in the "
+                "corpus and none reaches the 0.35 length fraction `woods` needs at 55 m (best 0.245, "
+                "merion), so no card draws it; the word 'trees' is exercised by #2f7d32 instead."),
+}
+
+
+@needs_corpus
+def test_every_hazard_ink_a_hole_map_draws_is_named_by_both_editions_legends():
+    """Ink on the paper that the legend does not name is a hazard the reader cannot interpret.
+
+    This project has now shipped that defect twice on one class. `golf=penalty_area` reached the paper
+    first in the #9cbf86 scrub fill, under a legend reading "bunkers (tan), water (blue), trees", so the
+    card told a junior the hazard is TREES; it was then moved into the water blue and the footer W, so the
+    same card told him there are ten waters on a hole with none. Both times the map drew something the
+    key beside it could not explain, and both times nothing failed. render_hole.py's own note beside
+    `golf=out_of_bounds` names the rule -- "a fourth colour needs a fourth legend entry on both editions'
+    guide cards" -- and this is the test of it.
+
+    THE POPULATION IS READ OUT OF THE RENDERER, not listed here: every `fill="..."` in
+    render_hole.render_hole's source, with a named constant resolved through the module. HOLE_MAP_FILL has
+    to classify all of them, so an ink added without a decision about the legend fails on the first
+    assertion below rather than on a reader's card. Then, per book, only the inks that book's cards
+    ACTUALLY carry are required in its legends -- a key for a colour the reader will never see is the
+    clutter that overflowed the tightest guide card in the corpus.
+
+    BOTH EDITIONS, because the two have drifted three times already (the enlarged card once lacked the
+    red ring, the grey ladder and the bunker/water key), and the pocket and enlarged legends are separate
+    literals in generate.py. For the penalty class the requirement is a WORD and a SWATCH: the row's rect
+    is filled from render_hole's own constants, so retuning the ink takes the key with it, and a copied
+    hex is what is forbidden. The four older classes are keyed by a colour word instead -- "bunkers
+    (tan), water (blue)" -- which is what this card has always done and what its width allows.
+
+    Only the LEGEND ROWS count, not the whole card: the About & legal block below them mentions water,
+    trees and a great deal else without defining anything, and would satisfy this test while explaining
+    nothing.
+
+    RENDERED, NOT BUILT. `generate.LAYOUTS` is filled here from render_hole directly instead of through
+    build_deck(), which would render every green of every course off the 0.4 m surfaces for a question
+    that is entirely about the hole map. The rows this skips are the green-specific ones -- (faint), no
+    clear fall, the coarse-lattice note -- and none of them names a hole-map ink.
+    """
+    import inspect
+    _cfg0, _rh0 = _engine(CORPUS[0])
+    src = inspect.getsource(_rh0.render_hole)
+    fill_tokens = set(re.findall(r'fill="(#[0-9a-fA-F]{6})"', src))
+    for name in re.findall(r'fill="\{([A-Za-z_][A-Za-z_0-9]*)\}"', src):
+        v = getattr(_rh0, name, None)
+        if isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+            fill_tokens.add(name)
+    assert fill_tokens, f"no fill literal found in render_hole.render_hole's source"
+    unclassified = sorted(t for t in fill_tokens if t not in HOLE_MAP_FILL)
+    assert not unclassified, (
+        f"render_hole.render_hole() draws fill(s) {unclassified} that HOLE_MAP_FILL does not classify, "
+        f"so nothing here can say whether the card's legend explains them. Add each one with the word a "
+        f"legend must use for it, or with None and the reason it needs none -- and if it is a hazard, add "
+        f"the legend entry to BOTH editions' guide cards (generate.guide_panel and coach_about_card) "
+        f"before adding it here. Ink the legend does not name is the defect the penalty-area class was")
+    stale = sorted(t for t in HOLE_MAP_FILL if t not in fill_tokens)
+    assert not stale, (
+        f"HOLE_MAP_FILL classifies {stale}, which render_hole no longer draws. Drop the entry rather "
+        f"than leave a rule that would cover the next ink on its own")
+
+    def resolve(rh, token):
+        return token if token.startswith("#") else getattr(rh, token)
+
+    missing, unidentified, seen, errors = [], [], {}, []
+    for slug in CORPUS:
+        # `generate` too, and NOT `distribution`: generate holds `from config import ... NAME as
+        # COURSE` at module level, so a stale copy prints the previous course; distribution reads no
+        # COURSE at all, and dropping it would isolate nothing while leaving every holder stale.
+        for m in ("config", "render_hole", "render_green", "generate"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = slug
+        import config as cfg
+        import generate as gen
+        try:
+            for hn in cfg.HOLE_NUMS:
+                gen.LAYOUTS[hn] = gen.render_hole.render_hole(hn, cfg.HOLES)
+        except Exception as e:
+            errors.append((slug, repr(e)[:120]))
+            continue
+        cards = "".join(svg for svg, _i in gen.LAYOUTS.values())
+        legends = {
+            "pocket": (gen.yardage_guide_panel() if cfg.BUILD_MODE == "yardage" else gen.guide_panel()),
+            "enlarged": gen.coach_about_card(),
+        }
+        rows = {k: " ".join(re.sub(r"<[^>]+>", " ", r) for r in
+                            re.findall(r'<div class="legrow">(.*?)</div>', v, re.S)).lower()
+                for k, v in legends.items()}
+        for token, (word, colour, _why) in sorted(HOLE_MAP_FILL.items()):
+            if word is None:
+                continue
+            if f'fill="{resolve(gen.render_hole, token)}"' not in cards:
+                continue
+            seen.setdefault(token, []).append(slug)
+            for edition, text in rows.items():
+                if word not in text:
+                    missing.append((slug, edition, token, word))
+                elif colour is None:
+                    if word not in LEGEND_NAMES_NO_COLOUR:
+                        unidentified.append((slug, edition, token, word, "no colour word recorded"))
+                elif not re.search(rf"{re.escape(word)}\w*\s*\({re.escape(colour)}\)", text):
+                    unidentified.append((slug, edition, token, word, colour))
+    assert not errors, f"{len(errors)} course(s) failed to render or lay out a legend: {errors[:5]}"
+    assert not missing, (
+        f"{len(missing)} (book, edition, ink, word) case(s) where a card draws an ink the guide card's "
+        f"legend rows never name: {missing[:8]}{' ...' if len(missing) > 8 else ''}. A reader shown a "
+        f"hazard and not told what it is guesses, and on this class the guess was 'trees'")
+    assert not unidentified, (
+        f"{len(unidentified)} (book, edition, ink, class, colour) case(s) where the legend NAMES a class "
+        f"the map draws and does not say what colour it is: {unidentified[:8]}. Naming the class is not "
+        f"naming the mark -- the sibling entries read \"bunkers (tan)\" and \"water (blue)\", and an "
+        f"entry without its colour leaves a reader looking at ink with no way into the key. That shipped "
+        f"once and the reader's question was \"what is the purple?\". Write it in the same form as its "
+        f"siblings, or record the class in LEGEND_NAMES_NO_COLOUR with the reason it cannot be")
+    for word, why in LEGEND_NAMES_NO_COLOUR.items():
+        assert any(w == word for w, _c, _y in HOLE_MAP_FILL.values()), \
+            f"LEGEND_NAMES_NO_COLOUR records {word!r}, which is not a class the hole map draws"
+        assert len(why) > 60, f"{word} needs a real reason, got {why!r}"
+    coloured = {w for w, c, _y in HOLE_MAP_FILL.values() if w is not None and c is not None}
+    assert coloured & {HOLE_MAP_FILL[t][0] for t in seen}, (
+        "no class with a required colour word is drawn anywhere, so the colour assertion above is vacuous")
+    named = sorted(t for t, (w, _c, _y) in HOLE_MAP_FILL.items() if w is not None)
+    undrawn = sorted(t for t in named if t not in seen)
+    assert undrawn == sorted(INK_DRAWN_NOWHERE), (
+        f"the named ink(s) drawn on no card in the built corpus are {undrawn}; INK_DRAWN_NOWHERE "
+        f"records {sorted(INK_DRAWN_NOWHERE)}. An ink that has STOPPED being drawn is a class that left "
+        f"the paper and wants explaining; one that has STARTED is now covered by the checks above and "
+        f"the record should go. Either way, re-measure rather than adjusting the table to match")
+    for token, why in INK_DRAWN_NOWHERE.items():
+        assert token in HOLE_MAP_FILL and len(why) > 40, f"{token} needs a real reason, got {why!r}"
+    words = {w for w, _c, _y in HOLE_MAP_FILL.values() if w is not None}
+    exercised = {HOLE_MAP_FILL[t][0] for t in seen}
+    assert exercised == words, (
+        f"the legend word(s) {sorted(words - exercised)} are required by this test of no book, because "
+        f"no ink carrying them is drawn anywhere in the built corpus, so the requirement is untested. "
+        f"That is a class off the paper, which is the finding")
+    assert len(seen.get("PENALTY_FILL", [])) >= 1, (
+        "no book draws the penalty-area ink, so the case this test was written for is not in the corpus")
+    # ...AND THE PENALTY CLASS'S KEY IS A SWATCH, so the key and the map are one colour instruction and
+    # not two that agree today. The four older classes are keyed by a colour WORD -- "bunkers (tan),
+    # water (blue)" -- which is what this card has always done and what its width allows; this one is
+    # keyed by a rect filled from render_hole's own constants, the arrangement _heat_swatches uses. A word
+    # cannot go stale when the ink is retuned and a copied hex can, so the copy is what is forbidden.
+    swatchless = []
+    for slug in seen.get("PENALTY_FILL", []):
+        # `generate` too, and NOT `distribution`: generate holds `from config import ... NAME as
+        # COURSE` at module level, so a stale copy prints the previous course; distribution reads no
+        # COURSE at all, and dropping it would isolate nothing while leaving every holder stale.
+        for m in ("config", "render_hole", "render_green", "generate"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = slug
+        import config as cfg
+        import generate as gen
+        for hn in cfg.HOLE_NUMS:
+            gen.LAYOUTS[hn] = gen.render_hole.render_hole(hn, cfg.HOLES)
+        for edition, card in (("pocket", gen.guide_panel()), ("enlarged", gen.coach_about_card())):
+            for what, ink in (("fill", gen.render_hole.PENALTY_FILL),
+                              ("edge", gen.render_hole.PENALTY_EDGE)):
+                if f'"{ink}"' not in card:
+                    swatchless.append((slug, edition, what, ink))
+    assert not swatchless, (
+        f"{len(swatchless)} guide card(s) name the penalty class but do not SHOW its ink: {swatchless}. "
+        f"The legend row carries a swatch drawn from render_hole.PENALTY_FILL/PENALTY_EDGE, so a retuned "
+        f"ink takes the key with it; a row that only says the word leaves the reader matching a colour "
+        f"name to a 6.6 pt shape, and a hardcoded hex leaves a key that can go stale")
+
+
 @needs_corpus
 def test_a_watercourse_inside_a_non_water_penalty_area_is_not_also_counted_as_water():
     """One hazard, one class -- the containment case. A drainage line through staked brush is not a water.
