@@ -32709,7 +32709,17 @@ def test_no_module_carries_a_pasted_duplicate_of_its_own_comment_or_assignment()
       1. no run of consecutive comment lines appears twice in a module. A PAIR is the unit -- single
          lines legitimately repeat (`# +0.5: the sample is a cell CENTRE` marks both sampling sites in
          render_green, and `# noqa: E402` twice in verify_elevation), and a duplicated paragraph
-         always duplicates at least one adjacent pair.
+         always duplicates at least one adjacent pair. Both lines of the pair must carry prose, for the
+         same reason the unit is a pair at all: a bare `#` normalises to nothing, so a one-line paragraph
+         between two of them produces two identical keys from ONE sentence.
+
+         WHAT THAT GIVES UP, stated rather than discovered later: a paragraph that is a single line, pasted
+         at two sites, is now invisible to this check. The rule that would catch it -- one comment line of
+         60+ characters appearing twice -- was measured over every production module and finds three cases
+         that are not pastes to fix here: two ASCII rules in generate.py (lines 194/196 and 1969/1977) and
+         one genuinely repeated sentence in tools/verify_elevation.py (273/351). Adopting it would fail the
+         suite on files outside this change, so it is recorded and not adopted; the verify_elevation pair is
+         worth a look by whoever owns that file.
 
       2. no statement list contains two adjacent identical assignments. That is a dead store by
          construction: with nothing between them the first can never be read. Checked on the AST, so
@@ -32743,8 +32753,19 @@ def test_no_module_carries_a_pasted_duplicate_of_its_own_comment_or_assignment()
         pairs = collections.defaultdict(list)
         for blk in blocks:
             for i in range(len(blk) - 1):
-                key = " ".join((blk[i].string.lstrip("#") + " "
-                                + blk[i + 1].string.lstrip("#")).split())
+                # BOTH lines of the pair have to carry prose of their own, or the "pair" is a single line
+                # wearing a disguise -- which is the exact case the pair unit exists to exclude. A bare `#`
+                # separates paragraphs everywhere in this codebase and normalises to nothing, so a ONE-LINE
+                # paragraph flanked by two of them yields two pairs, (blank, line) and (line, blank), whose
+                # keys are byte-identical. That is not a paste: render_hole.py's single-sentence paragraph
+                # about the bay-view incision measurement was reported as appearing at "[1289, 1290]" --
+                # two overlapping windows on one sentence. Measured over every production module, this is
+                # the only occurrence either way, so requiring prose on both sides costs nothing today.
+                first = blk[i].string.lstrip("#").strip()
+                second = blk[i + 1].string.lstrip("#").strip()
+                if not first or not second:
+                    continue
+                key = " ".join((first + " " + second).split())
                 if len(key) < 60:          # directives and rules, not prose
                     continue
                 pairs[key].append(blk[i].start[0])
@@ -40894,6 +40915,7 @@ def test_the_monarch_bay_sketch_has_one_length_and_the_engine_agrees_with_the_ge
                 f"One segment gets ONE figure -- three copies of it existed and one of them disagreed")
 
 
+@needs_corpus
 def test_a_lidar_figure_is_published_in_metres_and_the_unit_comes_from_the_crs():
     """A foot delivery read as metres is a 3.28x distance error and a 10.76x density error.
 
@@ -40904,11 +40926,22 @@ def test_a_lidar_figure_is_published_in_metres_and_the_unit_comes_from_the_crs()
     """
     from pyproj import CRS
     import geo
+    # TWO GATES, AND THEY ARE DIFFERENT JOBS. `@needs_corpus` above skips a tree with no course data at
+    # all -- courses/ is gitignored, so a stranger who clones this repo has the engine and none of the
+    # data, and a test that FAILS there makes our red indistinguishable from theirs. This second gate is
+    # narrower and is not covered by the first: laz/ is the one thing that can be re-downloaded, so a tree
+    # can legitimately hold courses with no point cloud, and then there is no unit to read from any CRS.
+    # The anti-vacuous floor at the bottom is the third job again -- it stops this passing by checking
+    # nothing on a tree that DOES have tiles.
+    have = [slug for slug in sorted(LIDAR_HORIZONTAL_UNIT)
+            if glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz"))]
+    if not have:
+        pytest.skip("no course named in LIDAR_HORIZONTAL_UNIT has LiDAR tiles here; laz/ is gitignored "
+                    "and re-downloadable, so its absence is an environment, not a defect")
     checked = 0
-    for slug, want in sorted(LIDAR_HORIZONTAL_UNIT.items()):
+    for slug in have:
+        want = LIDAR_HORIZONTAL_UNIT[slug]
         tiles = sorted(glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz")))
-        if not tiles:
-            continue
         import laspy
         src = None
         for t in tiles:
@@ -40929,7 +40962,9 @@ def test_a_lidar_figure_is_published_in_metres_and_the_unit_comes_from_the_crs()
             f"{got}. A LAS file's Z shares the horizontal unit unless the CRS is compound and says "
             f"otherwise; a disagreement here means one of the two is being guessed")
         checked += 1
-    assert checked >= 1, "no course with LiDAR tiles was checked, so this proves nothing"
+    assert checked == len(have), (
+        f"{checked} of the {len(have)} course(s) with tiles here were actually checked -- a course was "
+        f"skipped inside the loop, so this proves less than it claims")
     # The specific error, stated as an arithmetic fact so the message is self-explaining.
     assert abs(1.0 / 0.3048006096 ** 2 - 10.7638673) < 1e-4
 
@@ -40939,10 +40974,15 @@ def test_a_lidar_figure_is_published_in_metres_and_the_unit_comes_from_the_crs()
 # earth (a flat 111132 m/deg and 111320*cos), which is the second copy of the ground scale geo.py exists to
 # prevent -- the same mistake that published 39.5 m for a 39.4333 m distance. The tightest value is the
 # load-bearing one: it is what stands between this rule and the 0.90 bar.
+# KEYED BY COURSE, so a tree holding some of the corpus grades what it has instead of failing for what it
+# has not. The figures are per-way; the course is what decides whether they are reachable at all. This is
+# the same rule as the derived floors at the top of this file: never pin a test to this machine's twelve.
 SYNTHETIC_CONTAINMENT = {
-    83565232: 0.9528, 83566408: 1.0, 83567182: 1.0, 83567781: 1.0, 83574845: 1.0, 83583927: 0.9140,
-    83153363: 0.0, 83153285: 1.0, 83154430: 1.0, 83154748: 1.0, 83158129: 1.0, 83158847: 1.0,
-    83164289: 1.0, 83164563: 1.0, 1040957802: 0.0,
+    "copper-valley-golf-club": {83565232: 0.9528, 83566408: 1.0, 83567182: 1.0, 83567781: 1.0,
+                                83574845: 1.0, 83583927: 0.9140},
+    "micke-grove-golf-links": {83153363: 0.0},
+    "the-reserve-at-spanos-park": {83153285: 1.0, 83154430: 1.0, 83154748: 1.0, 83158129: 1.0,
+                                   83158847: 1.0, 83164289: 1.0, 83164563: 1.0, 1040957802: 0.0},
 }
 SYNTHETIC_CONTAINMENT_TIGHTEST = 0.9140
 
@@ -40957,6 +40997,10 @@ def test_the_containment_that_licenses_the_flowline_rule_is_measured_on_the_proj
     projection ORIGIN cannot move it; the SCALE can, which is exactly how 0.948 and 0.912 were published
     for 0.9528 and 0.9140.
     """
+    present = [s for s in sorted(SYNTHETIC_CONTAINMENT) if s in CORPUS]
+    if not present:
+        pytest.skip("none of the courses carrying a synthetic NHD flowline is built here")
+    want_all = {w: v for s in present for w, v in SYNTHETIC_CONTAINMENT[s].items()}
     seen = {}
     for slug in CORPUS:
         cfg, rh = _engine(slug)
@@ -40977,15 +41021,18 @@ def test_the_containment_that_licenses_the_flowline_rule_is_measured_on_the_proj
         for e in syn:
             seen[e["id"]] = rh.frac_len_inside_rings([em(q) for q in e["geometry"]], rings)
     assert seen, "no synthetic NHD flowline found in the corpus, so this rule has nothing to stand on"
-    assert set(seen) == set(SYNTHETIC_CONTAINMENT), (
-        f"the synthetic flowlines in the corpus are {sorted(seen)}; the record holds "
-        f"{sorted(SYNTHETIC_CONTAINMENT)}. Re-measure rather than adjusting the record")
-    for wid, want in sorted(SYNTHETIC_CONTAINMENT.items()):
+    assert set(seen) == set(want_all), (
+        f"the synthetic flowlines in the built courses {present} are {sorted(seen)}; the record holds "
+        f"{sorted(want_all)}. Re-measure rather than adjusting the record")
+    for wid, want in sorted(want_all.items()):
         assert abs(seen[wid] - want) < 5e-4, (
             f"way {wid}'s containment measures {seen[wid]:.4f}, recorded as {want}. Publish the engine's "
             f"own figure on geo.mlat/mlon -- a crude spherical earth published 0.948 for 0.9528 once")
     contained = sorted(v for v in seen.values() if v >= rh.PENALTY_CONTAINMENT_MIN)
-    assert len(contained) == 13, f"{len(contained)} of {len(seen)} flowlines are contained, not 13"
+    want_contained = sum(1 for v in want_all.values() if v >= rh.PENALTY_CONTAINMENT_MIN)
+    assert len(contained) == want_contained, (
+        f"{len(contained)} of {len(seen)} flowlines are contained; the record for {present} says "
+        f"{want_contained}")
     assert abs(min(contained) - SYNTHETIC_CONTAINMENT_TIGHTEST) < 5e-4, (
         f"the tightest contained flowline measures {min(contained):.4f}, recorded as "
         f"{SYNTHETIC_CONTAINMENT_TIGHTEST}")
@@ -40994,8 +41041,9 @@ def test_the_containment_that_licenses_the_flowline_rule_is_measured_on_the_proj
         f"{rh.PENALTY_CONTAINMENT_MIN} bar -- the rule's margin is gone and the two uncontained ones "
         f"(which must keep their blue) are no longer separated from it by a clear gap")
     uncontained = sorted(v for v in seen.values() if v < rh.PENALTY_CONTAINMENT_MIN)
-    assert uncontained == [0.0, 0.0], (
-        f"the uncontained flowlines measure {uncontained}, not [0.0, 0.0]. The rule rests on there being "
+    want_unc = sorted(v for v in want_all.values() if v < rh.PENALTY_CONTAINMENT_MIN)
+    assert uncontained == want_unc, (
+        f"the uncontained flowlines measure {uncontained}, not {want_unc}. The rule rests on there being "
         f"NOTHING near the bar; a value between 0 and 0.90 is a new case to measure, not a value to record")
 
 
@@ -41168,37 +41216,59 @@ def test_a_stale_book_cannot_launder_ink_that_went_missing_after_the_engine_drew
 # prints blue and counts W, because rule 2 says over-warn. The figures that sentence quotes are graded here,
 # because it published "34 of the 43 ways carrying that tag in this corpus are drawn today, on 5 of the 12
 # courses", which conflated the courses that CARRY the tag with the courses that DRAW one.
-INTERMITTENT = {"carried": 43, "carried_courses": 5, "drawn_ways": 13, "drawn_courses": 3,
-                "appearances": 29}
+# PER COURSE -- (ways carrying the tag, ways DRAWN, way/hole appearances) -- so a tree holding part of the
+# corpus grades what it has. The sentence in render_hole quotes the corpus-wide sums, and those are derived
+# from this table below rather than typed a second time.
+INTERMITTENT = {
+    "bay-view-golf-club": (13, 7, 16),
+    "callippe-preserve-golf-course": (7, 0, 0),
+    "copper-valley-golf-club": (18, 5, 9),
+    "micke-grove-golf-links": (4, 1, 4),
+    "the-reserve-at-spanos-park": (1, 0, 0),
+}
 
 
 @needs_corpus
 def test_the_intermittent_figures_the_wetland_prose_quotes_are_the_measured_ones():
     """Four numbers in one sentence, each read off the corpus rather than remembered."""
-    carried, carried_courses = 0, set()
-    drawn_ways, drawn_courses, appearances = set(), set(), 0
-    for slug in CORPUS:
+    present = [s for s in sorted(INTERMITTENT) if s in CORPUS]
+    if not present:
+        pytest.skip("no course carrying `intermittent=yes` is built here")
+    got, any_drawn = {}, False
+    for slug in present:
         cfg, rh = _engine(slug)
         els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
         ids = {e["id"] for e in els if (e.get("tags") or {}).get("intermittent") == "yes"}
-        carried += len(ids)
-        if ids:
-            carried_courses.add(slug)
+        drawn, appearances = set(), 0
         for hn in cfg.HOLE_NUMS:
             _svg, info = rh.render_hole(hn, cfg.HOLES)
             hit = ids & (set(info["creek_ids"]) | set(info["water_ids"]))
-            if hit:
-                drawn_ways |= hit
-                drawn_courses.add(slug)
-                appearances += len(hit)
-    got = {"carried": carried, "carried_courses": len(carried_courses),
-           "drawn_ways": len(drawn_ways), "drawn_courses": len(drawn_courses),
-           "appearances": appearances}
-    assert got == INTERMITTENT, (
-        f"the intermittent figures measure {got}, recorded as {INTERMITTENT}. Re-measure the sentence in "
-        f"render_hole.is_drawn_wetland rather than the record -- and keep the four quantities distinct: "
-        f"ways that CARRY the tag, courses that carry it, ways DRAWN, courses that draw one")
-    assert drawn_ways, "no intermittent watercourse is drawn anywhere, so the over-warn claim is vacuous"
+            drawn |= hit
+            appearances += len(hit)
+        got[slug] = (len(ids), len(drawn), appearances)
+        any_drawn = any_drawn or bool(drawn)
+    want = {s: INTERMITTENT[s] for s in present}
+    assert got == want, (
+        f"the per-course intermittent figures measure {got}, recorded as {want}. Re-measure the sentence "
+        f"in render_hole.is_drawn_wetland rather than the record -- and keep the quantities distinct: ways "
+        f"that CARRY the tag, ways DRAWN, and way/hole APPEARANCES are three different numbers, and the "
+        f"published sentence once conflated the courses that carry the tag with the courses that draw one")
+    assert any_drawn, "no intermittent watercourse is drawn anywhere, so the over-warn claim is vacuous"
+    # ...and the corpus-wide sums the prose quotes are DERIVED from the same table, never typed twice.
+    if set(present) == set(INTERMITTENT):
+        carried = sum(v[0] for v in got.values())
+        drawn_courses = sum(1 for v in got.values() if v[1])
+        drawn_ways = sum(v[1] for v in got.values())
+        appearances = sum(v[2] for v in got.values())
+        src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
+        flowed = " ".join(src.split())
+        claim = (f"{carried} ways carry that tag, on {len(present)} of the 12 courses, and {drawn_ways} of "
+                 f"them are DRAWN today on {drawn_courses} courses")
+        assert claim in flowed, (
+            f"render_hole.is_drawn_wetland no longer contains the measured sentence {claim!r}; the "
+            f"per-course table here sums to it")
+        assert f"{appearances} way/hole appearances" in flowed, (
+            f"render_hole.is_drawn_wetland no longer records {appearances} way/hole appearances")
 
 
 # The two bay-view ways proposed for removal as "lines of blue over flat ground", and the measurement that
