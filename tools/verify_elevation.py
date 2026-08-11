@@ -348,7 +348,7 @@ def dem_median_m(lat, lon, r_m=None, px=64):
     got = _fetch_patch(lon-dlon, lat-dlat, lon+dlon, lat+dlat, px)
     if got is None:
         return None
-    a, (w, s, e, n) = got               # the extent the service served, which is not the one asked for
+    a, (w, s, e, n) = got               # served extent, not the requested one -- see dem_median_over_ring
     H, W = a.shape
     lons = w + (np.arange(W) + 0.5) / W * (e - w)
     lats = n - (np.arange(H) + 0.5) / H * (n - s)
