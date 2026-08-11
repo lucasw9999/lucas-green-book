@@ -40,14 +40,23 @@ FMMP tile carries four of them and no subtype.
 WHAT IT CANNOT DECIDE, stated rather than implied:
 
   * merion `way/675572836`, a 151 m2 `wetland=marsh`, is ADMITTED -- it carries no import marker. It
-    is 2.48 m from green 285240132 and 9.6 m from hole 17's played line, so it would take merion 14,
-    16 and 17 from 0W to 1W the next time merion is fetched. An audit note offered it as a
+    is 2.48 m from green 285240132 and 10.2 m from hole 17's PLAYED LENGTH, and it took merion 14, 16
+    and 17 from 0W to 1W when merion was re-fetched. An audit note offered it as a
     counter-example on the grounds that its centroid sits inside a green; measured, the two polygons
     do not intersect at all (0.0 m2 of overlap, 2.48 m apart). What lands inside the green is the
     MEAN OF ITS VERTICES, which is not a property of the shape -- re-noding the ring moves it, and
     this project already replaced one vertex-fraction test for exactly that reason (see
     render_hole.frac_len_within). A greenside wet hollow a junior can reach is what rule 2 is about,
     so it is drawn. Over-warning is the chosen side.
+
+    HOLE 15 IS NOT IN THAT LIST AND MUST NOT BE ADDED. The marsh is 34.5 m from hole 15's centreline,
+    CLOSER than hole 14's 39.5 m, so the list reads as if it had missed one -- and two readings of this
+    marsh have now made that mistake. Measured through the engine, both halves of the `waters` selector
+    refuse hole 15: the boundary-length fraction inside 45 m is 0.2469 against the 0.35 bar (hole 14's
+    is 0.3582), and over the PLAYED length the marsh is 265.9 m away, because its nearest approach lies
+    at arc 0.0 -- at the tee, behind the line, where a struck ball travels away from it. The 34.5 m is a
+    with-end-caps figure; the same distinction is why hole 17 reads 9.6 m with caps and 10.2 m over the
+    played length.
   * a MIS-TAGGED SMALL wetland with no import provenance is indistinguishable from a real one here,
     and is drawn. That is the same direction the renderer already errs in for a seasonally dry
     channel: `is_visible_watercourse` excludes piped, hidden and not-water reaches but deliberately

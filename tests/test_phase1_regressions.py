@@ -40273,3 +40273,105 @@ def test_no_card_draws_water_over_the_merion_building_and_every_real_water_survi
             assert real_moved, (
                 f"deleting merion way {real}, a hand-mapped golf=lateral_water_hazard, changes no card: "
                 f"a real water hazard has stopped being drawn")
+
+
+# merion's greenside marsh (way 675572836) is drawn on holes 14, 16 and 17 and NOT on 15 -- while being
+# CLOSER to 15's centreline (34.5 m) than to 14's (39.5 m). Two separate readings of this feature have
+# concluded from that that hole 15 was missing from the list. It is not: the corridor distance that invites
+# the conclusion is measured WITH THE END CAPS, and the selector's reach half is clipped to the PLAYED
+# length, where the marsh's nearest approach sits at arc 0.0 -- at the tee, behind the line.
+#
+# Every figure here is read out of the engine below, never re-derived beside it, which is the whole point:
+# the two halves of `waters` are measured differently and that asymmetry is what the trap is made of.
+MERION_MARSH = 675572836
+MERION_MARSH_DRAWN_ON = (14, 16, 17)
+MERION_MARSH_FRACTION_AT_45 = {14: 0.3582, 15: 0.2469, 16: 1.0, 17: 1.0}
+MERION_MARSH_PLAYED_REACH_M = {14: 39.43, 15: 265.91, 16: 142.29, 17: 10.22}
+
+
+@needs_corpus
+def test_the_greenside_marsh_reaches_three_holes_and_hole_15_is_refused_by_both_halves():
+    """The marsh is closer to hole 15 than to hole 14 and belongs on 14's card, not 15's. Measured.
+
+    Guards a piece of PROSE as much as a behaviour, because the prose is what got this wrong twice. Read
+    out of the engine two ways:
+
+      * the FRACTION half, by spying on render_hole.frac_len_within with the marsh's own node count;
+      * the REACH half, by neutralising the fraction half for the marsh alone and binary-searching
+        CORRIDOR_M['water'] for the smallest corridor that still admits it. That is the engine's own
+        clipped measure -- `_seg_near_played_line` is 30 lines of interval clipping and a second copy
+        beside it is exactly the drift this suite exists to prevent.
+    """
+    if "merion-golf-club" not in CORPUS:
+        pytest.skip("merion not built")
+    cfg, rh = _engine("merion-golf-club")
+    course = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    marsh = next((e for e in course if e["id"] == MERION_MARSH), None)
+    assert marsh is not None, (
+        f"merion no longer carries way {MERION_MARSH}. That is a lost hazard 2.48 m from a green, not a "
+        f"reason to delete this test -- the shrink guard should have refused the re-fetch")
+    assert rh.is_drawn_wetland(marsh), "the marsh is no longer a wetland this engine draws"
+    nodes = len(marsh["geometry"])
+
+    orig = rh.frac_len_within
+    seen = {}
+
+    def spy(pts, line, buf):
+        r = orig(pts, line, buf)
+        if len(pts) == nodes:
+            seen[buf] = r
+        return r
+    drawn_on, fracs = [], {}
+    try:
+        rh.frac_len_within = spy
+        for hn in cfg.HOLE_NUMS:
+            seen.clear()
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            if hn in MERION_MARSH_FRACTION_AT_45:
+                fracs[hn] = seen.get(rh.CORRIDOR_M["water"])
+            if info["water_hazards"] and hn in MERION_MARSH_FRACTION_AT_45:
+                drawn_on.append(hn)
+    finally:
+        rh.frac_len_within = orig
+    for hn, want in sorted(MERION_MARSH_FRACTION_AT_45.items()):
+        assert fracs.get(hn) is not None, f"the fraction half was never measured for hole {hn}"
+        assert abs(fracs[hn] - want) < 5e-4, (
+            f"hole {hn}'s boundary-length fraction inside {rh.CORRIDOR_M['water']} m is "
+            f"{fracs[hn]:.4f}, recorded as {want}. Re-measure the prose in "
+            f"render_hole.is_drawn_wetland and tests/test_r16_wetland.py rather than the record")
+    assert fracs[15] < 0.35 <= fracs[14], (
+        f"hole 15's fraction {fracs[15]:.4f} and hole 14's {fracs[14]:.4f} no longer straddle the 0.35 "
+        f"bar, which is half the reason 15 is refused and 14 is not")
+
+    # The REACH half, with the fraction half neutralised for this feature only.
+    def blind(pts, line, buf):
+        return 0.0 if len(pts) == nodes else orig(pts, line, buf)
+    reach = {}
+    held = rh.CORRIDOR_M["water"]
+    try:
+        rh.frac_len_within = blind
+        for hn in sorted(MERION_MARSH_PLAYED_REACH_M):
+            lo, hi = 0.5, 900.0
+            for _ in range(44):
+                mid = (lo + hi) / 2.0
+                rh.CORRIDOR_M["water"] = mid
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+                if info["water_hazards"]:
+                    hi = mid
+                else:
+                    lo = mid
+            reach[hn] = hi
+    finally:
+        rh.frac_len_within = orig
+        rh.CORRIDOR_M["water"] = held
+    for hn, want in sorted(MERION_MARSH_PLAYED_REACH_M.items()):
+        assert abs(reach[hn] - want) < 0.05, (
+            f"hole {hn}'s reach over the PLAYED length is {reach[hn]:.2f} m, recorded as {want} m")
+    assert reach[15] > 45.0 > reach[17], (
+        f"hole 15's played-length reach {reach[15]:.2f} m and hole 17's {reach[17]:.2f} m no longer sit "
+        f"either side of the {held} m corridor")
+    # ...and the conclusion the two halves add up to.
+    assert tuple(drawn_on) == MERION_MARSH_DRAWN_ON, (
+        f"the marsh is drawn on holes {tuple(drawn_on)}, recorded as {MERION_MARSH_DRAWN_ON}. If hole 15 "
+        f"is now in that list, do NOT add it to the prose -- measure why: the marsh lies BEHIND 15's tee "
+        f"(nearest approach at arc 0.0), so admitting it means the played-length clip has stopped working")

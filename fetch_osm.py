@@ -773,6 +773,33 @@ def fetch(query, out, write=True):
     raise SystemExit(f"FAILED to fetch {out}")
 
 def main():
+    # `natural=coastline` IS DELIBERATELY NOT ASKED FOR, and this is the record of that decision rather
+    # than an oversight. Two courses in this corpus have sea beside them and both were measured, live
+    # against Overpass, from each hole's OSM centreline:
+    #
+    #     monarch-bay   San Francisco Bay   way 547215125   55.4 m from hole 17 (then 71.6 h16, 85.6 h18)
+    #     trump         the Pacific         ways 41645254 / 260968665   99.6 m from hole 17 (119.5 h18)
+    #
+    # Both are OUTSIDE the 45 m corridor render_hole selects water in, so no card omits the sea today and
+    # nothing shipped is wrong. That is what makes deferring this safe -- it is not what makes it right.
+    #
+    # THE REASON IT IS DEFERRED IS STRUCTURAL, and it holds at any distance: OSM does not map the sea as a
+    # polygon. `natural=coastline` is a set of LINES with an implied side -- land on the left, water on the
+    # right, by convention -- so turning it into something `waters` can fill means closing those lines
+    # against the fetch box and choosing which side to fill. Get the side wrong and the card paints the golf
+    # course blue, which is a worse statement than omitting the sea: a junior aiming at what the book shows
+    # as land is the failure mode rule 2 exists for, and this would invert it. Every other water class this
+    # query asks for arrives as a closed way or a relation ring and needs none of that.
+    #
+    # WHAT IT WOULD TAKE, so the next person does not restate the problem: polygonise the coastline against
+    # the fetch box with the side taken from the OSM convention and asserted rather than assumed (a test
+    # that the filled side contains no green, fairway or tee is cheap and would have caught an inversion);
+    # a census bucket of its own, default-deny like the rest; and a decision about whether the sea is
+    # `waters` or a class with its own legend entry, because "water (blue)" beside a 431-acre bay is a
+    # different statement from the same words beside a pond.
+    #
+    # REVISIT WHEN a coastline comes inside any hole's 45 m water corridor. 55.4 m is one re-drawn
+    # centreline away from that, so this is a near thing and not a remote one.
     geom = fetch(f'[out:json][timeout:120];(way["golf"="green"]({BB});way["golf"="hole"]({BB}););out geom tags;', "osm_geom.json")
     gr = [e for e in geom['elements'] if e.get('tags', {}).get('golf') == 'green']
     ho = [e for e in geom['elements'] if e.get('tags', {}).get('golf') == 'hole']

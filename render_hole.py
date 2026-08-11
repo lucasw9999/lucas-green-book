@@ -359,8 +359,8 @@ def is_drawn_wetland(feature):
 
     WHAT IT CANNOT DECIDE, said plainly. A mis-tagged SMALL wetland with no import provenance is
     indistinguishable from a real one and is drawn -- including merion way 675572836, a 151 m^2
-    `wetland=marsh` 2.48 m from a green and 9.6 m from hole 17's played line, which will take merion
-    14, 16 and 17 from 0W to 1W the next time that course is fetched. (It was offered as a second
+    `wetland=marsh` 2.48 m from a green and 10.2 m from hole 17's played length, which TOOK merion 14, 16
+    and 17 from 0W to 1W when that course was re-fetched. (It was offered as a second
     counter-example on the grounds that its centroid sits inside a green. The two polygons do not
     intersect: 0.0 m^2 of overlap, 2.48 m apart. What falls inside the green is the MEAN OF ITS
     VERTICES, which is not a property of the shape -- re-noding the ring moves it, which is exactly
@@ -369,6 +369,23 @@ def is_drawn_wetland(feature):
     `intermittent=yes`: PIPED, NOT_WATER and HIDDEN_LOCATION deliberately omit it, so a channel that
     is dry in August still prints blue and counts W -- 34 of the 43 ways carrying that tag in this
     corpus are drawn today, on 5 of the 12 courses.
+
+    HOLE 15 IS NOT IN THAT LIST AND MUST NOT BE ADDED, and the trap is worth writing down because two
+    readings of this marsh have now fallen into it. The marsh is 34.5 m from hole 15's centreline -- CLOSER
+    than hole 14's 39.5 m, which IS in the list -- so the list looks wrong. It is not. Both halves of the
+    `waters` selector refuse hole 15, measured through the engine:
+
+      * the boundary-length FRACTION inside 45 m is 0.2469 against the 0.35 bar (hole 14's is 0.3582);
+      * the REACH half is clipped to the PLAYED length, and over that length the marsh is 265.9 m away,
+        because its nearest approach lies at arc 0.0 -- at the tee, behind the played line. A ball struck
+        from there travels away from it.
+
+    The two distances differ because `frac_in` measures against dist_pt_seg, which clamps per segment and
+    so keeps a 45 m half-disc behind the tee and past the green, while `any_within` does not -- the
+    asymmetry documented at the `waters` selector. Every figure in this paragraph is a corridor
+    measurement; the list above is about W TRANSITIONS, and 14, 16 and 17 is exactly what moved. On the
+    same distinction, the "10.2 m from hole 17" above is over the PLAYED length: with the end caps
+    included it is 9.6 m, and naming which measure it is, is the point.
     """
     t = feature.get('tags') or {}
     if t.get('natural') != 'wetland':
@@ -1462,6 +1479,39 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     parea_svg="".join(f'<path d="{path(g)}" fill="{PENALTY_FILL}" stroke="{PENALTY_EDGE}" '
                       f'stroke-width="1.2"/>' for g in penalty_areas)
     water_svg="".join(f'<path d="{path(g)}" fill="#a9d3ef" stroke="#5b9bd0" stroke-width="1"/>' for g in waters)
+    # A WATERCOURSE IS DRAWN AS A LINE OF ONE WEIGHT, AND ITS WIDTH IS REFUSED. A `waterway` way is a
+    # CENTRELINE: OSM carries no width on any of the 185 in this corpus, so the only honest mark for one is
+    # a line that says "water crosses here" and not "water is this wide".
+    #
+    # THE CASE THAT ASKS FOR MORE, and the measurement that refuses it. monarch-bay way 1135575847 is a
+    # 4-node `waterway=stream` 1445.8 m long -- its last segment is a SINGLE straight 1441 m span -- and its
+    # own `source` tag records it as traced off aerial imagery rather than surveyed. The played lines of
+    # holes 12 and 18 come 1.0 m and 0.3 m from it, so both cross it, and it is drawn and counted on both
+    # (1W each). Nothing is omitted. It was put forward as a ~50-60 m wide water-filled tidal channel that
+    # the hairline understates, with an earlier LiDAR reading calling the hole 12 crossing "flat mown turf".
+    #
+    # Measured here from public-domain USGS 3DEP LiDAR, a +/-100 m cross-section at the hole 12 crossing in
+    # 5 m bins over a 20 m along-channel window:
+    #
+    #   * IT IS A CHANNEL, so the "mown turf" reading is wrong. Ground runs 10.95 m at -100 m, down to a
+    #     flat low plateau of 0.75-1.25 m from -60 to +30, a trough at 0.00-0.03 m from +35 to +60 -- 25 m
+    #     wide, its bed at datum -- then back up to 10.27 m at +100 m.
+    #   * AND THERE IS NO OPEN WATER ON THE FLIGHT: return density is uniform at 2.55-2.99 pt/m^2 across
+    #     the whole 200 m, with no void anywhere. That is consistent with a tidal bed exposed at low water,
+    #     which is when a coastal delivery is flown, and it means the flight cannot measure the wetted
+    #     width either.
+    #   * THE HOLE 18 CROSSING HAS NO TILE COVERAGE AT ALL, so it cannot be measured.
+    #
+    # AND NO SOURCE CARRIES A WIDTH. No `width` tag; and OSM maps this water as LINES, not as a surface --
+    # queried over the surrounding box, there is no `natural=water` polygon and no `waterway=riverbank` for
+    # it, only this stream, two `waterway=tidal_channel` ways 496 m and 807 m away, and the sea edge as
+    # `natural=coastline`. So a band would have banks that no source has: one LiDAR station of width, none
+    # at the other crossing, hung on a 1441 m straight sketch. That is rule 1 -- a number the data does not
+    # support -- and the hazard is already drawn and already counted, so refusing costs no warning.
+    #
+    # WHAT WOULD LICENSE IT: a mapped bank (a `natural=water` polygon or `waterway=riverbank`), which would
+    # make it AREA water and need nothing new here; or a width measured from LiDAR at enough stations along
+    # the reach to carry its shape, recorded per course the way the elevation products already are.
     creek_svg="".join('<polyline points="'+" ".join(f"{TX(x):.1f},{TY(y):.1f}" for x,y in poly_pts(g))
                       +'" fill="none" stroke="#5b9bd0" stroke-width="1.8" stroke-linecap="round"/>' for g in creeks)
     bunk_svg ="".join(f'<path d="{path(g)}" fill="#efe3b8" stroke="#c9b477" stroke-width="0.8"/>' for g in bunkers)
