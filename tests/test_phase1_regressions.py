@@ -25518,8 +25518,8 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-10): micke-grove 4,325,056; castlewood-hill 4,476,153;
-    merion 5,868,961; monarch-bay 4,932,715; copper-valley 6,083,338; callippe 6,815,201;
+    CURRENT SIZES (2026-08-11): micke-grove 4,325,056; castlewood-hill 4,476,153;
+    merion 5,870,442; monarch-bay 4,932,715; copper-valley 6,083,338; callippe 6,815,201;
     castlewood-valley 5,834,925; philadelphia 4,603,601; the-reserve 5,109,035;
     bay-view 4,242,595; valley-hi 4,697,660; poppy-ridge 341,146;
     trump-national-los-angeles 6,188,180.
@@ -25558,6 +25558,18 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     enlarged editions included, measured by rebuilding all sixteen into a scratch directory and comparing
     digests -- the legend row is gated on a book actually drawing the class, which is what keeps it off
     the twelve whose guide cards have no room for it.)
+    THEN MERION ALONE MOVED, by +1,481 to 5,870,442 on 2026-08-11, and the date above moved with it.
+    That course was re-fetched -- 0 elements lost, 1 gained -- and the one gain is way 675572836, a
+    151 m^2 `wetland=marsh` 2.48 m from a green and 10.2 m from hole 17's played length, which
+    render_hole.is_drawn_wetland admits: holes 14, 16 and 17 went 0W to 1W, so the book carries one more
+    filled water polygon on each of three cards and the frames those cards are fitted into moved with it.
+    Every other book is byte-identical. NOTE for whoever re-measures this next: merion's figure is due to
+    move again at the next corpus rebuild and DOWN, because two engine fixes have since landed that this
+    book predates -- way 225722025 is a `natural=water NHD:FTYPE=LakePond` ring with a house in it and
+    hole 10 no longer draws it (see render_hole.MEASURED_NOT_WATER), and hole 11's `3W` over two physical
+    waters is now 2W (see render_hole.water_identity). The engine currently renders merion with 4 filled
+    water polygons against the 5 this book holds; that divergence is why the water-ink baseline test was
+    moved off the built books and on to what the engine draws.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
