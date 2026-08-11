@@ -155,9 +155,13 @@ def water_identity(feature):
                        are one waterbody whatever flowlines cross them.
       nhd:reach_code   A REACH -- one number for one water however the ways are later split.
                        copper-valley ways 83568581, 83579191 and 83582265 all read 18040051001111.
-      scvwd:ROUTEID    A ROUTE -- same property. bay-view's seven `waterway=stream` ways (50256874,
-                       50256875, 50256873, 50256878, 50256813, 50256839, 50256841) are one continuous
-                       880 m channel and all seven read 490036.
+      scvwd:ROUTEID    A ROUTE -- same property, and the corpus's clearest case. THIRTEEN bay-view ways
+                       read 490036. Nine pass is_visible_watercourse; the other four are refused by the
+                       PIPED rule (50256834, 50256835 and 50256879 `tunnel=yes`, 50256877
+                       `tunnel=culvert`). Seven of the nine reach a card -- 50256874, 50256875, 50256873,
+                       50256878, 50256813, 50256839, 50256841, 924.8 m of channel between them -- and the
+                       remaining two (50256837, 50256872) are visible but out of reach of every hole. One
+                       route id for all thirteen, whichever subset a given card draws.
       name             What OSM calls it. Coarser than a reach and weaker, but a creek named once is one
                        creek.
       pasda:SEGID      A RIVER-MILE SEGMENT, and it used to sit with the reach codes. merion's two Cobbs
@@ -224,11 +228,18 @@ def is_synthetic_flowline(feature):
 
     SAYS ONLY WHAT IT IS, and deliberately does not say to drop it -- that is `runs_inside_drawn_water`'s
     job one level up, and the split is the whole safety of this rule. Measured over the corpus: 14
-    ArtificialPaths and 1 Connector on three courses, and 13 of the 15 lie 0.912-1.000 of their own length
+    ArtificialPaths and 1 Connector on three courses, and 13 of the 15 lie 0.914-1.000 of their own length
     inside a mapped `natural=water` polygon on the same course. TWO DO NOT -- micke-grove 83153363
-    (ArtificialPath, 1628.3 m) and the-reserve 1040957802 (Connector, 24.8 m) both measure 0.000 against
+    (ArtificialPath, 1627.5 m) and the-reserve 1040957802 (Connector, 24.8 m) both measure 0.000 against
     every water polygon in their caches. A synthetic path whose waterbody nobody has mapped is the ONLY
     mark that water has, so refusing it on the tag alone would be an omission, and rule 2 says over-warn.
+
+    THE TWO ARE NOT IN THE SAME POSITION, and saying "those two keep their blue" was wrong about one of
+    them. micke-grove 83153363 carries no tunnel tag, so `is_visible_watercourse` admits it and it would be
+    inked on any hole it reached; it reaches none today. the-reserve 1040957802 carries `tunnel=culvert`, so
+    the PIPED rule that predates this predicate already refuses it on BOTH engines -- it never had blue to
+    keep. It is still evidence for the rule, because it shows the FType alone cannot be the discriminator,
+    but it is not evidence that this rule preserves anything.
 
     That is also why `is_visible_watercourse` above is untouched: it answers "can this be seen", and a
     flowline over unmapped water stands in for water that can be.
@@ -1010,7 +1021,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
 
         The whole segment, not its endpoints. Testing endpoints only made the answer depend on how
         finely a mapper happened to node the way rather than on where the water is: monarch-bay way
-        1135575847 is a 4-node stream whose longest segment is 1396.9 m, and it CROSSES the playing
+        1135575847 is a 4-node stream whose longest segment is 1398.7 m, and it CROSSES the playing
         lines of holes 12 and 18 (nearest point 0.01 m and 0.10 m) while its nearest vertex is
         273.1 m and 93.5 m away. Both cards printed no water. Re-noding the identical shape to 72
         points made both report it. So distance is measured point-to-SEGMENT.
@@ -1232,13 +1243,13 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # lake it had already filled in the same blue, and had the reach available to count as a water.
     #
     # CONDITIONAL ON CONTAINMENT, NEVER ON THE FTYPE ALONE, and that is the whole safety of it. Measured
-    # over the corpus: 13 of the 15 synthetic flowlines lie 0.912-1.000 of their own length inside a mapped
+    # over the corpus: 13 of the 15 synthetic flowlines lie 0.914-1.000 of their own length inside a mapped
     # `natural=water` polygon on their own course, and TWO lie inside none -- micke-grove 83153363
-    # (1628.3 m) and the-reserve 1040957802 (24.8 m), both 0.000. Where nobody has mapped the waterbody,
+    # (1627.5 m) and the-reserve 1040957802 (24.8 m), both 0.000. Where nobody has mapped the waterbody,
     # the synthetic line is the ONLY mark that water has; dropping it on the tag would omit a hazard, and
     # rule 2 says over-warn. Those two keep their blue.
     #
-    # THE ONE FEATURE IN THIS CORPUS IT FIRES ON is copper-valley way 83565232, 0.948 of its 285.2 m inside
+    # THE ONE FEATURE IN THIS CORPUS IT FIRES ON is copper-valley way 83565232, 0.9528 of its 285.1 m inside
     # lake way 775614086. It was drawn on hole 11, which draws and counts that same lake -- so this is an
     # INK-ONLY correction there: the path shares NHD reach 18040051001111 with ways 83579191 and 83582265,
     # which hole 11 also draws, so the reach keeps its identity and the hole stays at 3W. What leaves is the
@@ -1251,7 +1262,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # tag and not on membership of `waters`.
     #
     # The same 0.90 bar as the penalty containment, deliberately, so the engine has ONE answer to "this
-    # line belongs to that area rather than to itself". 0.912 is the tightest measurement in the corpus and
+    # line belongs to that area rather than to itself". 0.914 is the tightest measurement in the corpus and
     # the next one down is 0.000, so nothing sits near the bar.
     water_rings=[[em(p['lat'], p['lon']) for p in g['geometry']]
                  for g in course if g.get('geometry') and len(g['geometry']) > 2
@@ -1495,30 +1506,45 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # a line that says "water crosses here" and not "water is this wide".
     #
     # THE CASE THAT ASKS FOR MORE, and the measurement that refuses it. monarch-bay way 1135575847 is a
-    # 4-node `waterway=stream` 1445.8 m long -- its last segment is a SINGLE straight 1441 m span -- and its
-    # own `source` tag records it as traced off aerial imagery rather than surveyed. The played lines of
+    # 4-node `waterway=stream` 1447.5 m long -- its last segment is a SINGLE straight 1398.7 m span, the
+    # figure _seg_near_played_line quotes -- and its own `source` tag records it as traced off aerial imagery
+    # rather than surveyed. The played lines of
     # holes 12 and 18 come 1.0 m and 0.3 m from it, so both cross it, and it is drawn and counted on both
     # (1W each). Nothing is omitted. It was put forward as a ~50-60 m wide water-filled tidal channel that
     # the hairline understates, with an earlier LiDAR reading calling the hole 12 crossing "flat mown turf".
     #
     # Measured here from public-domain USGS 3DEP LiDAR, a +/-100 m cross-section at the hole 12 crossing in
-    # 5 m bins over a 20 m along-channel window:
+    # 5 m bins over a 20 m along-channel window. THE TILES ARE ftUS ON ALL THREE AXES -- NAD83(2011) /
+    # California zone 3 (ftUS) + NAVD88 (ftUS) -- so every figure below is converted through the CRS's own
+    # axis factor (0.3048006096) before it is published. The first version of this note was NOT: it read
+    # the tile coordinates as metres, which made every distance 0.3048x and every density 10.7639x wrong.
+    # Class-2 GROUND, so vegetation returns cannot move the profile:
     #
-    #   * IT IS A CHANNEL, so the "mown turf" reading is wrong. Ground runs 10.95 m at -100 m, down to a
-    #     flat low plateau of 0.75-1.25 m from -60 to +30, a trough at 0.00-0.03 m from +35 to +60 -- 25 m
-    #     wide, its bed at datum -- then back up to 10.27 m at +100 m.
-    #   * AND THERE IS NO OPEN WATER ON THE FLIGHT: return density is uniform at 2.55-2.99 pt/m^2 across
-    #     the whole 200 m, with no void anywhere. That is consistent with a tidal bed exposed at low water,
-    #     which is when a coastal delivery is flown, and it means the flight cannot measure the wetted
-    #     width either.
-    #   * THE HOLE 18 CROSSING HAS NO TILE COVERAGE AT ALL, so it cannot be measured.
+    #   * IT IS A CHANNEL, so the "mown turf" reading is wrong. Ground runs 3.00 m at -100 m and about
+    #     3.5 m from -60 to -35, drops through 2.71 and 0.84 to a TROUGH from -22 m to +20 m -- about 42 m
+    #     wide -- whose bed sits between -0.03 and +0.36 m, i.e. AT DATUM, then climbs back through 1.29,
+    #     2.25 and 3.33 to 5.1-5.4 m at +50 to +80 and 4.36 m at +100 m. The banks stand 3.0 m (west) and
+    #     4.4 m (east) above that bed.
+    #   * AND THERE IS NO OPEN WATER ON THE FLIGHT: return density is 28.34-80.51 pt/m^2 across the whole
+    #     200 m against a nominal (p75) of 33.34, with NO void anywhere -- the 74.6-80.5 spikes at -50 to
+    #     -35 are multi-return vegetation, not water. That is consistent with a tidal bed exposed at low
+    #     water, which is when a coastal delivery is flown, and it means the flight cannot measure the
+    #     wetted width either.
+    #   * THE HOLE 18 CROSSING HAS NO RETURNS AT ALL over the same +/-100 m window -- one tile's bounding
+    #     box overlaps it and the tile holds no points there -- so it cannot be measured.
+    #
+    # THE CORRECTED TROUGH IS WIDER THAN THE ERRONEOUS ONE AND CLOSER TO THE CLAIM IT REFUSES, said plainly
+    # rather than left for the next reader to notice: 42 m against the 25 m first published, against a
+    # proposed 50-60 m. It does not change the answer, and the reason is what the 42 m IS -- a topographic
+    # trough at low water, measured at ONE station on ONE of the two crossings. It is not a wetted width,
+    # and no wetted width exists in any source on this flight.
     #
     # AND NO SOURCE CARRIES A WIDTH. No `width` tag; and OSM maps this water as LINES, not as a surface --
     # queried over the surrounding box, there is no `natural=water` polygon and no `waterway=riverbank` for
     # it, only this stream, two `waterway=tidal_channel` ways 496 m and 807 m away, and the sea edge as
-    # `natural=coastline`. So a band would have banks that no source has: one LiDAR station of width, none
-    # at the other crossing, hung on a 1441 m straight sketch. That is rule 1 -- a number the data does not
-    # support -- and the hazard is already drawn and already counted, so refusing costs no warning.
+    # `natural=coastline`. So a band would have banks that no source has: one LiDAR station of trough width,
+    # none at the other crossing, hung on a 1398.7 m straight sketch. That is rule 1 -- a number the data
+    # does not support -- and the hazard is already drawn and already counted, so refusing costs no warning.
     #
     # WHAT WOULD LICENSE IT: a mapped bank (a `natural=water` polygon or `waterway=riverbank`), which would
     # make it AREA water and need nothing new here; or a width measured from LiDAR at enough stations along

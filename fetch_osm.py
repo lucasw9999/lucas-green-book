@@ -220,7 +220,7 @@ def census(elements):
         845375656 (0.974 inside penalty areas 1330719395/1330719396).
       * runs_inside_drawn_water -- an NHD `ArtificialPath` or `Connector` 0.90+ of whose length lies
         inside a mapped waterbody is a synthetic flowline NHD threads through that water to keep its
-        network connected, not a channel. Fires on copper-valley way 83565232 (0.948 inside lake
+        network connected, not a channel. Fires on copper-valley way 83565232 (0.9528 inside lake
         775614086). See render_hole.is_synthetic_flowline for why the FType alone is NOT the rule: 2 of
         this corpus's 15 synthetic lines lie inside no mapped waterbody, and there the synthetic line is
         the only mark the water has.
@@ -777,8 +777,8 @@ def main():
     # than an oversight. Two courses in this corpus have sea beside them and both were measured, live
     # against Overpass, from each hole's OSM centreline:
     #
-    #     monarch-bay   San Francisco Bay   way 547215125   55.4 m from hole 17 (then 71.6 h16, 85.6 h18)
-    #     trump         the Pacific         ways 41645254 / 260968665   99.6 m from hole 17 (119.5 h18)
+    #     monarch-bay   San Francisco Bay   way 547215125   55.5 m from hole 17 (then 71.7 h16, 85.6 h18)
+    #     trump         the Pacific         ways 41645254 / 260968665   99.4 m from hole 17 (119.3 h18)
     #
     # Both are OUTSIDE the 45 m corridor render_hole selects water in, so no card omits the sea today and
     # nothing shipped is wrong. That is what makes deferring this safe -- it is not what makes it right.
@@ -798,7 +798,7 @@ def main():
     # `waters` or a class with its own legend entry, because "water (blue)" beside a 431-acre bay is a
     # different statement from the same words beside a pond.
     #
-    # REVISIT WHEN a coastline comes inside any hole's 45 m water corridor. 55.4 m is one re-drawn
+    # REVISIT WHEN a coastline comes inside any hole's 45 m water corridor. 55.5 m is one re-drawn
     # centreline away from that, so this is a near thing and not a remote one.
     geom = fetch(f'[out:json][timeout:120];(way["golf"="green"]({BB});way["golf"="hole"]({BB}););out geom tags;', "osm_geom.json")
     gr = [e for e in geom['elements'] if e.get('tags', {}).get('golf') == 'green']

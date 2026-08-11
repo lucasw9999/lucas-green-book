@@ -29330,7 +29330,7 @@ def test_water_on_the_card_depends_on_where_the_water_is_not_how_it_was_noded():
     ENDPOINTS happen to sit -- not by where the water is. OSM nodes a way wherever a mapper felt
     like it, so the card's answer depended on an editing accident.
 
-    Found on monarch-bay way 1135575847 (`waterway=stream`, 4 nodes, longest segment 1396.9 m).
+    Found on monarch-bay way 1135575847 (`waterway=stream`, 4 nodes, longest segment 1398.7 m).
     Holes 12 and 18 printed no water at all: the nearest way VERTEX is 273.1 m (h12) and 93.5 m
     (h18) away, both outside the 45 m corridor, while the nearest point ON the way is 0.01 m and
     0.10 m -- the stream runs across both playing lines. Re-noding that identical shape from 4
@@ -36640,7 +36640,7 @@ WATER_INK_REMOVED_DELIBERATELY = {
         "An NHD `ArtificialPath` is the line NHD threads through a lake to keep its flow network "
         "connected -- FCode 55800, not a channel -- and it imports into OSM as `waterway=stream`, so the "
         "card drew a blue creek line straight ACROSS a lake it had already filled in the same blue. Way "
-        "83565232 lies 0.948 of its 285.2 m inside lake way 775614086, which hole 11 draws and counts, so "
+        "83565232 lies 0.9528 of its 285.1 m inside lake way 775614086, which hole 11 draws and counts, so "
         "nothing wet leaves that card: the lake keeps its fill, and the reach identity 18040051001111 is "
         "shared with ways 83579191 and 83582265 which hole 11 also draws, so the hole stays at 3W. What "
         "leaves is a false mark -- a stream where there is open water. The rule is conditional on "
@@ -36673,7 +36673,7 @@ BOOK_PREDATES_THE_ENGINE = {
     ("copper-valley-golf-club", "watercourse line"): (
         10, 9,
         "This book predates 871070c. NHD way 83565232 is an `ArtificialPath` -- the synthetic line NHD "
-        "threads through a lake to keep its flow network connected -- lying 0.948 of its length inside "
+        "threads through a lake to keep its flow network connected -- lying 0.9528 of its length inside "
         "lake way 775614086, and the book still draws it as a creek across that lake. Rebuild clears this.",
     ),
     ("merion-golf-club", "water polygon"): (
@@ -40155,9 +40155,11 @@ def test_the_back_cover_builder_is_not_called_a_legend_and_no_book_styles_a_clas
 #   nhd:reach_code   A REACH. copper-valley's ways 83568581, 83579191 and 83582265 all carry
 #                    18040051001111 -- three OSM ways, one reach, and the reach is the same identifier
 #                    however the ways are later split. This is the identity the docstring describes.
-#   scvwd:ROUTEID    A ROUTE. bay-view's seven `waterway=stream` ways -- 50256874, 50256875, 50256873,
-#                    50256878, 50256813, 50256839, 50256841 -- form one continuous 880 m channel and all
-#                    seven carry 490036. Again one number for one water.
+#   scvwd:ROUTEID    A ROUTE. THIRTEEN bay-view ways carry 490036. Nine pass is_visible_watercourse (the
+#                    other four are PIPED: 50256834/50256835/50256879 `tunnel=yes`, 50256877
+#                    `tunnel=culvert`), and seven of those nine reach a card -- 50256874, 50256875,
+#                    50256873, 50256878, 50256813, 50256839, 50256841, 924.8 m of channel between them.
+#                    One number for one water, whichever subset a card draws.
 #   pasda:SEGID      A RIVER-MILE SEGMENT. merion's two Cobbs Creek segments read
 #                    `758_10.594_11.6195` and `758_6.5182_10.594`: stream 758 from mile 10.594 to
 #                    11.6195, and the same stream 758 from 6.5182 to 10.594. The value CHANGES along one
@@ -40325,18 +40327,18 @@ def test_the_footer_w_counts_physical_waters_and_not_drawn_polygons():
 # tests -- so the map drew a blue creek line ACROSS a lake it had already filled in blue.
 #
 # MEASURED over the whole corpus: 14 ArtificialPaths and 1 Connector, on three courses. 13 of the 15 lie
-# 0.912-1.000 of their own length inside a mapped `natural=water` polygon on the same course:
+# 0.914-1.000 of their own length inside a mapped `natural=water` polygon on the same course:
 #
-#   copper-valley  83565232 0.948 in 775614086   83566408 1.000 in 775441713
+#   copper-valley  83565232 0.9528 in 775614086  83566408 1.000 in 775441713
 #                  83567182 1.000 in 83584763    83567781 1.000 in 83580398
-#                  83574845 1.000 in 83584474    83583927 0.912 in 83584631
+#                  83574845 1.000 in 83584474    83583927 0.914 in 83584631
 #   the-reserve    83153285 1.000 in 82588630    83154430 1.000 in -196909217
 #                  83154748 1.000 in 82588630    83158129 1.000 in -196909217
 #                  83158847 1.000 in 82588630    83164289 1.000 in -196909217
 #                  83164563 1.000 in -196909217
 #
 # ...and TWO DO NOT, which is why the rule is containment and not the FType alone: micke-grove 83153363
-# (ArtificialPath, 1628.3 m) and the-reserve 1040957802 (Connector, 24.8 m) measure 0.000 against every
+# (ArtificialPath, 1627.5 m) and the-reserve 1040957802 (Connector, 24.8 m) measure 0.000 against every
 # water polygon in their caches. Excluding those on the tag would be an OMISSION -- a synthetic path whose
 # waterbody nobody has mapped is the only mark that water has, and rule 2 says over-warn.
 SYNTHETIC_FLOWLINES_IN_THE_CORPUS = {
@@ -40344,7 +40346,7 @@ SYNTHETIC_FLOWLINES_IN_THE_CORPUS = {
     "micke-grove-golf-links": 1,
     "the-reserve-at-spanos-park": 8,
 }
-# The one that reaches a card today: drawn on copper-valley 11, 0.948 inside lake way/775614086, which
+# The one that reaches a card today: drawn on copper-valley 11, 0.9528 inside lake way/775614086, which
 # that same card draws and counts. Redundant ink over water already inked.
 SYNTHETIC_ON_A_CARD = ("copper-valley-golf-club", 11, 83565232, 775614086)
 
@@ -40413,7 +40415,7 @@ def test_the_synthetic_flowline_over_a_drawn_lake_loses_its_blue_and_the_lake_ke
         rh.load = orig_load
     assert not moved, (
         f"deleting synthetic NHD flowline way {path_id} still changes {slug} card(s) {moved}, so it is "
-        f"reaching the paper. It lies 0.948 of its length inside lake way {lake_id}, which the same "
+        f"reaching the paper. It lies 0.9528 of its length inside lake way {lake_id}, which the same "
         f"card fills in blue and counts -- a creek drawn across a lake")
     # ...and the DELETION INSTRUMENT ITSELF WORKS on this course, or the assertion above is vacuous:
     # dropping the lake the path lay on MUST move a card.
@@ -40694,3 +40696,200 @@ def test_the_greenside_marsh_reaches_three_holes_and_hole_15_is_refused_by_both_
         f"the marsh is drawn on holes {tuple(drawn_on)}, recorded as {MERION_MARSH_DRAWN_ON}. If hole 15 "
         f"is now in that list, do NOT add it to the prose -- measure why: the marsh lies BEHIND 15's tee "
         f"(nearest approach at arc 0.0), so admitting it means the played-length clip has stopped working")
+
+
+# Everything from this marker to the end of
+# test_the_monarch_bay_sketch_has_one_length_and_the_engine_agrees_with_the_geodesic DOCUMENTS superseded
+# figures, and is excluded from that test's own "nobody still publishes them" scan. The marker is a string
+# so the scan can find its own start.
+SUPERSEDED_FIGURES_ARE_DOCUMENTED_FROM_HERE = "# ---- superseded LiDAR figures documented below ----"
+# ---- superseded LiDAR figures documented below ----
+# The two LiDAR-derived refusals this branch publishes rest on figures that were WRONG ONCE, in two
+# different ways, and both ways are pinned here.
+#
+# UNITS. monarch-bay and bay-view tiles are NAD83(2011) / California zone 3 (ftUS) with NAVD88 (ftUS) --
+# ftUS on all three axes. A scratch probe transformed EPSG:4326 into the tile CRS and then read the result
+# as METRES, so every published distance was 0.3048x and every density 10.7639x (exactly 1/0.3048^2) out.
+# merion's tiles are metres, which is why the house measurement was unaffected. The conversion has to come
+# from the CRS, never from the tile's name -- geo.vertical_scale already says so for Z and records the
+# 3.28x slope error that guessing caused.
+#
+# A SECOND COPY OF ONE LENGTH. monarch-bay way 1135575847's longest segment was published as 1396.9 m in
+# two places and 1441 m in a third, for one segment in one file. Measured: 1398.7 m, identically on
+# geo.mlat/mlon and on a WGS84 geodesic, so all three were wrong and the file disagreed with itself.
+MONARCH_BAY_SKETCH = {
+    "id": 1135575847,
+    "segments_m": (39.9, 8.9, 1398.7),
+    "total_m": 1447.5,
+}
+# Tiles whose horizontal axis is NOT metres, with the factor. Pinned so a course added on a foot delivery
+# cannot have metre figures published for it by the same mistake.
+LIDAR_HORIZONTAL_UNIT = {
+    "monarch-bay-golf-club": 0.3048006096,
+    "bay-view-golf-club": 0.3048006096,
+    "merion-golf-club": 1.0,
+}
+
+
+def test_the_monarch_bay_sketch_has_one_length_and_the_engine_agrees_with_the_geodesic():
+    """One segment, one figure, on the project's own earth model AND on a geodesic.
+
+    Every published length in this repo is measured on geo.mlat/mlon. That model is planar, so a 1.4 km
+    span is exactly where it could drift from the ellipsoid -- and this segment is the longest single span
+    in the corpus. Both are computed here and both are required to agree with the record, so neither a
+    second copy of the figure nor a model disagreement can go unnoticed.
+    """
+    if "monarch-bay-golf-club" not in CORPUS:
+        pytest.skip("monarch-bay not built")
+    cfg, _rh = _engine("monarch-bay-golf-club")
+    els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    way = next((e for e in els if e["id"] == MONARCH_BAY_SKETCH["id"]), None)
+    assert way is not None, f"monarch-bay no longer carries way {MONARCH_BAY_SKETCH['id']}"
+    g = way["geometry"]
+    la0 = sum(q["lat"] for q in g) / len(g)
+    ml, mo = _mlat(la0), _mlon(la0)
+    planar = [math.hypot((b["lon"] - a["lon"]) * mo, (b["lat"] - a["lat"]) * ml)
+              for a, b in zip(g, g[1:])]
+    from pyproj import Geod
+    geod = Geod(ellps="WGS84")
+    ellip = [geod.inv(a["lon"], a["lat"], b["lon"], b["lat"])[2] for a, b in zip(g, g[1:])]
+    want = MONARCH_BAY_SKETCH["segments_m"]
+    assert len(planar) == len(want), (
+        f"way {MONARCH_BAY_SKETCH['id']} now has {len(g)} nodes and {len(planar)} segments, not "
+        f"{len(want)}. Re-measure the refusal in render_hole rather than this record -- the whole point "
+        f"of that refusal is that a 4-node sketch cannot carry a width")
+    for i, (p, e, w) in enumerate(zip(planar, ellip, want)):
+        assert abs(p - w) < 0.1, (
+            f"segment {i} measures {p:.1f} m on geo.mlat/mlon, recorded as {w} m. Three copies of this "
+            f"figure existed and disagreed; re-measure and fix ALL of them")
+        assert abs(e - w) < 0.1, (
+            f"segment {i} measures {e:.1f} m on a WGS84 geodesic against {w} m on the record -- the "
+            f"planar model and the ellipsoid have diverged on the corpus's longest span")
+    assert abs(sum(planar) - MONARCH_BAY_SKETCH["total_m"]) < 0.1
+    # ...AND THE FIGURE MUST BE SPELLED THE SAME EVERYWHERE IT APPEARS, which is the half that catches the
+    # actual defect: three copies existed and one disagreed. The three superseded spellings are named so a
+    # revert is caught, and THIS FUNCTION'S OWN SOURCE IS STRIPPED before the search -- it necessarily
+    # contains them, and the first version of this check failed on itself. Same device as
+    # tests/test_r17_clean.py's SELF exclusion, and for the same reason.
+    import inspect
+    longest = f"{max(want):.1f}"
+    myself = inspect.getsource(test_the_monarch_bay_sketch_has_one_length_and_the_engine_agrees_with_the_geodesic)
+    superseded = (f"{1398.7 - 1.8:.1f}", f"{1441} m", f"{1445.8:.1f}")
+    for rel in ("render_hole.py", "tests/test_phase1_regressions.py"):
+        src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+        # Strip the region that DOCUMENTS the defect -- the narrative comment, the record, and this
+        # function -- from the region that must not PUBLISH it. They are contiguous, and the first two
+        # versions of this check failed on their own evidence.
+        if myself in src:
+            i = src.index(SUPERSEDED_FIGURES_ARE_DOCUMENTED_FROM_HERE)
+            src = src[:i] + src[src.index(myself) + len(myself):]
+        for wrong in superseded:
+            assert wrong not in src, (
+                f"{rel} still publishes {wrong!r} for monarch-bay way {MONARCH_BAY_SKETCH['id']}; the "
+                f"measured longest segment is {longest} m and the total {MONARCH_BAY_SKETCH['total_m']} m. "
+                f"One segment gets ONE figure -- three copies of it existed and one of them disagreed")
+
+
+def test_a_lidar_figure_is_published_in_metres_and_the_unit_comes_from_the_crs():
+    """A foot delivery read as metres is a 3.28x distance error and a 10.76x density error.
+
+    Not hypothetical and not old: figures published from monarch-bay and bay-view this round were out by
+    exactly 1/0.3048^2 in density because a scratch probe read ftUS tile coordinates as metres. The unit is
+    a property of the CRS and this asserts it is read from there -- the same rule geo.vertical_scale states
+    for Z, where guessing from the CRS NAME once inflated every slope by 3.28x.
+    """
+    from pyproj import CRS
+    import geo
+    checked = 0
+    for slug, want in sorted(LIDAR_HORIZONTAL_UNIT.items()):
+        tiles = sorted(glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz")))
+        if not tiles:
+            continue
+        import laspy
+        src = None
+        for t in tiles:
+            with laspy.open(t) as f:
+                src = f.header.parse_crs()
+                if src:
+                    break
+        assert src is not None, f"{slug}'s tiles carry no CRS; nothing may be published from them"
+        crs = src if hasattr(src, "axis_info") else CRS.from_user_input(src)
+        got = crs.axis_info[0].unit_conversion_factor
+        assert abs(got - want) < 1e-9, (
+            f"{slug}'s tiles are {crs.name!r}, whose horizontal axis converts to metres by {got}, "
+            f"recorded as {want}. Every distance, area and density published from this course has to be "
+            f"multiplied through that factor -- re-check any figure quoting it")
+        # Z must agree with the project's one answer, and for these deliveries that is the same factor.
+        assert abs(geo.vertical_scale(src) - want) < 1e-9, (
+            f"{slug}: geo.vertical_scale says {geo.vertical_scale(src)} where the horizontal axis says "
+            f"{got}. A LAS file's Z shares the horizontal unit unless the CRS is compound and says "
+            f"otherwise; a disagreement here means one of the two is being guessed")
+        checked += 1
+    assert checked >= 1, "no course with LiDAR tiles was checked, so this proves nothing"
+    # The specific error, stated as an arithmetic fact so the message is self-explaining.
+    assert abs(1.0 / 0.3048006096 ** 2 - 10.7638673) < 1e-4
+
+
+# Containment of every synthetic NHD flowline in its course's mapped water, as render_hole's OWN
+# frac_len_inside_rings measures it on geo.mlat/mlon. Published once as 0.948/0.912 off a crude spherical
+# earth (a flat 111132 m/deg and 111320*cos), which is the second copy of the ground scale geo.py exists to
+# prevent -- the same mistake that published 39.5 m for a 39.4333 m distance. The tightest value is the
+# load-bearing one: it is what stands between this rule and the 0.90 bar.
+SYNTHETIC_CONTAINMENT = {
+    83565232: 0.9528, 83566408: 1.0, 83567182: 1.0, 83567781: 1.0, 83574845: 1.0, 83583927: 0.9140,
+    83153363: 0.0, 83153285: 1.0, 83154430: 1.0, 83154748: 1.0, 83158129: 1.0, 83158847: 1.0,
+    83164289: 1.0, 83164563: 1.0, 1040957802: 0.0,
+}
+SYNTHETIC_CONTAINMENT_TIGHTEST = 0.9140
+
+
+@needs_corpus
+def test_the_containment_that_licenses_the_flowline_rule_is_measured_on_the_projects_own_earth():
+    """The margin between the tightest contained flowline and the 0.90 bar, from the engine's own measure.
+
+    Uses render_hole.frac_len_inside_rings itself -- a second copy of an arc-length containment measure is
+    the drift this whole round has been correcting -- and geo.mlat/mlon for the projection, which is what
+    the engine's own `em` is built from. Containment is a ratio of lengths along one line, so the choice of
+    projection ORIGIN cannot move it; the SCALE can, which is exactly how 0.948 and 0.912 were published
+    for 0.9528 and 0.9140.
+    """
+    seen = {}
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+        syn = [e for e in els if rh.is_synthetic_flowline(e) and e.get("geometry")]
+        if not syn:
+            continue
+        rings_src = [e for e in els if e.get("geometry") and len(e["geometry"]) > 2
+                     and ((e.get("tags") or {}).get("natural") == "water"
+                          or (e.get("tags") or {}).get("water"))]
+        la0 = syn[0]["geometry"][0]["lat"]
+        lo0 = syn[0]["geometry"][0]["lon"]
+        ml, mo = _mlat(la0), _mlon(la0)
+
+        def em(q):
+            return ((q["lon"] - lo0) * mo, (q["lat"] - la0) * ml)
+        rings = [[em(q) for q in r["geometry"]] for r in rings_src]
+        for e in syn:
+            seen[e["id"]] = rh.frac_len_inside_rings([em(q) for q in e["geometry"]], rings)
+    assert seen, "no synthetic NHD flowline found in the corpus, so this rule has nothing to stand on"
+    assert set(seen) == set(SYNTHETIC_CONTAINMENT), (
+        f"the synthetic flowlines in the corpus are {sorted(seen)}; the record holds "
+        f"{sorted(SYNTHETIC_CONTAINMENT)}. Re-measure rather than adjusting the record")
+    for wid, want in sorted(SYNTHETIC_CONTAINMENT.items()):
+        assert abs(seen[wid] - want) < 5e-4, (
+            f"way {wid}'s containment measures {seen[wid]:.4f}, recorded as {want}. Publish the engine's "
+            f"own figure on geo.mlat/mlon -- a crude spherical earth published 0.948 for 0.9528 once")
+    contained = sorted(v for v in seen.values() if v >= rh.PENALTY_CONTAINMENT_MIN)
+    assert len(contained) == 13, f"{len(contained)} of {len(seen)} flowlines are contained, not 13"
+    assert abs(min(contained) - SYNTHETIC_CONTAINMENT_TIGHTEST) < 5e-4, (
+        f"the tightest contained flowline measures {min(contained):.4f}, recorded as "
+        f"{SYNTHETIC_CONTAINMENT_TIGHTEST}")
+    assert min(contained) > rh.PENALTY_CONTAINMENT_MIN, (
+        f"the tightest contained flowline is {min(contained):.4f}, at or below the "
+        f"{rh.PENALTY_CONTAINMENT_MIN} bar -- the rule's margin is gone and the two uncontained ones "
+        f"(which must keep their blue) are no longer separated from it by a clear gap")
+    uncontained = sorted(v for v in seen.values() if v < rh.PENALTY_CONTAINMENT_MIN)
+    assert uncontained == [0.0, 0.0], (
+        f"the uncontained flowlines measure {uncontained}, not [0.0, 0.0]. The rule rests on there being "
+        f"NOTHING near the bar; a value between 0 and 0.90 is a new case to measure, not a value to record")
