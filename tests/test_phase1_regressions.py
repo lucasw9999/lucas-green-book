@@ -39875,3 +39875,80 @@ def test_the_back_cover_builder_is_not_called_a_legend_and_no_book_styles_a_clas
         assert not re.search(r"\.legend\b", style), (
             f"{os.path.relpath(path, ROOT)} styles `.legend`, which no element in it carries. The "
             f"fossil of legend_panel(), shipped in every pocket book.")
+
+
+# A PASDA `SEGID` and an NHD `ReachCode` are not the same kind of identifier, and
+# render_hole.watercourse_identity ranked them as if they were. Every value measured in the caches; the
+# shape of each key is what decides where it belongs, not which course happens to carry it.
+#
+#   nhd:reach_code   A REACH. copper-valley's ways 83568581, 83579191 and 83582265 all carry
+#                    18040051001111 -- three OSM ways, one reach, and the reach is the same identifier
+#                    however the ways are later split. This is the identity the docstring describes.
+#   scvwd:ROUTEID    A ROUTE. bay-view's seven `waterway=stream` ways -- 50256874, 50256875, 50256873,
+#                    50256878, 50256813, 50256839, 50256841 -- form one continuous 880 m channel and all
+#                    seven carry 490036. Again one number for one water.
+#   pasda:SEGID      A RIVER-MILE SEGMENT. merion's two Cobbs Creek segments read
+#                    `758_10.594_11.6195` and `758_6.5182_10.594`: stream 758 from mile 10.594 to
+#                    11.6195, and the same stream 758 from 6.5182 to 10.594. The value CHANGES along one
+#                    creek by construction, so it cannot be a creek's identity -- and ranked above
+#                    `name` it split one creek that OSM names once into two.
+#
+# The cost, measured on the shipped corpus: merion hole 11 printed `3W` over TWO physical waters -- Cobbs
+# Creek (ways 1216255652 and 225722009, both named "Cobbs Creek", different SEGIDs) and Trib 00765 To
+# Cobbs Creek (way 225722014). A junior reads "3W" as three waters to avoid.
+PASDA_SEGID_IS_A_RIVER_MILE_SEGMENT = (
+    ("758_10.594_11.6195", "758_6.5182_10.594"),   # merion, both named "Cobbs Creek"
+)
+
+
+def test_a_river_mile_segment_id_does_not_outrank_the_name_of_the_creek_it_cuts_up():
+    """One creek named once in OSM must count as one water, whatever a river-mile index calls its parts.
+
+    `watercourse_identity`'s docstring promises "the source hydrography's own REACH identifier, else the
+    name". A PASDA `SEGID` is not a reach identifier: it is `<stream>_<start river mile>_<end river
+    mile>`, so it is finer than the creek by construction and changes along it. Ranked above `name` it
+    made merion 11 print `3W` over two physical waters.
+
+    Graded on the KEY THE FUNCTION RETURNS, not on a rendered card, so the rule is pinned where it is
+    written -- and on both directions of it:
+
+      * two ways of ONE named creek with DIFFERENT river-mile SEGIDs must share an identity;
+      * two DIFFERENT named creeks must not, even where a SEGID would have separated them anyway --
+        otherwise a fix that simply dropped SEGID and kept nothing would pass;
+      * a genuine reach code still outranks the name, because a reach is the finer TRUE identity: a
+        named river has many reaches and they are different waters where they run past different holes.
+      * an unnamed way with a SEGID still uses it rather than falling back to its own OSM id, because a
+        river-mile segment id is a worse identity than a reach code and a better one than nothing.
+    """
+    import render_hole as rh
+    for a, b in PASDA_SEGID_IS_A_RIVER_MILE_SEGMENT:
+        wa = {"id": 1, "tags": {"waterway": "stream", "name": "Cobbs Creek", "pasda:SEGID": a}}
+        wb = {"id": 2, "tags": {"waterway": "stream", "name": "Cobbs Creek", "pasda:SEGID": b}}
+        assert rh.watercourse_identity(wa) == rh.watercourse_identity(wb), (
+            f"two ways of ONE creek OSM names 'Cobbs Creek' get different identities because their "
+            f"river-mile segments differ ({a!r} vs {b!r}), so the footer counts one creek twice. A "
+            f"PASDA SEGID is <stream>_<start mile>_<end mile> -- it changes ALONG a creek and cannot "
+            f"be its identity. Rank it below `name`.")
+    # ...and the fix may not be "ignore SEGID and count every unnamed way on its own".
+    ua = {"id": 3, "tags": {"waterway": "stream", "pasda:SEGID": "765_0_0.365"}}
+    ub = {"id": 4, "tags": {"waterway": "stream", "pasda:SEGID": "765_0_0.365"}}
+    assert rh.watercourse_identity(ua) == rh.watercourse_identity(ub), (
+        "two UNNAMED ways carrying the same PASDA SEGID no longer share an identity, so dropping the "
+        "key entirely has made the footer over-count where it used to be right. A segment id is a "
+        "worse identity than a reach code and a better one than an OSM way id.")
+    assert rh.watercourse_identity(ua) != rh.watercourse_identity(
+        {"id": 5, "tags": {"waterway": "stream", "pasda:SEGID": "758_0_0.365"}}), \
+        "two different PASDA streams share an identity"
+    # Two different named creeks stay apart.
+    assert rh.watercourse_identity({"id": 6, "tags": {"name": "Cobbs Creek", "waterway": "stream"}}) \
+        != rh.watercourse_identity({"id": 7, "tags": {"name": "Trib 00765 To Cobbs Creek",
+                                                     "waterway": "stream"}}), \
+        "two differently named creeks share an identity, so the footer would under-count"
+    # A reach code is the finer TRUE identity and still outranks the name.
+    r1 = {"id": 8, "tags": {"name": "Black Creek", "nhd:reach_code": "18040051001111"}}
+    r2 = {"id": 9, "tags": {"name": "Black Creek", "nhd:reach_code": "18040051001539"}}
+    assert rh.watercourse_identity(r1) != rh.watercourse_identity(r2), (
+        "two different NHD REACHES of one named river now share an identity. A reach is a real "
+        "identity and it is finer than the name -- two reaches past two different holes are two "
+        "waters -- so `nhd:reach_code` must stay above `name`.")
+    assert rh.watercourse_identity(r1) == ("nhd:reach_code", "18040051001111")

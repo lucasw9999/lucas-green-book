@@ -136,15 +136,37 @@ def watercourse_identity(feature):
     says it is the same water as its neighbour -- guessing from shared endpoints would merge a tributary
     into the creek it joins.
 
+    THE ORDER IS A RANKING OF HOW COARSE EACH IDENTIFIER IS, and it was wrong: `pasda:SEGID` sat with the
+    reach codes and is not one. Measured in the caches, by the SHAPE of each key's values:
+
+      nhd:reach_code   A REACH -- one number for one water however the ways are later split.
+                       copper-valley ways 83568581, 83579191 and 83582265 all read 18040051001111.
+      scvwd:ROUTEID    A ROUTE -- same property. bay-view's seven `waterway=stream` ways (50256874,
+                       50256875, 50256873, 50256878, 50256813, 50256839, 50256841) are one continuous
+                       880 m channel and all seven read 490036.
+      pasda:SEGID      A RIVER-MILE SEGMENT. merion's two Cobbs Creek ways read `758_10.594_11.6195` and
+                       `758_6.5182_10.594` -- stream 758, miles 10.594-11.6195 and 6.5182-10.594. The
+                       value CHANGES ALONG one creek by construction, so it cannot be that creek's
+                       identity. Above `name` it split a creek OSM names once into two, and merion 11
+                       printed `3W` over TWO physical waters: Cobbs Creek (both those ways) and Trib
+                       00765 To Cobbs Creek (way 225722014).
+
+    So a reach code still outranks the name -- a reach is finer than a name and TRUE, and two reaches of
+    one river past two different holes are two waters -- while a river-mile segment now ranks BELOW it.
+    Kept rather than dropped, because for an UNNAMED PASDA way it is still better than the way's own OSM
+    id: it is a worse identity than a reach code and a better one than nothing.
+
     Deduplicates the COUNT only. Every segment is still DRAWN: a golfer looking at the card should see
     all the blue that is there, and the honesty rule that matters is that no counted water lacks ink.
     """
     t = feature.get('tags') or {}
-    for k in ('nhd:reach_code', 'pasda:SEGID', 'scvwd:ROUTEID'):
+    for k in ('nhd:reach_code', 'scvwd:ROUTEID'):
         if t.get(k):
             return (k, t[k])
     if t.get('name'):
         return ('name', t['name'])
+    if t.get('pasda:SEGID'):
+        return ('pasda:SEGID', t['pasda:SEGID'])
     return ('id', feature.get('id'))
 
 
