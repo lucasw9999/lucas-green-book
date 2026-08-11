@@ -199,6 +199,46 @@ def is_visible_watercourse(feature):
     return t.get('location') not in HIDDEN_LOCATION
 
 
+# NHD'S OWN FTYPE FOR A LINE IT INVENTED. The National Hydrography Dataset is a flow NETWORK, so it has to
+# stay connected where there is no channel to follow: `ArtificialPath` (FCode 55800) is the line it threads
+# through a lake, pond or wide river to carry flow across the open water, and `Connector` (33400) is the
+# line it draws across a gap in its own linework. Neither is a channel. Nobody standing on the hole can see
+# one, because what is there is the LAKE.
+#
+# Imported into OSM these arrive as `waterway=stream`, which is exactly what a creek is, so the `waterway`
+# key cannot tell them apart -- and the map drew a blue creek line straight across a lake it had already
+# filled in the same blue, then had the reach available to count as water.
+#
+# THREE SPELLINGS, because three imports are present in this corpus: `gnis:ftype`, `nhd:ftype` and
+# `NHD:FTYPE`. Keyed on the FType word rather than the FCode number so the test reads as the statement it
+# is, and both are recorded above for whoever checks it against USGS's published domain.
+#
+# At module scope beside PIPED / NOT_WATER / WETLAND_LAND_CLASS and for their reason: it is graded by truth
+# table rather than through a rendered card, and fetch_osm's census reads the same one predicate.
+SYNTHETIC_FTYPE = ('ArtificialPath', 'Connector')
+_FTYPE_KEYS = ('gnis:ftype', 'nhd:ftype', 'NHD:FTYPE')
+
+
+def is_synthetic_flowline(feature):
+    """True when this `waterway` is a line NHD invented to keep its network connected, not a channel.
+
+    SAYS ONLY WHAT IT IS, and deliberately does not say to drop it -- that is `runs_inside_drawn_water`'s
+    job one level up, and the split is the whole safety of this rule. Measured over the corpus: 14
+    ArtificialPaths and 1 Connector on three courses, and 13 of the 15 lie 0.912-1.000 of their own length
+    inside a mapped `natural=water` polygon on the same course. TWO DO NOT -- micke-grove 83153363
+    (ArtificialPath, 1628.3 m) and the-reserve 1040957802 (Connector, 24.8 m) both measure 0.000 against
+    every water polygon in their caches. A synthetic path whose waterbody nobody has mapped is the ONLY
+    mark that water has, so refusing it on the tag alone would be an omission, and rule 2 says over-warn.
+
+    That is also why `is_visible_watercourse` above is untouched: it answers "can this be seen", and a
+    flowline over unmapped water stands in for water that can be.
+    """
+    t = feature.get('tags') or {}
+    if not t.get('waterway'):
+        return False
+    return any(t.get(k) in SYNTHETIC_FTYPE for k in _FTYPE_KEYS)
+
+
 # A LAND-CLASSIFICATION DATASET'S OWN LABEL FOR THE SAME POLYGON, on a way that also carries
 # natural=wetland. Any one of these means the outline came out of a bulk import of land COVER or land
 # USE classes -- `description` and `landuse` are the class itself, `attribution` names the programme,
@@ -1082,8 +1122,45 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     def runs_inside_a_penalty_area(g):
         return frac_len_inside_rings([em(p['lat'], p['lon']) for p in g['geometry']],
                                      pa_rings) >= PENALTY_CONTAINMENT_MIN
+
+    # ONE WATER, ONE MARK -- the same rule as runs_inside_a_penalty_area above, applied to the class of
+    # line that has no channel at all. See is_synthetic_flowline: NHD threads an `ArtificialPath` through a
+    # lake and a `Connector` across a gap in its own linework purely to keep its flow network connected,
+    # and those import into OSM as `waterway=stream`. So the card drew a blue creek line straight ACROSS a
+    # lake it had already filled in the same blue, and had the reach available to count as a water.
+    #
+    # CONDITIONAL ON CONTAINMENT, NEVER ON THE FTYPE ALONE, and that is the whole safety of it. Measured
+    # over the corpus: 13 of the 15 synthetic flowlines lie 0.912-1.000 of their own length inside a mapped
+    # `natural=water` polygon on their own course, and TWO lie inside none -- micke-grove 83153363
+    # (1628.3 m) and the-reserve 1040957802 (24.8 m), both 0.000. Where nobody has mapped the waterbody,
+    # the synthetic line is the ONLY mark that water has; dropping it on the tag would omit a hazard, and
+    # rule 2 says over-warn. Those two keep their blue.
+    #
+    # THE ONE FEATURE IN THIS CORPUS IT FIRES ON is copper-valley way 83565232, 0.948 of its 285.2 m inside
+    # lake way 775614086. It was drawn on hole 11, which draws and counts that same lake -- so this is an
+    # INK-ONLY correction there: the path shares NHD reach 18040051001111 with ways 83579191 and 83582265,
+    # which hole 11 also draws, so the reach keeps its identity and the hole stays at 3W. What leaves is the
+    # false mark, a stream drawn over open water.
+    #
+    # MEASURED AGAINST THE WHOLE COURSE'S WATER, not against this hole's `waters`, and the two are the same
+    # answer here: a line contained in a lake can only come within the corridor if the lake does, and the
+    # lake is then admitted by the same OR. Using the course keeps the classification a fact about the
+    # ground rather than about which hole is being drawn -- the reason is_land_penalty_area is keyed on the
+    # tag and not on membership of `waters`.
+    #
+    # The same 0.90 bar as the penalty containment, deliberately, so the engine has ONE answer to "this
+    # line belongs to that area rather than to itself". 0.912 is the tightest measurement in the corpus and
+    # the next one down is 0.000, so nothing sits near the bar.
+    water_rings=[[em(p['lat'], p['lon']) for p in g['geometry']]
+                 for g in course if g.get('geometry') and len(g['geometry']) > 2
+                 and ((g.get('tags') or {}).get('natural') == 'water' or (g.get('tags') or {}).get('water'))]
+    def runs_inside_drawn_water(g):
+        return (is_synthetic_flowline(g)
+                and frac_len_inside_rings([em(p['lat'], p['lon']) for p in g['geometry']],
+                                          water_rings) >= PENALTY_CONTAINMENT_MIN)
     creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry')
-             and any_within(g, CORRIDOR_M['water']) and not runs_inside_a_penalty_area(g)]
+             and any_within(g, CORRIDOR_M['water']) and not runs_inside_a_penalty_area(g)
+             and not runs_inside_drawn_water(g)]
     tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g, CORRIDOR_M['tee'])]
     fairways=[g for g in course if g.get('tags',{}).get('golf')=='fairway' and g.get('geometry') and frac_in(g, CORRIDOR_M['fairway'])>=0.40]
     roughs  =[g for g in course if g.get('tags',{}).get('golf')=='rough' and g.get('geometry') and frac_in(g, CORRIDOR_M['rough'])>=0.40]

@@ -210,6 +210,39 @@ def census(elements):
     is listed as volatile and not as a hazard for the same reason: it churns like the drawn lines do,
     and nothing is drawn or measured from it.
 
+    A KNOWN RESIDUAL, WRITTEN DOWN RATHER THAN LEFT TO BE REDISCOVERED: `waterway` is once again a step
+    wider than the drawn class, and this time the gap is not closable on tags. render_hole's `creeks`
+    now applies TWO GEOMETRIC exclusions after `is_visible_watercourse`, and both are properties of where
+    a line lies rather than of what it is tagged:
+
+      * runs_inside_a_penalty_area -- a `waterway` 0.90+ of whose length lies inside a non-water
+        `golf=penalty_area` is that area's drainage path. Fires on trump-national-los-angeles way
+        845375656 (0.974 inside penalty areas 1330719395/1330719396).
+      * runs_inside_drawn_water -- an NHD `ArtificialPath` or `Connector` 0.90+ of whose length lies
+        inside a mapped waterbody is a synthetic flowline NHD threads through that water to keep its
+        network connected, not a channel. Fires on copper-valley way 83565232 (0.948 inside lake
+        775614086). See render_hole.is_synthetic_flowline for why the FType alone is NOT the rule: 2 of
+        this corpus's 15 synthetic lines lie inside no mapped waterbody, and there the synthetic line is
+        the only mark the water has.
+
+    So the swap this bucket was split twice to prevent is open again in a narrow form -- lose a real
+    stream, gain a way that one of those two rules will refuse, count unmoved, guard silent. It is
+    narrow: the gaining feature has to be an NHD synthetic line inside a mapped waterbody, or a channel
+    inside a staked penalty area, and 2 of the corpus's 185 waterways are in that state today.
+
+    WHAT CLOSING IT NEEDS, so the next person does not have to work it out: a THIRD bucket beside
+    `waterway`/`waterway_undrawn`, holding the lines those two rules refuse, in neither VOLATILE_KINDS
+    nor HAZARD_KINDS -- default-deny, zero tolerance, structural, and not a hazard kind, exactly the
+    treatment `out_of_bounds` gets and for its reason (nothing draws it, so no message should tell a
+    human that hazard ink left a card). The bucket cannot be computed from tags: both rules measure
+    containment, so `census` would have to take geometry. And the two-bucket identity
+    `waterway + waterway_undrawn == every way carrying the key` is asserted over every stored cache in
+    tests/test_r14_census.py, which a third bucket has to be reconciled with in the same change.
+
+    NOT done here because that test file is outside this change, and because the direction of the
+    residual is the tolerable one: what it can hide is a lost stream, which the NEXT re-fetch's own
+    `waterway` count would still have to account for, and not a wrong number on a card.
+
     `natural=wetland` gets the SAME TREATMENT ONE CLASS OVER, and until this round it had none: the
     query never asked for it, so this key was unreachable and `VOLATILE_KINDS` carried a dead entry for
     it. The map now draws the wetland a card should draw (render_hole.is_drawn_wetland) in the same

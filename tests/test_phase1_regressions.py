@@ -40045,3 +40045,122 @@ def test_the_footer_w_counts_physical_waters_and_not_drawn_polygons():
             f"{len({rh.water_identity(g) for g in rings})} identities, so that one waterbody would "
             f"print one W per ring on any hole it reached")
     assert not bad, bad
+
+
+# NHD threads a SYNTHETIC line through every waterbody so its flow network stays connected: FType
+# `ArtificialPath` (FCode 55800) through a lake, pond or wide river, and `Connector` (33400) across a gap
+# in the linework. Neither is a channel anybody can see. Imported into OSM as `waterway=stream`, they are
+# indistinguishable from a creek by the `waterway` key alone -- which is what `is_visible_watercourse`
+# tests -- so the map drew a blue creek line ACROSS a lake it had already filled in blue.
+#
+# MEASURED over the whole corpus: 14 ArtificialPaths and 1 Connector, on three courses. 13 of the 15 lie
+# 0.912-1.000 of their own length inside a mapped `natural=water` polygon on the same course:
+#
+#   copper-valley  83565232 0.948 in 775614086   83566408 1.000 in 775441713
+#                  83567182 1.000 in 83584763    83567781 1.000 in 83580398
+#                  83574845 1.000 in 83584474    83583927 0.912 in 83584631
+#   the-reserve    83153285 1.000 in 82588630    83154430 1.000 in -196909217
+#                  83154748 1.000 in 82588630    83158129 1.000 in -196909217
+#                  83158847 1.000 in 82588630    83164289 1.000 in -196909217
+#                  83164563 1.000 in -196909217
+#
+# ...and TWO DO NOT, which is why the rule is containment and not the FType alone: micke-grove 83153363
+# (ArtificialPath, 1628.3 m) and the-reserve 1040957802 (Connector, 24.8 m) measure 0.000 against every
+# water polygon in their caches. Excluding those on the tag would be an OMISSION -- a synthetic path whose
+# waterbody nobody has mapped is the only mark that water has, and rule 2 says over-warn.
+SYNTHETIC_FLOWLINES_IN_THE_CORPUS = {
+    "copper-valley-golf-club": 6,
+    "micke-grove-golf-links": 1,
+    "the-reserve-at-spanos-park": 8,
+}
+# The one that reaches a card today: drawn on copper-valley 11, 0.948 inside lake way/775614086, which
+# that same card draws and counts. Redundant ink over water already inked.
+SYNTHETIC_ON_A_CARD = ("copper-valley-golf-club", 11, 83565232, 775614086)
+
+
+def test_a_synthetic_nhd_flowline_is_not_a_second_water_on_top_of_the_lake_it_threads():
+    """Tag truth table for the predicate, so it is graded where it is written and not through a card."""
+    import render_hole as rh
+    ap = {"id": 1, "tags": {"waterway": "stream", "gnis:ftype": "ArtificialPath",
+                            "gnis:fcode": "55800", "source": "NHD"}}
+    conn = {"id": 2, "tags": {"waterway": "stream", "gnis:ftype": "Connector", "gnis:fcode": "33400"}}
+    creek = {"id": 3, "tags": {"waterway": "stream", "gnis:ftype": "StreamRiver",
+                               "gnis:fcode": "46003", "intermittent": "yes"}}
+    ditch = {"id": 4, "tags": {"waterway": "ditch", "gnis:ftype": "CanalDitch", "gnis:fcode": "33600"}}
+    plain = {"id": 5, "tags": {"waterway": "stream"}}
+    assert rh.is_synthetic_flowline(ap), "an NHD ArtificialPath is not a channel"
+    assert rh.is_synthetic_flowline(conn), "an NHD Connector is not a channel"
+    for f, why in ((creek, "a StreamRiver is a real creek, intermittent or not"),
+                   (ditch, "a CanalDitch is a dug channel and is real"),
+                   (plain, "a plain waterway=stream carries no NHD FType and must not be guessed at")):
+        assert not rh.is_synthetic_flowline(f), why
+    # Spelled three ways across the corpus's imports, and the predicate must read all of them.
+    for key in ("gnis:ftype", "nhd:ftype", "NHD:FTYPE"):
+        assert rh.is_synthetic_flowline({"id": 6, "tags": {"waterway": "stream",
+                                                          key: "ArtificialPath"}}), key
+    # Being synthetic is NOT on its own a reason to drop it -- the drop is conditional on containment,
+    # which is the corpus check below. `is_visible_watercourse` must be unchanged by this.
+    assert rh.is_visible_watercourse(ap), (
+        "is_visible_watercourse now refuses an ArtificialPath outright. Two of the corpus's fifteen "
+        "lie inside no mapped waterbody at all, and there a synthetic path is the only mark the water "
+        "has -- dropping it on the tag is the omission direction")
+
+
+@needs_corpus
+def test_the_synthetic_flowline_over_a_drawn_lake_loses_its_blue_and_the_lake_keeps_its_count():
+    """The redundant mark goes; the water it lay on keeps its ink and its W. Measured on the corpus.
+
+    Both halves matter and they pull opposite ways. Dropping the line must not drop the WATER -- the lake
+    is still filled and still counted, so nothing a junior can reach leaves the page -- and it must not
+    drop the COUNT either, because on copper-valley 11 the path shares NHD reach 18040051001111 with ways
+    83579191 and 83582265, which that card also draws. So this is an ink-only correction there, and the
+    test pins it as one rather than trusting that it is.
+    """
+    slug, hn, path_id, lake_id = SYNTHETIC_ON_A_CARD
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} not built")
+    cfg, rh = _engine(slug)
+    course = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    byid = {e["id"]: e for e in course}
+    assert path_id in byid and lake_id in byid, (
+        f"{slug} no longer carries way {path_id} and/or {lake_id}; re-measure this record")
+    assert rh.is_synthetic_flowline(byid[path_id]), (
+        f"way {path_id} is no longer tagged as a synthetic NHD flowline -- re-measure")
+    base = {n: rh.render_hole(n, cfg.HOLES) for n in cfg.HOLE_NUMS}
+    # The lake is still inked and still counted on the hole the path used to double.
+    assert base[hn][1]["water_hazards"] >= 1, (
+        f"{slug} h{hn} draws no area water at all now; the lake the path lay on has left the card")
+    assert base[hn][1]["waters"] >= 1, f"{slug} h{hn} prints 0W with water drawn"
+    # THE PATH REACHES NO CARD, proved by DELETING it from the cache and requiring every card to be
+    # byte-identical. That is the instrument the out-of-bounds decision is graded with, and unlike a
+    # re-derived selector it cannot drift from the engine.
+    orig_load = rh.load
+    try:
+        rh.load = _drop_one(orig_load, path_id)
+        moved = [n for n in cfg.HOLE_NUMS if rh.render_hole(n, cfg.HOLES) != base[n]]
+    finally:
+        rh.load = orig_load
+    assert not moved, (
+        f"deleting synthetic NHD flowline way {path_id} still changes {slug} card(s) {moved}, so it is "
+        f"reaching the paper. It lies 0.948 of its length inside lake way {lake_id}, which the same "
+        f"card fills in blue and counts -- a creek drawn across a lake")
+    # ...and the DELETION INSTRUMENT ITSELF WORKS on this course, or the assertion above is vacuous:
+    # dropping the lake the path lay on MUST move a card.
+    try:
+        rh.load = _drop_one(orig_load, lake_id)
+        lake_moved = [n for n in cfg.HOLE_NUMS if rh.render_hole(n, cfg.HOLES) != base[n]]
+    finally:
+        rh.load = orig_load
+    assert lake_moved, (
+        f"deleting lake way {lake_id} changes no {slug} card, so _drop_one is not reaching this "
+        f"engine and the refusal above proves nothing")
+    # ...and the corpus population is what the record says it is.
+    for s, n_expected in sorted(SYNTHETIC_FLOWLINES_IN_THE_CORPUS.items()):
+        if s not in CORPUS:
+            continue
+        c2, r2 = _engine(s)
+        els = json.load(open(os.path.join(c2.COURSE_DIR, "osm_course.json")))["elements"]
+        got = sum(1 for e in els if r2.is_synthetic_flowline(e))
+        assert got == n_expected, (
+            f"{s} now has {got} synthetic NHD flowline(s), not {n_expected}. Re-measure the record "
+            f"above -- the containment figures in it are what the rule stands on")
