@@ -40164,3 +40164,112 @@ def test_the_synthetic_flowline_over_a_drawn_lake_loses_its_blue_and_the_lake_ke
         assert got == n_expected, (
             f"{s} now has {got} synthetic NHD flowline(s), not {n_expected}. Re-measure the record "
             f"above -- the containment figures in it are what the rule stands on")
+
+
+# A feature tagged as water that is a BUILDING, and the reason it takes a recorded per-feature refusal
+# rather than a rule. See render_hole.MEASURED_NOT_WATER for the measurement; this is the guard on it.
+#
+# THE RECORD HAS TO EXPIRE IF THE GROUND CHANGES. A refusal keyed on an OSM way id is a claim about one
+# polygon as it was measured, so the two things that would falsify it -- the way being deleted, and the way
+# being redrawn over something else -- must fail here rather than pass silently. The engine's own side of
+# that is the shape check (a redrawn ring is treated as water again, which is the over-warn direction);
+# this is the loud half.
+MEASURED_NOT_WATER_EVIDENCE = {
+    # id: (slug, node count, ring m^2, density ratio inside/window, tall-return footprint m)
+    225722025: ("merion-golf-club", 13, 455.9, 0.884, (11.5, 12.2)),
+}
+# Merion's three genuine waters, as the CONTROL the ratio above is read against: LiDAR does not return
+# from open water, so a real pond reads far below its surroundings and this ring does not.
+MERION_WATER_RETURN_RATIOS = {285224863: 0.209, 118824332: 0.240, 118837675: 0.371}
+
+
+def test_the_water_polygon_that_is_a_building_is_refused_and_the_two_real_ponds_are_not():
+    """merion way 225722025 is `natural=water NHD:FTYPE=LakePond` and there is a house inside it.
+
+    The refusal is per-feature and that is a decision, not laziness. All three of merion's NHD LakePond
+    imports carry structurally IDENTICAL tags -- same `NHD:FCode` 39004, same `NHD:Elevation`
+    0.00000000000, same `NHD:Resolution` High, same `NHD:FDate` 2001/08/17, same `source=NHD` -- so no tag
+    test can separate the building from the two genuine ponds, and OSM maps no building there either (43
+    building ways in that cache, none within 60 m of this ring). The only discriminator is a measurement,
+    and it is recorded where the refusal is.
+
+    What this test pins is that the refusal stays NARROW: it must remove that one way and nothing else,
+    and above all not the two real ponds beside it or the hand-mapped lateral hazard.
+    """
+    import render_hole as rh
+    for wid, (_slug, nodes, _a, _r, _f) in MEASURED_NOT_WATER_EVIDENCE.items():
+        assert wid in rh.MEASURED_NOT_WATER, f"way {wid} is no longer refused"
+        good = {"id": wid, "tags": {"natural": "water"},
+                "geometry": [{"lat": 0.0, "lon": 0.0}] * nodes}
+        assert rh.is_measured_not_water(good), f"way {wid} is no longer matched by its own record"
+        # A REDRAWN ring must NOT inherit the refusal: the measurement described the old shape.
+        for delta in (-1, +1):
+            redrawn = dict(good, geometry=[{"lat": 0.0, "lon": 0.0}] * (nodes + delta))
+            assert not rh.is_measured_not_water(redrawn), (
+                f"way {wid} keeps its refusal after being redrawn with {nodes + delta} nodes instead of "
+                f"{nodes}. The recorded measurement is of ONE shape; a re-noded or re-traced ring has "
+                f"not been measured, and treating it as water again is the over-warn direction")
+    for wid in MERION_WATER_RETURN_RATIOS:
+        assert wid not in rh.MEASURED_NOT_WATER, (
+            f"merion way {wid} is a genuine water and is being refused as measured-not-water")
+        assert not rh.is_measured_not_water(
+            {"id": wid, "tags": {"natural": "water"}, "geometry": [{"lat": 0.0, "lon": 0.0}] * 13})
+    # Nothing else may join the table without a recorded reason long enough to be one.
+    for wid, why in rh.MEASURED_NOT_WATER.items():
+        assert wid in MEASURED_NOT_WATER_EVIDENCE, (
+            f"way {wid} was added to MEASURED_NOT_WATER without being added here. A per-feature refusal "
+            f"to draw water needs its measurement recorded in both places or it becomes a list nobody "
+            f"can audit")
+        assert isinstance(why, tuple) and len(why) == 2 and len(why[1]) > 200, (
+            f"way {wid}'s record is {why!r}; it needs the node count and the measurement in prose")
+
+
+@needs_corpus
+def test_no_card_draws_water_over_the_merion_building_and_every_real_water_survives():
+    """Measured on the corpus, and in both directions -- the refusal must remove ink, and only that ink."""
+    wid = 225722025
+    slug, nodes, area_m2, ratio, _f = MEASURED_NOT_WATER_EVIDENCE[wid]
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} not built")
+    cfg, rh = _engine(slug)
+    course = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    byid = {e["id"]: e for e in course}
+    assert wid in byid, (
+        f"{slug} no longer carries way {wid}. If a mapper has deleted the phantom pond, this refusal is "
+        f"dead and should GO -- do not leave it behind covering the next way that gets that id")
+    assert len(byid[wid]["geometry"]) == nodes, (
+        f"way {wid} now has {len(byid[wid]['geometry'])} nodes, not the {nodes} that were measured. "
+        f"Re-measure it against the LiDAR before deciding what it is; the engine has already stopped "
+        f"refusing it, which is the safe direction and a wrong number on a card")
+    # The tags that make it look like water are still there -- otherwise the refusal is doing nothing
+    # and the finding has quietly become an OSM fix.
+    t = byid[wid]["tags"]
+    assert t.get("natural") == "water", (
+        f"way {wid} is no longer tagged `natural=water`, so nothing would draw it as water anyway and "
+        f"this refusal is dead weight. Drop it and record that OSM was fixed")
+    # Deleting it from the cache must change NOTHING: it already reaches no card.
+    base = {n: rh.render_hole(n, cfg.HOLES) for n in cfg.HOLE_NUMS}
+    orig_load = rh.load
+    try:
+        rh.load = _drop_one(orig_load, wid)
+        moved = [n for n in cfg.HOLE_NUMS if rh.render_hole(n, cfg.HOLES) != base[n]]
+    finally:
+        rh.load = orig_load
+    assert not moved, (
+        f"deleting way {wid} still changes {slug} card(s) {moved}, so a water hazard that is a house is "
+        f"reaching the paper. Its ring returns LiDAR at {ratio:.3f} of the surrounding window's density "
+        f"where merion's three genuine waters read 0.209-0.371, and 1743 of those returns stand more "
+        f"than 2 m above the class-2 ground inside it")
+    # ...and every genuine water on that course still reaches the cards it used to.
+    for real in sorted(MERION_WATER_RETURN_RATIOS):
+        if real not in byid:
+            continue
+        try:
+            rh.load = _drop_one(orig_load, real)
+            real_moved = [n for n in cfg.HOLE_NUMS if rh.render_hole(n, cfg.HOLES) != base[n]]
+        finally:
+            rh.load = orig_load
+        if real == 285224863:
+            assert real_moved, (
+                f"deleting merion way {real}, a hand-mapped golf=lateral_water_hazard, changes no card: "
+                f"a real water hazard has stopped being drawn")

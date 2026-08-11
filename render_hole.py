@@ -239,6 +239,73 @@ def is_synthetic_flowline(feature):
     return any(t.get(k) in SYNTHETIC_FTYPE for k in _FTYPE_KEYS)
 
 
+# A FEATURE TAGGED AS WATER THAT IS NOT WATER, REFUSED ONE AT A TIME AND ONLY ON A MEASUREMENT.
+#
+# This is the shape of rule this project least wants -- a list, not a rule -- so the reason it is a list
+# is recorded before the list is. Every other refusal in this module is a predicate over tags, because a
+# predicate cannot go stale and a list can. Here no predicate exists:
+#
+#   * merion has THREE `natural=water NHD:FTYPE=LakePond` ways and their tags are structurally IDENTICAL:
+#     way 225722025, 118824332 and 118837675 each carry `NHD:FCode` 39004, `NHD:Elevation`
+#     0.00000000000, `NHD:Resolution` High, `NHD:FDate` 2001/08/17 and `source=NHD`, and differ only in
+#     their ComID / Permanent_ / ReachCode. Two of them are genuine ponds. Any tag test that removed the
+#     third would remove all three.
+#   * OSM does not map the building either. That cache holds 43 `building` ways and not one is within
+#     60 m of this ring, so there is no second OSM feature to key on.
+#
+# So the honest answer is a per-feature refusal that carries its measurement, and the measurement is the
+# project's own method: public-domain USGS 3DEP LiDAR, computed here (tiles USGS_LPC_PA_17County_D24_*).
+#
+# WHAT WAS MEASURED, for way 225722025. Open water absorbs the 1064 nm pulse, so a water surface returns
+# far fewer points than the ground around it. Return density INSIDE the 13-node ring (455.9 m^2 by
+# shoelace) against the density of a 45 m collar around it:
+#
+#     way 225722025  this ring                       13.77 / 15.58 pt/m^2  = 0.884
+#     way 285224863  hand-mapped lateral hazard        2.79 / 13.32        = 0.209
+#     way 118824332  genuine NHD LakePond              5.75 / 23.92        = 0.240
+#     way 118837675  genuine NHD LakePond              8.57 / 23.09        = 0.371
+#
+# The three genuine waters on the same course, flown on the same tiles, return a fifth to a third of
+# their surroundings. This ring returns essentially all of it -- there is no water surface in it.
+#
+# AND WHAT IS THERE INSTEAD. Of the 6277 returns inside, 4510 are class 2 (ground) confined to
+# 89.42-90.57 m, so dry mapped ground runs through the whole ring; there are ZERO class 9 (water)
+# returns. The other 1743 stand more than 2 m above that ground (median 89.61 m) in a rigid
+# 11.5 x 12.2 m footprint occupying 147 m^2 of the 456 m^2 ring, rising to 7.18 m with a single linear
+# ridge along its centre -- read off a 1.2 m height-above-ground raster. A water surface is flat and
+# 456 m^2 of it does not contain a 12 m pitched roof.
+#
+# THE RECORD EXPIRES WITH THE SHAPE IT DESCRIBES. The value is (node count when measured, the
+# measurement), and is_measured_not_water below matches on the node count: a ring somebody re-traces or
+# re-nodes has NOT been measured, so it goes back to being drawn and counted as water. That is the
+# over-warn direction, chosen deliberately -- the cost is a wrong number on one card, the alternative is
+# a refusal outliving its evidence and hiding a real pond. The loud half of that expiry is in
+# tests/test_phase1_regressions.py, which fails if the way is deleted, re-noded, or has its
+# `natural=water` tag fixed in OSM, and says to drop the entry rather than adjust it.
+MEASURED_NOT_WATER = {
+    225722025: (13,
+                "merion-golf-club. A small pitched-roof building on mown turf, inside a 13-node "
+                "`natural=water NHD:FTYPE=LakePond` ring of 455.9 m^2. Public-domain USGS 3DEP LiDAR, "
+                "computed here: the ring returns 13.77 pt/m^2 against 15.58 in a 45 m collar (0.884), "
+                "where merion's three genuine waters on the same tiles return 0.209, 0.240 and 0.371 of "
+                "theirs -- open water absorbs the pulse and this ring does not. 4510 of its 6277 returns "
+                "are class 2 ground at 89.42-90.57 m and none is class 9 water; the remaining 1743 stand "
+                "over 2 m above that ground in a rigid 11.5 x 12.2 m footprint covering 147 m^2 and "
+                "rising to 7.18 m with one linear ridge. The card printed a water hazard on hole 10 that "
+                "is a house."),
+}
+
+
+def is_measured_not_water(feature):
+    """True when this exact feature has been MEASURED not to be water, so no card may draw it as water.
+
+    Matches on the node count as well as the id, so the refusal cannot outlive the shape it was measured
+    on -- see MEASURED_NOT_WATER for why that direction is the safe one.
+    """
+    rec = MEASURED_NOT_WATER.get(feature.get('id'))
+    return bool(rec) and len(feature.get('geometry') or []) == rec[0]
+
+
 # A LAND-CLASSIFICATION DATASET'S OWN LABEL FOR THE SAME POLYGON, on a way that also carries
 # natural=wetland. Any one of these means the outline came out of a bulk import of land COVER or land
 # USE classes -- `description` and `landuse` are the class itself, `attribution` names the programme,
@@ -1045,11 +1112,18 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # `natural` key a mapper omitted is the one water signal the clauses above would miss. Measured over
     # the corpus: 10 features carry `water=*` (bay-view 2, copper-valley 1, philadelphia 5, the-reserve
     # 2) and all 10 also carry `natural=water`, so it admits nothing new and no book's bytes move for it.
+    #
+    # ...AND ONE FEATURE IS REFUSED BY MEASUREMENT, past every tag test above, because its tags say water
+    # and the ground says building. See MEASURED_NOT_WATER for the LiDAR and for why this one refusal is a
+    # recorded id rather than a predicate: merion's three NHD LakePond imports are tag-identical and two
+    # of them are real ponds, so no tag test can separate them. Last, so the tag clauses stay readable as
+    # the classification they are and the exception reads as the exception it is.
     waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water'
              or g.get('tags',{}).get('water')
              or is_drawn_wetland(g)
              or penalty_area_is_water(g)) and g.get('geometry')
+             and not is_measured_not_water(g)
              and (frac_in(g, CORRIDOR_M['water'])>=0.35 or any_within(g, CORRIDOR_M['water']))]
 
     # A PENALTY AREA THAT IS NOT WATER IS ITS OWN CLASS: its own ink, its own legend entry, its own
