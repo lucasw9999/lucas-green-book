@@ -39,12 +39,22 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   0.36 is a CEILING and the panel fit usually binds first: re-derived off the built markup with
   `tools/check_scale.py`'s own browser-layout measurement across all 216 greens in the corpus's 12
   courses that print real greens (poppy‑ridge ships blank greens by design and carries none),
-  **27 reach it** — a clear cluster printing 0.3598–0.3601 in : 5 yd, with the next value down
+  **27 reach it** — a clear cluster printing 0.3597–0.3601 in : 5 yd, with the next value down
   0.3552 (trump‑national‑los‑angeles hole 15 — the added course's own worst green) — median
   **1:593**. (This document previously said "26 of 198, median 1:588"; re-running
   the same measurement over the prior 198-green population also returns 27, not 26 — the corpus's
   growth from 198 to 216 greens, a 13th course added, moved the denominator and the median, not the
   count of greens at the ceiling, since the added course's own worst green sits below this cluster.)
+
+  THE CLUSTER'S FLOOR SITS ON A ROUNDING BOUNDARY BETWEEN TWO WAYS OF MEASURING IT. Parsing the
+  built markup directly (the SVG's own `viewBox` against its inline `width=`/`height=`) gives
+  0.359755 → 0.3598; laying the same book out in a real browser under print media — what
+  `tools/check_scale.py` actually does, and the method this document treats as authoritative
+  everywhere else, including the worst‑gated reading two paragraphs below — gives 0.359742 →
+  0.3597, a 1.25e‑05 difference. The browser‑layout figure is the one printed above and the one
+  `tests/test_r18_scale.py` grades this cluster's range against, for the same reason
+  `tools/check_scale.py`'s own docstring gives for measuring the artifact rather than the markup:
+  a stylesheet can move what the markup alone cannot show.
 - **Measured, not asserted.** The intended cap was once defeated by a single CSS rule: the size was
   emitted as an SVG `width=` presentation attribute, which has zero specificity, so the stylesheet
   overrode it and 15 of 198 greens printed over the limit while three documents claimed the cap
@@ -118,6 +128,10 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   **0.458 in : 5 yd (1:393)** — but reports them in a separate, non‑gating section, because gating
   an edition built to exceed the cap would be a gate against a design decision. Recorded here because a conformance document that never
   mentions the one edition that does not conform invites the reader to assume every book does.
+  Every figure in this paragraph — the green count, the range and its ratios, the margin
+  percentages, the count over the cap, the closest‑to‑conforming hole, and the median — is graded
+  against `tools/check_scale.py`'s own measurement by `tests/test_r18_scale.py`, so this paragraph
+  cannot restate a number that gate no longer produces.
 
 ## Why the wording is safe
 - We say **"Designed to conform,"** not "conforms" / "legal" / "USGA‑approved." It is an
