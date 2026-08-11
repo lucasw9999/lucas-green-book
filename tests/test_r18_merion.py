@@ -47,9 +47,28 @@ reaching the PLAYED length at all. Nearest-edge distance measured WITH the end c
 behind the tee and past the green -- is a third thing again, and it is the loosest of the three. On
 this marsh the three disagree, and the disagreement is load-bearing here: the played-length metric
 decides which cards MUST gain water, and the end-cap metric bounds which cards must not move at all.
-One hole lies 34.6 m from the drawn centreline with the caps included and 265.9 m from its PLAYED
-length, because the whole of that approach is behind its tee. A ball struck from that tee travels away
-from the marsh, so that card prints `0W` correctly and keeps printing it.
+
+HOLE 15 IS THE CASE THAT SITS BETWEEN THEM, and it is NOT GUARDED BY THIS FILE. Measured from the OSM
+geometry in merion's cache: the marsh's nearest edge is **34.57 m** from hole 15's drawn centreline
+with the end caps included -- which is INSIDE the 45 m water corridor -- and **265.91 m** from its
+PLAYED length. Its boundary-length fraction in the corridor is **0.2469** against the 0.35 bar, so
+today both halves of the selector refuse it and the card prints `0W`. That is the right answer: the
+WHOLE polygon lies behind the tee, spanning **-42.60 m to -24.08 m** along the tee-to-green axis, with
+its nearest point **33.17 m** behind the first vertex on the first segment's own axis (t = **-0.1426**
+of that 232.60 m segment, the same per-segment parameterisation `dist_to_line` uses). A ball struck
+from that tee travels away from the marsh.
+
+BUT NOTHING HERE REQUIRES IT TO STAY 0W, and an earlier version of this file's commit message claimed
+it did. Because 34.57 m is inside the corridor, hole 15 is not in the mutation arm's `far` band; it
+falls in the middle band, which is deliberately unasserted in direction (see that arm's docstring for
+why). Demonstrated rather than asserted: with the `waters` boundary-length bar lowered 0.35 -> 0.20 in
+a throwaway copy of the engine, hole 15 paints 1W and one blue fill and all three arms here still
+report `3 passed`. That is the intended latitude -- over-drawing a hazard a golfer cannot reach is the
+over-warning direction this book deliberately prefers, and pinning hole 15 to `0W` would convert a
+safe future change into a test failure. What this file owes the reader is an honest account of what it
+does and does not guard, which is what the paragraph above is -- and
+`test_the_unguarded_holes_figures_are_measured_and_its_band_is_really_unguarded` keeps that account
+from going stale, by re-deriving every figure in it and re-checking that the band really is open.
 
 NOTHING HERE WRITES UNDER `courses/`. Both arms read the caches and render in memory; the mutation arm
 withdraws the polygon from an in-memory element list by monkeypatching `render_hole.load`, never from a
@@ -301,11 +320,22 @@ def test_removing_the_marsh_takes_down_the_water_on_exactly_the_cards_it_reaches
 
     THE THREE BANDS ARE NOT THE SAME BAND, and the middle one is deliberately left unasserted in
     direction. `render_hole`'s water selector is an OR of a boundary-length fraction and a played-length
-    reach, so a hole can be admitted by the fraction alone -- one merion card is, at 13.0 m off its
-    centreline with the marsh sitting beside the green it putts to and 142.3 m from its played length,
-    which is the greenside hazard on that hole and over-warning is the side this book takes. Asserting
-    a direction there would mean respelling the selector inside the test, and a test carrying its own
-    copy of the drawing rule cannot disagree with the engine about anything.
+    reach, so a hole can be admitted by the fraction alone. TWO merion cards sit in that middle band and
+    they sit at opposite ends of it, which is why naming only one of them misleads:
+
+      * hole 16 is admitted by the fraction (1.0000) at 13.0 m off its centreline and 142.3 m from its
+        played length -- the marsh is 2.48 m from the green it putts to, so this is its greenside
+        hazard, and over-warning is the side this book takes.
+      * HOLE 15 IS REFUSED BY BOTH HALVES TODAY and prints `0W`, at 34.57 m off its centreline with the
+        end caps included, 265.91 m from its played length, fraction 0.2469 against the 0.35 bar. Being
+        inside the 45 m corridor is exactly what keeps it OUT of the `far` band above, so THIS ARM DOES
+        NOT REQUIRE IT TO KEEP PRINTING `0W`. Measured, not assumed: lower the `waters` bar to 0.20 in
+        a throwaway copy of the engine and hole 15 paints 1W and one blue fill while all three arms
+        here still pass. That latitude is deliberate and must not be closed -- painting an unreachable
+        hazard is the over-warning direction, and a guard forbidding it would fail the safe change.
+
+    Asserting a direction in the middle band would mean respelling the selector inside the test, and a
+    test carrying its own copy of the drawing rule cannot disagree with the engine about anything.
 
     The withdrawal is in memory -- `render_hole.load` is monkeypatched, `courses/` is never touched.
     """
@@ -367,3 +397,123 @@ def test_removing_the_marsh_takes_down_the_water_on_exactly_the_cards_it_reaches
         "%d merion card(s) moved their footer W without moving their blue ink, or the reverse -- the "
         "number under the map must describe the map -- (hole, W without/with, blue fills "
         "without/with): %s" % (len(disagree), disagree))
+
+
+# =============================================================================================
+# THE ACCOUNT THIS FILE GIVES OF WHAT IT DOES NOT GUARD IS ITSELF GRADED
+# =============================================================================================
+
+def _axis_figures(cfg, rh, hn, wet):
+    """Every figure this file publishes about the unguarded hole, re-measured from the cache.
+
+    One helper so the prose and the grader cannot drift by measuring two different things. The frame is
+    the renderer's own: `match_green` picks which end of the centreline is the tee, exactly as
+    `render_hole` does, so "behind the tee" here means what it means on the card.
+    """
+    import geo
+    course, geom = rh.load()
+    greens = [e for e in geom if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+    loc = cfg.COURSE.get("location") or {}
+    line = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))[hn]["geometry"]
+    _green, green_end, tee_end = rh.match_green(line, greens)
+    em, line_em = _projector(line)
+    tee = em(tee_end["lat"], tee_end["lon"])
+    grn = em(green_end["lat"], green_end["lon"])
+    ux, uy = grn[0] - tee[0], grn[1] - tee[1]
+    chord = math.hypot(ux, uy) or 1.0
+    ux, uy = ux / chord, uy / chord
+    pts = [em(p["lat"], p["lon"]) for g in wet for p in g["geometry"]]
+
+    caps = min(_dist_with_end_caps(p, line_em) for p in pts)
+    played = min(_dist_to_played_line(p, line_em) for p in pts)
+    frac = min(rh.frac_len_within([em(p["lat"], p["lon"]) for p in g["geometry"]], line_em,
+                                 rh.CORRIDOR_M["water"]) for g in wet)
+    along = [((p[0] - tee[0]) * ux + (p[1] - tee[1]) * uy) for p in pts]
+    # the nearest point, and where it lands on the FIRST segment's own axis -- the per-segment
+    # parameterisation `dist_to_line` uses, which is why its sign is what the played-length clip reads
+    near = min(pts, key=lambda p: _dist_with_end_caps(p, line_em))
+    ax, ay = line_em[0]
+    bx, by = line_em[1]
+    dx, dy = bx - ax, by - ay
+    seg0 = math.hypot(dx, dy) or 1.0
+    t0 = ((near[0] - ax) * dx + (near[1] - ay) * dy) / (dx * dx + dy * dy)
+    return {"caps": caps, "played": played, "frac": frac,
+            "axis_min": min(along), "axis_max": max(along),
+            "seg0": seg0, "t0": t0, "behind": t0 * seg0}
+
+
+def test_the_unguarded_holes_figures_are_measured_and_its_band_is_really_unguarded():
+    """The module docstring names a hole this file does NOT guard. Re-derive the case it makes.
+
+    THIS EXISTS BECAUSE THE CLAIM IT GRADES WAS ONCE WRONG IN THE OTHER DIRECTION. A tracked record for
+    this work stated that the mutation arm "requires" hole 15 to keep printing `0W`. It does not, and the
+    reason is a measured distance: 34.57 m is INSIDE the 45 m corridor, so that hole is not in the arm's
+    `far` band. Overstating a guard is the same defect class as a stale published figure -- both are a
+    record claiming something the build does not do -- and this repo already grades its published figures
+    by re-deriving them rather than trusting the sentence. So this arm does that for the account above.
+
+    TWO HALVES, because the sentence makes two kinds of claim:
+
+      * THE FIGURES. Every distance, fraction and offset the docstring publishes for that hole is
+        re-measured from the OSM geometry in merion's cache and must agree to the precision printed. A
+        typo, a re-noded polygon or a moved centreline fails here instead of quietly misinforming.
+      * THE BAND. The hole must genuinely still be OUTSIDE the set the mutation arm constrains. If a
+        later change widened that band to cover it, the docstring's "not guarded" would silently become
+        false -- so the membership is asserted, not described.
+
+    IT DOES NOT ASSERT THAT THE HOLE PRINTS `0W`, deliberately, and that omission is the point. Pinning
+    it would forbid the over-warning direction this book prefers. The honest guard is on the ACCOUNT,
+    not on the outcome.
+
+    The hole number is read out of the prose being graded rather than typed, so this arm cannot end up
+    measuring a different hole than the paragraph describes.
+    """
+    import re
+    cfg, rh = _merion()
+    doc = sys.modules[__name__].__doc__
+    # Matched against a whitespace-FLATTENED copy. The figures sit mid-paragraph, so re-wrapping the
+    # prose moves newlines through them -- one pattern already broke that way while being written. The
+    # grader must fail on a wrong NUMBER, never on a reflow.
+    flat = re.sub(r"\s+", " ", doc)
+    m = re.search(r"HOLE (\d+) IS THE CASE THAT SITS BETWEEN THEM", flat)
+    assert m, "the module docstring no longer names the unguarded hole in the expected shape"
+    hn = int(m.group(1))
+    wet, _reach_map = _reach(cfg, rh)
+    assert wet, "no drawn wetland in the cache; see the first arm"
+
+    def pub(pattern, what):
+        got = re.search(pattern, flat)
+        assert got, "the module docstring no longer publishes %s in the expected shape" % what
+        return float(got.group(1))
+
+    want = {
+        "caps": pub(r"nearest edge is \*\*([\d.]+) m\*\*", "the end-cap distance"),
+        "played": pub(r"\*\*([\d.]+) m\*\* from its PLAYED length", "the played-length distance"),
+        "frac": pub(r"fraction in the corridor is \*\*([\d.]+)\*\*", "the boundary-length fraction"),
+        "axis_min": pub(r"\*\*(-[\d.]+) m to -[\d.]+ m\*\*", "the near end of the axis extent"),
+        "axis_max": pub(r"\*\*-[\d.]+ m to (-[\d.]+) m\*\*", "the far end of the axis extent"),
+        "behind": -pub(r"nearest point \*\*([\d.]+) m\*\* behind the first vertex",
+                       "the offset behind the tee"),
+        "t0": pub(r"t = \*\*(-[\d.]+)\*\*", "the first-segment t"),
+        "seg0": pub(r"of that ([\d.]+) m segment", "the first segment length"),
+    }
+    got = _axis_figures(cfg, rh, hn, wet)
+    wrong = []
+    for k, w in want.items():
+        places = len(str(w).split(".")[1]) if "." in str(w) else 0
+        if round(got[k], places) != round(w, places):
+            wrong.append("%s: docstring says %s, measured %.4f" % (k, w, got[k]))
+    assert not wrong, (
+        "the module docstring's figures for hole %d no longer match the cache -- re-measure the prose "
+        "rather than the other way round: %s" % (hn, wrong))
+
+    # THE BAND. Inside the corridor is precisely what keeps this hole out of the constrained set.
+    corridor = rh.CORRIDOR_M["water"]
+    assert got["caps"] < corridor, (
+        "hole %d is %.2f m from the centreline with the end caps included, which is NOT inside the %g m "
+        "corridor -- so it now falls in the band the mutation arm constrains, and the module docstring's "
+        "account of it as unguarded has become false" % (hn, got["caps"], corridor))
+    assert hn not in _beyond_corridor(cfg, rh, wet), (
+        "hole %d is now in the mutation arm's `far` band, so that arm DOES require it not to move. The "
+        "module docstring says the opposite. Reconcile them -- and note that closing this latitude "
+        "forbids the over-warning direction this book prefers" % hn)
