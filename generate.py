@@ -67,6 +67,16 @@ ADDR_USABLE_UNITS = 292.0    # 95% of the gold frame's 307.4-unit inner span
 ADDR_MAX_FS = 9.0            # what every cover printed before there was a rule; never enlarge past it
 ADDR_MIN_FS = 6.0            # the cover's own smallest type is the 6.2-unit copyright line
 
+# Clarification 4.3a/1's own ceiling (3/8 in : 5 yd == 1:480) -- see _scale_size_line() below for why
+# this is printed on the cover. This is the RULE's number, not the tighter internal design target
+# render_green.py sizes every green under (0.36 in : 5 yd, ~4% inside this cap; see its own
+# `legal_kf = 0.36 * px_m / 4.572`): every shipped green is at or under both, so the Rule's own
+# ceiling is the literal, checkable claim, and it is the same figure tools/check_scale.py gates
+# every green against (`LIMIT_IN_PER_5YD`) -- if a green were ever built past it that gate fails, so
+# this word cannot go stale without the build's own Rule 4.3 gate going red first.
+# tests/test_r18_scale.py pins it against tools/check_scale.py's copy.
+RULE_4_3_SCALE_CAP_IN_PER_5YD = 0.375
+
 # THE REASON A BOOK MAY NOT BE SHARED IS STATED IN TWO RECORDS, and nothing tied their WORDS together.
 # The left half of each pair is what the card prints; the right half is what distribution.py's own reason
 # for the SAME refusal has to claim -- that reason is what tools/gen_provenance.py writes into
@@ -936,7 +946,44 @@ def cover_panel():
   <text x="175" y="438" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="{badge_size}" letter-spacing="1.0" fill="{badge_fill}">{badge_text}</text>
   <text x="175" y="462" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="8" letter-spacing="3" fill="#7f9484">JUNIOR GOLF EDITION</text>
   <text x="175" y="474" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.2" letter-spacing="0.5" fill="#6f8676">&#169; 2026 Lucas Wu &#183; Lucas Green Book&#8482;</text>
+  {_scale_size_line()}
 </svg></div>'''
+
+
+def _scale_size_line():
+    """Rule 4.3's own scale cap and this book's card size, IN WORDS, on the pocket cover.
+
+    Clarification 4.3a/1's FAQ closes with a recommendation this book did not follow: developers
+    should "indicate on the cover or within a book's legend the scale of green images as well as
+    the overall size of the book." The book already draws a physical 5-yd bar inside every green's
+    own viewBox -- genuinely better evidence, since it scales with a mis-scaled printer and a ruler
+    on it gives the true scale -- but that is not what an official checking a book at a tournament
+    reads; they read words.
+
+    THE LEGEND CARD HAS NO ROOM FOR IT. monarch-bay's guide card ships with 1.19 px of clearance in
+    its own 3.5x5in `overflow:hidden` box (tests/test_r17_print.py), and this project has clipped
+    that card's tail -- the licence, the warranty disclaimer and the contact address -- twice
+    already. Measured the same way (panel spliced into every shipped cover, laid out in
+    chrome-headless-shell under print media): the pocket cover has room. See
+    tests/test_r18_scale.py for the measurement this claim rests on.
+
+    Both figures are READ, not typed, so neither can drift from what the book actually is:
+    - the card size comes straight from `config.CARD_W_IN`/`CARD_H_IN` -- the per-course override a
+      future course.json could set, not the engine default -- so a course that ever prints a
+      different size states its OWN size, not a stale "3.5 x 5.0".
+    - the scale is Rule 4.3's own ceiling, `RULE_4_3_SCALE_CAP_IN_PER_5YD`, the same number
+      tools/check_scale.py gates every green against -- see that constant's own comment for why a
+      violation cannot go unnoticed.
+
+    Gated on DISTRIBUTABLE, the same flag `_cover_badge()` uses for the "DESIGNED TO CONFORM" claim
+    itself: a blank-green book (Poppy Ridge) prints no green image, so it has no scale to disclose.
+    """
+    if not DISTRIBUTABLE:
+        return ""
+    cap = round(180.0 / RULE_4_3_SCALE_CAP_IN_PER_5YD)   # 180 in = 5 yd; this cap's own ratio -> 1:480
+    return (f'<text x="175" y="486" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" '
+            f'font-size="6.0" letter-spacing="0.4" fill="#8a9d8f">SCALE 1:{cap} OR SMALLER '
+            f'&#183; CARD {config.CARD_W_IN:.1f} &#215; {config.CARD_H_IN:.1f} IN</text>')
 
 
 def _cover_badge():

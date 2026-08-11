@@ -36,15 +36,23 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
 - **Green print scale:** rendered at **0.36 in : 5 yd**, i.e. ~4% **under** the 3/8 in (0.375 in)
   cap — a deliberate safety margin so print/rounding can't push a green over the limit.
   (See `render_green.py`: `legal_kf = 0.36 * px_m / 4.572`, then `kf = min(legal_kf, fit_kf)` —
-  0.36 is a CEILING and the panel fit usually binds first: measured, 26 of 198 greens reach it,
-  median 1:588.)
+  0.36 is a CEILING and the panel fit usually binds first: re-derived off the built markup with
+  `tools/check_scale.py`'s own browser-layout measurement across all 216 greens in the corpus's 12
+  courses that print real greens (poppy‑ridge ships blank greens by design and carries none),
+  **27 reach it** — a clear cluster printing 0.3598–0.3601 in : 5 yd, with the next value down
+  0.3552 (trump‑national‑los‑angeles hole 15 — the added course's own worst green) — median
+  **1:593**. (This document previously said "26 of 198, median 1:588"; re-running
+  the same measurement over the prior 198-green population also returns 27, not 26 — the corpus's
+  growth from 198 to 216 greens, a 13th course added, moved the denominator and the median, not the
+  count of greens at the ceiling, since the added course's own worst green sits below this cluster.)
 - **Measured, not asserted.** The intended cap was once defeated by a single CSS rule: the size was
   emitted as an SVG `width=` presentation attribute, which has zero specificity, so the stylesheet
   overrode it and 15 of 198 greens printed over the limit while three documents claimed the cap
   held. `tools/check_scale.py` now **lays every book out in a real browser under print media and
-  measures the drawn green there**, exiting non‑zero above 0.375 in : 5 yd. Latest run:
-  **198/198 conforming, worst 0.3601 in : 5 yd (1:500)**, 4.0% margin. Never trust the renderer's
-  intent again — measure the artifact.
+  measures the drawn green there**, exiting non‑zero above 0.375 in : 5 yd. Latest run, across all
+  216 greens in the 12 courses that print real greens (poppy‑ridge ships blank greens by design
+  and is outside this count): **216/216 conforming, worst 0.3601 in : 5 yd (1:500)**, 4.0% margin.
+  Never trust the renderer's intent again — measure the artifact.
 
   Two precise statements about what that gate does and does not do, because an earlier revision of
   this file overstated it:
@@ -66,11 +74,28 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
     Separately, a test reads the printed card size straight out of the PDF's crop marks and compares
     it to the 4.25 × 7 in limit.
 - **Per‑hole, not per‑book.** Scale is computed per green, so it legitimately varies (roughly 1:500
-  to 1:944; median 1:588). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
+  to 1:944; median 1:593). Per the USGA's own FAQ (Q9), if one image did exceed the cap only **that hole's** image
   becomes unusable for reading the green — the rest of the book stays fine.
 - **Book size:** cards are **3.5 × 5.0 in** — well under the 4.25 × 7 in cap.
   (See `config.py`: `CARD_DEFAULT_W_IN, CARD_DEFAULT_H_IN = 3.5, 5.0`; `CARD_W_IN`/`CARD_H_IN` are
   per‑course overrides and no course sets `"card"`, so every built book is 3.5 × 5.0 in.)
+- **Scale & size, in words, on the cover.** Clarification 4.3a/1's own FAQ closes with a
+  recommendation this book did not follow: developers should "indicate on the cover or within a
+  book's legend the scale of green images as well as the overall size of the book." The physical
+  5‑yd bar drawn inside every green's own viewBox is genuinely better evidence — it scales with a
+  mis‑scaled printer and a ruler on it gives the true scale — but it is not what an official
+  checking a book at a tournament reads; they read words. The legend card has no room: it ships at
+  1.19 px of clearance in its own 3.5 × 5.0 in box on monarch‑bay (`tests/test_r17_print.py`), and
+  this project has clipped that card's tail twice already. Measured the same way (the panel spliced
+  into every shipped cover and laid out in chrome‑headless‑shell under print media): the pocket
+  cover has room, so `generate.py`'s `cover_panel()` now prints **"SCALE 1:480 OR SMALLER · CARD
+  3.5 × 5.0 IN"** beneath the Rule 4.3 badge, on every distributable book, with 12.44 px of
+  clearance to the card's own edge on every course measured. Neither figure is typed: the card size
+  is read from `config.CARD_W_IN`/`CARD_H_IN`, and the scale is Rule 4.3's own ceiling
+  (`RULE_4_3_SCALE_CAP_IN_PER_5YD` — the same number `tools/check_scale.py` gates every green
+  against), so a card‑size or cap change cannot leave the printed claim behind without
+  `tests/test_r18_scale.py` catching it. It does not print on Poppy Ridge: that book is
+  non‑distributable and prints no green image, so it has no scale to disclose.
 - **Which books this covers, and the one it does not.** Everything above is about the **standard
   pocket edition**, the book meant for competition. The **enlarged edition**
   (`COACH=1`) deliberately breaks the scale cap so the greens read at arm's length: measured off its
@@ -82,7 +107,7 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   That is a design decision, not a defect, and it is stated on the enlarged edition's own guide card:
   *"Printed larger than tournament scale: a practice aid, NOT a conforming competition book under
   Rule 4.3. Use the pocket edition in competition."* It also omits the "DESIGNED TO CONFORM · RULE 4.3" cover badge that the
-  pocket book carries, and it sits **outside** the 198/198 gate above rather than passing it. `tools/check_scale.py`
+  pocket book carries, and it sits **outside** the 216/216 gate above rather than passing it. `tools/check_scale.py`
   now measures the enlarged books too — every figure in this paragraph is its output, median
   **0.458 in : 5 yd (1:393)** — but reports them in a separate, non‑gating section, because gating
   an edition built to exceed the cap would be a gate against a design decision. Recorded here because a conformance document that never
