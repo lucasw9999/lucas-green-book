@@ -25518,11 +25518,11 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-11): micke-grove 4,325,056; castlewood-hill 4,476,153;
-    merion 5,870,442; monarch-bay 4,932,715; copper-valley 6,083,338; callippe 6,815,201;
-    castlewood-valley 5,834,925; philadelphia 4,603,601; the-reserve 5,109,035;
-    bay-view 4,242,595; valley-hi 4,697,660; poppy-ridge 341,146;
-    trump-national-los-angeles 6,188,180.
+    CURRENT SIZES (2026-08-11): micke-grove 4,325,254; castlewood-hill 4,476,351;
+    merion 5,870,409; monarch-bay 4,932,913; copper-valley 6,083,125; callippe 6,815,399;
+    castlewood-valley 5,835,123; philadelphia 4,603,799; the-reserve 5,109,233;
+    bay-view 4,242,793; valley-hi 4,697,858; poppy-ridge 341,149;
+    trump-national-los-angeles 6,188,378.
     (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
     rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
     net, those 121 less the 63 its conditional back-cover sentences added. micke-grove then gained 4
@@ -25563,13 +25563,44 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     151 m^2 `wetland=marsh` 2.48 m from a green and 10.22 m from hole 17's played length, which
     render_hole.is_drawn_wetland admits: holes 14, 16 and 17 went 0W to 1W, so the book carries one more
     filled water polygon on each of three cards and the frames those cards are fitted into moved with it.
-    Every other book is byte-identical. NOTE for whoever re-measures this next: merion's figure is due to
-    move again at the next corpus rebuild and DOWN, because two engine fixes have since landed that this
-    book predates -- way 225722025 is a `natural=water NHD:FTYPE=LakePond` ring with a house in it and
-    hole 10 no longer draws it (see render_hole.MEASURED_NOT_WATER), and hole 11's `3W` over two physical
-    waters is now 2W (see render_hole.water_identity). The engine currently renders merion with 4 filled
-    water polygons against the 5 this book holds; that divergence is why the water-ink baseline test was
-    moved off the built books and on to what the engine draws.
+    Every other book was byte-identical.
+    THEN THE WHOLE CORPUS WAS REBUILT AGAIN, later the same day, which is why every figure above moved
+    once more. TWO CAUSES, and they are worth keeping apart because only one of them reaches paper.
+    THE COVER LINE, on twelve books: generate.cover_panel() now calls _scale_size_line(), which prints
+    "SCALE 1:480 OR SMALLER . CARD 3.5 x 5.0 IN" beneath the Rule 4.3 badge -- the Clarification 4.3a/1
+    FAQ recommendation legal/06 records the book as having not followed. It is exactly +198 bytes, and it
+    is the SAME 198 on every one of the twelve distributable pocket books, because neither figure is typed
+    (config.CARD_W_IN/CARD_H_IN and RULE_4_3_SCALE_CAP_IN_PER_5YD) and every course resolves them
+    identically. Directly measured as +198 on the ten pocket books whose maps did not move; on the two
+    that did it is the residue, and merion's is confirmed independently below rather than assumed.
+    poppy-ridge gained 3 and not 198: it is non-distributable, so _scale_size_line()
+    returns "" and what lands is the two-space indent and the newline of the now-empty placeholder line
+    at generate.py's `  {_scale_size_line()}`. Its PDF is byte-identical at 488,639 -- which is the proof
+    those 3 bytes print nothing, and the honest answer to "did poppy-ridge disclose a scale it has no
+    green image for": it did not. The two enlarged editions that carry no engine change -- monarch-bay
+    and philadelphia -- are byte-identical, cover line included, because build_coach() calls
+    coach_cover_panel() and never cover_panel(); that architecture is the whole reason the conforming
+    scale claim cannot reach the one edition built past the cap.
+    THE ENGINE FIXES, on two courses and three cards, which is the part that changes what a golfer reads:
+      * copper-valley -213 net. Its drawn watercourse lines went 10 to 9 and the card that lost one is
+        hole 11, from 4 to 3: NHD `ArtificialPath` way
+        83565232, the synthetic line NHD threads through a lake to keep its flow network connected,
+        lying 0.9528 of its length inside lake way 775614086 -- recorded with its refusing predicate in
+        WATER_INK_REMOVED_DELIBERATELY. Nothing wet left that card: the lake keeps its fill and the
+        footer still reads `8B 3W`. What left is a blue creek drawn across open water. This course has no
+        enlarged edition, so its map delta is the residue -411 rather than a second measurement.
+      * merion -33 net, i.e. the same +198 against -231. Its filled water polygons went 5 to 4 -- hole
+        10's card no longer fills way 225722025, the `natural=water NHD:FTYPE=LakePond` ring with a
+        house inside it (render_hole.MEASURED_NOT_WATER) -- and hole 11's footer went 3W to `7B 2W`
+        over the same two physical waters (render_hole.water_identity). MEASURED TWICE: merion's
+        ENLARGED edition moved -231 EXACTLY, and it carries no cover line of its own, so the enlarged
+        book isolates the engine delta that the pocket book's -33 has the cover line folded into.
+    So three shipped cards in the whole corpus moved ink -- copper-valley 11, merion 10, merion 11 --
+    and the previous note's prediction that merion was "due to move again at the next corpus rebuild and
+    DOWN" is now discharged rather than pending: it moved down by exactly the 231 bytes those two fixes
+    were worth, the built book and the engine agree at 4 filled water polygons, and the two entries in
+    BOOK_PREDATES_THE_ENGINE that recorded the divergence were emptied by this rebuild, which is what
+    that table is designed to do.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -36677,19 +36708,22 @@ WATER_INK_REMOVED_DELIBERATELY = {
 # EVERY ENTRY IS SELF-CLEARING. A stale book is a build that has not happened yet, so the moment the corpus
 # is rebuilt these figures become equal and the test says to delete the entry. That is deliberate: the
 # allowance is a note about work in flight, not a permanent exemption.
-BOOK_PREDATES_THE_ENGINE = {
-    ("copper-valley-golf-club", "watercourse line"): (
-        10, 9,
-        "This book predates 871070c. NHD way 83565232 is an `ArtificialPath` -- the synthetic line NHD "
-        "threads through a lake to keep its flow network connected -- lying 0.9528 of its length inside "
-        "lake way 775614086, and the book still draws it as a creek across that lake. Rebuild clears this.",
-    ),
-    ("merion-golf-club", "water polygon"): (
-        5, 4,
-        "This book predates c506b3b. Way 225722025 is `natural=water NHD:FTYPE=LakePond` with a house "
-        "inside it, and hole 10's card in this book still fills it blue. Rebuild clears this.",
-    ),
-}
+# EMPTY, AND THAT IS THE CLEARED STATE RATHER THAN AN UNUSED TABLE. It held two entries until the
+# 2026-08-11 corpus rebuild, and the rebuild is what emptied it -- exactly as the paragraph above says it
+# should. Both were self-clearing and both cleared, measured on the books this rebuild wrote:
+#   copper-valley watercourse line -- book 10 against engine 9, the 871070c synthetic-flowline refusal
+#     (NHD `ArtificialPath` way 83565232, 0.9528 of its length inside lake way 775614086). Built book
+#     now 9, equal to the engine; the lake keeps its fill and hole 11 stays at 3W, so what left the card
+#     is the false creek line and nothing wet. The removal itself stays recorded, with its way id and
+#     refusing predicate, in WATER_INK_REMOVED_DELIBERATELY above -- that record is about the ENGINE
+#     against the preserved book and is not cleared by a rebuild.
+#   merion water polygon -- book 5 against engine 4, the c506b3b per-feature refusal (way 225722025,
+#     `natural=water NHD:FTYPE=LakePond` with a house inside it; see render_hole.MEASURED_NOT_WATER).
+#     Built book now 4, equal to the engine, so hole 10's card no longer fills that ring blue.
+# Left as `{}` rather than deleted: the table is the declared shape for the next book/engine gap, and the
+# assertions below still grade it (a reason string, a known drawn class, and the settled check that would
+# fail if an entry were re-added after the build that resolves it).
+BOOK_PREDATES_THE_ENGINE = {}
 
 
 def water_ink_book_findings(before, now, built, has_removal, removal_now, allowance):
