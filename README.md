@@ -66,8 +66,9 @@ fetch_dem_hd.py         # 0.4 m green surfaces from the raw LiDAR ground returns
                         #    refuses; OVERWRITE=1 to blank it on purpose)
 fetch_dem.py            #   THEN the USGS 3DEP seamless MOSAIC for the greens it refused -- a
                         #   multi-resolution service, so each patch records the source cell measured
-                        #   out of its own pixels instead of a tier (fills gaps;
-                        #   OVERWRITE=1 to replace a good 0.4 m surface on purpose)
+                        #   out of its own pixels instead of a tier (fills gaps; keeps a green that
+                        #   already reads rather than blanking it on a worse reply;
+                        #   OVERWRITE=1 to replace a good surface on purpose)
 fetch_trees.py          # trees from LiDAR returns 2.5-35 m above ground (never on greens/fairways/tees/bunkers)
 fetch_hole_elev.py      # tee-to-green height change from the same LiDAR -> hole_elev.json (--write)
 lidar_coverage.py       # greens & holes vs the tiles' header bboxes, + a dem_hd cross-check
