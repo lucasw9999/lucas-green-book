@@ -1258,9 +1258,9 @@ def _penalty_note():
     junior was told the hazard is TREES; it was then moved into the water blue and the footer W, so the
     same junior was told there are ten waters on a hole that has none; and then it was given an ink of its
     own that the legend named without naming its colour, which left a reader who knows the course asking
-    "what is the purple?". It is a quiet grey now, placed in the card's own greyscale ladder so that quiet
-    does not become invisible, and both the list above and the swatch below name it
-    (render_hole.PENALTY_FILL).
+    "what is the purple?". It is a quiet grey now -- render_hole.PENALTY_FILL, whose value and the
+    measured separation from every ink it touches are recorded at that constant's own definition, not
+    restated here -- and both the list above and the swatch below name it.
 
     THE SWATCH IS THE RENDERER'S OWN TWO COLOURS, evaluated, never a copy -- the arrangement
     _heat_swatches uses and for its reason: a key that merely agrees with the map today is a key that

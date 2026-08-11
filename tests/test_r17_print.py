@@ -1005,8 +1005,8 @@ def test_render_hole_publishes_the_penalty_inks_real_separation_from_every_ink_i
     bar is `_GREY_TOL`, the same 12 levels defect 1 uses for "these two would tell apart in mono".
     """
     inks = _hole_map_inks()
-    import render_hole as _rh_probe                                   # noqa: F401  (import guard only)
-    fill, edge = "#f2f2f2", "#c8c8c8"
+    import render_hole as rh
+    fill, edge = rh.PENALTY_FILL, rh.PENALTY_EDGE
     assert {fill, edge} <= inks, (
         f"render_hole no longer draws {fill}/{edge}; this section grades those two constants and must "
         f"be re-pointed at whatever replaced them")
