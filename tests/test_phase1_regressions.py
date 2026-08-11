@@ -16437,11 +16437,22 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
 
     So discriminate the slope layer by FONT RESOURCE instead. Chrome emits each green's SVG text as its
     own Type3 font, and a green's slope labels therefore land in a resource of their own. A resource
-    holding only 1-2 digit values, at least one of them not a multiple of 5, is a slope-label set: the
-    ladder rungs and the gutter ticks are always multiples of 5, and the hole-map yardages are
-    3-digit, so neither can qualify. Measured across the corpus this isolates exactly 252 resources --
-    one per green card, 198 pocket + 54 enlarged -- with a maximum value of 10, the cap. Nothing is
-    intersected with the HTML, so a PDF that disagrees with its source is now visible here.
+    holding only 1-2 digit values is the candidate -- the hole-map yardages and the gutter's to-green
+    radii are 3-digit, so those are excluded arithmetically -- and the depth ladder, which shares the
+    1-2 digit shape, is removed by co-location with its own declared ink. Both steps, and the rules
+    tried and rejected, are argued where they are implemented in slope_label_sets below. That isolates
+    one resource per green card, 18 on every book in this corpus, with a maximum value of 10 -- the
+    engine's own cap. Nothing is intersected with the HTML, so a PDF that disagrees with its source is
+    now visible here.
+
+    AND IT HAS TO ACTUALLY RUN, which for the whole life of the halo it did not. The guard below --
+    every haloed ladder must be identified before any value is called a slope -- failed on the FIRST
+    book of the corpus, so the verdict at the bottom of this test had never once executed, for any
+    course, and the test was a persistent red that looked like a reader crash. The cause was the
+    co-location anchor, not the bound: it compared bounding boxes across two fonts with different
+    vertical metrics, which holds on an upright card and misses on a card rotated for the fold. Fixed by
+    anchoring on the glyph's baseline origin; the measurements are in slope_label_sets. Lowering the
+    guard instead would have reinstated exactly the silent pass this test was rewritten to end.
 
     Sibling coverage, so this test does not have to carry it: PDF-vs-HTML faithfulness is
     test_every_number_printed_in_a_pdf_exists_in_its_html, and staleness is
@@ -16464,6 +16475,10 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         without this the flagged set becomes [15,20,25,30,35,40] and the test reports "unputtable
         slopes" for depth-ladder rungs. A failure with the wrong diagnosis sends someone hunting a
         slope defect that does not exist.
+
+        The two runs of one rung are matched on the glyph's BASELINE ORIGIN, which is the placement
+        point Chrome writes for both passes, and not on the span's bounding box -- see the block below
+        for what that cost when it was the bbox.
         """
         by, origins, ladder_at = {}, {}, []
         with fitz.open(path) as d:
@@ -16474,7 +16489,7 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
                             txt = "".join(c.get("c", "") for c in sp.get("chars", [])).strip()
                             if not re.fullmatch(r"\d{1,3}", txt):
                                 continue
-                            x, y = round(sp["bbox"][0], 1), sp["bbox"][1]
+                            x, y = round(sp["origin"][0], 1), round(sp["origin"][1], 1)
                             # the ladder's own ink: the fill run under a rung's halo
                             if sp.get("color") == ink:
                                 ladder_at.append((pg.number, x, y, txt))
@@ -16485,20 +16500,43 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
                             by.setdefault(key, set()).add(int(txt))
                             origins.setdefault(key, []).append((x, y, txt))
         # A Type3 resource is the LADDER when one of its glyphs is painted over by the ladder's own ink
-        # at the same place. Decided per RESOURCE and not per glyph: `rawdict` drops some of the
-        # overlapped fill runs (83% survived on that same export), so one match has to be enough, and
-        # a resource is per green card so this cannot over-reach into another card's layer.
+        # at the same place. Decided per RESOURCE and not per glyph: `rawdict` drops one of the
+        # overlapped fill runs per ladder, so one match has to be enough, and a resource is per green
+        # card so this cannot over-reach into another card's layer.
         #
-        # WHY CO-LOCATION AND NOT THE OTHER TWO CANDIDATES. Span SIZE separates them arithmetically --
-        # a rung run is 3.4/4.6 of its own card's slope run -- but only when both exist, and a green
-        # with rungs and no slope label would then be read as a slope layer, which is the misleading
-        # direction. Intersecting with `html_slopes` is the very thing this test removed: it made a PDF
-        # accusable only of printing a slope its HTML also printed, so a stale export could not be
-        # caught. Co-location leans on neither: it reads the ladder's declared ink and the fact that a
-        # stroked glyph is painted twice in one place, and the verdict stays read from the PDF alone.
+        # "AT THE SAME PLACE" IS THE BASELINE ORIGIN, NOT THE BOUNDING BOX, and that distinction is the
+        # whole mechanism. Keyed on `bbox` this matched 9 of 18 ladders in every pocket book -- never
+        # more, never fewer -- and 0 of 18 in all three coach books, so the guard below fired on the
+        # first book in the corpus and the verdict at the end of this test had never once executed. The
+        # two runs of a rung come from different fonts: the halo is a Type3 resource (ascender 0.845,
+        # descender -0.144) and the fill is HelveticaNeue (0.951, -0.212). Different vertical metrics
+        # mean their boxes never coincide, and the offset between the two tops is not even constant in
+        # sign: measured on bay-view, +0.10x the glyph size where the card is upright and -0.64x where
+        # the card is rotated 180 degrees for the fold, i.e. 3.7-5.0 pt at these sizes, past any
+        # tolerance loose enough to still be a co-location test. A pocket book lays out exactly half its
+        # 18 green cards rotated (bay-view: pages 0/2/4 upright, 1/3/5 flipped, 9 cards each) and a
+        # coach book rotates every green page -- which is the whole of "exactly 9 of 18" and "0 of 18".
+        # The ORIGIN is the pen position Chrome emits for both passes, and it does not depend on either
+        # font's metrics or on the card's rotation: of the 1200 rungs in this corpus whose halo and fill
+        # runs BOTH survive extraction, all 1200 report bit-identical origins. So the tolerance here is
+        # tight rather than generous.
+        #
+        # WHY CO-LOCATION AND NOT THE OTHER THREE CANDIDATES. Span SIZE separates them arithmetically --
+        # a rung run is 3.4/4.6 of its own card's slope run, measured within 0.2% on all 270 cards -- but
+        # only when both exist, and a green with rungs and no slope label would then be read as a slope
+        # layer, which is the misleading direction. Intersecting with `html_slopes` is the very thing
+        # this test removed: it made a PDF accusable only of printing a slope its HTML also printed, so a
+        # stale export could not be caught. Reading the two layers from a source that does not coalesce
+        # -- `page.get_texttrace()`, which does return all 82 of bay-view's rungs against rawdict's 64 --
+        # is DISQUALIFIED here for a reason outside this test's control: on PyMuPDF 1.27.2.2 it aborts
+        # the interpreter with `Fatal Python error: none_dealloc` partway through this corpus
+        # (reproducibly on micke-grove, the 8th PDF), which would take the whole suite down rather than
+        # fail one test. Co-location leans on none of them: it reads the ladder's declared ink and the
+        # fact that a stroked glyph is painted twice in one place, and the verdict stays read from the
+        # PDF alone.
         ladder = set()
         for key, pts in origins.items():
-            if any(key[0] == pn and abs(x - lx) < 0.5 and abs(y - ly) < 2.0 and t == lt
+            if any(key[0] == pn and abs(x - lx) < 0.2 and abs(y - ly) < 0.2 and t == lt
                    for x, y, t in pts for pn, lx, ly, lt in ladder_at):
                 ladder.add(key)
         by = {k: v for k, v in by.items() if k not in ladder}
@@ -16549,8 +16587,17 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         # matching would hand every rung value straight to the verdict below and report a green's 15, 20,
         # 25... as unputtable slopes -- a failure with the wrong diagnosis, which is worse than a clean
         # one. Self-activating: a pre-halo book carries no such group, so `n_haloed` is 0 and this is
-        # inert; measured on an 18-green export from this tree, 18 groups in the source gave exactly 18
+        # inert; measured on every shipped book in this corpus, 18 groups in the source give exactly 18
         # identified resources, so equality is what the mechanism actually delivers.
+        #
+        # WHAT IT COSTS AND WHERE IT IS THIN, measured rather than assumed. `rawdict` drops exactly one
+        # of each ladder's fill runs, and always the same one: the `5` rung, 270 of them across the 15
+        # slope-bearing books, 18 per book -- one per green, deterministic, not sampled. Every other rung
+        # keeps its fill run, so a resource is identified by 2-7 co-located rungs and has that much
+        # margin. ONE resource in the corpus has margin 1: micke-grove page 0, a green shallow enough to
+        # draw only {5, 10}, whose `5` is the dropped one. If a future export loses that rung's fill run
+        # too, this guard fires and names the book -- it does NOT quietly hand {5, 10} to the verdict,
+        # and neither value could trip it anyway. That is the intended direction of failure.
         assert _found_ladders and _found_ladders[0] >= n_haloed, (
             f"{os.path.relpath(pdf, ROOT)}: the HTML carries {n_haloed} haloed depth-ladder group(s) but "
             f"only {_found_ladders[0] if _found_ladders else 0} ladder font resource(s) were identified "
