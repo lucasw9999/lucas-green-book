@@ -77,12 +77,18 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 # D-4 -- an unrecognised argument must never reach a branch that rewrites a legal record
 # ==================================================================================================
 
-# The two generators whose non---check branch OVERWRITES a tracked legal document, and the file each
-# one would overwrite. Named here so a third generator cannot arrive unpinned: the assertion at the
-# bottom of test_every_argv_gate_in_tools_refuses_what_it_does_not_understand discovers every tool in
-# tools/ that spells the rule and requires it to be named here or graded explicitly below.
+# The generators whose non---check branch OVERWRITES a tracked record, and the record each one would
+# overwrite. Named here so a further generator cannot arrive unpinned: the assertion at the bottom of
+# test_every_argv_gate_in_tools_refuses_what_it_does_not_understand discovers every tool in tools/ that
+# spells the rule and requires it to be named here or graded explicitly below -- which is how
+# gen_repo_figures arrived under this table on the day it was written rather than after a typo found it.
+# The third one rewrites ONE SENTENCE in each of two hand-written documents rather than a whole file
+# (legal/10's tracked-file count and README's sys.modules drop count, both derived from the repo), and
+# that makes no difference to the rule it has to spell: a mistyped flag reaching its write branch edits
+# a legal record just the same.
 _LEGAL_WRITERS = {"gen_provenance": "legal/03_PROVENANCE_BY_COURSE.md",
-                  "gen_disclaimers": "legal/05_DISCLAIMER_TEXT.md"}
+                  "gen_disclaimers": "legal/05_DISCLAIMER_TEXT.md",
+                  "gen_repo_figures": "legal/10_SOFTWARE_DEPENDENCIES.md (and README.md)"}
 
 # Arguments a person plausibly types meaning "check". Every one of them rewrote both legal records.
 _MEANT_CHECK = ("-check", "--chek", "--verify", "-n", "--check=1", "check", "--dry-run", "--CHECK")
@@ -178,16 +184,24 @@ def _has_what_it_compares(tool):
     the reason gen_disclaimers routes its own floor through `_books`. So this cannot drift from the floor
     it is predicting: it is the same call.
 
-    It exists because both tools have a documented floor BEFORE the comparison, and on a fresh clone
-    every one of them fires -- courses/ is gitignored, so a stranger who clones this repo has neither a
-    course record nor a built book. gen_provenance refuses with "no course data present" (2) and
-    gen_disclaimers with "no built books found" (1). Those are the tools being right, and a test that
+    It exists because every one of these tools has a documented floor BEFORE the comparison, and on a
+    fresh clone the corpus ones fire -- courses/ is gitignored, so a stranger who clones this repo has
+    neither a course record nor a built book. gen_provenance refuses with "no course data present" (2)
+    and gen_disclaimers with "no built books found" (1). Those are the tools being right, and a test that
     demands a staleness verdict there is testing the tree, not the tool.
+
+    gen_repo_figures has a floor for a different absence: its figures describe the REPOSITORY, so a
+    corpus-less clone is a tree it can measure in full, and the tree it cannot is one with no `.git` --
+    which is exactly the tree the fresh-clone gate builds out of the tracked files. It answers None
+    there rather than 0, and refuses with 2.
     """
     if tool == "gen_provenance":
         # build() enumerates through distribution.course_slugs, and main()'s floor asks the same thing.
         import distribution
         return bool(distribution.course_slugs(ROOT))
+    if tool == "gen_repo_figures":
+        # Its own derivation, which is where the floor lives: None means git could not be asked here.
+        return __import__("gen_repo_figures").tracked_files() is not None
     # gen_disclaimers quotes BOTH editions and refuses if either is missing, so both are the precondition.
     mod = __import__("gen_disclaimers")
     return bool(list(mod._books("greenbook.html"))) and bool(list(mod._books("greenbook_coach.html")))
@@ -282,15 +296,15 @@ def _near_misses(flag):
 def test_every_argv_gate_in_tools_refuses_what_it_does_not_understand():
     """The rule, graded once for every tool that spells it: exact membership, and nothing else.
 
-    Three tools carry it (`tools/check_osm_bbox.py`, `tools/gen_disclaimers.py`,
-    `tools/gen_provenance.py`) and `tools/export_pdf.py` carries an inline variant that also takes
-    course slugs, so it is not judged by this table. What this asserts:
+    Four tools carry it (`tools/check_osm_bbox.py`, `tools/gen_disclaimers.py`,
+    `tools/gen_provenance.py`, `tools/gen_repo_figures.py`) and `tools/export_pdf.py` carries an inline
+    variant that also takes course slugs, so it is not judged by this table. What this asserts:
 
       * every flag the tool declares KNOWN is accepted, and the empty argv is accepted -- without
         this, "refuse everything" would pass, and refusing `--check` would make the check branch
         unreachable while refusing nothing would make the WRITE branch the default.
       * every near-miss spelling of every known flag is refused.
-      * a bare positional word is refused. Neither legal generator takes an argument at all.
+      * a bare positional word is refused. No generator here takes an argument at all.
     """
     gates = _argv_gates()
     assert set(gates) >= set(_LEGAL_WRITERS) | {"check_osm_bbox"}, (

@@ -100,7 +100,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. It rebinds `COURSE` and
-drops modules from `sys.modules` at 114 sites — counted across `tests/*.py` with comments and string
+drops modules from `sys.modules` at 115 sites — counted across `tests/*.py` with comments and string
 literals stripped, so every one of them executes; a plain `grep -c` reads higher, because the suite's
 own comments discuss the idiom — so a test can silently reconfigure the next one, and file order alone
 will never show it: a real `IndexError` in `render_hole` hid behind that for its whole life and only
@@ -113,6 +113,16 @@ The autouse `_bind_a_course` fixture in `tests/conftest.py` restores the `COURSE
 test in this directory, so leakage should be structurally impossible across the whole suite: pytest
 loads `tests/conftest.py` for every test module here, so every one of them inherits it. The shuffle is
 how you find out it still is.
+
+That site count is **generated, not typed** — as is the tracked-file count in
+`legal/10_SOFTWARE_DEPENDENCIES.md`. Both are properties of this repository rather than of any book, so
+any round that adds a test file or a `sys.modules` drop moves one of them; hand-typed, the pair went
+stale three times in a single day. If a test tells you either figure is wrong, do not retype it:
+```bash
+python3 tools/gen_repo_figures.py          # rewrites just those two sentences
+python3 tools/gen_repo_figures.py --check  # exits 1 while either is stale
+```
+The tracked count is the one `git ls-files` reports, so `git add` a new file before republishing.
 
 `tools/check_scale.py` is the important one. It lays each book out in a real browser under print
 media and measures the drawn green there, rather than trusting the SVG's own attributes — a

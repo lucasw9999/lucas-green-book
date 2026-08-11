@@ -9,7 +9,7 @@ licences — and that asymmetry is exactly how an AGPL dependency sat in `requir
 
 ## Nothing here is redistributed
 
-This repository ships **67 tracked files: source, docs, one original banner image and one 3D-print model.** No dependency
+This repository ships **70 tracked files: source, docs, one original banner image and one 3D-print model.** No dependency
 is vendored, bundled, or re-published. The binary-attribution duties in BSD/MIT/Apache attach to
 *redistribution*, so they are not triggered. The list below is hygiene and, for one entry, a real
 compatibility question.
@@ -90,6 +90,10 @@ EOF
 
 Re-run it when pinning or bumping anything. A licence can change between releases — PyMuPDF's did not,
 but `rasterio` moved maintainers, and a permissive-to-copyleft change in any of these would matter.
+
+The tracked-file count in *Nothing here is redistributed* is not re-verified by hand at all: it is
+generated from `git ls-files` by `python3 tools/gen_repo_figures.py`, and `--check` fails while it is
+stale. That one sentence is the only generated thing in this file; everything else here is authored.
 
 Every version in the tables above must also be one `requirements.txt` actually permits. The two files
 are separate accounts of the same dependency set — this one records what was verified, that one records
