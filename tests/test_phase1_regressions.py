@@ -25565,11 +25565,11 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-11): micke-grove 4,325,254; castlewood-hill 4,476,351;
-    merion 5,870,409; monarch-bay 4,932,913; copper-valley 6,083,125; callippe 6,815,399;
-    castlewood-valley 5,835,123; philadelphia 4,603,799; the-reserve 5,109,233;
-    bay-view 4,242,793; valley-hi 4,697,858; poppy-ridge 341,149;
-    trump-national-los-angeles 6,188,378.
+    CURRENT SIZES (2026-08-11): micke-grove 4,325,254; castlewood-hill 4,476,033;
+    merion 5,869,454; monarch-bay 4,932,913; copper-valley 6,083,125; callippe 6,815,080;
+    castlewood-valley 5,834,804; philadelphia 4,603,640; the-reserve 5,109,233;
+    bay-view 4,241,679; valley-hi 4,697,699; poppy-ridge 341,149;
+    trump-national-los-angeles 6,188,219.
     (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
     rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
     net, those 121 less the 63 its conditional back-cover sentences added. micke-grove then gained 4
@@ -25648,6 +25648,27 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     were worth, the built book and the engine agree at 4 filled water polygons, and the two entries in
     BOOK_PREDATES_THE_ENGINE that recorded the divergence were emptied by this rebuild, which is what
     that table is designed to do.
+    THEN THE CORPUS WAS REBUILT AGAIN THE SAME DAY, 2026-08-11, for a change that only ever removes, and
+    eight of the figures above moved with it. 0c92cda stops printing the tee NAME on the tee mark of any
+    card whose drawn OSM centreline does not span the hole: the mark stands on the pad the drawn line
+    starts from, and on those cards that pad is not the tee the label named -- up to 103 yd from it. The
+    mark itself, the tee ink, the dashed line and GRN are unchanged, so this is the smallest corpus-wide
+    delta on record, and it is measured card by card rather than inferred from a total. Eight pocket books
+    moved and five did not: bay-view -1,114 (holes 2, 6, 7, 12, 14, 15, 16), merion -955 (2, 3, 5, 6, 8,
+    9), callippe -319 (3, 17), castlewood-valley -319 (10, 18), castlewood-hill -318 (4, 16),
+    philadelphia -159 (17), trump-national-los-angeles -159 (10), valley-hi -159 (6); copper-valley,
+    micke-grove, monarch-bay, the-reserve and poppy-ridge are byte-identical. That is 22 of the 216 pocket
+    cards, each losing exactly ONE `<text ... fill="#20402a">` element and nothing else. Proved per card
+    rather than asserted: deleting that one element from the shipped card yields the rebuilt card
+    byte-for-byte, so no viewBox, path, footer mark, carry or gutter number moved anywhere, and the other
+    194 cards and every non-card panel are unchanged. The element is 159 bytes, or 160 on the four pocket
+    cards whose font-size reaches 10.0 and takes a fourth character, which is what each book's total above
+    is the sum of. The enlarged editions move the same way and are a second check on it: merion_coach -960
+    -- the same six holes, all six at 160 because that edition scales the type past 10.0 --
+    philadelphia_coach -159 (17), monarch-bay_coach byte-identical. legal/03 and legal/05 did not move, and
+    that is correct rather than an oversight: 03 is derived from course.json and the green surfaces, and 05
+    quotes only printed text carrying one of its four legal marks (gen_disclaimers.LEGAL_MARKS), which a
+    three-letter tee name on a hole map never carries.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
