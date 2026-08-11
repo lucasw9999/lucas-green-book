@@ -18842,7 +18842,7 @@ def test_each_card_footer_matches_its_own_map():
             #
             # A watercourse is split into several OSM ways at every road crossing and tag change, and
             # those ways are drawn as separate joined polylines that a reader sees as ONE creek. So the
-            # footer counts distinct water (render_hole.watercourse_identity) while the map inks every
+            # footer counts distinct water (render_hole.water_identity) while the map inks every
             # segment, and demanding equality here would force the footer back to counting OSM ways --
             # which is how copper-valley 11 came to print "7W" for two NHD reaches and merion 13 "2W"
             # for two ways both named Cobbs Creek.
@@ -39878,7 +39878,7 @@ def test_the_back_cover_builder_is_not_called_a_legend_and_no_book_styles_a_clas
 
 
 # A PASDA `SEGID` and an NHD `ReachCode` are not the same kind of identifier, and
-# render_hole.watercourse_identity ranked them as if they were. Every value measured in the caches; the
+# render_hole.water_identity ranked them as if they were. Every value measured in the caches; the
 # shape of each key is what decides where it belongs, not which course happens to carry it.
 #
 #   nhd:reach_code   A REACH. copper-valley's ways 83568581, 83579191 and 83582265 all carry
@@ -39904,7 +39904,7 @@ PASDA_SEGID_IS_A_RIVER_MILE_SEGMENT = (
 def test_a_river_mile_segment_id_does_not_outrank_the_name_of_the_creek_it_cuts_up():
     """One creek named once in OSM must count as one water, whatever a river-mile index calls its parts.
 
-    `watercourse_identity`'s docstring promises "the source hydrography's own REACH identifier, else the
+    `water_identity`'s docstring promises "the source hydrography's own REACH identifier, else the
     name". A PASDA `SEGID` is not a reach identifier: it is `<stream>_<start river mile>_<end river
     mile>`, so it is finer than the creek by construction and changes along it. Ranked above `name` it
     made merion 11 print `3W` over two physical waters.
@@ -39924,7 +39924,7 @@ def test_a_river_mile_segment_id_does_not_outrank_the_name_of_the_creek_it_cuts_
     for a, b in PASDA_SEGID_IS_A_RIVER_MILE_SEGMENT:
         wa = {"id": 1, "tags": {"waterway": "stream", "name": "Cobbs Creek", "pasda:SEGID": a}}
         wb = {"id": 2, "tags": {"waterway": "stream", "name": "Cobbs Creek", "pasda:SEGID": b}}
-        assert rh.watercourse_identity(wa) == rh.watercourse_identity(wb), (
+        assert rh.water_identity(wa) == rh.water_identity(wb), (
             f"two ways of ONE creek OSM names 'Cobbs Creek' get different identities because their "
             f"river-mile segments differ ({a!r} vs {b!r}), so the footer counts one creek twice. A "
             f"PASDA SEGID is <stream>_<start mile>_<end mile> -- it changes ALONG a creek and cannot "
@@ -39932,23 +39932,116 @@ def test_a_river_mile_segment_id_does_not_outrank_the_name_of_the_creek_it_cuts_
     # ...and the fix may not be "ignore SEGID and count every unnamed way on its own".
     ua = {"id": 3, "tags": {"waterway": "stream", "pasda:SEGID": "765_0_0.365"}}
     ub = {"id": 4, "tags": {"waterway": "stream", "pasda:SEGID": "765_0_0.365"}}
-    assert rh.watercourse_identity(ua) == rh.watercourse_identity(ub), (
+    assert rh.water_identity(ua) == rh.water_identity(ub), (
         "two UNNAMED ways carrying the same PASDA SEGID no longer share an identity, so dropping the "
         "key entirely has made the footer over-count where it used to be right. A segment id is a "
         "worse identity than a reach code and a better one than an OSM way id.")
-    assert rh.watercourse_identity(ua) != rh.watercourse_identity(
+    assert rh.water_identity(ua) != rh.water_identity(
         {"id": 5, "tags": {"waterway": "stream", "pasda:SEGID": "758_0_0.365"}}), \
         "two different PASDA streams share an identity"
     # Two different named creeks stay apart.
-    assert rh.watercourse_identity({"id": 6, "tags": {"name": "Cobbs Creek", "waterway": "stream"}}) \
-        != rh.watercourse_identity({"id": 7, "tags": {"name": "Trib 00765 To Cobbs Creek",
+    assert rh.water_identity({"id": 6, "tags": {"name": "Cobbs Creek", "waterway": "stream"}}) \
+        != rh.water_identity({"id": 7, "tags": {"name": "Trib 00765 To Cobbs Creek",
                                                      "waterway": "stream"}}), \
         "two differently named creeks share an identity, so the footer would under-count"
     # A reach code is the finer TRUE identity and still outranks the name.
     r1 = {"id": 8, "tags": {"name": "Black Creek", "nhd:reach_code": "18040051001111"}}
     r2 = {"id": 9, "tags": {"name": "Black Creek", "nhd:reach_code": "18040051001539"}}
-    assert rh.watercourse_identity(r1) != rh.watercourse_identity(r2), (
+    assert rh.water_identity(r1) != rh.water_identity(r2), (
         "two different NHD REACHES of one named river now share an identity. A reach is a real "
         "identity and it is finer than the name -- two reaches past two different holes are two "
         "waters -- so `nhd:reach_code` must stay above `name`.")
-    assert rh.watercourse_identity(r1) == ("nhd:reach_code", "18040051001111")
+    assert rh.water_identity(r1) == ("nhd:reach_code", "18040051001111")
+
+
+# The multipolygon half of the same count. A relation's OUTER RINGS are flattened into way-shaped
+# elements by fetch_osm._flatten_relations so nothing downstream needs to know about relations -- and the
+# footer, which counts one number per drawn feature, then reads those rings as separate waters.
+#
+# MEASURED in the caches: philadelphia relation 16617182 is the Schuylkill, `natural=water water=river`,
+# flattened into FOUR unnamed outer rings (ways -1661718201 with 155 nodes, -1661718202 with 3,
+# -1661718203 with 190, -1661718204 with 9). Nothing on those rings names them, so no reach code and no
+# name can join them -- but `_from_relation` is already stamped on each one by the flattener, and it is an
+# exact identity rather than a guess. the-reserve relation 1969092 is the same shape with one ring.
+#
+# LATENT, not shipped: the Schuylkill's nearest approach is 523 m, so no card draws it today and no
+# footer has printed `4W` for one river. That is why this is a test and not a correction to a number.
+WATER_RELATION_RINGS = {
+    "philadelphia-country-club": (16617182, 4),
+    "the-reserve-at-spanos-park": (1969092, 1),
+}
+
+
+def test_the_outer_rings_of_one_water_relation_count_as_one_water():
+    """A river mapped as a multipolygon is one water, however many rings the flattener makes of it.
+
+    The footer prints "9B 3W" and a reader takes the W as a number of waters to carry. `water_identity`
+    is what makes that true of a creek split into OSM ways; a relation flattened into rings is the same
+    defect one level up, and the ring carries the answer already -- `_from_relation`.
+
+    Graded on the returned key, and on the direction that matters in each case: rings of ONE relation
+    agree, rings of DIFFERENT relations do not, and a plain way with no relation is unaffected -- so a
+    fix that keyed everything on a constant fails.
+    """
+    import render_hole as rh
+    a = {"id": -1661718201, "tags": {"natural": "water", "water": "river"}, "_from_relation": 16617182}
+    b = {"id": -1661718203, "tags": {"natural": "water", "water": "river"}, "_from_relation": 16617182}
+    c = {"id": -196909217, "tags": {"natural": "water", "water": "river"}, "_from_relation": 1969092}
+    assert rh.water_identity(a) == rh.water_identity(b), (
+        "two outer rings of ONE multipolygon relation get different identities, so a river flattened "
+        "into four rings prints 4W. `_from_relation` is stamped on every ring by "
+        "fetch_osm._flatten_relations and is an exact identity, not a guess.")
+    assert rh.water_identity(a) != rh.water_identity(c), \
+        "rings of two DIFFERENT water relations share an identity, so two rivers would count as one"
+    assert rh.water_identity(a) == ("_from_relation", 16617182)
+    # A relation ring outranks even a reach code: the reach code is a property of the SOURCE
+    # hydrography's linework, and two rings of one mapped waterbody are one waterbody whatever
+    # flowlines cross them.
+    assert rh.water_identity({"id": -1, "tags": {"nhd:reach_code": "X"}, "_from_relation": 7}) \
+        == ("_from_relation", 7)
+    # A plain way is untouched.
+    assert rh.water_identity({"id": 5, "tags": {"natural": "water"}}) == ("id", 5)
+
+
+@needs_corpus
+def test_the_footer_w_counts_physical_waters_and_not_drawn_polygons():
+    """`W` is a count of WATERS, so two marks of one water may not print as two.
+
+    The line half of this was already true -- a creek split into ways is deduplicated by
+    `water_identity`. The AREA half counted `len(waters)`, one per drawn polygon, so a waterbody mapped
+    as a multipolygon would print one W per outer ring.
+
+    Measured through the ENGINE on the real caches rather than argued: for every hole of every course,
+    the number the footer prints may not exceed the number of DISTINCT waters among the features that
+    card draws. Equality is not required and must not be -- a hole legitimately reaching two separate
+    ponds prints 2W -- so this is the one-sided rule, in the direction that is a wrong number.
+    """
+    bad, checked = [], 0
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        for hn in cfg.HOLE_NUMS:
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            checked += 1
+            # `waters` is the count under test; `water_hazards` + `watercourses` is the number of drawn
+            # features. The count may never exceed the feature count either -- that direction would be
+            # a W with no ink behind it.
+            assert info["waters"] <= info["water_hazards"] + info["watercourses"], (
+                f"{slug} h{hn} prints {info['waters']}W over "
+                f"{info['water_hazards'] + info['watercourses']} drawn water feature(s)")
+    assert checked == expected_geometry_holes(), (
+        f"{checked} holes examined where the filesystem declares {expected_geometry_holes()}")
+    # ...and the relation case specifically, on the courses that carry one.
+    for slug, (rel, nrings) in sorted(WATER_RELATION_RINGS.items()):
+        if slug not in CORPUS:
+            continue
+        cfg, rh = _engine(slug)
+        course = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+        rings = [e for e in course if e.get("_from_relation") == rel]
+        assert len(rings) == nrings, (
+            f"{slug} relation {rel} now flattens to {len(rings)} ring(s), not {nrings}. Re-measure "
+            f"this record rather than adjusting the number -- the count it guards is derived from it")
+        assert len({rh.water_identity(g) for g in rings}) == 1, (
+            f"{slug}'s {len(rings)} outer rings of relation {rel} carry "
+            f"{len({rh.water_identity(g) for g in rings})} identities, so that one waterbody would "
+            f"print one W per ring on any hole it reached")
+    assert not bad, bad

@@ -122,8 +122,8 @@ NOT_WATER = ('dam', 'weir', 'lock_gate', 'sluice_gate', 'fish_pass')
 HIDDEN_LOCATION = ('underground', 'underwater')
 
 
-def watercourse_identity(feature):
-    """A key that is the same for every OSM way belonging to ONE physical watercourse.
+def water_identity(feature):
+    """A key that is the same for every OSM feature belonging to ONE physical water.
 
     "3W" beside "14B" is read as "there are three waters on this hole", and it was counting OSM WAYS.
     A creek is routinely split into several ways at every road crossing and tag change, so one stream
@@ -131,34 +131,52 @@ def watercourse_identity(feature):
     code 18040051001111 -- one reach -- and merion 13 printed 2W for two ways both named "Cobbs Creek".
     20 of 198 cards printed a bigger W than there is water.
 
-    The key is already in the data on 137 of the corpus's 179 waterways: the source hydrography's own
-    reach identifier, else the name. A way with neither is counted on its own, because nothing available
-    says it is the same water as its neighbour -- guessing from shared endpoints would merge a tributary
-    into the creek it joins.
+    WHAT THE FOOTER'S W COUNTS, decided here because it was being decided in two places: PHYSICAL WATERS,
+    not marks and not features. A reader is choosing what to carry, so the honest unit is "how many waters
+    are on this hole", and one creek drawn as four joined blue polylines is one of them. The map still inks
+    every feature -- that is rule 2, and no counted water may lack ink -- so the two numbers legitimately
+    differ and the card prints only the one a player uses. `waters` in render_hole() is that count; the
+    guide card's legend is what has to say which number it is, and generate.py owns that wording.
 
-    THE ORDER IS A RANKING OF HOW COARSE EACH IDENTIFIER IS, and it was wrong: `pasda:SEGID` sat with the
-    reach codes and is not one. Measured in the caches, by the SHAPE of each key's values:
+    APPLIES TO AREAS AS WELL AS LINES, which it did not, and that is the multipolygon half. The line half
+    was deduplicated here while the area half counted `len(waters)` -- one per drawn polygon -- so a
+    waterbody mapped as a MULTIPOLYGON printed one W per outer ring. Measured: philadelphia relation
+    16617182 is the Schuylkill, flattened by fetch_osm._flatten_relations into FOUR unnamed outer rings
+    (ways -1661718201/-1661718202/-1661718203/-1661718204), and it would print `4W` for one river on any
+    hole it reached. It reaches none today -- 523 m at its nearest -- so this closes a latent wrong number
+    rather than correcting a shipped one, and no card's bytes move for it.
 
+    The key is already in the data. In rank order, coarsest-TRUE first, and the rank is the whole content
+    of this function -- each step down is a weaker claim about what "the same water" means:
+
+      _from_relation   THE SAME MAPPED WATERBODY. Stamped on every flattened ring by the flattener, so it
+                       is exact rather than inferred, and it outranks even a reach code: a reach code
+                       describes the source hydrography's LINEWORK, and two rings of one mapped waterbody
+                       are one waterbody whatever flowlines cross them.
       nhd:reach_code   A REACH -- one number for one water however the ways are later split.
                        copper-valley ways 83568581, 83579191 and 83582265 all read 18040051001111.
       scvwd:ROUTEID    A ROUTE -- same property. bay-view's seven `waterway=stream` ways (50256874,
                        50256875, 50256873, 50256878, 50256813, 50256839, 50256841) are one continuous
                        880 m channel and all seven read 490036.
-      pasda:SEGID      A RIVER-MILE SEGMENT. merion's two Cobbs Creek ways read `758_10.594_11.6195` and
-                       `758_6.5182_10.594` -- stream 758, miles 10.594-11.6195 and 6.5182-10.594. The
-                       value CHANGES ALONG one creek by construction, so it cannot be that creek's
-                       identity. Above `name` it split a creek OSM names once into two, and merion 11
-                       printed `3W` over TWO physical waters: Cobbs Creek (both those ways) and Trib
-                       00765 To Cobbs Creek (way 225722014).
-
-    So a reach code still outranks the name -- a reach is finer than a name and TRUE, and two reaches of
-    one river past two different holes are two waters -- while a river-mile segment now ranks BELOW it.
-    Kept rather than dropped, because for an UNNAMED PASDA way it is still better than the way's own OSM
-    id: it is a worse identity than a reach code and a better one than nothing.
+      name             What OSM calls it. Coarser than a reach and weaker, but a creek named once is one
+                       creek.
+      pasda:SEGID      A RIVER-MILE SEGMENT, and it used to sit with the reach codes. merion's two Cobbs
+                       Creek ways read `758_10.594_11.6195` and `758_6.5182_10.594` -- stream 758, miles
+                       10.594-11.6195 and 6.5182-10.594. The value CHANGES ALONG one creek by
+                       construction, so it cannot be that creek's identity. Above `name` it split a creek
+                       OSM names once into two, and merion 11 printed `3W` over TWO physical waters:
+                       Cobbs Creek (both those ways) and Trib 00765 To Cobbs Creek (way 225722014). Kept
+                       BELOW the name rather than dropped, because for an unnamed PASDA way it is still a
+                       better identity than that way's own OSM id.
+      id               The way itself. A feature with none of the above is counted on its own, because
+                       nothing available says it is the same water as its neighbour -- guessing from
+                       shared endpoints would merge a tributary into the creek it joins.
 
     Deduplicates the COUNT only. Every segment is still DRAWN: a golfer looking at the card should see
     all the blue that is there, and the honesty rule that matters is that no counted water lacks ink.
     """
+    if feature.get('_from_relation'):
+        return ('_from_relation', feature['_from_relation'])
     t = feature.get('tags') or {}
     for k in ('nhd:reach_code', 'scvwd:ROUTEID'):
         if t.get(k):
@@ -1022,7 +1040,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # with a neighbour, so they are ONE continuous non-turf network -- brush ribbons and barranca floors
     # -- cut into pieces at tag and mapping boundaries, and a per-way count says "10 penalty areas on
     # hole 14" of ground a golfer would call "the barranca, left and right". That is the defect
-    # watercourse_identity exists for, one class over, and here it has no reach code and no name to
+    # water_identity exists for, one class over, and here it has no reach code and no name to
     # deduplicate on; deduplicating by contiguity instead would report 1 where a hole has brush on BOTH
     # sides, which is the understating direction on a hazard. So the card names the class and refuses
     # the number -- rule 1 -- and generate.penalty_mark prints a mark, not a total. `info` carries the
@@ -2054,9 +2072,13 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # printed it over five separate lines of Cobbs Creek. The guide's legend calls all of it "water
     # (blue)", so the footer was contradicting both the map beside it and the legend that explains it.
     info=dict(bunkers=len(bunkers),
-              # distinct PHYSICAL waters: the area hazards plus the deduplicated watercourses. See
-              # watercourse_identity -- counting OSM ways made one split creek read as several.
-              waters=len(waters)+len({watercourse_identity(g) for g in creeks}),
+              # DISTINCT PHYSICAL WATERS -- see water_identity for what that unit is and why the card
+              # prints it rather than a feature count. Counting OSM ways made one split creek read as
+              # several; counting drawn polygons made one multipolygon river read as one W per outer ring.
+              # Areas and lines go through ONE set for that reason: a `natural=water` ring and a
+              # `waterway` line of the same NHD reach are the same water seen twice, and two counts that
+              # deduplicate separately cannot notice it.
+              waters=len({water_identity(g) for g in waters + creeks}),
               water_hazards=len(waters), watercourses=len(creeks),
               # Non-water penalty areas this card DRAWS. The card prints no number for them and must not
               # -- see the `penalty_areas` selector for why 28 contiguous ways are not 28 places -- so
