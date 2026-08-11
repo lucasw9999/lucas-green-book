@@ -30616,7 +30616,7 @@ HOLE_MAP_FILL = {
                      "a golf=penalty_area that is not water: brush, canyon, waste. A quiet grey because "
                      "the class covers ground on 16 of this course's 18 holes, so a loud ink would bury "
                      "the sand, the water and the line -- see render_hole.PENALTY_FILL for the value and "
-                     "the luma deltas that keep quiet from becoming invisible"),
+                     "why its own fill, not the edge or the words beside it, is what fails a mono printer"),
     '#cfe8b2': (None, None, "fairway -- TURF, the ground the hole is made of and what a player aims at"),
     '#e9f0da': (None, None, "rough -- TURF"),
     '#7cc45a': (None, None, "the putting surface -- TURF, and the card is turned around it"),
