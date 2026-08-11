@@ -231,6 +231,204 @@ def is_drawn_wetland(feature):
     return True
 
 
+# `golf=penalty_area` IS NOT `golf=water_hazard` UNDER A NEW NAME, and a shipped book assumed it was.
+#
+# The 2019 Rules of Golf did retire "water hazard" and "lateral water hazard" and put "penalty area" in
+# their place, but the replacement is a SUPERSET, not a rename: a penalty area is every water on the
+# course PLUS any area a Committee chooses to mark as one -- native brush, a canyon floor, desert,
+# lava. `golf=water_hazard` meant water. `golf=penalty_area` does not, and nothing in the tag says
+# which of the two a given feature is.
+#
+# MEASURED IN THE CACHES, over all 13 courses. trump-national-los-angeles is the only one that carries
+# the tag at all, and ALL 34 of its penalty areas are `natural=scrub` and nothing else -- native brush
+# ribbons and barranca floors on a coastal bluff, 101 to 27,778 m^2 each (shoelace area of each ring in
+# its own local metric frame), and 31 of the 34 share vertices with a neighbour: the 34 ways form only 5
+# connected areas and the largest single area is 28 of them, so they are one continuous non-turf network
+# cut into pieces rather than 34 places. Not one of them is water. That
+# course's water is three small ponds
+# (ways 215463946, 215463948, 215463950 -- `golf=water_hazard` with `natural=water`) and three visible
+# streams (ways 845375651, 845375656, 845375657 -- `waterway=stream`; four further stream ways carry
+# `tunnel=culvert` and is_visible_watercourse refuses them, correctly).
+#
+# DRAWN AS WATER, those 34 took the book's 18 footers from 8 W to 91 and hole 14 to "10W" over no water
+# at all. That is rule 1 -- a number the data does not support -- and "10W" tells a junior there are ten
+# waters where there are none. The corrected book prints 6 W, on holes 8, 9, 12, 13 and 16: the three
+# ponds, each counted on the two holes that reach it, and nothing else (see `creeks` for the third
+# feature that left the W, a drainage line inside two of these penalty areas). Painted in the scrub fill instead, as they were before, it was rule 2:
+# 83 of the pairs are inside the water corridor and the legend beside them reads "trees". Both are
+# wrong. The class needs its own answer, and the only evidence available to give it one is the
+# feature's own tags:
+#
+#   * a penalty area that IS water -- open water, a water subtype, a watercourse a golfer can see, or
+#     wet ground a card should draw -- is water. It takes the blue, the footer W and the 45 m corridor,
+#     because it is the thing the blue already means.
+#   * a penalty area that is not water is a PENALTY AREA: drawn, in ink of its own, with a legend entry
+#     of its own and its own footer mark. See `penalty_areas` in render_hole() for the ink, the
+#     corridor and the reason there is no per-hole COUNT.
+#
+# Two pure, tag-only predicates at module scope, beside is_visible_watercourse and is_drawn_wetland and
+# for their reasons: they can be graded by truth table rather than through a rendered card, fetch_osm's
+# census and this renderer cannot disagree about which half a feature falls in, and the suite grades
+# the split by importing these rather than respelling them.
+def penalty_area_is_water(feature):
+    """True when a `golf=penalty_area` is WATER, so the blue and the footer W are the honest ink for it.
+
+    Water by the definitions this engine ALREADY uses, never by a new one invented here: `natural=water`
+    (the open-water tag `waters` selects on), a `water=*` subtype (a lake/pond/canal classification on a
+    way whose `natural` key a mapper left off), `is_visible_watercourse` (a stream or ditch that is not
+    culverted, covered, underground, or a dam or weir), or `is_drawn_wetland` (marsh a card should draw,
+    with that predicate's own refusal of a land-classification tile intact). Anything else is not water,
+    and is_land_penalty_area below gets it.
+
+    ORDER OF THE FOUR DOES NOT MATTER because this is a classification, not a draw list -- whichever
+    clause fires, the feature is water and `waters` or `creeks` already inks and counts it. What matters
+    is that all four appear here AND on the drawing side: a penalty area this predicate calls water and
+    no selector admits would be a hazard drawn as nothing, which is the omission direction. That is why
+    `waters` gained the `water=*` clause with this change. Measured: 10 features in this corpus carry
+    `water=*` (bay-view 2, copper-valley 1, philadelphia 5, the-reserve 2) and every one of the 10 also
+    carries `natural=water`, so the clause admits nothing new today and no book moves for it; it is here
+    so that the split above is EXHAUSTIVE and no penalty area can fall between the two halves.
+
+    NO COURSE IN THIS CORPUS HAS A WATER PENALTY AREA -- all 34 are scrub -- so this half is exercised by
+    truth table and by mutation (see the suite), not by the corpus. It is written anyway because the
+    corpus is not the population: the tag is the current spelling, a mapper anywhere may use it for a
+    pond, and the branch that would then be missing is the one that keeps a pond out of the brush ink.
+    """
+    t = feature.get('tags') or {}
+    if t.get('golf') != 'penalty_area':
+        return False
+    return bool(t.get('natural') == 'water' or t.get('water')
+                or is_visible_watercourse(feature) or is_drawn_wetland(feature))
+
+
+def is_land_penalty_area(feature):
+    """True when a `golf=penalty_area` is NOT water -- brush, canyon, waste: its own hazard class.
+
+    The complement of penalty_area_is_water WITHIN the tag, so the two are exhaustive and disjoint by
+    construction and no feature can be drawn twice or dropped. Keyed on the TAG and not on membership
+    of `waters`: which class a hazard belongs to is a fact about the ground, not about which hole is
+    being drawn, and a feature out of reach of this hole would otherwise be classed one way here and
+    the other way on the next card.
+    """
+    return ((feature.get('tags') or {}).get('golf') == 'penalty_area'
+            and not penalty_area_is_water(feature))
+
+
+# THE PENALTY-AREA INK, named here rather than written inline like the other four fills, because the
+# guide cards' legend swatch is generated from it (generate._penalty_note) and a hazard whose key and
+# whose map are two separate hex strings is a key that can go stale.
+#
+# A QUIET GREY, AND THAT IS A DECISION ABOUT THE WHOLE CARD RATHER THAN ABOUT THIS CLASS. On this course
+# the class covers ground on 16 of 18 holes -- the drawn playing line runs INSIDE a penalty area for 1 to
+# 154 m on those sixteen -- so whatever colour it takes, it takes over every card. A loud ink would bury
+# the three things a player is choosing between: the sand, the water and the line. Grey says "this is
+# here, and it is not turf" without competing with them. Two louder versions were built first and both
+# failed for the same reason in different directions: violet was unreadable (a reader who knows this
+# course asked "what is the purple?"), and the Rules' own red -- Rule 17 marks a penalty area with red or
+# yellow stakes -- was legible but dominated all eighteen cards. Understated is the point; INVISIBLE is
+# not, so the value below is derived, not chosen for taste.
+#
+# THE VALUE, DERIVED. The guide card tells the reader to print in colour precisely BECAUSE this map's greys
+# collapse: a bunker and the fairway it lies in differ by 3.00 levels of 255, 2.87% in Rec.601 luma, and
+# tests/test_r17_print.py measures the sand vanishing off rendered cards. So a grey fill has to be placed
+# in that ladder, not dropped into it. Every fill the hole map draws, as Rec.709 grey over white -- which
+# is what Chrome's `filter: grayscale(1)`, and a mono printer after it, actually produce: white paper 255,
+# rough 236.9, bunker 226.4, fairway 222.8, water 204.1, the putting surface 173.0, a tee 144.2. The
+# widest gap in that ladder is the 31.1 levels between the putting surface and the water, so PENALTY_FILL
+# sits at its midpoint, grey 188. Measured against every ink it can touch, as (Rec.709 / Rec.601) levels
+# of 255:
+#
+#     white paper 67.0 / 67.0      rough 48.9 / 47.4       bunker 38.4 / 37.7     fairway 34.8 / 30.4
+#     water 16.1 / 13.6            putting surface 15.0 / 25.6                    tee 43.8 / 51.5
+#     tree marker 85.0 / 94.9      green outline 111 / 117    centre line 50.0 / 50.0
+#
+# The tightest of those, water at 6.3% of 255, is five times the 2.87% collapse the print warning exists
+# for, and it is a blue against a grey in colour. Nothing it touches is within the 12-level bar
+# test_r17_print uses for "these two would tell apart in mono".
+#
+# IT IS THE ONE INK ON THIS CARD THAT CANNOT LOSE ANYTHING TO A MONO PRINTER, because a pure grey is its
+# own luma under every matrix: R=G=B means the colour and greyscale renderings are identical by
+# construction, not by measurement. Verified rather than assumed -- the card is rendered through
+# `filter: grayscale(1)` and the fill sampled on both sides.
+#
+# THE EDGE is #636363 (grey 99), 89 levels below the fill, because the BOUNDARY is the part a player acts
+# on: relief is measured from where the ball last crossed it, so it is drawn heavier than water's (1.2
+# against 1.0). Its value is set by the only other grey LINE on this panel: the dashed centre line at
+# grey 138, which it must not be mistaken for, and the brown cart path at 80.2. 99 sits 39 below the one
+# and 19 above the other. It lands 8 levels from the green card's depth-ladder digits (#6b6b6b) and 4 from
+# a tree marker (#2f7d32), and neither is a confusion a reader can make: those are a digit on the other
+# panel and a filled dot, against a closed boundary line.
+#
+# FLAT AND OPAQUE, not hatched or translucent, and that is measured too. A hatch would say "staked" more
+# literally, and on this course it would also invent structure: 44 of its same-card penalty pairs OVERLAP
+# and 70 more abut at 0.00 m, so any texture or transparency stacks where the polygons stack and draws a
+# mottled patchwork over ground that is one continuous brush ribbon. Flat opaque renders the patchwork as
+# the single region it is. A `<pattern>` would also need an id inside a document that inlines 36 SVGs --
+# one fixed id makes 17 of the 18 definitions dead and silently resolves every card to the first, and a
+# per-hole id forces the legend swatch to carry a SECOND copy of the pattern, which is two definitions of
+# one ink and the drift the derived swatch exists to prevent.
+PENALTY_FILL = "#bcbcbc"
+PENALTY_EDGE = "#636363"
+
+# HOW MUCH OF A WATERCOURSE HAS TO LIE INSIDE A NON-WATER PENALTY AREA before the card treats it as that
+# area's drainage line rather than as separate water. See runs_inside_a_penalty_area below for the rule
+# and frac_len_inside_rings for the measure. 0.90 is not a tuned number: the three visible watercourses
+# in this corpus measure 0.974, 0.000 and 0.000, so nothing sits anywhere near the bar, and the bar is
+# set high because the consequence of crossing it is that a feature stops being counted as water.
+PENALTY_CONTAINMENT_MIN = 0.90
+
+
+def frac_len_inside_rings(pts, rings, step_m=2.0):
+    """Fraction of polyline `pts`' own LENGTH that lies inside any ring in `rings`. Planar metres.
+
+    SHAPE-BASED, NOT VERTEX-BASED, which is the property this whole file has had to fix three times
+    (frac_in, the wetland centroid, the green-binding mean). The polyline is walked at a fixed ARC-LENGTH
+    step and each step's midpoint is tested, so the answer depends on where the line and the rings ARE,
+    not on where a mapper happened to click on either of them: re-noding the line does not move a sample,
+    and point-in-polygon is a property of a ring's outline rather than of its vertices.
+
+    The step is a DISCRETISATION and is stated as one. At 2 m over the one feature in this corpus the rule
+    fires on -- a 191.9 m channel measuring 0.974 -- the worst a mis-placed sample can cost is one step,
+    0.010 of the fraction, against a 0.074 margin to PENALTY_CONTAINMENT_MIN and a 0.974 gap to the next
+    watercourse. Anything that made that margin thin would be a new case to measure, not a step to shrink.
+
+    A bounding box rejects most rings before any edge is touched, which is what keeps this affordable: it
+    runs per hole over every penalty area on the course, and returns immediately when there are none --
+    twelve of the thirteen courses.
+    """
+    if not rings or len(pts) < 2:
+        return 0.0
+    boxes = [(min(x for x, _ in R), min(y for _, y in R), max(x for x, _ in R), max(y for _, y in R))
+             for R in rings]
+
+    def in_any(x, y):
+        for (x0, y0, x1, y1), R in zip(boxes, rings):
+            if x < x0 or x > x1 or y < y0 or y > y1:
+                continue
+            inside = False
+            for i in range(len(R)):
+                ax, ay = R[i]
+                bx, by = R[(i + 1) % len(R)]
+                if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / ((by - ay) or 1e-12):
+                    inside = not inside
+            if inside:
+                return True
+        return False
+
+    total = inside_len = 0.0
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        seg = math.hypot(bx - ax, by - ay)
+        total += seg
+        if seg <= 0.0:
+            continue
+        n = max(1, int(math.ceil(seg / step_m)))
+        for k in range(n):
+            t = (k + 0.5) / n
+            if in_any(ax + (bx - ax) * t, ay + (by - ay) * t):
+                inside_len += seg / n
+    return (inside_len / total) if total else 0.0
+
+
 def par3_exact_from_tee(par, arc_m, chord_m):
     """True when a tick's distance FROM THE TEE can be derived exactly as (card - to_green).
 
@@ -318,8 +516,9 @@ CARRY_MERGE_GAP_YD = 8.0
 #
 # Every feature class this module draws is selected by how near it comes to the hole's centreline, and
 # each class has its own half-width -- a wood is a background fill that may legitimately start 55 m out,
-# a fairway is not. Those eight numbers were eleven literals at eleven call sites -- water's 45 spelled
-# four times over -- and nothing anywhere said what the WIDEST of them was. tools/check_osm_bbox.py needs
+# a fairway is not. Those eight numbers are what thirteen literals at thirteen call sites would otherwise
+# be -- water's 45 spelled four times over, twice of them now by the penalty class, which shares it --
+# and nothing anywhere said what the WIDEST of them was. tools/check_osm_bbox.py needs
 # exactly that figure: it asks whether the
 # OSM fetch box covers what the cards draw, and it carried its own `CORRIDOR_M = 45.0` with the comment
 # "render_hole.in_corridor's drawing buffer". 45 was never the widest -- OSM tree nodes are taken to
@@ -743,54 +942,117 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # and nothing else on any card moves -- same bunkers, same trees, same yardage rows, same carries,
     # same from-tee gutters; only the water counts and the frames the new ink is fitted into.
     #
-    # AND SO DOES `golf=penalty_area`, FOR A STRICTER REASON THAN WETLAND'S: it is not a neighbouring
-    # class that deserves the same treatment, it is the SAME CLASS UNDER ITS CURRENT NAME. The 2019 Rules
-    # of Golf replaced "water hazard" and "lateral water hazard" with one term, "penalty area", and OSM
-    # followed; `golf=water_hazard` above is the pre-2019 spelling of exactly this tag. So it takes the
-    # same blue, the same footer W, the same 45 m corridor and the same OR, and nothing about it is a new
-    # decision -- printing it any other way would be printing the same hazard two ways depending on when
-    # its mapper last read the rule book.
+    # A `golf=penalty_area` JOINS THIS LIST ONLY WHEN IT IS WATER, and that is a correction. It was
+    # admitted here unconditionally, on the premise that the tag is `golf=water_hazard` under its
+    # post-2019 name. It is not: "penalty area" replaced the two hazard tags above AND widened them, so
+    # the term now covers any area a Committee marks, water or not. See penalty_area_is_water, which is
+    # what this OR calls, and `penalty_areas` below, which draws the rest in its own ink. On this corpus
+    # the water half is empty -- all 34 penalty areas are `natural=scrub` -- so what this clause does
+    # here today is keep the DECISION in one place: a pond a mapper tags in the current vocabulary
+    # cannot fall out of the blue.
     #
-    # It had never appeared in this engine at all. trump-national-los-angeles is mapped entirely in the
-    # new vocabulary: 34 penalty areas, 185,918 m^2, 101-27,778 m^2 each, against 3 golf=water_hazard --
-    # so 92% of that course's hazards were a class `waters` could not see. Every one of the 34 also
-    # carries `natural=scrub`, so they fell through to `woods` below, were painted #9cbf86 at 0.6
-    # opacity and counted in info["trees"], under a legend that reads "bunkers (tan), water (blue),
-    # trees". Measured on the shipped cards: 120 penalty-area/hole pairs within 60 m of a played line,
-    # 83 of them admitted by this gate, 0 counted in any footer's W, and 58 of the 120 drawn as literally
-    # nothing -- the `woods` gate is a FRACTION, which the frac_in note above condemns in its own words
-    # for a hazard. On holes 2, 4, 6 and 9 the drawn playing line passes straight THROUGH a penalty area
-    # the card left blank; hole 6 printed "9B 0W" over 27,778 m^2 its own centreline crosses.
-    #
-    # Cost, measured over all 13 courses: only this one moves -- the other twelve render byte-identically,
-    # because no other course in the corpus carries the tag. Its 18 cards go from 8 W to 91 and from 6
-    # filled water polygons to 89 (11 of them from 0W), its OSM tree count from 62 to 0, and its bunker
-    # counts, carry windows and from-tee gutter rows do not move at all; 17 of the 18 frames refit around
-    # the new ink.
-    waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard','penalty_area')
+    # `water=*` IS TESTED TOO, for that exhaustiveness and for nothing else: the split between the two
+    # penalty classes has to leave no feature in neither, and a lake/pond/canal subtype on a way whose
+    # `natural` key a mapper omitted is the one water signal the clauses above would miss. Measured over
+    # the corpus: 10 features carry `water=*` (bay-view 2, copper-valley 1, philadelphia 5, the-reserve
+    # 2) and all 10 also carry `natural=water`, so it admits nothing new and no book's bytes move for it.
+    waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water'
-             or is_drawn_wetland(g)) and g.get('geometry')
+             or g.get('tags',{}).get('water')
+             or is_drawn_wetland(g)
+             or penalty_area_is_water(g)) and g.get('geometry')
              and (frac_in(g, CORRIDOR_M['water'])>=0.35 or any_within(g, CORRIDOR_M['water']))]
 
-    creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g, CORRIDOR_M['water'])]
+    # A PENALTY AREA THAT IS NOT WATER IS ITS OWN CLASS: its own ink, its own legend entry, its own
+    # footer mark, and never the footer's W. See is_land_penalty_area for what the class is and why the
+    # engine may not treat the tag as a respelling of `water_hazard`.
+    #
+    # DRAWN, not merely reclassified, and that is rule 2. On trump-national-los-angeles -- the only
+    # course of the 13 that carries the tag -- 83 penalty-area/hole pairs are inside this corridor, the
+    # drawn playing line passes straight THROUGH one on holes 2, 4, 6 and 9, and a ball in coastal brush
+    # is gone. Left to the `woods` fill below (all 34 carry `natural=scrub`) it was inked #9cbf86 under a
+    # legend reading "bunkers (tan), water (blue), trees", which told a junior the hazard is TREES; and
+    # 58 of the 120 pairs within 60 m were drawn as nothing at all, because that gate is a FRACTION,
+    # which the frac_in note above condemns in its own words for a hazard.
+    #
+    # THE SAME 45 m CORRIDOR AND THE SAME OR AS WATER, deliberately, and it is the only defensible
+    # choice of the three available. The question a corridor answers is "can a ball off this hole reach
+    # it", which does not depend on what the hazard is made of -- the note above refuses to claim a pond
+    # at 45 m is more reachable than a ditch at 45 m, and brush at 45 m is no different. The `woods`
+    # gate's 55 m is a BACKGROUND-FILL rule by its own comment, measured as a fraction only, so widening
+    # to it would select a hazard by how much of it happens to lie near the line. And a third number
+    # would mean a second corridor to justify with nothing to justify it from. One consequence worth
+    # stating: because the gate is identical to the water gate, the SET of polygons this book draws does
+    # not move at all -- every one of the 83 pairs that was blue is now this ink, no pair loses its ink,
+    # and every frame is bit-identical. Only the colour, the class and the count change.
+    #
+    # THERE IS NO PER-HOLE COUNT, and that refusal is the point of the fix. The footer prints "NB NW"
+    # because a bunker and a pond are countable places; these are not. 31 of the 34 ways share vertices
+    # with a neighbour, so they are ONE continuous non-turf network -- brush ribbons and barranca floors
+    # -- cut into pieces at tag and mapping boundaries, and a per-way count says "10 penalty areas on
+    # hole 14" of ground a golfer would call "the barranca, left and right". That is the defect
+    # watercourse_identity exists for, one class over, and here it has no reach code and no name to
+    # deduplicate on; deduplicating by contiguity instead would report 1 where a hole has brush on BOTH
+    # sides, which is the understating direction on a hazard. So the card names the class and refuses
+    # the number -- rule 1 -- and generate.penalty_mark prints a mark, not a total. `info` carries the
+    # count for the suite to grade the ink against; nothing prints it.
+    penalty_areas=[g for g in course if is_land_penalty_area(g) and g.get('geometry')
+                   and (frac_in(g, CORRIDOR_M['water'])>=0.35 or any_within(g, CORRIDOR_M['water']))]
+
+    # ONE HAZARD, ONE CLASS -- APPLIED TO CONTAINMENT, which is the second half of the same correction.
+    # A `waterway` line running THROUGH ground that is itself classified as a non-water penalty area is
+    # that area's drainage path, not a separate water: the same hazard, counted once as a penalty area and
+    # again in the footer's W. So it takes the containing class and leaves the W, exactly as the polygons
+    # above did.
+    #
+    # THE ONE FEATURE IN THIS CORPUS IT FIRES ON is trump-national-los-angeles way 845375656, a
+    # `waterway=stream` with 187.0 m of its 191.9 m -- 0.974 of its length -- inside penalty areas
+    # 1330719395 and 1330719396. It supplied 2 of that book's 91 W, on holes 4 and 5, and both of those
+    # penalty areas are drawn on both of those cards, so the ground keeps its hazard ink and its footer
+    # mark; what it loses is the claim that there is WATER there. The course's other two visible
+    # watercourses measure 0.000 and 0.000 and are untouched, and neither is within reach of any hole
+    # anyway. No other course in the corpus has a penalty area, so `rings` is empty for all twelve and
+    # this costs them a single length test that returns immediately.
+    #
+    # KEYED ON THE CONTAINING CLASSIFICATION and not on what the channel looks like, because the tags are
+    # the only evidence this engine has: the same OSM mapper who drew these 34 areas as scrub penalty
+    # areas tagged the three ponds `golf=water_hazard` with `natural=water` in the same edit, so the
+    # distinction is IN the data and it was the renderer that erased it. The direction of the residual is
+    # the safe one: a genuine creek inside a staked native area would lose its blue line and its W and
+    # would still be drawn as a penalty area with a penalty mark on the footer -- reclassified, never
+    # omitted, and the relief is one stroke either way.
+    #
+    # AREA WATER IS DELIBERATELY NOT SUBJECT TO THIS. A pond has a surface of its own and is a pond
+    # whether or not the brush around it is staked; a line has no surface at all, which is what makes the
+    # ground it crosses the only thing that can say what it is. Measured, and it is not close: this
+    # course's three ponds have 8 of 27, 6 of 36 and 18 of 43 of their vertices inside a penalty area --
+    # 0.22 to 0.42 -- because the rings abut their banks. Not one is contained, so the same test applied
+    # to them would change nothing; it is scoped out on the principle, not on the margin.
+    pa_rings=[[em(p['lat'], p['lon']) for p in g['geometry']]
+              for g in course if is_land_penalty_area(g) and g.get('geometry')]
+    def runs_inside_a_penalty_area(g):
+        return frac_len_inside_rings([em(p['lat'], p['lon']) for p in g['geometry']],
+                                     pa_rings) >= PENALTY_CONTAINMENT_MIN
+    creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry')
+             and any_within(g, CORRIDOR_M['water']) and not runs_inside_a_penalty_area(g)]
     tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g, CORRIDOR_M['tee'])]
     fairways=[g for g in course if g.get('tags',{}).get('golf')=='fairway' and g.get('geometry') and frac_in(g, CORRIDOR_M['fairway'])>=0.40]
     roughs  =[g for g in course if g.get('tags',{}).get('golf')=='rough' and g.get('geometry') and frac_in(g, CORRIDOR_M['rough'])>=0.40]
     # ONE FEATURE, ONE CLASS. A penalty area is excluded here even though `natural=scrub` is true of it,
-    # or the same polygon would be drawn twice -- blue under green -- and counted twice, once as water
-    # and once in the tree total that decides the "no tree data" caveat. Keyed on the HAZARD TAG and not
-    # on membership of `waters` above, and that choice is NOT free: the two gates are measured
-    # differently -- 55 m of fraction only here, against 45 m of fraction OR reach up there, the reach
-    # half clipped to the PLAYED length -- so three penalty-area/hole pairs pass this one and fail that
-    # one, and by the tag they now get no ink at all. They are hole 7 way 1330719393, hole 14 way
-    # 1330769548 and hole 16 way 1330769549, and every one of the three is drawn as WATER on another card
-    # of the same book (way 1330719393 on hole 14; 1330769548 on 8, 15 and 16; 1330769549 on 13 and 17),
-    # so no polygon loses its ink book-wide -- only its appearances on the holes this engine judges it out
-    # of reach of.
+    # or the same polygon would be drawn twice -- hazard ink under landcover green -- and counted twice,
+    # once as a hazard and once in the tree total that decides the "no tree data" caveat. Keyed on the
+    # HAZARD TAG and not on membership of `waters` or `penalty_areas` above, and that choice is NOT free:
+    # the gates are measured differently -- 55 m of fraction only here, against 45 m of fraction OR reach
+    # up there, the reach half clipped to the PLAYED length -- so three penalty-area/hole pairs pass this
+    # one and fail that one, and by the tag they get no ink at all. They are hole 7 way 1330719393, hole
+    # 14 way 1330769548 and hole 16 way 1330769549, and every one of the three is drawn as a PENALTY AREA
+    # on another card of the same book (way 1330719393 on hole 14; 1330769548 on 8, 15 and 16; 1330769549
+    # on 13 and 17), so no polygon loses its ink book-wide -- only its appearances on the holes this
+    # engine judges it out of reach of.
     #
     # Keyed on the tag anyway, because the alternative is worse than losing background fill on three
     # cards: painting a staked penalty area #9cbf86 tells a 12-year-old reading the legend beside it that
-    # the hazard is TREES, and it would say water on one card and trees on the next for the same ground.
+    # the hazard is TREES, and it would say hazard on one card and trees on the next for the same ground.
     # An out-of-reach feature drawn as nothing is what every other class here already does; an in-play
     # hazard drawn as the wrong class is a false statement. What class a hazard is does not depend on
     # which hole is being drawn.
@@ -803,8 +1065,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # corpus -- trump-national-los-angeles way 1330731228, a closed 22-node ring of 13,392 m^2, 140 x 169
     # m, whose nearest edge is 10.3 m from hole 2's played line and 30.9 m from hole 1's, and which
     # overlaps no fairway, rough, green, tee or bunker and contains no centreline vertex of any hole. OB
-    # is stroke-and-distance, which is strictly worse for a junior than the penalty areas above, so the
-    # reason for leaving it off the paper has to be better than "nobody wrote the code".
+    # is stroke-and-distance, which is strictly worse for a junior than the penalty areas above -- those
+    # cost one stroke, this costs a stroke and the ground -- so the reason for leaving it off the paper
+    # has to be better than "nobody wrote the code".
     #
     # IT IS A COVERAGE PROBLEM, NOT A GEOMETRY ONE, and that is what settles it. Every hole of every one
     # of the 13 courses has out of bounds: the property line is a fact of every golf course. OSM has
@@ -815,12 +1078,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # the "no tree data" caveat exists for, and unlike the canopy there is no per-hole record of where the
     # boundary was surveyed and where it was not, so the caveat cannot be written either.
     #
-    # AND IT HAS NO INK IT CAN HONESTLY BORROW. The card's legend names three classes -- "bunkers (tan),
-    # water (blue), trees". OB is not sand, not landcover, and NOT a penalty area: the relief and the
-    # stroke count differ, so putting it in the blue would state the wrong rule as confidently as the
-    # scrub fill stated the wrong class. A fourth colour needs a fourth legend entry on both editions'
-    # guide cards (generate.py), and ink on the paper that the legend does not name is exactly the defect
-    # the penalty-area class above was: a reader is shown a hazard and told what it is not.
+    # AND IT HAS NO INK IT CAN HONESTLY BORROW. The card's legend names four classes -- bunkers (tan),
+    # water (blue), penalty areas (their own ink) and trees. OB is not sand, not water, not landcover, and
+    # NOT a penalty area: the relief and the stroke count differ -- a penalty area costs one stroke and
+    # lets you drop, OB is stroke and distance and sends you back -- so putting it in either hazard ink
+    # would state the wrong RULE as confidently as the scrub fill stated the wrong class. A fifth colour
+    # needs a fifth legend entry on both editions' guide cards (generate.py), and ink on the paper that
+    # the legend does not name is exactly the defect the penalty-area class above was: a reader is shown
+    # a hazard and told what it is not. That the penalty class has since been given ink and a legend
+    # entry of its own is the PRECEDENT for how OB would have to be done, not a colour it may share.
     #
     # NOR IS THIS POLYGON THE BOUNDARY. It is an area beside two holes, not a line around a course, so it
     # says nothing about where the line is on the other 16 -- a boundary drawn on 2 of 18 cards is not a
@@ -907,11 +1173,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # frame around the corridor + every tree marker so no tree/tee/green is clipped.
     # big background fills (rough, woods) are NOT in the bounds -- they clip cleanly
     # at the frame edge instead of zooming the whole hole out. Water is drawn WHOLE and framed to the
-    # corridor, which is the same treatment one step finer -- see corridor_pts.
+    # corridor, which is the same treatment one step finer -- see corridor_pts. A non-water penalty area
+    # is framed the same way for the same reason -- it is selected by REACH, so its own extent says
+    # nothing about how big the hole is, and these run to 27,778 m^2 -- and keeping the two classes on one
+    # rule is also what makes this fix ink-neutral: the polygons are the ones that were in `waters`, they
+    # contribute the same frame points, so every card's frame and every coordinate on it is unchanged.
     allpts=[proj(p['lat'],p['lon']) for p in line]
     for g in bunkers+tees+fairways+treerows+[green]:
         allpts+=poly_pts(g)
-    for g in waters:
+    for g in waters+penalty_areas:
         allpts+=corridor_pts(g, CORRIDOR_M['water'])
     allpts+=[proj(la,lo) for la,lo in tree_src]
     xs=[p[0] for p in allpts]; ys=[p[1] for p in allpts]
@@ -984,6 +1254,13 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     fair_svg ="".join(f'<path d="{path(g)}" fill="#cfe8b2" stroke="#79b356" stroke-width="1.2"/>' for g in fairways)
     rough_svg="".join(f'<path d="{path(g)}" fill="#e9f0da" stroke="#cdd9b4" stroke-width="0.5"/>' for g in roughs)
     wood_svg ="".join(f'<path d="{path(g)}" fill="#9cbf86" fill-opacity="0.6" stroke="#7ea36a" stroke-width="0.5"/>' for g in woods)
+    # OPAQUE, and at a HEAVIER outline than water's, because this is a hazard and not a background fill and
+    # because its boundary is what relief is measured from. The same treatment `waters` gets one line down
+    # otherwise -- see PENALTY_FILL for the colour, the value and why the fill is flat. Drawn AFTER the
+    # turf fills and BEFORE the water: a hazard may not be hidden under fairway or rough, and where the
+    # two hazard classes ever meet, water is the more specific statement and keeps the top.
+    parea_svg="".join(f'<path d="{path(g)}" fill="{PENALTY_FILL}" stroke="{PENALTY_EDGE}" '
+                      f'stroke-width="1.2"/>' for g in penalty_areas)
     water_svg="".join(f'<path d="{path(g)}" fill="#a9d3ef" stroke="#5b9bd0" stroke-width="1"/>' for g in waters)
     creek_svg="".join('<polyline points="'+" ".join(f"{TX(x):.1f},{TY(y):.1f}" for x,y in poly_pts(g))
                       +'" fill="none" stroke="#5b9bd0" stroke-width="1.8" stroke-linecap="round"/>' for g in creeks)
@@ -1728,7 +2005,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # did, or all 12 pocket books change bytes for a purely cosmetic reason.
     vb=f"0 0 {round(VBW,1):g} {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
-         f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
+         f'{wood_svg}{rough_svg}{fair_svg}{parea_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
          f'{trow_svg}{tdot_svg}{rings}{labels}</svg>')
     # COUNT WHAT THIS CARD DRAWS. An earlier attempt counted "features whose nearest hole is this
     # one, within 90 m" so that the per-hole numbers would sum to no more than the course holds
@@ -1750,6 +2027,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               # watercourse_identity -- counting OSM ways made one split creek read as several.
               waters=len(waters)+len({watercourse_identity(g) for g in creeks}),
               water_hazards=len(waters), watercourses=len(creeks),
+              # Non-water penalty areas this card DRAWS. The card prints no number for them and must not
+              # -- see the `penalty_areas` selector for why 28 contiguous ways are not 28 places -- so
+              # this key exists for two consumers only: generate.penalty_mark, which asks whether the
+              # hole has any at all, and the suite, which grades the ink against it. It is NOT added into
+              # `waters`: a footer that counted brush as water is the defect this class was split out of.
+              penalty_areas=len(penalty_areas),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
               arc_yd=round(arc_yd), card_yd=total_yd, green_gap_yd=round(green_gap_yd, 2),

@@ -723,6 +723,41 @@ def bank_span(s):
     return f'<span>{" &middot; ".join(notes)}</span>' if notes else ''
 
 
+def penalty_mark(i):
+    """The footer's penalty-area mark -- "penalty area" -- or "". ONE definition for both editions.
+
+    A MARK AND NOT A COUNT, and the refusal is the whole point. The footer prints "9B 0W" because a
+    bunker and a pond are countable places. A non-water penalty area on this corpus is not: 31 of
+    trump-national-los-angeles' 34 ways share vertices with a neighbour and the 34 form only 5 connected
+    areas, the largest of them 28 ways, so they are one continuous
+    non-turf network -- brush ribbons and barranca floors -- cut into pieces at mapping boundaries, and
+    the per-way figure would print "10" on hole 14 for ground a golfer would call "the barranca, left
+    and right". Deduplicating by contiguity instead reports 1 where a hole has brush down BOTH sides,
+    which understates a hazard. Neither number is one the data supports, so the card names the class and
+    prints no number -- see the `penalty_areas` selector in render_hole.py for the full argument.
+
+    ITS OWN SPAN, for bank_span's measured reason: `.foot` is a wrapping flex row whose spans are
+    `white-space: nowrap`, so a span wider than the row does not wrap, it overflows and the trim line
+    cuts it. The span this would otherwise join -- depth, then "NB NW", then the other tees -- is
+    already the widest in the corpus (copper-valley 6 at 296.00 px of 323.00, about six characters of
+    room), and this mark is thirteen. As its own span it wraps to a footer line instead, which the green
+    sizing already reserves three of.
+
+    WHY THE CARD NEEDS IT AT ALL, given the map already inks the class and the guide card explains it:
+    without it, a hole whose every hazard is brush prints "9B 0W" and nothing else, and "0W" beside a
+    bunker count reads as "nothing else to avoid". That was true of 11 of this book's 18 cards before
+    the class existed. The footer is what a junior reads first.
+
+    ONE NUMBER, ONE MEANING, on the card this ships on. A reader takes "2W" for two hazards, so the W it
+    sits beside has to be able to bear that: on this book it is now 6 counted, 6 drawn blue marks and 0
+    watercourse lines, from three ponds of 3,080-4,497 m^2 lying 62.7 to 377.9 m apart with no shared
+    vertex -- three separate waters, each counted on the two holes that reach it. Features and marks agree
+    1:1, so the one number on the card means one thing and this mark, which is not a number at all, means
+    another.
+    """
+    return '<span><b>penalty area</b></span>' if i.get("penalty_areas") else ''
+
+
 def hole_panel(hole, sheet_label):
     row = HOLES[hole]
     par, hcp = row[0], row[1]
@@ -754,6 +789,7 @@ def hole_panel(hole, sheet_label):
     foot = (f'<span>{lead}</span>'
             f'<span>{depth_phrase(s)} &middot; {i["bunkers"]}B {i["waters"]}W{notrees}'
             f' &middot; {esc(others)}</span>'
+            f'{penalty_mark(i)}'
             f'{bank_span(s)}')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
@@ -1123,6 +1159,87 @@ def _no_tree_note():
             'ground.</span></div>\n')
 
 
+def _book_draws_penalty_areas():
+    """True when any hole of THIS book draws a non-water penalty area. Derived from what was rendered.
+
+    Mirrors _book_draws_trees: read off render_hole's own per-hole `info`, never off the tags, so the
+    legend can only ever promise ink the cards actually carry.
+    """
+    return any(LAYOUTS[h][1].get("penalty_areas") for h in config.HOLE_NUMS if h in LAYOUTS)
+
+
+def _penalty_key():
+    """The fourth entry in the HOLE-map colour list, or "" -- one wording for both editions.
+
+    The list on that row -- "bunkers (tan), water (blue), trees" -- is an ENUMERATION of the map's ink,
+    and an enumeration that omits a colour the map uses is false, not merely short. It is also the row a
+    reader consults to decode a shape, so the class belongs in it and not only in the row below that
+    defines it. Conditional for _penalty_note's reason: on the twelve books that draw none it would be
+    words spent on a colour the reader will never see, on the card with the least room in the book.
+
+    IT NAMES THE COLOUR, in the same shape as its siblings, and the first version of this row did not.
+    It read ", penalty areas" -- the class named with nothing to identify it by, while "(tan)" and
+    "(blue)" sat beside it -- on the reasoning that the swatch on the next row shows the ink and a word
+    cannot go stale. That reasoning is fine for the SWATCH and wrong for the LIST: shown the rebuilt
+    cards, a reader who knows this course asked "what is the purple?" and had no way to get from the mark
+    to the meaning. A key entry a reader cannot enter from the map is not a key entry. Measured in
+    chrome-headless-shell against the shipped stylesheet: ", penalty areas (grey)" is 22 characters and
+    keeps this row at two lines, leaving the card +11.73 px of clearance, so the sibling form costs
+    nothing here and is what ships.
+    """
+    return ', penalty areas (grey)' if _book_draws_penalty_areas() else ''
+
+
+def _penalty_note():
+    """Name the penalty-area ink, in BOTH editions, ONLY in a book whose cards draw one.
+
+    A HAZARD CLASS WITH NO LEGEND ENTRY IS A HAZARD THE READER CANNOT INTERPRET, and this project has
+    now made that mistake in three directions on one class. `golf=penalty_area` -- brush, a canyon floor,
+    waste, anything a Committee marks, which since 2019 is what the term covers -- first reached the
+    paper in the tree/scrub fill under a legend reading "bunkers (tan), water (blue), trees", so a
+    junior was told the hazard is TREES; it was then moved into the water blue and the footer W, so the
+    same junior was told there are ten waters on a hole that has none; and then it was given an ink of its
+    own that the legend named without naming its colour, which left a reader who knows the course asking
+    "what is the purple?". It is a quiet grey now, placed in the card's own greyscale ladder so that quiet
+    does not become invisible, and both the list above and the swatch below name it
+    (render_hole.PENALTY_FILL).
+
+    THE SWATCH IS THE RENDERER'S OWN TWO COLOURS, evaluated, never a copy -- the arrangement
+    _heat_swatches uses and for its reason: a key that merely agrees with the map today is a key that
+    can go stale. Retune the fill and this row follows it.
+
+    GATED ON WHAT THE BOOK DREW, like _faint_note and _no_fall_note, and here that gate is doing real
+    work rather than tidiness. This card is the tightest thing in the book: monarch-bay ships with 1.19
+    px of clearance to the bottom of a 3.5x5in `overflow:hidden` box whose last block is the licence,
+    the warranty disclaimer and the contact address, and a legend line costs 10.55 px. One course of the
+    13 carries the tag (trump-national-los-angeles, 34 ways, all `natural=scrub`), and its guide card has
+    35.83 px of clearance -- so the row lands where it is needed and is not spent on the twelve books
+    that would have to pay for it. Every one of those twelve, and both enlarged editions of them, stays
+    byte-identical.
+
+    TWO LINES, AND THAT IS THE BUDGET, not a preference. Laid out in chrome-headless-shell against the
+    shipped stylesheet: this row at three lines plus _penalty_key's clause overflows that 35.83 px card
+    by 9.36 and clips the licence block -- the same failure this project has already had twice. At two
+    lines, with _penalty_key's clause at 21 characters, the card ends at +11.73 px. The sentence below is
+    what fits, and it was chosen by measuring four wordings rather than by counting characters.
+
+    WHAT THE WORDING HAS TO DO, in the order a reader needs it: say it is NOT water, because that is the
+    confusion the ink was invented to end; say what it is on the ground, so it can be recognised; and say
+    what it costs. What it deliberately does NOT do is name which relief option applies -- Rule 17 marks a
+    penalty area red or yellow and the two differ in the relief they allow, while the tag records only
+    that an area is one; the stakes and lines on the course are the authority for that. The ink is a quiet
+    GREY rather than either of those two colours (see render_hole.PENALTY_FILL for the reason and the
+    measurements), so nothing about the mark can be read as a ruling on the relief either.
+    """
+    if not _book_draws_penalty_areas():
+        return ''
+    return ('  <div class="legrow"><svg width="28" height="14">'
+            f'<rect x="2" y="3" width="20" height="9" fill="{render_hole.PENALTY_FILL}" '
+            f'stroke="{render_hole.PENALTY_EDGE}" stroke-width="1"/></svg>\n'
+            '    <span><b>Penalty area</b> = <b>not water</b>: brush, canyon or waste. A ball there is '
+            'usually lost; relief costs <b>one stroke</b>.</span></div>\n')
+
+
 def _faint_note():
     """Define "(faint)" ONLY in a book that prints it, same as _no_fall_note.
 
@@ -1249,8 +1366,8 @@ def guide_panel():
     <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; red (&ge;5%);
     steeper is always <b>darker</b>. <b>Print in colour</b> &mdash; bunkers vanish in black &amp; white.
     <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add up.</span></div>
-  <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue)''' + _penalty_key() + ''', <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add up.</span></div>
+''' + _penalty_note() + '''  <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
   <div class="legrow"><span><b>green N ft above/below</b> = <b>measured</b> height vs the back tee.
     <b>Not</b> a yardage adjustment &mdash; club depends on your ball flight, so <b>you</b>
@@ -1887,7 +2004,7 @@ def coach_map_card(hole):
       <span class="yalt">{row[FRONT_I]} {esc(FRONT_NAME)}</span></div>
   </div>
   <div class="cmap"><div class="minilab">HOLE &middot; tee &rarr; green</div>{lsvg}</div>
-  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_drew_trees(hole) or not _book_draws_trees()) else ' &middot; <b>no tree data</b>'}</span><span>course layout</span></div>
+  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_drew_trees(hole) or not _book_draws_trees()) else ' &middot; <b>no tree data</b>'}</span>{penalty_mark(i)}<span>course layout</span></div>
   {playline}
 </div>'''
 
@@ -1922,10 +2039,10 @@ def coach_about_card():
   <div class="legrow"><span><b>Black numbers</b> = slope % there; over <b>10%</b> is bank or bunker face,
     not putting surface: coloured, not numbered. <b>Grey numbers</b> = yd from the <b>front edge</b>, down
     the middle. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue)''' + _penalty_key() + ''', <b>trees</b>. <b>Left</b> = to
     green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add
     up.</span></div>
-''' + _faint_note() + _no_fall_note() + _no_tree_note() + '''
+''' + _penalty_note() + _faint_note() + _no_fall_note() + _no_tree_note() + '''
   <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
     conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a

@@ -291,6 +291,14 @@ def test_site1_render_hole_output_is_byte_identical():
     `golf=penalty_area` a class the renderer draws, 91d30d0 and a7fc354 moved carry figures, 22d23bf and
     89c265b changed what the query asks for.
 
+    RE-PINNED AGAIN when `golf=penalty_area` was split out of the water class into a hazard class of its
+    own, for ONE reason and it is measured rather than assumed: the `info` dict gained a `penalty_areas`
+    key. This course carries no penalty area at all -- the value is 0 on all 18 holes -- and removing
+    that single key from the dict before hashing reproduces the previous pin,
+    d786e07749e9c02d4226bfd2594d4d7bf2490fcbf47f67cd67fb7dac62b93d4b, exactly. So no SVG byte and no
+    other `info` value moved on this course; a dict with a new key serialises differently, and that is
+    all this digest is reporting.
+
     WHAT THE CONSTANT STILL BUYS, which is why it is re-pinned rather than dropped: it catches a FUTURE
     edit at this site that touches something live. That was always its forward-looking job -- the
     docstring at the top of this file says a truly dead line cannot make this hash go red-then-green --
@@ -305,10 +313,11 @@ def test_site1_render_hole_output_is_byte_identical():
         parts.append(svg)
         parts.append(json.dumps(info, sort_keys=True, default=repr))
     digest = _sha(*parts)
-    assert digest == "d786e07749e9c02d4226bfd2594d4d7bf2490fcbf47f67cd67fb7dac62b93d4b", (
-        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned at the "
-        f"2026-08-10 corpus rebuild. If a deliberate engine change moved it, re-derive this digest and "
-        f"say in the docstring which commit moved it -- do not copy it out of this message blind")
+    assert digest == "7ae3e441eb8d2529e3420559d8d25823efb7e85b0814287fab53aa69590eb773", (
+        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned when the "
+        f"penalty-area class was split out of the water class. If a deliberate engine change moved it, "
+        f"re-derive this digest and say in the docstring which commit moved it -- do not copy it out of "
+        f"this message blind")
 
 
 # ---------------------------------------------------------------------------------------------

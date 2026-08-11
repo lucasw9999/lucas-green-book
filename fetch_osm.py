@@ -220,6 +220,13 @@ def census(elements):
     volatile and not a hazard, because a mapper re-classifying a landcover polygon is an OSM
     improvement and nothing draws or measures it. Splitting them is what stops the swap this bucket's
     neighbour already had to be split for: lose a real marsh, gain a tile, count unmoved, guard silent.
+
+    `golf` BEFORE `natural`, which is why `penalty_area` has a bucket of its own at all and why the one
+    course that carries the tag counts 0 `scrub`. All 34 of trump-national-los-angeles' penalty areas
+    also carry `natural=scrub`, and that ordering is what a consumer needs: what the card draws them as
+    is decided by the HAZARD tag (see render_hole.is_land_penalty_area), so a guard bucketing them as
+    landcover would hand a drawn hazard the churn tolerance a scrub polygon gets. See HAZARD_KINDS below
+    for why one bucket covers both halves of the class.
     """
     c = Counter()
     for e in elements:
@@ -295,14 +302,25 @@ VOLATILE_KINDS = frozenset({
 # hazard kind, for `waterway_undrawn`'s reason exactly: no card draws it, nothing measures from it, and
 # a mapper re-classifying one is an OSM improvement that must not read as a lost hazard.
 #
-# `penalty_area` is here because it is `water_hazard` under its current name: the 2019 Rules of Golf
-# replaced "water hazard" and "lateral water hazard" with one term and OSM followed, and render_hole's
-# `waters` now draws all three in the same blue and counts them in the same footer W. It was STRUCTURAL
-# before -- not in either set, so it fell to the default-deny branch -- which is the right severity but
-# the wrong REASON: losing one of these removes drawn hazard ink from a card, so the message a human
-# reads has to say "hazard" and the waiver it prescribes has to be ALLOW_HAZARD_SHRINK, not
-# ALLOW_STRUCTURAL_SHRINK. The tolerance does not move: both branches give a zero-tolerance,
-# no-rarity-exemption comparison, and 2% of trump-national-los-angeles' 34 is 0.
+# `penalty_area` is here because BOTH halves of it are drawn hazard ink, and it is here for its own
+# reason rather than water_hazard's. It is NOT that tag renamed: the 2019 Rules of Golf replaced "water
+# hazard" and "lateral water hazard" with "penalty area" and WIDENED the term to any area a Committee
+# marks, so render_hole splits it -- the water ones take the blue and the footer W, the rest take an ink,
+# a legend entry and a footer mark of their own (render_hole.penalty_area_is_water,
+# is_land_penalty_area). Whichever half a feature is in, losing it removes drawn hazard ink from a card,
+# so the message a human reads has to say "hazard" and the waiver it prescribes has to be
+# ALLOW_HAZARD_SHRINK and not ALLOW_STRUCTURAL_SHRINK. It was STRUCTURAL before -- not in either set, so
+# it fell to the default-deny branch -- which is the right severity by the wrong route. The tolerance
+# does not move: both branches give a zero-tolerance, no-rarity-exemption comparison, and
+# 2% of trump-national-los-angeles' 34 is 0.
+#
+# ONE BUCKET FOR BOTH HALVES, unlike `waterway`/`waterway_undrawn` and `wetland`/`wetland_undrawn`, and
+# the difference is what those splits were for: there, one half was DRAWN and the other was not, so a
+# merged bucket let a reply lose a real marsh and gain a landcover tile without moving a number. Here
+# both halves reach the paper, so the bucket is not wider than the drawn class. The residual, stated
+# rather than hidden: a reply that re-tagged a brush penalty area as a pond, or the reverse, would move a
+# card's W without moving this count. That is a change in the GROUND rather than in the mapping, and no
+# course in this corpus has a water penalty area to lose -- all 34 are `natural=scrub`.
 HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'penalty_area', 'water',
                           'waterway', 'wetland'})
 
