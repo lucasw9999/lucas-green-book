@@ -29678,13 +29678,23 @@ def _is_area_water(g, rh):
     `natural` key a mapper left off. All 10 features in this corpus carrying it also carry
     `natural=water`, so it changes nothing here today and is present so that this helper and the
     selector stay the same shape.
+
+    AND ONE REFUSAL PAST ALL FIVE, imported for the same reason: render_hole.is_measured_not_water, the
+    per-feature record of a polygon MEASURED not to be water (merion way 225722025, a house inside a
+    `natural=water NHD:FTYPE=LakePond` ring). It has to be here or this helper's population would be
+    WIDER than the drawn class in the one direction that matters to the re-noding test: that refusal is
+    keyed on the node count ON PURPOSE, so that a ring somebody re-traces is treated as water again
+    rather than staying refused on a measurement of a shape that no longer exists. Re-noding it therefore
+    DOES change the card -- correctly -- and a sweep that included it would be asserting the opposite of
+    what the refusal is for. Excluding it here is not a narrowing: the card does not draw it.
     """
     t = g.get("tags") or {}
-    return (t.get("golf") in ("water_hazard", "lateral_water_hazard")
-            or t.get("natural") == "water"
-            or t.get("water")
-            or rh.is_drawn_wetland(g)
-            or rh.penalty_area_is_water(g))
+    return ((t.get("golf") in ("water_hazard", "lateral_water_hazard")
+             or t.get("natural") == "water"
+             or t.get("water")
+             or rh.is_drawn_wetland(g)
+             or rh.penalty_area_is_water(g))
+            and not rh.is_measured_not_water(g))
 
 
 @needs_corpus
@@ -36589,6 +36599,43 @@ WATER_INK_GAINED_DELIBERATELY = {
         "class; callippe was never one of febbbba's four re-fetched courses, so its old equality was a "
         "coincidence of the frozen baseline rather than evidence.",
     ),
+    ("merion-golf-club", "water polygon"): (
+        2, 4,
+        "Two changes in opposite directions, and the net is +2. UP by three: merion was re-fetched and "
+        "gained way 675572836, a 151 m^2 `wetland=marsh` 2.48 m from a green and 10.2 m from hole 17's "
+        "played length, which render_hole.is_drawn_wetland admits and which took holes 14, 16 and 17 from "
+        "0W to 1W -- one polygon inked on three cards. DOWN by one: way 225722025 is tagged "
+        "`natural=water NHD:FTYPE=LakePond` and there is a house inside it, so hole 10 no longer draws "
+        "it -- its ring returns public-domain USGS 3DEP LiDAR at 0.884 of the surrounding collar's "
+        "density where merion's three genuine waters read 0.209-0.371, and 1743 of its returns stand over "
+        "2 m above the class-2 ground inside it in an 11.5 x 12.2 m footprint. See "
+        "render_hole.MEASURED_NOT_WATER. Merion's watercourse lines are unchanged at 20.",
+    ),
+}
+
+
+# (course, drawn class) -> (count in the preserved 2026-08-03 book, count now, why it went DOWN,
+#                           {way id: the render_hole predicate that refuses it}).
+#
+# THE MIRROR OF THE GAIN RECORD, AND IT CARRIES ONE BAR MORE. A loss of drawn water ink is the dangerous
+# direction -- normally it means a hazard the card no longer shows -- so this record may not be satisfied
+# by prose alone: it has to NAME the ways it removed and the predicate that refuses each, and the test
+# re-checks that the engine still refuses exactly those. A count cannot tell a reader WHICH mark went, and
+# that is the one thing that decides whether the removal was a correction or an omission.
+WATER_INK_REMOVED_DELIBERATELY = {
+    ("copper-valley-golf-club", "watercourse line"): (
+        10, 9,
+        "An NHD `ArtificialPath` is the line NHD threads through a lake to keep its flow network "
+        "connected -- FCode 55800, not a channel -- and it imports into OSM as `waterway=stream`, so the "
+        "card drew a blue creek line straight ACROSS a lake it had already filled in the same blue. Way "
+        "83565232 lies 0.948 of its 285.2 m inside lake way 775614086, which hole 11 draws and counts, so "
+        "nothing wet leaves that card: the lake keeps its fill, and the reach identity 18040051001111 is "
+        "shared with ways 83579191 and 83582265 which hole 11 also draws, so the hole stays at 3W. What "
+        "leaves is a false mark -- a stream where there is open water. The rule is conditional on "
+        "containment and never on the FType alone, because 2 of this corpus's 15 synthetic flowlines lie "
+        "inside no mapped waterbody and there the synthetic line is the only mark the water has.",
+        {83565232: "is_synthetic_flowline"},
+    ),
 }
 
 
@@ -36679,28 +36726,83 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
             new = os.path.join(ROOT, "courses", slug, "greenbook.html")
             if os.path.exists(old) and os.path.exists(new):
                 have.append((slug, old, new))
+    # THE "NOW" SIDE IS WHAT THE ENGINE DRAWS, NOT WHAT courses/<slug>/greenbook.html HAPPENS TO HOLD,
+    # and that is a correction. The question is "does the map draw this hazard", and a built book is a
+    # CACHED RENDER of that answer -- so comparing against it made this test's verdict depend on when
+    # somebody last ran generate.py. Measured: with merion re-fetched and the engine refusing one
+    # measured-not-water polygon, the book on disk read 5 water polygons while the engine draws 4, so the
+    # same tree gave two different answers depending on build order. That is the stale-figure class
+    # 4dbe6b2 already had to fix once ("every figure measured off the old books went stale"), and it makes
+    # a LOSS invisible until a rebuild rather than at the moment it is introduced.
+    #
+    # Strictly more timely and no less strict: the preserved 2026-08-03 books are still the baseline, and
+    # a hazard that stops being drawn now fails here on the commit that stops drawing it. The built
+    # figure is carried into the messages so a reader can see whether the book is also behind.
     lost, unrecorded, mismatched = [], [], []
     measured = {}
+    nogeom = []
     for slug, old, new in have:
         o = open(old, encoding="utf-8").read()
-        n = open(new, encoding="utf-8").read()
+        if slug not in CORPUS:
+            # A book with no OSM geometry cannot be re-rendered -- poppy-ridge is that case, built in
+            # yardage mode because no post-rebuild LiDAR exists for it. Its preserved book must then
+            # carry NO water ink at all, or the engine-side comparison would be silently skipping a
+            # course that had some. Checked rather than skipped.
+            nogeom.append((slug, {w: o.count(n) for w, n in PAT.items()}))
+            continue
+        cfg, rh = _engine(slug)
+        cards = "".join(rh.render_hole(hn, cfg.HOLES)[0] for hn in cfg.HOLE_NUMS)
+        book = open(new, encoding="utf-8").read()
         for what, needle in PAT.items():
-            before, now = o.count(needle), n.count(needle)
+            before, now = o.count(needle), cards.count(needle)
             measured[(slug, what)] = (before, now)
+            built = book.count(needle)
+            where = f" (the built book holds {built})" if built != now else ""
             if now < before:
-                lost.append(f"{slug}: drawn {what} count {before} before the re-fetch, {now} now")
+                said = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
+                if said is None:
+                    lost.append(f"{slug}: drawn {what} count {before} before the re-fetch, "
+                                f"{now} now{where}")
+                elif (said[0], said[1]) != (before, now):
+                    mismatched.append(f"{slug} {what}: recorded REMOVAL {said[0]} -> {said[1]}, "
+                                      f"measured {before} -> {now}{where}")
             elif now > before:
                 said = WATER_INK_GAINED_DELIBERATELY.get((slug, what))
                 if said is None:
-                    unrecorded.append(f"{slug}: drawn {what} count {before} -> {now}")
+                    unrecorded.append(f"{slug}: drawn {what} count {before} -> {now}{where}")
                 elif (said[0], said[1]) != (before, now):
                     mismatched.append(f"{slug} {what}: recorded {said[0]} -> {said[1]}, "
-                                      f"measured {before} -> {now}")
+                                      f"measured {before} -> {now}{where}")
+    # A RECORDED REMOVAL HAS TO NAME THE FEATURES IT REMOVED, AND THE ENGINE HAS TO AGREE IT REFUSES
+    # THEM. This is the extra bar the removal record carries and the gain record does not, because losing
+    # ink is the dangerous direction: without it, "we meant to remove that" is an assertion, and the one
+    # thing a reader cannot check from a count is WHICH mark went.
+    for (slug, what), rec in sorted(WATER_INK_REMOVED_DELIBERATELY.items()):
+        assert len(rec) == 4 and len(rec[2]) > 200 and rec[3], (
+            f"{slug} {what}: a removal record needs both figures, a reason, and the way ids it removed")
+        if slug not in CORPUS:
+            continue
+        cfg, rh = _engine(slug)
+        byid = {e["id"]: e for e in
+                json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]}
+        for wid, predicate in rec[3].items():
+            assert wid in byid, (
+                f"{slug} {what}: the removal record names way {wid}, which is no longer in the cache. "
+                f"If OSM deleted it the record is dead and should GO -- do not leave it excusing a "
+                f"count it no longer explains")
+            assert getattr(rh, predicate)(byid[wid]), (
+                f"{slug} {what}: the record says way {wid} is removed because render_hole.{predicate} "
+                f"refuses it, and it does not. The count is being excused by a reason that is no "
+                f"longer true")
     # THE RULE. No waiver, and it is the whole question this test's name asks.
     assert not lost, (
-        "a re-fetch DROPPED drawn water ink a shipped book used to carry, which is the loss this "
+        "drawn water ink a shipped book used to carry is no longer drawn, which is the loss this "
         "test exists to detect -- a hazard the card no longer draws is a hazard the golfer cannot "
-        "see:\n  " + "\n  ".join(lost))
+        "see:\n  " + "\n  ".join(lost)
+        + "\n  If a mark was removed ON PURPOSE because it was FALSE -- a synthetic flowline over open "
+          "water, a polygon measured not to be water -- record it in WATER_INK_REMOVED_DELIBERATELY "
+          "with both figures, the reason, and the way ids with the predicate that refuses each. There "
+          "is no waiver that does not name what went.")
     # THE RECORD. A gain is the fix, but an UNEXAMINED gain is not: every one has to be accounted for,
     # with the figures, so `>=` cannot quietly become "anything upward is fine forever".
     assert not unrecorded, (
@@ -36708,6 +36810,11 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
         "is the right direction -- 89c265b's wetland fix is why this comparison is a direction at all "
         "-- but an unexplained gain is a re-fetch nobody looked at:\n  " + "\n  ".join(unrecorded)
         + "\n  Add it to WATER_INK_GAINED_DELIBERATELY with both figures and the reason.")
+    for slug, counts in nogeom:
+        assert not any(counts.values()), (
+            f"{slug} has a preserved book carrying water ink {counts} and no OSM geometry on disk, so "
+            f"this test cannot re-render it and would be dropping a course that has water to lose. "
+            f"Restore its geometry or grade it another way -- do not let it fall out silently")
     assert not mismatched, (
         "a recorded deliberate gain no longer measures what it records. If the figure FELL, ink was "
         "lost from a course that had already gained it -- which the >= rule above cannot see, because "
