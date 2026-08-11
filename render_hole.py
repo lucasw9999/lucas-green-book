@@ -351,13 +351,22 @@ def is_land_penalty_area(feature):
 # construction, not by measurement. Verified rather than assumed -- the card is rendered through
 # `filter: grayscale(1)` and the fill sampled on both sides.
 #
-# THE EDGE is #636363 (grey 99), 89 levels below the fill, because the BOUNDARY is the part a player acts
-# on: relief is measured from where the ball last crossed it, so it is drawn heavier than water's (1.2
-# against 1.0). Its value is set by the only other grey LINE on this panel: the dashed centre line at
-# grey 138, which it must not be mistaken for, and the brown cart path at 80.2. 99 sits 39 below the one
-# and 19 above the other. It lands 8 levels from the green card's depth-ladder digits (#6b6b6b) and 4 from
-# a tree marker (#2f7d32), and neither is a confusion a reader can make: those are a digit on the other
-# panel and a filled dot, against a closed boundary line.
+# DELIBERATELY THE QUIETEST INK ON THE CARD, at the owner's instruction: near white, "just a tiny grey".
+# These areas cover ground on 16 of this course's 18 holes, so an ink loud enough to read in isolation
+# buries what a player actually aims at -- the sand, the water and the line. The fill is grey 242, which
+# sits 25.6 levels (10.1%) off the fairway it most often lies on, 107 off the rough and 151 off the trees.
+# The fairway pairing is the tightest and is the one that matters: 10.1% is still 3.5x the 2.87% collapse
+# the print warning exists for, so it survives the page. Anything lighter would not.
+#
+# THE EDGE is #c8c8c8 (grey 200), 42 levels below its own fill, because the BOUNDARY is the part a player
+# acts on: relief is measured from where the ball last crossed it. It reads against the fill it encloses
+# rather than against the turf, which is what lets it stay quiet. It is 62 levels off the dashed centre
+# line (grey 138) and 120 off the brown cart path, so it cannot be mistaken for either.
+#
+# The cost is stated rather than hidden: on fairway this region is found by its FILL, not its edge -- the
+# edge is 18 levels off fairway and will not carry the boundary on its own there. On rough and trees both
+# carry easily. That is the trade the instruction asks for, and rule 2 still holds because the fill clears
+# the mono bar everywhere.
 #
 # FLAT AND OPAQUE, not hatched or translucent, and that is measured too. A hatch would say "staked" more
 # literally, and on this course it would also invent structure: 44 of its same-card penalty pairs OVERLAP
@@ -367,8 +376,8 @@ def is_land_penalty_area(feature):
 # one fixed id makes 17 of the 18 definitions dead and silently resolves every card to the first, and a
 # per-hole id forces the legend swatch to carry a SECOND copy of the pattern, which is two definitions of
 # one ink and the drift the derived swatch exists to prevent.
-PENALTY_FILL = "#bcbcbc"
-PENALTY_EDGE = "#636363"
+PENALTY_FILL = "#f2f2f2"
+PENALTY_EDGE = "#c8c8c8"
 
 # HOW MUCH OF A WATERCOURSE HAS TO LIE INSIDE A NON-WATER PENALTY AREA before the card treats it as that
 # area's drainage line rather than as separate water. See runs_inside_a_penalty_area below for the rule
