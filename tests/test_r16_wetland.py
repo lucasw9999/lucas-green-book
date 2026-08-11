@@ -40,7 +40,7 @@ FMMP tile carries four of them and no subtype.
 WHAT IT CANNOT DECIDE, stated rather than implied:
 
   * merion `way/675572836`, a 151 m2 `wetland=marsh`, is ADMITTED -- it carries no import marker. It
-    is 2.48 m from green 285240132 and 10.2 m from hole 17's PLAYED LENGTH, and it took merion 14, 16
+    is 2.48 m from green 285240132 and 10.22 m from hole 17's PLAYED LENGTH, and it took merion 14, 16
     and 17 from 0W to 1W when merion was re-fetched. An audit note offered it as a
     counter-example on the grounds that its centroid sits inside a green; measured, the two polygons
     do not intersect at all (0.0 m2 of overlap, 2.48 m apart). What lands inside the green is the
@@ -49,14 +49,17 @@ WHAT IT CANNOT DECIDE, stated rather than implied:
     render_hole.frac_len_within). A greenside wet hollow a junior can reach is what rule 2 is about,
     so it is drawn. Over-warning is the chosen side.
 
-    HOLE 15 IS NOT IN THAT LIST AND MUST NOT BE ADDED. The marsh is 34.5 m from hole 15's centreline,
-    CLOSER than hole 14's 39.5 m, so the list reads as if it had missed one -- and two readings of this
-    marsh have now made that mistake. Measured through the engine, both halves of the `waters` selector
-    refuse hole 15: the boundary-length fraction inside 45 m is 0.2469 against the 0.35 bar (hole 14's
-    is 0.3582), and over the PLAYED length the marsh is 265.9 m away, because its nearest approach lies
-    at arc 0.0 -- at the tee, behind the line, where a struck ball travels away from it. The 34.5 m is a
-    with-end-caps figure; the same distinction is why hole 17 reads 9.6 m with caps and 10.2 m over the
-    played length.
+    HOLE 15 IS NOT IN THAT LIST AND MUST NOT BE ADDED. The marsh is 34.57 m from hole 15's OSM
+    centreline, CLOSER than hole 14's 39.43 m, so the list reads as if it had missed one -- and two
+    readings of this marsh have now made that mistake. Measured through the engine, both halves of the
+    `waters` selector refuse hole 15: the boundary-length fraction inside 45 m is 0.2469 against the 0.35
+    bar (hole 14's is 0.3582), and over the PLAYED length the marsh is 265.91 m away, because its nearest
+    approach lies at arc 0.0 -- at the tee, behind the line, where a struck ball travels away from it.
+
+    TWO AXES, NAMED, because they are not interchangeable. Both are nearest-EDGE distances on
+    geo.mlat/mlon: against the raw OSM centreline WITH END CAPS it is h14 39.43, h15 34.57, h16 13.02,
+    h17 9.62; against the DRAWN PLAYED LINE as `any_within` clips it, h14 39.43, h15 265.91, h16 142.29,
+    h17 10.22. They coincide on hole 14 and diverge by 132x on hole 15.
   * a MIS-TAGGED SMALL wetland with no import provenance is indistinguishable from a real one here,
     and is drawn. That is the same direction the renderer already errs in for a seasonally dry
     channel: `is_visible_watercourse` excludes piped, hidden and not-water reaches but deliberately
@@ -222,8 +225,8 @@ def test_the_wetland_predicate_admits_hand_mapped_marsh_and_refuses_a_land_class
         "a real NHD SwampMarsh is refused -- a refusal keyed on `source` alone would do this, and it "
         "is the omission direction rule 2 forbids")
     assert rh.is_drawn_wetland(_way(4, MERION_MARSH_TAGS)) is True, (
-        "merion's 151 m2 greenside marsh is refused. It carries no import marker; it is 9.6 m from a "
-        "played line; when in doubt this book warns")
+        "merion's 151 m2 greenside marsh is refused. It carries no import marker; it is 10.22 m from "
+        "hole 17's played line (9.62 m from the centreline with end caps); when in doubt this book warns")
 
     # not our business: anything that is not natural=wetland at all
     for tags in ({"natural": "water"}, {"waterway": "stream"}, {"golf": "green"},

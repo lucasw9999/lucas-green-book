@@ -359,7 +359,7 @@ def is_drawn_wetland(feature):
 
     WHAT IT CANNOT DECIDE, said plainly. A mis-tagged SMALL wetland with no import provenance is
     indistinguishable from a real one and is drawn -- including merion way 675572836, a 151 m^2
-    `wetland=marsh` 2.48 m from a green and 10.2 m from hole 17's played length, which TOOK merion 14, 16
+    `wetland=marsh` 2.48 m from a green and 10.22 m from hole 17's played length, which TOOK merion 14, 16
     and 17 from 0W to 1W when that course was re-fetched. (It was offered as a second
     counter-example on the grounds that its centroid sits inside a green. The two polygons do not
     intersect: 0.0 m^2 of overlap, 2.48 m apart. What falls inside the green is the MEAN OF ITS
@@ -371,21 +371,32 @@ def is_drawn_wetland(feature):
     corpus are drawn today, on 5 of the 12 courses.
 
     HOLE 15 IS NOT IN THAT LIST AND MUST NOT BE ADDED, and the trap is worth writing down because two
-    readings of this marsh have now fallen into it. The marsh is 34.5 m from hole 15's centreline -- CLOSER
-    than hole 14's 39.5 m, which IS in the list -- so the list looks wrong. It is not. Both halves of the
-    `waters` selector refuse hole 15, measured through the engine:
+    readings of this marsh have now fallen into it. The marsh is 34.57 m from hole 15's OSM centreline --
+    CLOSER than hole 14's 39.43 m, which IS in the list -- so the list looks wrong. It is not. Both halves
+    of the `waters` selector refuse hole 15, measured through the engine:
 
       * the boundary-length FRACTION inside 45 m is 0.2469 against the 0.35 bar (hole 14's is 0.3582);
-      * the REACH half is clipped to the PLAYED length, and over that length the marsh is 265.9 m away,
+      * the REACH half is clipped to the PLAYED length, and over that length the marsh is 265.91 m away,
         because its nearest approach lies at arc 0.0 -- at the tee, behind the played line. A ball struck
         from there travels away from it.
 
     The two distances differ because `frac_in` measures against dist_pt_seg, which clamps per segment and
     so keeps a 45 m half-disc behind the tee and past the green, while `any_within` does not -- the
     asymmetry documented at the `waters` selector. Every figure in this paragraph is a corridor
-    measurement; the list above is about W TRANSITIONS, and 14, 16 and 17 is exactly what moved. On the
-    same distinction, the "10.2 m from hole 17" above is over the PLAYED length: with the end caps
-    included it is 9.6 m, and naming which measure it is, is the point.
+    measurement; the list above is about W TRANSITIONS, and 14, 16 and 17 is exactly what moved.
+
+    WHICH AXIS EACH FIGURE IS ON, because they are not interchangeable and one of them was published a
+    round mis-rounded. Two measures appear here and both are nearest-EDGE distances on geo.mlat/mlon, this
+    project's one figure of the Earth:
+
+      OSM CENTRELINE, END CAPS INCLUDED -- the raw `golf=hole` way, no clipping:
+          h14 39.43   h15 34.57   h16 13.02   h17 9.62      (marsh area 151.27 m^2, 35 nodes)
+      THE DRAWN PLAYED LINE, as `any_within` clips it -- what actually decides a card:
+          h14 39.43   h15 265.91  h16 142.29  h17 10.22
+
+    They coincide on hole 14 (its nearest approach is mid-line) and diverge by 132x on hole 15. So
+    "10.22 m from hole 17" is the played-length figure and 9.62 m is the centreline one; the prose used to
+    print 9.6 and call it the played line, which is the wrong axis under the right number.
     """
     t = feature.get('tags') or {}
     if t.get('natural') != 'wetland':

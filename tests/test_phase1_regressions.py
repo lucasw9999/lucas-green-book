@@ -25560,7 +25560,7 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     the twelve whose guide cards have no room for it.)
     THEN MERION ALONE MOVED, by +1,481 to 5,870,442 on 2026-08-11, and the date above moved with it.
     That course was re-fetched -- 0 elements lost, 1 gained -- and the one gain is way 675572836, a
-    151 m^2 `wetland=marsh` 2.48 m from a green and 10.2 m from hole 17's played length, which
+    151 m^2 `wetland=marsh` 2.48 m from a green and 10.22 m from hole 17's played length, which
     render_hole.is_drawn_wetland admits: holes 14, 16 and 17 went 0W to 1W, so the book carries one more
     filled water polygon on each of three cards and the frames those cards are fitted into moved with it.
     Every other book is byte-identical. NOTE for whoever re-measures this next: merion's figure is due to
@@ -36614,7 +36614,7 @@ WATER_INK_GAINED_DELIBERATELY = {
     ("merion-golf-club", "water polygon"): (
         2, 4,
         "Two changes in opposite directions, and the net is +2. UP by three: merion was re-fetched and "
-        "gained way 675572836, a 151 m^2 `wetland=marsh` 2.48 m from a green and 10.2 m from hole 17's "
+        "gained way 675572836, a 151 m^2 `wetland=marsh` 2.48 m from a green and 10.22 m from hole 17's "
         "played length, which render_hole.is_drawn_wetland admits and which took holes 14, 16 and 17 from "
         "0W to 1W -- one polygon inked on three cards. DOWN by one: way 225722025 is tagged "
         "`natural=water NHD:FTYPE=LakePond` and there is a house inside it, so hole 10 no longer draws "
@@ -40395,7 +40395,7 @@ def test_no_card_draws_water_over_the_merion_building_and_every_real_water_survi
 
 
 # merion's greenside marsh (way 675572836) is drawn on holes 14, 16 and 17 and NOT on 15 -- while being
-# CLOSER to 15's centreline (34.5 m) than to 14's (39.5 m). Two separate readings of this feature have
+# CLOSER to 15's OSM centreline (34.57 m) than to 14's (39.43 m). Two separate readings of this have
 # concluded from that that hole 15 was missing from the list. It is not: the corridor distance that invites
 # the conclusion is measured WITH THE END CAPS, and the selector's reach half is clipped to the PLAYED
 # length, where the marsh's nearest approach sits at arc 0.0 -- at the tee, behind the line.
@@ -40406,6 +40406,13 @@ MERION_MARSH = 675572836
 MERION_MARSH_DRAWN_ON = (14, 16, 17)
 MERION_MARSH_FRACTION_AT_45 = {14: 0.3582, 15: 0.2469, 16: 1.0, 17: 1.0}
 MERION_MARSH_PLAYED_REACH_M = {14: 39.43, 15: 265.91, 16: 142.29, 17: 10.22}
+# The OTHER axis: nearest EDGE to the raw OSM `golf=hole` centreline with the end caps included, on
+# geo.mlat/mlon -- the project's one figure of the Earth, imported rather than restated for the reason at
+# the top of this file. This is the pair of figures that makes hole 15 look closer than hole 14, so it is
+# pinned beside the played-length one and the prose has to name which it is quoting. 39.5 shipped once for
+# hole 14: a crude spherical earth rounded the wrong way off 39.4333.
+MERION_MARSH_CENTRELINE_M = {14: 39.43, 15: 34.57, 16: 13.02, 17: 9.62}
+MERION_MARSH_AREA_M2 = 151.27
 
 
 @needs_corpus
@@ -40489,6 +40496,47 @@ def test_the_greenside_marsh_reaches_three_holes_and_hole_15_is_refused_by_both_
     assert reach[15] > 45.0 > reach[17], (
         f"hole 15's played-length reach {reach[15]:.2f} m and hole 17's {reach[17]:.2f} m no longer sit "
         f"either side of the {held} m corridor")
+    # THE OTHER AXIS, on the project's own earth model, because the prose quotes both and the pair that
+    # invites the wrong conclusion is this one. Nearest EDGE (segment-to-segment, not vertex-to-segment --
+    # re-noding a ring must not move a published figure) to the raw OSM centreline, end caps included.
+    from geo import mlat as _ml, mlon as _mo
+    mg = marsh["geometry"]
+    la0 = sum(q["lat"] for q in mg) / len(mg)
+    lo0 = sum(q["lon"] for q in mg) / len(mg)
+    ml, mo = _ml(la0), _mo(la0)
+
+    def _em(q):
+        return ((q["lon"] - lo0) * mo, (q["lat"] - la0) * ml)
+
+    def _sd(px, py, ax, ay, bx, by):
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / l2))
+        return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+    def _ss(a, b, c, d):
+        return min(_sd(a[0], a[1], c[0], c[1], d[0], d[1]), _sd(b[0], b[1], c[0], c[1], d[0], d[1]),
+                   _sd(c[0], c[1], a[0], a[1], b[0], b[1]), _sd(d[0], d[1], a[0], a[1], b[0], b[1]))
+    M = [_em(q) for q in mg]
+    lines = {(e["tags"] or {}).get("ref"): e["geometry"] for e in course
+             if (e.get("tags") or {}).get("golf") == "hole" and e.get("geometry")}
+    for hn, want in sorted(MERION_MARSH_CENTRELINE_M.items()):
+        H = [_em(q) for q in lines[str(hn)]]
+        got = min(_ss(M[k], M[(k + 1) % len(M)], H[i], H[i + 1])
+                  for k in range(len(M)) for i in range(len(H) - 1))
+        assert abs(got - want) < 0.005, (
+            f"hole {hn}'s nearest-edge distance to the marsh over the raw OSM centreline is {got:.4f} m, "
+            f"recorded as {want} m. Re-measure the prose in render_hole.is_drawn_wetland and "
+            f"tests/test_r16_wetland.py -- and use geo.mlat/mlon: 39.5 shipped for hole 14 because a "
+            f"crude spherical earth rounded 39.4333 the wrong way")
+    area = abs(sum(M[i][0] * M[(i + 1) % len(M)][1] - M[(i + 1) % len(M)][0] * M[i][1]
+                   for i in range(len(M)))) / 2.0
+    assert abs(area - MERION_MARSH_AREA_M2) < 0.02, (
+        f"the marsh measures {area:.3f} m^2 by shoelace, recorded as {MERION_MARSH_AREA_M2}")
+    assert MERION_MARSH_CENTRELINE_M[15] < MERION_MARSH_CENTRELINE_M[14], (
+        "hole 15 is no longer CLOSER than hole 14 on the centreline axis, which is the whole trap the "
+        "prose exists to defuse -- re-read it rather than adjusting these numbers")
+
     # ...and the conclusion the two halves add up to.
     assert tuple(drawn_on) == MERION_MARSH_DRAWN_ON, (
         f"the marsh is drawn on holes {tuple(drawn_on)}, recorded as {MERION_MARSH_DRAWN_ON}. If hole 15 "
