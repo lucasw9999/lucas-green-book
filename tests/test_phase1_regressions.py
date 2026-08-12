@@ -25587,11 +25587,11 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-11): micke-grove 4,325,254; castlewood-hill 4,476,033;
-    merion 5,869,454; monarch-bay 4,932,913; copper-valley 6,083,125; callippe 6,815,080;
+    CURRENT SIZES (2026-08-11): micke-grove 4,325,678; castlewood-hill 4,476,033;
+    merion 5,869,829; monarch-bay 4,932,913; copper-valley 6,083,617; callippe 6,815,854;
     castlewood-valley 5,834,804; philadelphia 4,603,640; the-reserve 5,109,233;
-    bay-view 4,241,679; valley-hi 4,697,699; poppy-ridge 341,149;
-    trump-national-los-angeles 6,188,219.
+    bay-view 4,242,205; valley-hi 4,697,699; poppy-ridge 341,149;
+    trump-national-los-angeles 6,188,189.
     (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
     rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
     net, those 121 less the 63 its conditional back-cover sentences added. micke-grove then gained 4
@@ -25691,6 +25691,41 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that is correct rather than an oversight: 03 is derived from course.json and the green surfaces, and 05
     quotes only printed text carrying one of its four legal marks (gen_disclaimers.LEGAL_MARKS), which a
     three-letter tee name on a hole map never carries.
+    THEN THE WHOLE CORPUS WAS REBUILT ONCE MORE, still 2026-08-11, for TWO changes -- and only one of them
+    reaches a byte, which is the part worth keeping apart. 08f06db takes drawn wetland and
+    `intermittent=yes` channels OUT of the water blue: they take the not-water grey
+    (render_hole.PENALTY_FILL/PENALTY_EDGE), leave the footer's W, and carry a word mark naming the class
+    instead. Every mark stays on the same card in the same frame -- no card loses one. Five books' cards
+    move, 34 cards in all: bay-view 7 (holes 11-17), copper-valley 6 (1, 3, 9, 10, 11, 18), micke-grove 4
+    (2, 3, 7, 8), merion 3 (14, 16, 17), callippe 14. Each moved card is +34, or +29 on merion, and the
+    difference is which ink moved: a recoloured polyline plus a `creek runs dry` span against a recoloured
+    polygon plus a `wetland` span. The guide card gains the grey's legend swatch row, +288, on each book
+    that now draws it. So bay-view +526 (288 + 7x34), copper-valley +492 (288 + 6x34), micke-grove +424
+    (288 + 4x34) and merion +375 (288 + 3x29). CALLIPPE IS +0 AND NOT BYTE-IDENTICAL: its 14 cards were
+    already on disk from a single-course rebuild run earlier the same day to show the owner the result, so
+    what moves here is its cover alone. merion_coach +375 is the second measurement of the engine delta in
+    isolation -- the same three cards and the same row, on an edition that carries no cover line at all.
+    trump-national-los-angeles -30 is the only book that moves on the LEGEND ALONE: it already drew this
+    grey for its 34 `natural=scrub` penalty areas, so its swatch row was REWORDED rather than added, and
+    all 18 of its cards and its 6 W are byte-identical. Footer W, measured before and after: bay-view 21 ->
+    14, copper-valley 32 -> 25, micke-grove 21 -> 17, merion 23 -> 20. Not one B count moved anywhere in
+    the corpus. Callippe's own 39 -> 10 is not measurable from any file on disk -- the 39-W book was
+    overwritten by that single-course rebuild -- and it is the 29 grey polygon appearances its cards still
+    carry, leaving the W that its 10 remaining and its one `natural=water` polygon account for.
+    THE SECOND CHANGE COSTS NOTHING, and that was checked rather than assumed. 3ee65d5 moves the cover's
+    scale line from y="486", where the gold frame's 1.4-unit stroke ran through the capitals, up to y="414"
+    inside the frame. The placeholder line is byte-identical in LENGTH, so no book's size moves from it:
+    the seven pocket books with no engine change -- castlewood-hill, castlewood-valley, monarch-bay,
+    philadelphia, poppy-ridge, the-reserve, valley-hi -- are the same size to the byte with a changed cover
+    panel, and monarch-bay_coach and philadelphia_coach are byte-identical OUTRIGHT, cover included, which
+    is the evidence that the enlarged edition still never carries this line. poppy-ridge is byte-identical
+    too, HTML and PDF both, because it is non-distributable and _scale_size_line() returns "" for it.
+    legal/03 and legal/05 did not move, for the same two reasons as last time: 03 is derived from
+    course.json and the green surfaces, neither of which a rebuild touches, and 05 quotes only the printed
+    blocks carrying one of gen_disclaimers.LEGAL_MARKS. A footer word mark and a legend swatch row carry
+    none, so the new words fall outside what it extracts -- measured on callippe, whose 83 elements
+    containing "wetland" include 7 that also carry a legal mark and not one that survives the
+    smallest-element rule _printed_legal_blocks applies.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -37225,44 +37260,27 @@ WATER_INK_REMOVED_DELIBERATELY = {
 # EVERY ENTRY IS SELF-CLEARING. A stale book is a build that has not happened yet, so the moment the corpus
 # is rebuilt these figures become equal and the test says to delete the entry. That is deliberate: the
 # allowance is a note about work in flight, not a permanent exemption.
-# TEN ENTRIES, ALL FROM ONE CHANGE AND ALL SELF-CLEARING ON THE NEXT BUILD. Every book in the corpus was
-# written by an engine that drew wetland and `intermittent=yes` channels in the water blue and counted them
-# in the footer's W; the engine no longer does (render_hole.holds_open_water). Until the rebuild, five books
-# hold blue ink the engine no longer draws and none of them holds the grey ink it now draws instead. That is
-# precisely what this table is for, and every figure below becomes equal the moment `generate.py` runs, at
-# which point the assertions demand the entry be dropped.
-#
-# NOTHING HERE IS A LOSS. The blue figures fall and the grey figures rise by the same amounts on the same
-# courses -- the conservation is proved through the engine by WATER_INK_RECLASSIFIED -- and callippe's and
-# merion's wetland polygons keep every one of their appearances. The two exceptions to "equal and opposite"
-# are both recorded removals of marks that were false: copper-valley's NHD `ArtificialPath` and merion's
+# THE TABLE IS EMPTY, AND THAT IS THE SELF-CLEARING WORKING RATHER THAN THE RECORD BEING ABANDONED. It held
+# TEN entries, all from one change: every book in the corpus had been written by an engine that drew wetland
+# and `intermittent=yes` channels in the water blue and counted them in the footer's W, and the engine no
+# longer does (render_hole.holds_open_water). Five books held blue ink the engine no longer draws and none
+# held the grey it draws instead. The corpus was then rebuilt and all ten pairs came out equal -- bay-view
+# 16/0 blue and 0/16 grey, callippe 31/2 and 0/29, copper-valley 9/0 and 0/9, merion 4/1 and 0/3,
+# micke-grove 4/0 and 0/4, each built figure now the engine's -- at which point ALLOWANCE_SETTLED demanded
+# every one of them be dropped, and they were. Nothing was waived on the way out: the conservation is proved
+# through the engine by WATER_INK_RECLASSIFIED, and the two departures from "equal and opposite" are both
+# recorded removals of marks that were false -- copper-valley's NHD `ArtificialPath` and merion's
 # `natural=water` ring with a house in it.
 #
-# The one entry that also has to satisfy BOOK_LOST_INK is copper-valley's watercourse line, whose built book
-# (9) sits BELOW the preserved book (10). It is allowed for the reason that rule states: a removal is
-# recorded whose engine-side figure is that 9, so the deficit against the baseline is accounted for by a
-# named way and a named refusal rather than by staleness.
-_WHY_BLUE = ("Written before the wetland/dry-channel split. This book's cards were rendered by an engine "
-             "that drew this class in the water blue and counted it in the footer's W; the engine now "
-             "draws it in the not-water grey, so the book carries blue ink the engine no longer writes. "
-             "No mark is lost -- the same features are drawn on the same cards in the other ink, and the "
-             "matching grey entry for this course records the other half. Rebuilding clears both.")
-_WHY_GREY = ("Written before the wetland/dry-channel split, so this book carries NONE of the not-water grey "
-             "the engine now draws for this class, while its blue count is correspondingly high. The "
-             "features and the cards are unchanged; only the ink and the footer wording are. The matching "
-             "blue entry for this course records the other half, and rebuilding clears both.")
-BOOK_PREDATES_THE_ENGINE = {
-    ("bay-view-golf-club", "watercourse line"): (16, 0, _WHY_BLUE),
-    ("bay-view-golf-club", "not-water line"): (0, 16, _WHY_GREY),
-    ("callippe-preserve-golf-course", "water polygon"): (31, 2, _WHY_BLUE),
-    ("callippe-preserve-golf-course", "not-water polygon"): (0, 29, _WHY_GREY),
-    ("copper-valley-golf-club", "watercourse line"): (9, 0, _WHY_BLUE),
-    ("copper-valley-golf-club", "not-water line"): (0, 9, _WHY_GREY),
-    ("merion-golf-club", "water polygon"): (4, 1, _WHY_BLUE),
-    ("merion-golf-club", "not-water polygon"): (0, 3, _WHY_GREY),
-    ("micke-grove-golf-links", "watercourse line"): (4, 0, _WHY_BLUE),
-    ("micke-grove-golf-links", "not-water line"): (0, 4, _WHY_GREY),
-}
+# WHAT THE REBUILD ALSO EXPOSED, and it is a gap in the BOOK-side rule rather than in this table: three of
+# those courses now sit below the preserved 2026-08-03 baseline on the blue class they no longer draw --
+# bay-view 16 -> 0, copper-valley 10 -> 0, micke-grove 4 -> 0 -- and BOOK_LOST_INK fires on all three.
+# Nothing left the paper; the marks are on the same cards in the grey, which WATER_INK_RECLASSIFIED records
+# and which the ENGINE-side chain below already credits. water_ink_book_findings does not: it walks a
+# removal record and no reclassification, so the book axis reads a conservation-preserving move as a loss.
+# That is left standing and reported rather than patched around, because the rule it needs is the engine
+# side's chain and changing a graded invariant is not a figure update.
+BOOK_PREDATES_THE_ENGINE = {}
 
 
 def water_ink_book_findings(before, now, built, has_removal, removal_now, allowance):
