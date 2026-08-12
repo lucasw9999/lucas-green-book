@@ -37341,15 +37341,24 @@ def water_ink_book_findings(before, now, built, has_removal, removal_now, allowa
       also refuses the netting shape BETWEEN the two classes -- a to-class holding 16 arrivals while 5 of its
       own preserved marks went missing nets to "no deficit" against its own baseline and fails here.
 
-      WHAT NEITHER RULE CAN SEE, STATED SO IT IS NOT MISTAKEN FOR COVERAGE. Every figure here is a
-      COURSE-LEVEL TOTAL, so a card losing a mark while another card of the same course and class gains one
-      cancels and nothing on this axis moves. On the ENGINE side that shape is closed by the positive
-      per-card invariants (test_no_card_omits_a_watercourse_the_played_line_reaches and its area sibling,
-      per card and by identity). Those render through render_hole, so they do NOT cover the FILE: measured
-      by moving one grey polyline out of bay-view's hole 12 panel and into its hole 18 panel in a copy of
-      the built book held in memory, the total stays 16 and this test passes. A per-card book-versus-engine
-      identity is what would close it, and it does not exist yet. This axis notices that a course's totals
-      moved and refuses to let a move go unattributed; it is not a per-card guarantee about the file.
+      WHAT NEITHER RULE CAN SEE ON THIS AXIS, STATED SO IT IS NOT MISTAKEN FOR A GAP IN THE SUITE. Every
+      figure here is a COURSE-LEVEL TOTAL, so a card losing a mark while another card of the same course and
+      class gains one cancels and nothing on THIS axis moves. On the ENGINE side that shape is closed by the
+      positive per-card invariants (test_no_card_omits_a_watercourse_the_played_line_reaches and its area
+      sibling, per card and by identity); those render through render_hole, so they do not reach the FILE.
+      The FILE is reached by a third guard, test_every_shipped_card_is_what_the_engine_produces_now: it
+      re-renders every hole panel in process and requires the shipped greenbook.html to hold it verbatim, so
+      a mark moved between two cards shows up as the FROM card no longer matching. Reproduced: moving one
+      grey polyline out of bay-view's hole 12 panel and into its hole 18 panel in a copy of the built book
+      leaves this axis's total at 16, untouched -- and fails that other test, naming hole 12 (in that
+      reproduction, hole 18 as well, because the insertion point happened to break its panel's own
+      contiguous text too). It runs by default under a plain `pytest tests/` (its @pytest.mark.slow is
+      opt-out via `-m "not slow"`, not opt-in) and is not waived for a stale book -- a stale book is exactly
+      what it exists to catch. What it does NOT reach is the ENLARGED (coach) edition: it opens only
+      greenbook.html, never greenbook_coach.html, so the identical move made against a coach book's cards is
+      covered by neither it nor this axis. This axis notices that a course's totals moved and refuses to let
+      a move go unattributed; the per-card guarantee against the pocket edition's file belongs to that other
+      test, not to this one.
 
       ALLOWANCE_DIRECTION. An allowance whose book is SHORT of the engine is only possible when the engine
       has gained against the baseline. If the engine drew a mark then and draws it now, a book written in
