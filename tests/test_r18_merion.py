@@ -17,22 +17,35 @@ suite was green: a corpus sweep can only measure the wetlands the corpus HOLDS, 
 from the cache is invisible to it by construction.
 
 WHAT THIS FILE GRADES, and why it is not the sweep that already exists.
-`test_r16_wetland.py::test_a_wetland_the_played_line_reaches_is_never_printed_as_no_water` asserts
+`test_r16_wetland.py::test_a_wetland_the_played_line_reaches_is_never_printed_as_no_hazard` asserts
 that a reachable wetland is counted and filled. That is the right invariant and it cannot see this
 defect twice over: it is satisfied vacuously by a course whose cache holds no wetland, and where a
-card has other water it is satisfied by that other water -- `water_hazards >= len(near)` does not ask
+card has other wetland it is satisfied by that other wetland -- `wetlands >= len(near)` does not ask
 WHICH polygon supplied the number. So the arms here ask the two questions it does not:
 
   * is the class in the file the cards are drawn from AT ALL, on a course whose ground has it
     (`test_merions_hand_mapped_marsh_is_in_the_cache_its_cards_are_drawn_from`); and
-  * is that polygon the REASON its cards print water -- withdrawing it must take the footer W down and
-    the blue ink off every card it reaches, leave every card it is nowhere near untouched, and move a
-    card's number and its map together or not at all
+  * is that polygon the REASON its cards mark a hazard -- withdrawing it must take the card's wetland
+    count down and the grey ink off every card it reaches, leave every card it is nowhere near
+    untouched, and move a card's number and its map together or not at all
     (`test_removing_the_marsh_takes_down_the_water_on_exactly_the_cards_it_reaches`).
 
-The second is a mutation test and it is what makes the first honest. A card that prints `1W` over a
-pond it always had would satisfy any presence check; requiring the number and the ink to MOVE when the
+The second is a mutation test and it is what makes the first honest. A card that marks a hazard it
+always had would satisfy any presence check; requiring the number and the ink to MOVE when the
 polygon is withdrawn is what ties them to this hazard rather than to the neighbourhood.
+
+THE CLASS IS NO LONGER DRAWN AS WATER, and this file was re-pointed rather than relaxed. When it was
+written, a drawn wetland took the pond blue and the footer's W, so both arms measured `info["waters"]`
+and the water fill. That ink was a false description: callippe Preserve holds ONE `natural=water`
+polygon and its shipped book printed 39 W across 18 cards, with 2,309 of its 7,507 tree markers
+standing inside what the card called a pond. Wetland now takes the not-water grey
+(`render_hole.PENALTY_FILL`) and is counted under `info["wetlands"]`, and the footer names the class in
+words instead of adding to the W. Every assertion below asserts what it always did -- a reachable marsh
+is DRAWN and is COUNTED, and the number and the map move together -- against the ink and the key the
+class actually uses. Nothing was weakened: a marsh inked blue again would fail both arms for a missing
+grey fill, and each arm additionally refuses to run if the two inks are ever the same hex.
+The name of the mutation arm still says "water" because it is what a reader searching git for this
+defect will look for; its docstring and its assertions say wetland.
 
 NO HOLE NUMBER, COUNT OR DISTANCE IS TYPED IN ANY ASSERTION HERE. Which holes the marsh reaches is
 derived from the OSM centrelines and the mapped wetland polygon at test time, against the renderer's
@@ -143,6 +156,33 @@ def _water_fill(rh):
     return _FILL_ATTR % m.group(1) if m else None
 
 
+def _wetland_fill(rh):
+    """The fill attribute a card writes for DRAWN WETLAND, read out of the renderer's own source.
+
+    The sibling of _water_fill and derived for the same reason, but it has to resolve a NAMED CONSTANT
+    rather than a literal: wetland is drawn in the not-water grey, and that ink is
+    `render_hole.PENALTY_FILL` because the guide cards' legend swatch is generated from it. So the
+    statement reads `fill="{PENALTY_FILL}"` and the hex has to come from the module, which is the whole
+    point -- a hex typed here would be a third copy of a value the legend and the map already share.
+
+    Scoped to the `wet_svg` assignment, as _water_fill is scoped to `water_svg`: a regex over the whole
+    function would match the penalty-area statement one line up, which writes the SAME ink for a
+    different class, and this file would then be unable to tell a marsh from a barranca.
+    """
+    import inspect
+    import re
+    src = inspect.getsource(rh.render_hole)
+    stmt = next((ln for ln in src.splitlines() if re.match(r"\s*wet_svg\s*=", ln)), None)
+    if not stmt:
+        return None
+    m = re.search(r'fill="\{([A-Za-z_][A-Za-z_0-9]*)\}"', stmt)
+    if not m:
+        m = re.search(r'fill="(#[0-9a-fA-F]{3,8})"', stmt)
+        return _FILL_ATTR % m.group(1) if m else None
+    ink = getattr(rh, m.group(1), None)
+    return _FILL_ATTR % ink if isinstance(ink, str) else None
+
+
 def _projector(line):
     """(em, line_em) -- a local metres projection centred on this centreline, and the line in it.
 
@@ -235,26 +275,38 @@ def test_merions_hand_mapped_marsh_is_in_the_cache_its_cards_are_drawn_from():
         % (len(wet), rh.CORRIDOR_M["water"]))
 
 
-def test_every_merion_card_a_wetland_reaches_prints_it_as_water_and_fills_it_blue():
-    """Reachable wetland must be BOTH counted in the footer and filled on the map, per card.
+def test_every_merion_card_a_wetland_reaches_prints_it_as_a_hazard_and_fills_it_grey():
+    """Reachable wetland must be BOTH counted on the card and filled on the map, per card.
 
     Both halves, separately, because either alone lets the other regress: a card can print a number
-    over blank ground and it can draw blue under a zero. The shipped defect had neither.
+    over blank ground and it can draw ink under a zero. The shipped defect had neither.
+
+    THE CLASS MOVED OFF THE BLUE AND THE RULE DID NOT. This test was `..._prints_it_as_water_and_fills_it_
+    blue` and read `info["waters"]`, `info["water_hazards"]` and the water fill. Marsh is not water: merion's
+    way 675572836 is a 151 m^2 `wetland=marsh`, and drawing it in the pond blue is what let callippe ship 39
+    W over a course holding ONE `natural=water` polygon. So the count is `info["wetlands"]` and the ink is
+    the not-water grey. What is asserted is what was asserted before -- reachable wetland is counted and
+    drawn -- and it is no weaker: a marsh that went back to being inked blue would fail here for a missing
+    grey fill, which is the direction that shipped.
     """
     cfg, rh = _merion()
     wet, reach = _reach(cfg, rh)
     if not reach:
         pytest.fail("no merion card is reached by a drawn wetland -- see the arm above")
-    fill = _water_fill(rh)
-    assert fill, "cannot read the renderer's water fill; a colour-blind count would pass vacuously"
+    fill = _wetland_fill(rh)
+    assert fill, "cannot read the renderer's wetland fill; a colour-blind count would pass vacuously"
+    assert fill != _water_fill(rh), (
+        "the renderer writes the SAME fill for wetland and for open water, so this file cannot tell a "
+        "marsh from a pond and neither can a reader. That sharing is the defect: one ink may mean only "
+        "one thing in the legend -- see render_hole.holds_open_water")
     bad = []
     for hn, d in sorted(reach.items()):
         svg, info = rh.render_hole(hn, cfg.HOLES)
-        if info["waters"] < 1 or info["water_hazards"] < 1 or svg.count(fill) < 1:
-            bad.append((hn, round(d, 2), info["waters"], info["water_hazards"], svg.count(fill)))
+        if info["wetlands"] < 1 or svg.count(fill) < 1:
+            bad.append((hn, round(d, 2), info["wetlands"], svg.count(fill), info["waters"]))
     assert not bad, (
-        "%d merion card(s) are reached by a drawn wetland and do not print it as water -- "
-        "(hole, metres off the played length, printed W, counted area hazards, blue fills): %s"
+        "%d merion card(s) are reached by a drawn wetland and do not print it as a hazard -- "
+        "(hole, metres off the played length, counted wetlands, grey fills, printed W): %s"
         % (len(bad), bad))
 
 
@@ -343,8 +395,11 @@ def test_removing_the_marsh_takes_down_the_water_on_exactly_the_cards_it_reaches
     wet, reach = _reach(cfg, rh)
     if not reach:
         pytest.fail("no merion card is reached by a drawn wetland -- see the first arm")
-    fill = _water_fill(rh)
-    assert fill, "cannot read the renderer's water fill; a colour-blind count would pass vacuously"
+    fill = _wetland_fill(rh)
+    assert fill, "cannot read the renderer's wetland fill; a colour-blind count would pass vacuously"
+    assert fill != _water_fill(rh), (
+        "the renderer writes the SAME fill for wetland and for open water, so withdrawing the marsh would "
+        "be graded against the pond ink as well -- one ink may mean only one thing in the legend")
 
     # The withdrawal set is derived from THIS element list, not from `_reach`'s. `rh.load()` re-reads
     # the cache and returns fresh dicts every call, so Python object identity does not survive between
@@ -360,7 +415,7 @@ def test_removing_the_marsh_takes_down_the_water_on_exactly_the_cards_it_reaches
     with_marsh = {}
     for hn in sorted(cfg.HOLE_NUMS):
         svg, info = rh.render_hole(hn, cfg.HOLES)
-        with_marsh[hn] = (info["waters"], svg.count(fill))
+        with_marsh[hn] = (info["wetlands"], svg.count(fill))
 
     kept = [g for g in course if (g.get("type"), g.get("id")) not in drop]
     assert len(kept) == len(course) - len(wet_here), "the withdrawal removed the wrong number of ways"
@@ -370,7 +425,7 @@ def test_removing_the_marsh_takes_down_the_water_on_exactly_the_cards_it_reaches
         without = {}
         for hn in sorted(cfg.HOLE_NUMS):
             svg, info = rh.render_hole(hn, cfg.HOLES)
-            without[hn] = (info["waters"], svg.count(fill))
+            without[hn] = (info["wetlands"], svg.count(fill))
     finally:
         monkey.undo()
 
@@ -385,17 +440,17 @@ def test_removing_the_marsh_takes_down_the_water_on_exactly_the_cards_it_reaches
         if hn in far and (w_on, f_on) != (w_off, f_off):
             collateral.append((hn, round(far[hn], 1), (w_off, w_on), (f_off, f_on)))
     assert not silent, (
-        "%d merion card(s) print the same water with the marsh and without it, so its ink and its "
-        "footer W are not coming from the hazard the card is reached by -- (hole, metres off the "
-        "played length, W without/with, blue fills without/with): %s" % (len(silent), silent))
+        "%d merion card(s) count the same wetland with the marsh and without it, so its ink and its "
+        "footer mark are not coming from the hazard the card is reached by -- (hole, metres off the "
+        "played length, wetlands without/with, grey fills without/with): %s" % (len(silent), silent))
     assert not collateral, (
         "%d merion card(s) the marsh cannot reach under ANY half of the selector changed when it was "
-        "withdrawn -- water has been painted onto a hole the golfer cannot reach it from, the "
+        "withdrawn -- hazard ink has been painted onto a hole the golfer cannot reach it from, the "
         "over-draw direction of the same rule -- (hole, metres off the centreline with end caps, "
-        "W without/with, blue fills without/with): %s" % (len(collateral), collateral))
+        "wetlands without/with, grey fills without/with): %s" % (len(collateral), collateral))
     assert not disagree, (
-        "%d merion card(s) moved their footer W without moving their blue ink, or the reverse -- the "
-        "number under the map must describe the map -- (hole, W without/with, blue fills "
+        "%d merion card(s) moved their wetland count without moving their hazard ink, or the reverse -- "
+        "the marks under the map must describe the map -- (hole, wetlands without/with, grey fills "
         "without/with): %s" % (len(disagree), disagree))
 
 

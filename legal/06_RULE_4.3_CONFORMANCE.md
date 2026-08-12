@@ -95,7 +95,8 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   5‑yd bar drawn inside every green's own viewBox is genuinely better evidence — it scales with a
   mis‑scaled printer and a ruler on it gives the true scale — but it is not what an official
   checking a book at a tournament reads; they read words. The legend card has no room: it ships at
-  1.19 px of clearance in its own 3.5 × 5.0 in box on monarch‑bay (`tests/test_r17_print.py`), and
+  1.19 px of clearance in its own 3.5 × 5.0 in box on monarch‑bay and micke‑grove
+  (`tests/test_r17_print.py`), and
   this project has clipped that card's tail twice already. Measured the same way (the panel spliced
   into every shipped cover and laid out in chrome‑headless‑shell under print media): the pocket
   cover has room, so `generate.py`'s `cover_panel()` now prints **"SCALE 1:480 OR SMALLER · CARD

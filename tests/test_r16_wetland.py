@@ -618,24 +618,37 @@ def test_the_water_corridor_this_file_measures_against_is_the_renderers_own():
         % (rh.CORRIDOR_M["water"], WATER_CORRIDOR_M))
 
 
-def test_a_wetland_the_played_line_reaches_is_never_printed_as_no_water():
+def test_a_wetland_the_played_line_reaches_is_never_printed_as_no_hazard():
     """THE RULE: never omit a hazard the golfer can reach. Swept over every cache on disk.
 
     Every `natural=wetland` polygon a card should draw and whose boundary comes within the water
-    corridor of the played line must be COUNTED in the footer and FILLED on the map. The count and the
+    corridor of the played line must be COUNTED on the card and FILLED on the map. The count and the
     fill are checked separately because the shipped defect had neither and either one alone would let
-    the other regress -- a card can print a number over blank ground, and it can draw blue and print a
+    the other regress -- a card can print a number over blank ground, and it can draw ink and print a
     zero.
+
+    THE COUNT AND THE FILL BOTH MOVED CLASS, and the rule did not. This test was
+    `..._is_never_printed_as_no_water` and it read `info["water_hazards"]` and `fill="#a9d3ef"`: marsh was
+    drawn in the water blue and counted in the footer's W. That was a false description a reader found on
+    the ground -- callippe holds ONE `natural=water` polygon and its book printed 39 W across 18 cards,
+    with 2,309 tree markers standing in the blue. So the ink is now render_hole.PENALTY_FILL, the not-water
+    grey, and the count is `info["wetlands"]`. What this test asserts is unchanged and is the part that
+    matters: a reachable marsh is DRAWN and is COUNTED. Only the ink and the key it is counted under moved,
+    and the requirement got no weaker -- a wetland drawn in the water blue would now FAIL here, because the
+    grey fill would be missing.
+
+    BOTH INK CONSTANTS ARE READ FROM THE ENGINE, never frozen here, for test_r18_merion's stated reason:
+    a hex typed into a test file is a second copy of a value that has already been retuned once.
 
     A course whose cache holds no wetland contributes nothing and that is not silently a pass: the
     witness count below refuses to let this test claim anything if the corpus stopped holding a
     reachable wetland at all.
     """
-    fill = 'fill="#a9d3ef"'
     omitted, reachable, examined, errors = [], 0, 0, []
     for slug in _corpus():
         cfg, rh = _engine(slug)
         import geo
+        fill = 'fill="%s"' % rh.PENALTY_FILL
         try:
             course, geom = rh.load()
             loc = cfg.COURSE.get("location") or {}
@@ -674,9 +687,9 @@ def test_a_wetland_the_played_line_reaches_is_never_printed_as_no_water():
                 errors.append((slug, hn, repr(e)[:120]))
                 continue
             examined += 1
-            if info["water_hazards"] < len(near) or svg.count(fill) < len(near):
+            if info["wetlands"] < len(near) or svg.count(fill) < len(near):
                 omitted.append((slug, hn, sorted(near, key=lambda r: r[1]),
-                                info["water_hazards"], svg.count(fill), info["waters"]))
+                                info["wetlands"], svg.count(fill), info["waters"]))
     assert not errors, "%d failure(s) gathering the corpus: %s" % (len(errors), errors[:5])
     assert reachable >= 12, (
         "only %d wetland/hole pairs come within %g m of a played line in the whole corpus -- the "
@@ -685,7 +698,7 @@ def test_a_wetland_the_played_line_reaches_is_never_printed_as_no_water():
         "rather than deleting this bar" % (reachable, WATER_CORRIDOR_M))
     assert not omitted, (
         "%d card(s) omit wetland the played line reaches -- (course, hole, [(way, metres off the "
-        "played line)], counted area hazards, drawn water fills, printed W): %s"
+        "played line)], counted wetlands, drawn not-water fills, printed W): %s"
         % (len(omitted), omitted[:8]))
 
 
@@ -703,7 +716,7 @@ def _renode(pts, k):
 
 
 def test_a_re_noded_wetland_polygon_does_not_change_what_the_card_prints():
-    """A wetland now runs the same selector water does, so it inherits the same invariant.
+    """A wetland runs the same selector water does, so it inherits the same invariant.
 
     The selector is an OR of `frac_len_within(...) >= 0.35` and a segment reach test, both closed-form
     over the boundary, so inserting vertices ON the boundary must move nothing. This is not a
@@ -711,20 +724,35 @@ def test_a_re_noded_wetland_polygon_does_not_change_what_the_card_prints():
     one noding density and a different four at another, which is why the length measure exists. A
     wetland admitted through a different code path would not be covered by that test, since it selects
     on `natural=water` and golf tags only.
+
+    THE TUPLE HAD TO FOLLOW THE INK, or this test would have gone quietly vacuous about its own subject.
+    It compared `(waters, water_hazards, count of fill="#a9d3ef")`, which is what a wetland used to move.
+    Wetland is now drawn in the not-water grey and counted under `wetlands` (render_hole.holds_open_water
+    is the split), so re-noding one CANNOT move any of those three -- the assertion would have held for a
+    reason that has nothing to do with noding, on a test named for wetland. The wetland keys are measured
+    now, and the water keys are KEPT alongside: re-noding a marsh must move nothing at all, so the
+    stronger tuple is the honest one and it also catches a marsh leaking back into the blue.
     """
     moved, added, examined = [], 0, 0
+    marked = [0, 0]                        # [wetlands counted, grey fills drawn] over the WHOLE corpus
     for slug in _corpus():
         cfg, rh = _engine(slug)
+        grey = 'fill="%s"' % rh.PENALTY_FILL
         try:
             course, _ = rh.load()
         except Exception as e:                                  # pragma: no cover - env-dependent
             pytest.skip("%s: %r" % (slug, e))
         if not any(rh.is_drawn_wetland(g) and len(g.get("geometry") or []) > 1 for g in course):
             continue
-        plain = {}
-        for hn in cfg.HOLE_NUMS:
-            svg, info = rh.render_hole(hn, cfg.HOLES)
-            plain[hn] = (info["waters"], info["water_hazards"], svg.count('fill="#a9d3ef"'))
+
+        def shot(hn, _rh=rh, _cfg=cfg, _grey=grey):
+            svg, info = _rh.render_hole(hn, _cfg.HOLES)
+            return (info["wetlands"], svg.count(_grey),
+                    info["waters"], info["water_hazards"], svg.count('fill="#a9d3ef"'))
+        plain = {hn: shot(hn) for hn in cfg.HOLE_NUMS}
+        for p in plain.values():
+            marked[0] += p[0]
+            marked[1] += p[1]
         orig = rh.load
         try:
             for k in (2, 5):
@@ -742,8 +770,7 @@ def test_a_re_noded_wetland_polygon_does_not_change_what_the_card_prints():
                     - sum(len(e.get("geometry") or []) for e in course)
                 added += grew
                 for hn in cfg.HOLE_NUMS:
-                    svg, info = rh.render_hole(hn, cfg.HOLES)
-                    got = (info["waters"], info["water_hazards"], svg.count('fill="#a9d3ef"'))
+                    got = shot(hn)
                     examined += 1
                     if got != plain[hn]:
                         moved.append((slug, hn, "k=%d" % k, plain[hn], got))
@@ -754,10 +781,20 @@ def test_a_re_noded_wetland_polygon_does_not_change_what_the_card_prints():
     assert added > examined, (
         "the re-noding inserted only %d vertices over %d renderings -- it is not re-noding anything"
         % (added, examined))
+    # ...and the perturbation has to be able to MOVE the keys it grades, or "nothing moved" says nothing.
+    # Counted over the WHOLE corpus and not the last course examined: the-reserve holds a drawn wetland
+    # that reaches no card, so it enters this loop and contributes zero marks, and a per-course witness
+    # taken from whichever course happened to be last is the vacuous check this bar exists to refuse.
+    # Measured: callippe draws 29 wetland marks over 14 cards and merion 3 over 3.
+    assert marked[0] >= 12 and marked[1] >= 12, (
+        "the corpus counted %d wetland(s) and drew %d not-water fill(s) across every card of every course "
+        "that holds a drawn wetland, so the two keys this test was re-pointed at are near zero and the "
+        "comparison proves little. 32 and 32 were measured; re-measure rather than lowering this"
+        % (marked[0], marked[1]))
     assert not moved, (
-        "%d card(s) print a different water count when the SAME wetland is re-noded -- (course, hole, "
-        "noding, before, after) with the tuple being (waters, water_hazards, drawn water fills): %s"
-        % (len(moved), moved[:8]))
+        "%d card(s) print something different when the SAME wetland is re-noded -- (course, hole, "
+        "noding, before, after) with the tuple being (wetlands, grey fills, waters, water_hazards, "
+        "blue fills): %s" % (len(moved), moved[:8]))
 
 
 def _tile_beside(line, standoff_m, span_m):
@@ -797,6 +834,12 @@ def test_a_land_classification_tile_paints_no_card_even_where_it_reaches_one():
     card, and with the tags stripped to a bare `natural=wetland` it must change at least one. Without
     the second arm a predicate that refused every wetland would pass this, and without the first the
     fix would be untested where it matters -- on the page.
+
+    THE KEY IT WATCHES IS `wetlands` AND NOT `water_hazards`, because that is where an admitted wetland
+    now lands: the class is drawn in the not-water grey and counted separately from the footer's W (see
+    render_hole.holds_open_water). Watching `water_hazards` would have made the SECOND arm impossible to
+    satisfy -- a bare `natural=wetland` cannot move a water count any more -- so this test would have
+    started failing honestly, which is how the re-point was found rather than assumed.
     """
     hit = []
     for slug in _corpus():
@@ -811,19 +854,28 @@ def test_a_land_classification_tile_paints_no_card_even_where_it_reaches_one():
         hn = cfg.HOLE_NUMS[0]
         ring = _tile_beside(lines[hn]["geometry"], 23.5, 1320.0)
         orig = rh.load
+
+        def marks(_rh=rh, _cfg=cfg):
+            """Both halves of "this tile reached the paper": the count AND the ink."""
+            out = {}
+            for h in _cfg.HOLE_NUMS:
+                svg, info = _rh.render_hole(h, _cfg.HOLES)
+                out[h] = (info["wetlands"], svg.count('fill="%s"' % _rh.PENALTY_FILL))
+            return out
         try:
-            base = {h: rh.render_hole(h, cfg.HOLES)[1]["water_hazards"] for h in cfg.HOLE_NUMS}
+            base = marks()
             tile = {"type": "way", "id": -9001, "tags": dict(FMMP_TILE_TAGS), "geometry": ring}
             rh.load = lambda _o=orig, _t=tile: (_o()[0] + [_t], _o()[1])
-            tagged = {h: rh.render_hole(h, cfg.HOLES)[1]["water_hazards"] for h in cfg.HOLE_NUMS}
+            tagged = marks()
             bare = dict(tile, tags={"natural": "wetland"})
             rh.load = lambda _o=orig, _b=bare: (_o()[0] + [_b], _o()[1])
-            stripped = {h: rh.render_hole(h, cfg.HOLES)[1]["water_hazards"] for h in cfg.HOLE_NUMS}
+            stripped = marks()
         finally:
             rh.load = orig
         assert tagged == base, (
-            "%s: a farmland-classification tile added water to hole(s) %s -- those cards would print "
-            "blue over dry ground" % (slug, [h for h in base if tagged[h] != base[h]]))
+            "%s: a farmland-classification tile put hazard ink or a hazard count on hole(s) %s -- those "
+            "cards would mark dry shoreline as ground a ball is lost in"
+            % (slug, [h for h in base if tagged[h] != base[h]]))
         painted = [h for h in base if stripped[h] != base[h]]
         assert painted, (
             "%s: the same shape with a bare natural=wetland tag also changed nothing, so this course "

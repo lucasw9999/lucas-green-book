@@ -324,6 +324,31 @@ def test_site1_render_hole_output_is_byte_identical():
     b4ce00b406d01035dbb906bf68ca6cb95af351e1ed9d2c5dd10bbd2907f850b5, exactly. So no `info` value moved,
     the other 11 cards are byte-identical, and on those 7 the whole difference is the withdrawn label.
 
+    RE-PINNED A FIFTH TIME, for the wetland/dry-channel split -- the change that stopped this engine
+    drawing anything but OPEN WATER in the water blue (render_hole.holds_open_water). Two causes, and both
+    were isolated rather than assumed:
+
+      * `info` GAINED FOUR KEYS -- `wetlands`, `wetland_ids`, `dry_channels`, `dry_channel_ids` -- the
+        counts and the ids of the not-water hazards each card draws. They exist for the reason
+        `water_ids`/`creek_ids` do: the two positive rule-2 guards check by IDENTITY, and after the split
+        a marsh or a dry ditch is in neither of the old two lists, so without these the guards would have
+        reported 29 drawn callippe wetlands and 29 bay-view/copper-valley/micke-grove channels as omitted
+        hazards. Nothing prints a number from any of them (generate.not_water_mark names the class in
+        words instead).
+      * SEVEN OF THIS COURSE'S CARDS REALLY MOVED, and bay-view is the sharpest possible case: all 7 of
+        its drawn watercourses carry `intermittent=yes`, so every blue polyline it had becomes a grey one.
+        Holes 11 through 17 each swap 1 to 3 `stroke="#5b9bd0" stroke-width="1.8"` polylines for the same
+        number at `stroke="#c8c8c8"`. Each card's SVG is the SAME LENGTH before and after -- 38623, 26838,
+        29901, 24066, 43123, 37622 and 32848 bytes -- because the two hex strings are the same width and
+        the marks are otherwise identical: the geometry, the weight and the linecap are untouched, and no
+        card gains or loses a mark. The other 11 cards are byte-identical.
+
+    THE CAUSAL PROOF, run rather than reasoned: strip those four keys from the dict and make
+    render_hole.runs_dry_in_season return False -- which puts the 7 channels back in the blue and is the
+    only behaviour the split changed on this course -- and the digest is
+    8da5717cd04fd50d71180db15b24aaa720a2cb95d45e9b3a4325cc9aa830e128, the previous pin, exactly. So the two
+    causes above are the WHOLE difference and nothing else at this site moved.
+
     WHAT THE CONSTANT STILL BUYS, which is why it is re-pinned rather than dropped: it catches a FUTURE
     edit at this site that touches something live. That was always its forward-looking job -- the
     docstring at the top of this file says a truly dead line cannot make this hash go red-then-green --
@@ -338,9 +363,9 @@ def test_site1_render_hole_output_is_byte_identical():
         parts.append(svg)
         parts.append(json.dumps(info, sort_keys=True, default=repr))
     digest = _sha(*parts)
-    assert digest == "8da5717cd04fd50d71180db15b24aaa720a2cb95d45e9b3a4325cc9aa830e128", (
-        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned when the tee "
-        f"mark stopped naming a tee the drawn line does not run from. If a deliberate engine change moved "
+    assert digest == "e1fd176045d71e0541a88ddad3ab01c4d118d449679209bf6aaa2e543cfdb6ee", (
+        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned when wetland "
+        f"and dry channels stopped being drawn in the water blue. If a deliberate engine change moved "
         f"it, re-derive this digest and say in the docstring which commit moved it -- do not copy it out "
         f"of this message blind")
 

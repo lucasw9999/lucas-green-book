@@ -886,18 +886,27 @@ def test_legal_06_states_the_measured_cover_and_legend_clearance():
         f"legal/06 states the cover's clearance as {m.group(1)} px; re-measured under print media "
         f"it is {next(iter(cover_vals)):.2f} px on every distributable course.")
 
-    tight_slug, tight_val = min(legend_rows, key=lambda r: r[1])
+    # EVERY BOOK AT THE MINIMUM MUST BE NAMED, not just one of them, and the tie is why this is not a
+    # single-slug match any more. monarch-bay held the tightest legend card alone at 1.19 px; the
+    # wetland/dry-channel split added a legend row to the six books that draw the not-water grey, and
+    # micke-grove -- which had 14.73 px and draws one dry channel -- landed on exactly the same 1.19.
+    # "The tightest card is monarch-bay" is now false by omission, and a doc that names one of two equally
+    # tight cards would let the other one drift unwatched, which is the whole thing this assertion is for.
+    tight_val = min(v for _s, v in legend_rows)
+    at_min = sorted(s for s, v in legend_rows if round(v, 2) == round(tight_val, 2))
     m = re.search(r"([0-9.]+) px of clearance in its own [0-9.]+ [×x] [0-9.]+ in box on "
-                  r"([\w‑-]+)", text)
+                  r"([^(]+)", text)
     assert m, "legal/06 no longer states the legend card's measured clearance in the expected wording"
     assert round(float(m.group(1)), 2) == round(tight_val, 2), (
         f"legal/06 states the tightest legend card's clearance as {m.group(1)} px; re-measured "
-        f"under print media the tightest is {tight_val:.2f} px ({tight_slug}).")
-    assert m.group(2).replace("‑", "-") == tight_slug or tight_slug.startswith(
-        m.group(2).replace("‑", "-")), (
-        f"legal/06 attributes the tightest legend card to {m.group(2)}; re-measured under print "
-        f"media it is {tight_slug} (at {tight_val:.2f} px, against "
-        f"{sorted(v for _s, v in legend_rows)}).")
+        f"under print media the tightest is {tight_val:.2f} px ({at_min}).")
+    named = re.findall(r"[\w‑-]+", m.group(2).replace("‑", "-"))
+    unnamed = [s for s in at_min if not any(s == n or s.startswith(n) for n in named)]
+    assert not unnamed, (
+        f"legal/06 attributes the tightest legend card to {named}; re-measured under print media the "
+        f"book(s) {unnamed} sit at the same {tight_val:.2f} px and are not named (all measured: "
+        f"{sorted(v for _s, v in legend_rows)}). Name every one of them -- a card at the minimum that the "
+        f"doc does not mention is a card nobody is watching, and this project has clipped that tail twice.")
 
 
 def _enlarged_stats():

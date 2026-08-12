@@ -245,10 +245,16 @@ def census(elements):
 
     `natural=wetland` gets the SAME TREATMENT ONE CLASS OVER, and until this round it had none: the
     query never asked for it, so this key was unreachable and `VOLATILE_KINDS` carried a dead entry for
-    it. The map now draws the wetland a card should draw (render_hole.is_drawn_wetland) in the same
-    filled blue as a pond and counts it in the same footer W, so the drawn ones are a HAZARD kind here,
-    exactly as `water` is -- callippe alone has 12 of them, one within 45 m of the played line on 16 of
-    its 18 holes, and nine of its cards printed "0W" over one. The ones the predicate refuses -- a
+    it. The map draws the wetland a card should draw (render_hole.is_drawn_wetland), so the drawn ones
+    are a HAZARD kind here, exactly as `water` is -- callippe alone has 12 of them, one within 45 m of
+    the played line on 16 of its 18 holes, and nine of its cards printed "0W" over one. It is drawn in
+    the NOT-WATER GREY and counted separately from the footer's W, which is a correction to what this
+    paragraph used to say ("in the same filled blue as a pond and counts it in the same footer W"):
+    marsh is not open water, callippe's whole cache holds ONE `natural=water` polygon while its shipped
+    book prints 39 W across 18 cards, and 2,309 of its tree markers stand inside ground the card had
+    painted as a pond. See render_hole.holds_open_water for the split. Being a hazard kind is unaffected
+    by that and is the only thing this bucket turns on -- a ball in marsh is lost either way, so losing
+    one is still a hazard loss and still aborts. The ones the predicate refuses -- a
     farmland-classification tile that merely carries the tag -- go in `wetland_undrawn`, which is
     volatile and not a hazard, because a mapper re-classifying a landcover polygon is an OSM
     improvement and nothing draws or measures it. Splitting them is what stops the swap this bucket's
@@ -515,13 +521,21 @@ def _check_response(j, path, out):
         # closed, and do not let the baseline go a second time -- which is what HAZARD_KINDS is for.
         #
         # THAT EQUALITY IS DATED 2026-08-03 AND ONE COURSE HAS SINCE MOVED, deliberately and UPWARD.
-        # Adding `natural=wetland` to the query and to `waters` took callippe from 2 drawn water
-        # polygons to 31 across its 18 cards, on 14 of them, 9 of those from 0W -- the hand-mapped
-        # seasonal wetland the fetch had never asked for. So the invariant the evidence supports is
-        # "no drawn water class LOST ink", not "no count changed": callippe was never one of febbbba's
-        # four re-fetched courses, and an equality frozen over the whole corpus cannot tell a lost
-        # hazard from a found one. Its watercourse polylines are unchanged, and no other course's
+        # Adding `natural=wetland` to the query and to the area-hazard selector took callippe from 2
+        # drawn hazard polygons to 31 across its 18 cards, on 14 of them, 9 of those from 0W -- the
+        # hand-mapped seasonal wetland the fetch had never asked for. So the invariant the evidence
+        # supports is "no drawn water class LOST ink", not "no count changed": callippe was never one of
+        # febbbba's four re-fetched courses, and an equality frozen over the whole corpus cannot tell a
+        # lost hazard from a found one. Its watercourse polylines are unchanged, and no other course's
         # counts moved in either class.
+        #
+        # THOSE 29 ARE NO LONGER IN THE BLUE, and the figure above is left as the historical one it is
+        # rather than rewritten, because it is what the 2026-08-03 comparison measured. Marsh is not open
+        # water: it is drawn in the not-water grey now and counted separately from the footer's W (see
+        # render_hole.holds_open_water), so callippe's blue polygon count is back at the preserved book's
+        # 2 and 29 grey ones stand beside it. Nothing left the paper -- the same polygons are on the same
+        # 14 cards -- and the ink accounting for the move, per course and per class, is graded by
+        # tests/test_phase1_regressions.py::test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side.
         lost, churn, hazard = {}, {}, {}
         for k in oc:
             if nc[k] >= oc[k]:

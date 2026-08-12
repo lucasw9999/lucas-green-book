@@ -29858,17 +29858,31 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     _is_area_water is a second spelling of it and a second spelling went stale the moment a third class
     was added: 89c265b made `natural=wetland` drawable, the helper did not follow, and NOTHING failed --
     a class the helper omits is simply a class this test stops perturbing. Narrowing a sweep is the
-    quiet failure, so the tag literals and the named predicate are read out of the `waters`
+    quiet failure, so the tag literals and the named predicate are read out of the AREA-HAZARD
     comprehension in render_hole.py and required to appear in the helper.
+
+    THE SELECTOR READ IS `area_hazards` AND NOT `waters`, and the rename is not cosmetic. render_hole now
+    admits the whole class of water-ish hazards with one tag OR at one corridor and then SPLITS it by
+    `holds_open_water`: what is open water keeps the blue and the footer W, and what is not -- drawn
+    wetland -- takes the not-water grey. `waters` is therefore a filtered comprehension with no tag
+    literals in it at all, and pointing this scrape at it found nothing and failed loudly, which is the
+    behaviour this docstring asks for. `area_hazards` is the population that gets re-noded, so it is the
+    one the helper has to match, and the split is graded separately by
+    test_one_ink_means_one_thing_in_the_legend_and_only_open_water_is_drawn_in_the_blue.
+
+    THE MEASURED TUPLE CARRIES BOTH CLASSES for the same anti-narrowing reason. It was
+    (watercourses, waters, water_hazards, blue fills) -- all four of which a wetland re-noding can no
+    longer move -- so this sweep would have gone on perturbing wetland polygons while grading nothing
+    about them. The wetland count and the grey fill are in the tuple now.
     """
     import ast
     import inspect
     rh_src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
     sel = next((ast.get_source_segment(rh_src, n.value) for n in ast.walk(ast.parse(rh_src))
                 if isinstance(n, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "waters" for t in n.targets)), None)
-    assert sel, ("render_hole.py no longer has a `waters = [...]` assignment, so this test cannot tell "
-                 "whether _is_area_water still matches the selector it stands in for")
+                and any(isinstance(t, ast.Name) and t.id == "area_hazards" for t in n.targets)), None)
+    assert sel, ("render_hole.py no longer has an `area_hazards = [...]` assignment, so this test cannot "
+                 "tell whether _is_area_water still matches the selector it stands in for")
     helper = inspect.getsource(_is_area_water)
     # DERIVED FROM THE SELECTOR'S OWN COMPARISONS, not filtered through a list of the tags that
     # happened to exist when this was written. It read
@@ -29884,7 +29898,7 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     for _cmp in re.finditer(r"get\('(?:golf|natural)'\)\s*(?:in\s*(\([^)]*\))|==\s*('[a-z_]+'))", sel):
         want_tags |= set(re.findall(r"'([a-z_]+)'", _cmp.group(1) or _cmp.group(2)))
     want_tags = sorted(want_tags)
-    assert want_tags, f"no water tag literal found in render_hole's waters selector:\n{sel}"
+    assert want_tags, f"no water tag literal found in render_hole's area_hazards selector:\n{sel}"
     missing = [t for t in want_tags if f'"{t}"' not in helper and f"'{t}'" not in helper]
     # `wetland` is spelled in the helper as the CALL, not as a literal -- that is the point of importing
     # the real predicate rather than re-deriving its tag rules, which run to twenty lines in
@@ -29892,14 +29906,14 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     if "wetland" in missing and _in_code("rh.is_drawn_wetland(g)", helper):
         missing.remove("wetland")
     assert not missing, (
-        f"render_hole's `waters` selector tests tag(s) {missing} that _is_area_water does not, so this "
+        f"render_hole's `area_hazards` selector tests tag(s) {missing} that _is_area_water does not, so this "
         f"test silently stops re-noding a whole class of drawn water -- which is exactly how the "
         f"wetland class went unperturbed here for the life of 89c265b. The selector reads:\n{sel}")
     called = sorted({m for m in re.findall(r"\bis_[a-z_]+(?=\()", sel)})
-    assert called, f"render_hole's `waters` selector no longer calls a named predicate:\n{sel}"
+    assert called, f"render_hole's `area_hazards` selector no longer calls a named predicate:\n{sel}"
     for named in called:
         assert _in_code(named + "(", helper), (
-            f"render_hole's `waters` selector calls {named}() and _is_area_water does not, so this test "
+            f"render_hole's `area_hazards` selector calls {named}() and _is_area_water does not, so this test "
             f"re-nodes a narrower set of polygons than the card actually draws. Import the real "
             f"predicate rather than re-implementing it -- render_hole.{named} is pure and tag-only for "
             f"exactly that reason. The selector reads:\n{sel}")
@@ -29913,8 +29927,9 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
         for hn in cfg.HOLE_NUMS:
             svg, info = rh.render_hole(hn, cfg.HOLES)
             plain[hn] = (info["watercourses"], info["waters"], info["water_hazards"],
-                         svg.count('fill="#a9d3ef"'))
-            counts += info["waters"]
+                         svg.count('fill="#a9d3ef"'),
+                         info["wetlands"], svg.count('fill="%s"' % rh.PENALTY_FILL))
+            counts += info["waters"] + info["wetlands"]
         orig_load = rh.load
         try:
             for k, skew in ((2, False), (5, False), (4, True), (9, True)):
@@ -29940,7 +29955,8 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
                         errors.append((slug, hn, k, skew, repr(e)[:120]))
                         continue
                     got = (info["watercourses"], info["waters"], info["water_hazards"],
-                           svg.count('fill="#a9d3ef"'))
+                           svg.count('fill="#a9d3ef"'),
+                           info["wetlands"], svg.count('fill="%s"' % rh.PENALTY_FILL))
                     holes += 1
                     if got != plain[hn]:
                         moved.append((slug, hn, f"k={k}{' skewed' if skew else ''}",
@@ -29958,11 +29974,12 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     assert inserted > 4 * expected_geometry_holes(), (
         f"the re-noding only inserted {inserted} vertices across {pairs} passes -- it is not "
         f"actually re-noding anything, so this test would pass on a broken engine")
-    assert counts > 0, "the corpus reports no water at all, so nothing here could move"
+    assert counts > 0, "the corpus reports no area hazard at all, so nothing here could move"
     assert not moved, (
         f"{len(moved)} card(s) print a different water count when the SAME water is re-noded "
         f"-- (course, hole, re-noding, before, after) with the tuple being "
-        f"(watercourses, waters, water_hazards, drawn water areas): {moved[:8]}"
+        f"(watercourses, waters, water_hazards, drawn water areas, wetlands, drawn grey areas): "
+        f"{moved[:8]}"
         f"{' ...' if len(moved) > 8 else ''}")
 
 
@@ -30064,13 +30081,20 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
             def em(la, lo, _mo=mlon, _mla=mla, _la0=la0, _lo0=lo0):
                 return ((lo - _lo0) * _mo, (la - _la0) * _mla)
             line_em = [em(q["lat"], q["lon"]) for q in line]
-            near = []
+            near, wet_near = [], []
             for g in areas:
                 d = min(_dist_to_played_line(em(p["lat"], p["lon"]), line_em)
                         for p in g["geometry"])
                 if d < WATER_CORRIDOR_M:
-                    near.append((g.get("id"), round(d, 2)))
-            reachable += len(near)
+                    # SPLIT BY CLASS, because the two are drawn in different inks and counted under
+                    # different keys now, and a class checked against the other one's ink is a check that
+                    # cannot pass. `holds_open_water` is the engine's own split and is re-derived
+                    # independently by _holds_open_water for
+                    # test_one_ink_means_one_thing_in_the_legend_and_only_open_water_is_drawn_in_the_blue;
+                    # here it is only being asked WHICH ink to grade against, so the engine's answer is the
+                    # right one to use -- grading a pond against the grey would be the bug, not a finding.
+                    (near if rh.holds_open_water(g) else wet_near).append((g.get("id"), round(d, 2)))
+            reachable += len(near) + len(wet_near)
             if named.get((slug, hn)):
                 seen_named[(slug, hn)] = (named[(slug, hn)],
                                           dict(near).get(named[(slug, hn)]),
@@ -30083,17 +30107,26 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
             # (test_no_card_omits_a_watercourse_the_played_line_reaches) was written for a DEMONSTRATED
             # instance of that class, so the same strengthening belongs here rather than waiting for one.
             # The counts are kept alongside, because a count that disagrees with the ids is its own defect.
+            grey = svg.count('fill="%s"' % rh.PENALTY_FILL)
             if ([w for w, _d in near if w not in info["water_ids"]]
                     or info["water_hazards"] < len(near)
                     or svg.count('fill="#a9d3ef"') < len(near)):
-                omitted.append((slug, hn, sorted(near, key=lambda r: r[1]),
+                omitted.append((slug, hn, "open water", sorted(near, key=lambda r: r[1]),
                                 info["water_hazards"], svg.count('fill="#a9d3ef"'),
                                 info["waters"]))
+            # ...AND THE SAME RULE FOR THE WETLAND HALF, against ITS ink and ITS count. Rule 2 does not
+            # care which colour a hazard is drawn in, only that it is drawn: a reachable marsh missing
+            # from the card is the same omission as a missing pond, and it is the omission that shipped.
+            if ([w for w, _d in wet_near if w not in info["wetland_ids"]]
+                    or info["wetlands"] < len(wet_near)
+                    or grey < len(wet_near)):
+                omitted.append((slug, hn, "wetland", sorted(wet_near, key=lambda r: r[1]),
+                                info["wetlands"], grey, info["waters"]))
     assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
     assert holes == expected_geometry_holes(), \
         f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
     assert reachable >= 15, (
-        f"only {reachable} area-water/hole pairs come within {WATER_CORRIDOR_M:g} m of a played line in "
+        f"only {reachable} area-hazard/hole pairs come within {WATER_CORRIDOR_M:g} m of a played line in "
         f"the whole corpus -- the witness found nothing to check, so this test proves nothing")
 
     # THE TWO NAMED CARDS. Skipped only if that course is not built here, and never silently: their
@@ -30113,9 +30146,9 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
             f"fill(s), while way {way} comes {dist} m from the played line. That is water a junior "
             f"can reach, omitted from both the map and the footer")
     assert not omitted, (
-        f"{len(omitted)} card(s) omit area water the played line reaches -- (course, hole, "
-        f"[(way, metres from the played line)], counted area hazards, drawn water fills, printed W): "
-        f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
+        f"{len(omitted)} card(s) omit an area hazard the played line reaches -- (course, hole, class, "
+        f"[(way, metres from the played line)], counted for that class, fills drawn in that class's ink, "
+        f"printed W): {omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
 
 
 def _is_land_penalty_area(g, rh):
@@ -30287,7 +30320,7 @@ def test_a_penalty_area_that_is_not_water_is_neither_counted_as_water_nor_left_u
         f"hazard the golfer can reach")
 
     # THE FIGURE THE REFUSAL TO PRINT A NUMBER RESTS ON, re-derived rather than trusted. render_hole's
-    # `penalty_areas` selector and generate.penalty_mark both decline to print a per-hole COUNT on the
+    # `penalty_areas` selector and generate.not_water_mark both decline to print a per-hole COUNT on the
     # grounds that these ways are ONE continuous network cut into pieces -- "28 of the 34 share vertices
     # with a neighbour" -- so a per-way figure would say "10 penalty areas" of ground a golfer calls "the
     # barranca, left and right". Nothing else in the suite grades that sentence, and it is the whole
@@ -30631,14 +30664,27 @@ def test_out_of_bounds_is_fetched_and_deliberately_absent_from_every_card():
 # the course asked "what is the purple?". A legend a reader cannot enter from the mark is not a legend.
 HOLE_MAP_FILL = {
     '#efe3b8': ("bunkers", "tan", "sand, the tan the legend names first"),
-    '#a9d3ef': ("water", "blue", "ponds, drawn wetland and water penalty areas"),
+    '#a9d3ef': ("water", "blue",
+                "OPEN WATER and nothing else: a mapped waterbody, a pre-2019 `golf=water_hazard`, or a "
+                "visible watercourse that is not tagged as running dry -- render_hole.holds_open_water is "
+                "the definition. This entry USED TO READ 'ponds, drawn wetland and water penalty areas', "
+                "and that third of it was the defect: `natural=wetland` was inked here under the legend "
+                "word 'water', so callippe -- ONE `natural=water` polygon in its whole cache -- shipped a "
+                "book printing 39 W across 18 cards with 2,309 tree markers standing in what the card "
+                "called a pond. The false premise was written into THIS TABLE, which is why the legend "
+                "guard below could not see it: a class with no ink of its own has no name to be missing"),
     '#9cbf86': ("trees", None, "the wood/scrub background fill -- see LEGEND_NAMES_NO_COLOUR"),
     '#2f7d32': ("trees", None, "tree markers and tree rows -- the same class the wood fill belongs to"),
-    'PENALTY_FILL': ("penalty area", "grey",
-                     "a golf=penalty_area that is not water: brush, canyon, waste. A quiet grey because "
-                     "the class covers ground on 16 of this course's 18 holes, so a loud ink would bury "
-                     "the sand, the water and the line -- see render_hole.PENALTY_FILL for the value and "
-                     "why its own fill, not the edge or the words beside it, is what fails a mono printer"),
+    'PENALTY_FILL': ("not water", "grey",
+                     "every hazard this engine draws that holds no open water, which is three classes and "
+                     "ONE meaning: a `golf=penalty_area` that is not water (brush, canyon, waste), drawn "
+                     "wetland, and a watercourse tagged `intermittent=yes`. Named for the meaning and not "
+                     "for a member -- calling callippe's marsh a 'penalty area' would assert a Rule 17 "
+                     "marking nothing in the data records. A quiet grey because the class covers ground on "
+                     "16 of trump's 18 holes and 5.50-51.87% of the drawn card on the 14 callippe cards "
+                     "that carry it, so a loud ink would bury the sand, the water and the line -- see "
+                     "render_hole.PENALTY_FILL for the value and why its own fill, not the edge or the "
+                     "words beside it, is what fails a mono printer"),
     '#cfe8b2': (None, None, "fairway -- TURF, the ground the hole is made of and what a player aims at"),
     '#e9f0da': (None, None, "rough -- TURF"),
     '#7cc45a': (None, None, "the putting surface -- TURF, and the card is turned around it"),
@@ -30649,7 +30695,7 @@ HOLE_MAP_FILL = {
 # than waived silently: the rule below is that a reader must be able to get from the mark to the meaning,
 # and one class in the corpus cannot.
 #
-# "trees" is that class. The HOLE-map row reads "bunkers (tan), water (blue), penalty areas (red),
+# "trees" is that class. The HOLE-map row reads "bunkers (tan), water (blue), not water (grey),
 # **trees**", and the word "green" appears nowhere on the card in connection with the tree marks -- the
 # only "green" in the colour rows is the steepness ramp on the GREEN panel, which is a different thing.
 # It is left alone because the row is shared by all 13 books and both editions, so rewording it moves
@@ -30658,7 +30704,7 @@ HOLE_MAP_FILL = {
 # fill. It is a real gap, it is sequenced separately, and this record is what stops it being forgotten.
 LEGEND_NAMES_NO_COLOUR = {
     "trees": ("the HOLE-map row names the class in bold and gives no colour for it, while its siblings "
-              "read (tan), (blue) and (red). Not a hazard fill, and the row is shared by 13 books and "
+              "read (tan), (blue) and (grey). Not a hazard fill, and the row is shared by 13 books and "
               "both editions, so the wording change belongs with a corpus-wide pass, not with this one."),
 }
 
@@ -30841,6 +30887,245 @@ def test_every_hazard_ink_a_hole_map_draws_is_named_by_both_editions_legends():
         f"The legend row carries a swatch drawn from render_hole.PENALTY_FILL/PENALTY_EDGE, so a retuned "
         f"ink takes the key with it; a row that only says the word leaves the reader matching a colour "
         f"name to a 6.6 pt shape, and a hardcoded hex leaves a key that can go stale")
+
+
+def _holds_open_water(g, rh):
+    """(the hole map's BLUE is the honest ink for this feature) -- re-derived here, tag by tag.
+
+    A SECOND OPINION on render_hole.holds_open_water, and the reason this test does not simply call it:
+    the defect being guarded is that the engine decided `natural=wetland` means water, so a test that
+    asks the engine which features are water asks the accused for the verdict. The three refusals and
+    the four admissions are written out from tags. `is_visible_watercourse` and `is_drawn_wetland` are
+    IMPORTED rather than respelled -- culverted/covered/underground/dam/weir are the first one's rules and
+    the 431-acre farmland-tile refusal is the second's, and a second copy of either is the drift this suite
+    keeps removing (see _is_area_water and _is_land_penalty_area, which import them for the same reason).
+
+    The two spellings are then required to AGREE on every feature of every course, so an engine that
+    starts calling marsh water fails here rather than taking this test's population with it.
+    """
+    t = g.get("tags") or {}
+    if rh.is_drawn_wetland(g):
+        return False
+    if t.get("golf") == "penalty_area" and _is_land_penalty_area(g, rh):
+        return False
+    if t.get("intermittent") == "yes" and rh.is_visible_watercourse(g):
+        return False
+    return bool(t.get("golf") in ("water_hazard", "lateral_water_hazard")
+                or t.get("natural") == "water" or t.get("water")
+                or rh.is_visible_watercourse(g))
+
+
+@needs_corpus
+def test_one_ink_means_one_thing_in_the_legend_and_only_open_water_is_drawn_in_the_blue():
+    """THE GUARD THAT WAS MISSING, and the reason this defect survived months of tests that all passed.
+
+    A reader was shown a pond and there was no pond. callippe Preserve holds exactly ONE `natural=water`
+    polygon in its whole cache and its shipped book prints 39 W across 18 cards, because `natural=wetland`
+    was selected by the water selector, filled #a9d3ef and counted in the footer's W; 2,309 of its 7,507
+    tree markers stand inside ground the card had painted as water, which is what the owner saw when he
+    walked it and asked how a tree got into the water.
+
+    WHY NOTHING FAILED. The legend guard above reads its population out of HOLE_MAP_FILL, and that table
+    said `'#a9d3ef': ("water", "blue", "ponds, drawn wetland and water penalty areas")`. The false premise
+    was written into the very table the guard grades against -- wetland having no ink of its own meant
+    there was no unnamed ink to find, and "the legend names every ink the map draws" was true and useless.
+    Every other water test in the suite counted MARKS: at least as many blue fills as reachable hazards,
+    the footer no lower than the map. A count cannot see a class wearing another class's colour.
+
+    SO THIS GRADES THE CHAIN, feature -> ink -> legend word, in the two directions a count cannot:
+
+      1. EVERY FEATURE INKED BLUE IS OPEN WATER, by this file's own tag reading and not the engine's.
+         That is the assertion the owner's complaint is about, and it is what makes the defect a test
+         failure rather than a reading of a card.
+      2. NO TWO LEGEND WORDS SHARE A FILL. This is the invariant stated precisely, and the precision
+         matters because the fix DELIBERATELY shares one grey between three classes: penalty areas,
+         wetland and channels that run dry. "One ink, one TAG" would be false -- it would forbid the
+         fix -- and would also have permitted the defect, since wetland and ponds were two tags in one
+         ink under one word. What must hold is that a fill maps to exactly ONE legend word, and that the
+         word is true of every class drawn in it. Three tags sharing "not water" is fine because all
+         three are not water; wetland sharing "water" was not, because marsh is not water.
+
+    AND IT IS PROVED NON-TAUTOLOGICAL BY MUTATION, because the renderer now SELECTS the blue by the same
+    predicate this test re-derives, so "every blue feature is water" would otherwise be true by
+    construction. The engine is patched back to its shipped behaviour -- holds_open_water admitting drawn
+    wetland -- and assertion 1 must catch it on the course the owner walked. A test that cannot fail on
+    the defect it is named for is not a guard, and this suite has already found four of those.
+    """
+    import copy
+
+    # 1. The two spellings of "this is open water" must agree feature by feature, or the population this
+    #    test grades is not the population the engine draws.
+    disagreed, blue_not_water, grey_is_water, errors = [], [], [], []
+    wetland_seen = dry_seen = penalty_seen = 0
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, _geom = rh.load()
+        except Exception as e:                                   # pragma: no cover - env-dependent
+            errors.append((slug, repr(e)[:100]))
+            continue
+        for g in course:
+            mine, theirs = _holds_open_water(g, rh), rh.holds_open_water(g)
+            if mine != theirs:
+                disagreed.append((slug, g.get("id"), dict(g.get("tags") or {}), mine, theirs))
+        byid = {g.get("id"): g for g in course}
+        for hn in cfg.HOLE_NUMS:
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            for wid in info["water_ids"] + info["creek_ids"]:
+                if not _holds_open_water(byid[wid], rh):
+                    blue_not_water.append((slug, hn, wid, dict(byid[wid].get("tags") or {})))
+            for gid in info["wetland_ids"] + info["dry_channel_ids"]:
+                if _holds_open_water(byid[gid], rh):
+                    grey_is_water.append((slug, hn, gid, dict(byid[gid].get("tags") or {})))
+            wetland_seen += len(info["wetland_ids"])
+            dry_seen += len(info["dry_channel_ids"])
+            penalty_seen += info["penalty_areas"]
+    assert not errors, f"{len(errors)} course(s) failed to load or render: {errors[:5]}"
+    assert not disagreed, (
+        f"{len(disagreed)} feature(s) where this file's tag reading of 'is this open water' and "
+        f"render_hole.holds_open_water disagree: {disagreed[:5]}. One of the two is wrong and the ink on "
+        f"the paper follows the engine's, so fix whichever is wrong -- do not adjust this helper to match")
+    assert not blue_not_water, (
+        f"{len(blue_not_water)} (course, hole, way, tags) case(s) where a card inks a feature in the "
+        f"WATER BLUE that is not open water: {blue_not_water[:8]}. The legend word for #a9d3ef is "
+        f"{HOLE_MAP_FILL['#a9d3ef'][0]!r}, so every feature drawn in it is the card telling a junior "
+        f"there is water there. This is the shipped defect: callippe printed 39 W over 12 hand-mapped "
+        f"wetlands and one pond, with 2,309 tree markers standing in the blue")
+    assert not grey_is_water, (
+        f"{len(grey_is_water)} (course, hole, way, tags) case(s) where a card inks OPEN WATER in the "
+        f"not-water grey: {grey_is_water[:8]}. That is the same defect in the other direction -- a pond "
+        f"drawn as dry ground -- and it is the more dangerous one, because the reader is not warned")
+
+    # 2. Anti-vacuity, on each class separately: a corpus that stopped drawing one of them would make the
+    #    assertions above silent about it, which is exactly how the original defect stayed invisible.
+    assert wetland_seen >= 12, (
+        f"only {wetland_seen} wetland/hole appearance(s) in the whole corpus, so assertion 1 is barely "
+        f"exercised on the class this test was written for. callippe alone drew 29 across 14 cards; "
+        f"re-measure before lowering this")
+    assert dry_seen >= 12, (
+        f"only {dry_seen} dry-channel/hole appearance(s); 29 were measured across bay-view, "
+        f"copper-valley and micke-grove. A class off the paper is the finding, not a reason to relax")
+    assert penalty_seen >= 12, (
+        f"only {penalty_seen} penalty-area/hole appearance(s); trump-national-los-angeles drew 83")
+
+    # 3. ONE FILL, ONE LEGEND WORD. Mechanical, over the table the legend guard grades against, because
+    #    that table is where the false premise lived.
+    by_word = {}
+    for token, (word, _colour, _why) in HOLE_MAP_FILL.items():
+        if word is not None:
+            by_word.setdefault(token, set()).add(word)
+    shared = {t: sorted(w) for t, w in by_word.items() if len(w) > 1}
+    assert not shared, (
+        f"fill(s) {shared} are recorded under more than one legend word. A reader decodes a mark by its "
+        f"colour, so one colour may carry exactly one meaning -- if two classes genuinely share an ink, "
+        f"they share the WORD too and the legend row has to be true of both (as 'not water' is of brush, "
+        f"wetland and a dry channel). Two words on one fill means the card cannot be read")
+    assert HOLE_MAP_FILL['#a9d3ef'][0] == "water", (
+        "the blue's legend word is no longer 'water', so assertion 1's premise -- that a blue mark tells "
+        "the reader there is water there -- needs re-reading before this test means anything")
+    assert HOLE_MAP_FILL['PENALTY_FILL'][0] == "not water", (
+        "the grey's legend word has moved off 'not water'. It is shared by three classes and named for "
+        "the one thing they have in common; a word naming a MEMBER (\"penalty area\") would assert a "
+        "Rule 17 marking over callippe's marsh that nothing in the data records")
+
+    # 4. THE MUTATION, which is what makes the above a guard rather than a restatement of the selector.
+    #    render_hole picks the blue BY holds_open_water, so put the shipped behaviour back -- wetland
+    #    admitted as water -- and require assertion 1 to catch it.
+    cfg, rh = _engine("callippe-preserve-golf-course")
+    course, _geom = rh.load()
+    byid = {g.get("id"): g for g in course}
+    real = rh.holds_open_water
+    caught = 0
+    try:
+        rh.holds_open_water = lambda g: True if rh.is_drawn_wetland(g) else real(g)
+        for hn in cfg.HOLE_NUMS:
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            caught += sum(1 for wid in info["water_ids"] if not _holds_open_water(byid[wid], rh))
+    finally:
+        rh.holds_open_water = real
+    assert caught >= 12, (
+        f"with the engine patched back to inking drawn wetland as water -- the behaviour that shipped 39 W "
+        f"on a course with one water feature -- assertion 1 caught only {caught} blue-but-not-water "
+        f"mark(s) on callippe. It should catch 29. This test cannot fail on the defect it is named for, "
+        f"which means it is grading the selector against itself rather than the ink against the legend")
+
+
+@needs_corpus
+def test_every_card_that_draws_the_not_water_grey_names_the_class_in_its_own_footer():
+    """The card-level half of rule 2 for the grey classes: the map marks it AND the footer says what it is.
+
+    THE REGRESSION THIS EXISTS TO CATCH is the one the fix could most easily have introduced. Wetland and
+    dry channels used to be counted in the footer's W; they are not any more, because they are not water.
+    On 34 cards across five books the W therefore FALLS, and on 20 of them it falls to `0W` -- callippe 2,
+    3, 5, 6, 7, 8, 9, 11, 12 and merion 14, 16, 17 among them. "0B 0W" beside a blank-looking corridor
+    reads as "nothing here to avoid", over ground where a ball is lost. That is a worse card than the one
+    that said there was a pond. The footer mark is what stops the correction becoming an omission, so it
+    is asserted per card rather than trusted to a template.
+
+    BOTH DIRECTIONS. A card that draws the grey must name every class it drew; a card that draws none must
+    print no mark at all, because a legend line spent on ink the reader will never see is the clutter that
+    has twice overflowed the tightest guide card in this corpus -- and a footer mark for a hazard that is
+    not there is a false warning.
+
+    THROUGH THE REAL PANEL, not through not_water_mark() alone. Calling the helper and checking its output
+    against the same `info` it was given proves nothing: the question is whether the mark reaches the card,
+    and it reaches it through generate.hole_panel's footer template. A build_deck() per course costs about
+    a second and is what makes this an assertion about the page.
+    """
+    WORD = {"wetlands": "wetland", "dry_channels": "creek runs dry", "penalty_areas": "penalty area"}
+    missing, spurious, wrong_word, drew, errors = [], [], [], 0, []
+    for slug in CORPUS:
+        for m in ("config", "render_hole", "render_green", "generate"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = slug
+        import config as cfg
+        import generate as gen
+        try:
+            gen.build_deck()
+        except Exception as e:                                   # pragma: no cover - env-dependent
+            errors.append((slug, repr(e)[:120]))
+            continue
+        grey_fill = 'fill="%s" stroke="%s" stroke-width="1.2"' % (gen.render_hole.PENALTY_FILL,
+                                                                  gen.render_hole.PENALTY_EDGE)
+        grey_line = 'stroke="%s" stroke-width="1.8"' % gen.render_hole.PENALTY_EDGE
+        for hn in cfg.HOLE_NUMS:
+            svg, info = gen.LAYOUTS[hn]
+            panel = gen.hole_panel(hn, "x")
+            foot = re.search(r'<div class="foot">(.*?)</div>\s*(?:<|$)', panel, re.S)
+            assert foot, f"{slug} hole {hn}: the hole panel has no footer to read"
+            text = re.sub(r"<[^>]+>", " ", foot.group(1))
+            inked = svg.count(grey_fill) + svg.count(grey_line)
+            present = [k for k in WORD if info.get(k)]
+            if present:
+                drew += 1
+                for k in present:
+                    if WORD[k] not in text:
+                        missing.append((slug, hn, WORD[k], " ".join(text.split())[:90]))
+            if inked and not present:
+                spurious.append((slug, hn, "grey ink with no class counted", inked))
+            if present and not inked:
+                spurious.append((slug, hn, "class counted with no grey ink", present))
+            for k, word in WORD.items():
+                if not info.get(k) and word in text:
+                    wrong_word.append((slug, hn, word, " ".join(text.split())[:90]))
+    assert not errors, f"{len(errors)} course(s) failed to build a deck: {errors[:5]}"
+    assert drew >= 30, (
+        f"only {drew} card(s) in the whole corpus draw a not-water class, so this test barely exercises "
+        f"the rule it states. 52 were measured -- trump 18, callippe 14, bay-view 7, copper-valley 6, "
+        f"micke-grove 4, merion 3. A class off the paper is the finding, not a reason to lower this")
+    assert not missing, (
+        f"{len(missing)} (course, hole, word, footer) case(s) where a card draws a not-water hazard and "
+        f"its footer never names it: {missing[:8]}. Twenty of these cards print `0W`, so without the mark "
+        f"the footer reads as 'nothing else to avoid' over ground a ball is lost in -- which is a worse "
+        f"card than the one that called it a pond")
+    assert not spurious, (
+        f"{len(spurious)} card(s) where the grey INK and the counted class disagree: {spurious[:8]}. "
+        f"One feature is one path and one count; a card that inks a hazard it does not count cannot name "
+        f"it in the footer, and a card that counts one it does not ink names a hazard that is not drawn")
+    assert not wrong_word, (
+        f"{len(wrong_word)} card(s) whose footer names a not-water class the card does not draw: "
+        f"{wrong_word[:8]}. A mark for a hazard that is not there is a false warning, and on the penalty "
+        f"word it would also assert a Rule 17 marking the data does not record")
 
 
 @needs_corpus
@@ -36766,27 +37051,113 @@ def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_pa
 # has to be accounted for, and the pair of figures is what makes a later PARTIAL loss visible: the >= rule
 # below compares against the frozen baseline, so callippe falling 31 -> 20 would pass it and fails here.
 WATER_INK_GAINED_DELIBERATELY = {
-    ("callippe-preserve-golf-course", "water polygon"): (
-        2, 31,
+    ("callippe-preserve-golf-course", "not-water polygon"): (
+        0, 29,
         "89c265b: `natural=wetland` was fetched by nothing and drawn by nothing, so nine of callippe's "
         "shipped cards printed `0W` over hand-mapped seasonal wetland 1.0-5.7 m off the played line -- "
         "a rule 2 violation in a built book. The query now asks for it and render_hole.is_drawn_wetland "
-        "decides which ones a card draws, filled in the same blue as a pond and counted in the same "
-        "footer W. Its watercourse polylines are unchanged at 8, and no other course moved in either "
-        "class; callippe was never one of febbbba's four re-fetched courses, so its old equality was a "
-        "coincidence of the frozen baseline rather than evidence.",
+        "decides which ones a card draws. THE GAIN IS RECORDED AGAINST THE NOT-WATER GREY AND NOT THE "
+        "BLUE, which is the correction to how this entry read: the 29 marks were first added to the water "
+        "blue and the footer's W, and callippe holds exactly ONE `natural=water` polygon in its whole "
+        "cache while its shipped book prints 39 W across 18 cards, with 2,309 of its 7,507 tree markers "
+        "standing inside what the card called a pond. The polygons are the same 29 on the same 14 cards; "
+        "what changed is that they are no longer described as water. Its blue polygons are back to the "
+        "preserved book's 2 and its watercourse polylines are unchanged at 8.",
     ),
-    ("merion-golf-club", "water polygon"): (
-        2, 4,
-        "Two changes in opposite directions, and the net is +2. UP by three: merion was re-fetched and "
-        "gained way 675572836, a 151 m^2 `wetland=marsh` 2.48 m from a green and 10.22 m from hole 17's "
-        "played length, which render_hole.is_drawn_wetland admits and which took holes 14, 16 and 17 from "
-        "0W to 1W -- one polygon inked on three cards. DOWN by one: way 225722025 is tagged "
-        "`natural=water NHD:FTYPE=LakePond` and there is a house inside it, so hole 10 no longer draws "
-        "it -- its ring returns public-domain USGS 3DEP LiDAR at 0.884 of the surrounding collar's "
-        "density where merion's three genuine waters read 0.209-0.371, and 1743 of its returns stand over "
-        "2 m above the class-2 ground inside it in an 11.5 x 12.2 m footprint. See "
-        "render_hole.MEASURED_NOT_WATER. Merion's watercourse lines are unchanged at 20.",
+    ("merion-golf-club", "not-water polygon"): (
+        0, 3,
+        "merion was re-fetched and gained way 675572836, a 151 m^2 `wetland=marsh` 2.48 m from a green "
+        "and 10.22 m from hole 17's played length, which render_hole.is_drawn_wetland admits -- one "
+        "polygon inked on holes 14, 16 and 17. It was first drawn in the water blue and counted in those "
+        "cards' W; it takes the not-water grey now, for the reason recorded on callippe above, and the "
+        "footer names the class in words instead. Merion's watercourse lines are unchanged at 20.",
+    ),
+    ("bay-view-golf-club", "not-water line"): (
+        0, 16,
+        "The reclassification of `intermittent=yes` channels off the water blue -- see "
+        "WATER_INK_RECLASSIFIED for the ways, the conservation check and the argument. All 7 of "
+        "bay-view's drawn channels carry the tag, so every one of its 16 blue polyline appearances "
+        "becomes a grey one: no card loses a mark and no card gains one, and its 8 `natural=water` "
+        "polygons are untouched.",
+    ),
+    ("copper-valley-golf-club", "not-water line"): (
+        0, 9,
+        "The reclassification of `intermittent=yes` channels off the water blue -- see "
+        "WATER_INK_RECLASSIFIED. 5 of copper-valley's drawn channels carry the tag, over 9 appearances. "
+        "The tenth appearance in its preserved book was the NHD `ArtificialPath` way 83565232, which left "
+        "the card earlier and for a different reason (see WATER_INK_REMOVED_DELIBERATELY); the two are "
+        "recorded separately because one feature stopped being drawn and these five did not.",
+    ),
+    ("micke-grove-golf-links", "not-water line"): (
+        0, 4,
+        "The reclassification of `intermittent=yes` channels off the water blue -- see "
+        "WATER_INK_RECLASSIFIED. One way, 83154406, drawn on four cards; all four appearances move from "
+        "the blue to the grey and none leaves the paper.",
+    ),
+}
+
+
+# (course, class it LEFT, class it went TO) -> (from-before, from-now, appearances moved, why,
+#                                              {way id: the render_hole predicate that moves it})
+#
+# THE THIRD KIND OF CHANGE, and it needed its own record because the other two describe it falsely.
+# A GAIN says a hazard reached the paper that was not on it; a REMOVAL says a mark left the paper. A
+# RECLASSIFICATION says the mark is still there and is drawn in a different ink because the old ink was a
+# false description -- `intermittent=yes` channels drawn in the pond blue, on a book whose legend called
+# that blue "water".
+#
+# RECORDING ONE AS A REMOVAL WOULD BE A FALSE STATEMENT AND THE SUITE CATCHES IT, which is how this table
+# came to exist rather than being designed up front. The removal record's MUTED half asserts that deleting
+# each named way from the cache changes NO card, on the reasoning that the ink is already gone so the
+# feature cannot matter any more. That is true of way 83565232 and false of every way here: they are still
+# drawn, so deleting one changes the cards it appears on, and the attempt to file them as removals failed
+# on exactly that assertion. The record that fits is the one that says what happened.
+#
+# WHAT EACH ENTRY HAS TO PROVE, and none of it is prose:
+#   * CONSERVATION, measured through the engine. Lifting the named predicate for exactly the named ways
+#     must raise the from-class by `moved` and lower the to-class by `moved`. Not "about the same" -- the
+#     same number, both directions, which is what makes this a move rather than a loss plus a gain that
+#     happen to be equal.
+#   * STILL DRAWN. Deleting each named way must CHANGE a card. This is the mirror image of the removal
+#     record's MUTED half and it is the rule-2 assertion of the whole change: a ball in a dry ditch is
+#     still lost, so the mark may be re-described but never withdrawn.
+#   * AGREEMENT WITH THE GAIN RECORD, so the to-class's gain is this move and not an unexamined addition
+#     sitting beside it.
+WATER_INK_RECLASSIFIED = {
+    ("bay-view-golf-club", "watercourse line", "not-water line"): (
+        16, 0, 16,
+        "All 7 of bay-view's drawn watercourses carry `intermittent=yes` -- the mapper's statement that "
+        "the channel is dry for part of the year -- and every one was drawn in the pond blue and counted "
+        "in the footer's W, on the over-warn reading that a channel dry in August should still print blue. "
+        "That reading is withdrawn at render_hole.runs_dry_in_season: it answers the wrong question, "
+        "because rule 2 asks whether the hazard is SHOWN and not whether it is shown in the water colour. "
+        "A dry ditch drawn as a pond does not over-warn, it misdescribes -- and a reader who walks the "
+        "course and finds no water there learns that the blue on this map cannot be trusted, which costs "
+        "him the blue that is real. All 16 appearances are still on the paper in the not-water grey.",
+        {50256813: "runs_dry_in_season", 50256839: "runs_dry_in_season",
+         50256841: "runs_dry_in_season", 50256873: "runs_dry_in_season",
+         50256874: "runs_dry_in_season", 50256875: "runs_dry_in_season",
+         50256878: "runs_dry_in_season"},
+    ),
+    ("copper-valley-golf-club", "watercourse line", "not-water line"): (
+        9, 0, 9,
+        "The same reclassification as bay-view's, on the 5 of copper-valley's drawn channels that carry "
+        "`intermittent=yes`, over 9 appearances -- see render_hole.runs_dry_in_season for the argument. "
+        "The from-figure is 9 and NOT the preserved book's 10 on purpose: this course had already lost one "
+        "appearance for an unrelated and separately recorded reason (NHD `ArtificialPath` way 83565232, in "
+        "WATER_INK_REMOVED_DELIBERATELY), and folding two causes into one figure is how a record stops "
+        "explaining anything. The chain is 10 -> 9 by that removal, then 9 -> 0 by this move.",
+        {83563564: "runs_dry_in_season", 83568581: "runs_dry_in_season",
+         83578904: "runs_dry_in_season", 83579191: "runs_dry_in_season",
+         83582265: "runs_dry_in_season"},
+    ),
+    ("micke-grove-golf-links", "watercourse line", "not-water line"): (
+        4, 0, 4,
+        "The same reclassification as bay-view's, on the one micke-grove channel that carries "
+        "`intermittent=yes` (way 83154406), drawn on four cards -- see render_hole.runs_dry_in_season. "
+        "This course's 8 `natural=water` polygons and its 17 blue polygon appearances are untouched, so "
+        "the move is visible here in isolation from any change to area water.",
+        {83154406: "runs_dry_in_season"},
     ),
 }
 
@@ -36810,8 +37181,28 @@ WATER_INK_REMOVED_DELIBERATELY = {
         "shared with ways 83579191 and 83582265 which hole 11 also draws, so the hole stays at 3W. What "
         "leaves is a false mark -- a stream where there is open water. The rule is conditional on "
         "containment and never on the FType alone, because 2 of this corpus's 15 synthetic flowlines lie "
-        "inside no mapped waterbody and there the synthetic line is the only mark the water has.",
+        "inside no mapped waterbody and there the synthetic line is the only mark the water has. "
+        "THIS RECORD STOPS AT 9 AND THE CLASS IS NOW AT 0: the remaining 9 appearances did not leave the "
+        "paper, they changed ink, and that is recorded in WATER_INK_RECLASSIFIED rather than folded in "
+        "here -- one feature stopped being drawn and five did not, and a record that averaged the two "
+        "would explain neither.",
         {83565232: "is_synthetic_flowline"},
+    ),
+    ("merion-golf-club", "water polygon"): (
+        2, 1,
+        "Way 225722025 is tagged `natural=water NHD:FTYPE=LakePond` and there is a HOUSE inside it, so "
+        "hole 10 no longer draws it. Computed here from public-domain USGS 3DEP LiDAR: its ring returns "
+        "13.77 pt/m^2 against 15.58 in a 45 m collar (0.884) where merion's three genuine waters on the "
+        "same tiles return 0.209, 0.240 and 0.371 of theirs -- open water absorbs the pulse and this ring "
+        "does not -- and 1743 of its 6277 returns stand over 2 m above the class-2 ground inside it, in a "
+        "rigid 11.5 x 12.2 m footprint covering 147 m^2 and rising to 7.18 m with one linear ridge. The "
+        "card printed a water hazard on hole 10 that is a house. See render_hole.MEASURED_NOT_WATER for "
+        "why this one refusal is a recorded id and not a predicate: merion's three NHD LakePond imports "
+        "are tag-identical and two of them are real ponds. This was previously carried inside a GAIN "
+        "record that netted it against the +3 the re-fetched marsh brought in; the marsh is not water and "
+        "is now recorded against the not-water grey, so the two no longer cancel and this removal stands "
+        "on its own figures.",
+        {225722025: "is_measured_not_water"},
     ),
 }
 
@@ -36834,22 +37225,44 @@ WATER_INK_REMOVED_DELIBERATELY = {
 # EVERY ENTRY IS SELF-CLEARING. A stale book is a build that has not happened yet, so the moment the corpus
 # is rebuilt these figures become equal and the test says to delete the entry. That is deliberate: the
 # allowance is a note about work in flight, not a permanent exemption.
-# EMPTY, AND THAT IS THE CLEARED STATE RATHER THAN AN UNUSED TABLE. It held two entries until the
-# 2026-08-11 corpus rebuild, and the rebuild is what emptied it -- exactly as the paragraph above says it
-# should. Both were self-clearing and both cleared, measured on the books this rebuild wrote:
-#   copper-valley watercourse line -- book 10 against engine 9, the 871070c synthetic-flowline refusal
-#     (NHD `ArtificialPath` way 83565232, 0.9528 of its length inside lake way 775614086). Built book
-#     now 9, equal to the engine; the lake keeps its fill and hole 11 stays at 3W, so what left the card
-#     is the false creek line and nothing wet. The removal itself stays recorded, with its way id and
-#     refusing predicate, in WATER_INK_REMOVED_DELIBERATELY above -- that record is about the ENGINE
-#     against the preserved book and is not cleared by a rebuild.
-#   merion water polygon -- book 5 against engine 4, the c506b3b per-feature refusal (way 225722025,
-#     `natural=water NHD:FTYPE=LakePond` with a house inside it; see render_hole.MEASURED_NOT_WATER).
-#     Built book now 4, equal to the engine, so hole 10's card no longer fills that ring blue.
-# Left as `{}` rather than deleted: the table is the declared shape for the next book/engine gap, and the
-# assertions below still grade it (a reason string, a known drawn class, and the settled check that would
-# fail if an entry were re-added after the build that resolves it).
-BOOK_PREDATES_THE_ENGINE = {}
+# TEN ENTRIES, ALL FROM ONE CHANGE AND ALL SELF-CLEARING ON THE NEXT BUILD. Every book in the corpus was
+# written by an engine that drew wetland and `intermittent=yes` channels in the water blue and counted them
+# in the footer's W; the engine no longer does (render_hole.holds_open_water). Until the rebuild, five books
+# hold blue ink the engine no longer draws and none of them holds the grey ink it now draws instead. That is
+# precisely what this table is for, and every figure below becomes equal the moment `generate.py` runs, at
+# which point the assertions demand the entry be dropped.
+#
+# NOTHING HERE IS A LOSS. The blue figures fall and the grey figures rise by the same amounts on the same
+# courses -- the conservation is proved through the engine by WATER_INK_RECLASSIFIED -- and callippe's and
+# merion's wetland polygons keep every one of their appearances. The two exceptions to "equal and opposite"
+# are both recorded removals of marks that were false: copper-valley's NHD `ArtificialPath` and merion's
+# `natural=water` ring with a house in it.
+#
+# The one entry that also has to satisfy BOOK_LOST_INK is copper-valley's watercourse line, whose built book
+# (9) sits BELOW the preserved book (10). It is allowed for the reason that rule states: a removal is
+# recorded whose engine-side figure is that 9, so the deficit against the baseline is accounted for by a
+# named way and a named refusal rather than by staleness.
+_WHY_BLUE = ("Written before the wetland/dry-channel split. This book's cards were rendered by an engine "
+             "that drew this class in the water blue and counted it in the footer's W; the engine now "
+             "draws it in the not-water grey, so the book carries blue ink the engine no longer writes. "
+             "No mark is lost -- the same features are drawn on the same cards in the other ink, and the "
+             "matching grey entry for this course records the other half. Rebuilding clears both.")
+_WHY_GREY = ("Written before the wetland/dry-channel split, so this book carries NONE of the not-water grey "
+             "the engine now draws for this class, while its blue count is correspondingly high. The "
+             "features and the cards are unchanged; only the ink and the footer wording are. The matching "
+             "blue entry for this course records the other half, and rebuilding clears both.")
+BOOK_PREDATES_THE_ENGINE = {
+    ("bay-view-golf-club", "watercourse line"): (16, 0, _WHY_BLUE),
+    ("bay-view-golf-club", "not-water line"): (0, 16, _WHY_GREY),
+    ("callippe-preserve-golf-course", "water polygon"): (31, 2, _WHY_BLUE),
+    ("callippe-preserve-golf-course", "not-water polygon"): (0, 29, _WHY_GREY),
+    ("copper-valley-golf-club", "watercourse line"): (9, 0, _WHY_BLUE),
+    ("copper-valley-golf-club", "not-water line"): (0, 9, _WHY_GREY),
+    ("merion-golf-club", "water polygon"): (4, 1, _WHY_BLUE),
+    ("merion-golf-club", "not-water polygon"): (0, 3, _WHY_GREY),
+    ("micke-grove-golf-links", "watercourse line"): (4, 0, _WHY_BLUE),
+    ("micke-grove-golf-links", "not-water line"): (0, 4, _WHY_GREY),
+}
 
 
 def water_ink_book_findings(before, now, built, has_removal, removal_now, allowance):
@@ -36970,8 +37383,37 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     # source half above is the part that always runs; this half needs the preserved books (which live
     # outside the repo, so a fresh clone has none) AND the rebuilt ones (courses/ is gitignored).
     ev = os.path.join(os.path.expanduser("~"), EV)
+    # THE FOUR DRAWN HAZARD CLASSES, not the two this test was written with, because the two it had could
+    # not see a class change ink. `intermittent=yes` channels moved off the blue polyline and callippe's
+    # wetland off the blue polygon; with only the blue patterns here that reads as ink LOST, and the record
+    # tables would have had to excuse a loss on courses where nothing left the paper at all. Counting both
+    # inks makes the move visible as the conservation it is -- see WATER_INK_RECLASSIFIED.
+    #
+    # THE GREY PATTERNS CARRY THEIR STROKE WIDTH and the blue ones do not need to, and that is not
+    # symmetry for its own sake: the guide cards' legend swatch is a `<rect>` drawn from these same two
+    # constants (generate._grey_note), so a bare `fill="#f2f2f2"` counts the KEY as well as the map and
+    # every book that draws the grey reads one too high. The map writes stroke-width 1.2 on an area and
+    # 1.8 on a line; the swatch writes 1. Measured: trump-national's built book gives 84 on the bare
+    # pattern against the engine's 83, and 83/83 on this one.
+    # WRITTEN AS LITERALS AND CHECKED AGAINST THE ENGINE, rather than read out of it. `_engine` needs a
+    # course.json to bind to and a fresh clone has none -- courses/ is gitignored -- while the record
+    # tables below are graded with or without data and need PAT either way. Deriving these two from
+    # render_hole unconditionally made this test the ONE failure a stranger cloning the repo saw, which
+    # test_a_fresh_clone_gets_a_clean_suite exists to catch and did. So the pair is spelled out beside the
+    # blue ones, and where there IS a corpus it must equal what the engine draws: a retune moves the
+    # constant and fails here instead of quietly counting a colour no card writes.
+    GREY_FILL, GREY_EDGE = "#f2f2f2", "#c8c8c8"
+    if CORPUS:
+        _cfg_ink, _rh_ink = _engine(CORPUS[0])
+        assert (_rh_ink.PENALTY_FILL, _rh_ink.PENALTY_EDGE) == (GREY_FILL, GREY_EDGE), (
+            f"render_hole draws the not-water class in "
+            f"{(_rh_ink.PENALTY_FILL, _rh_ink.PENALTY_EDGE)}; this test counts {(GREY_FILL, GREY_EDGE)}. "
+            f"Re-point the patterns at the live constants -- a frozen hex counts a colour no card writes "
+            f"and would report every grey mark in the corpus as missing")
     PAT = {"water polygon": 'fill="#a9d3ef"',
-           "watercourse line": 'stroke="#5b9bd0" stroke-width="1.8"'}
+           "watercourse line": 'stroke="#5b9bd0" stroke-width="1.8"',
+           "not-water polygon": ('fill="%s" stroke="%s" stroke-width="1.2"' % (GREY_FILL, GREY_EDGE)),
+           "not-water line": 'stroke="%s" stroke-width="1.8"' % GREY_EDGE}
     have = []
     if os.path.isdir(ev):
         for slug in sorted(os.listdir(ev)):
@@ -37032,13 +37474,30 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
                 else:
                     book_gap.append(msg + f" -- {kind}")
             if now < before:
+                # THE DROP MUST BE ACCOUNTED FOR BY THE WHOLE RECORDED CHAIN, and there can be two links
+                # in it: a REMOVAL takes marks off the paper and a RECLASSIFICATION moves them to another
+                # ink. copper-valley's blue polylines went 10 -> 9 by a removal and 9 -> 0 by a move, and
+                # requiring one record to explain both would have meant writing a figure that describes
+                # neither. The chain is walked in that order and the arithmetic has to land exactly on
+                # `now`; anything left over is an unexplained loss and is reported as one.
                 said = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
-                if said is None:
+                moves = [r for (sl, frm, _to), r in sorted(WATER_INK_RECLASSIFIED.items())
+                         if sl == slug and frm == what]
+                chain = said[1] if said else before
+                for r in moves:
+                    chain -= r[2]
+                if said is None and not moves:
                     lost.append(f"{slug}: drawn {what} count {before} before the re-fetch, "
                                 f"{now} now{where}")
-                elif (said[0], said[1]) != (before, now):
-                    mismatched.append(f"{slug} {what}: recorded REMOVAL {said[0]} -> {said[1]}, "
-                                      f"measured {before} -> {now}{where}")
+                elif said is not None and said[0] != before:
+                    mismatched.append(f"{slug} {what}: recorded REMOVAL starts at {said[0]}, the "
+                                      f"preserved book holds {before}{where}")
+                elif chain != now:
+                    mismatched.append(
+                        f"{slug} {what}: the recorded chain accounts for {before} -> {chain} "
+                        f"(removal to {said[1] if said else before}, then "
+                        f"{sum(r[2] for r in moves)} appearance(s) moved to another ink), but the engine "
+                        f"draws {now}{where}")
             elif now > before:
                 said = WATER_INK_GAINED_DELIBERATELY.get((slug, what))
                 if said is None:
@@ -37150,12 +37609,24 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
         finally:
             for predicate, fn in held.items():
                 setattr(rh, predicate, fn)
-        assert restored == rec[0], (
+        # THE TARGET IS `before` LESS WHATEVER ANOTHER RECORD ACCOUNTS FOR, because a class can lose ink
+        # for two reasons at once and this half must only be asked to prove ITS one. copper-valley's blue
+        # polylines fell 10 -> 9 by this removal and 9 -> 0 because nine more appearances changed INK
+        # (WATER_INK_RECLASSIFIED), so lifting `is_synthetic_flowline` alone can only ever restore the
+        # course to 1: the other nine are drawn in the grey and lifting a refusal that never touched them
+        # cannot bring them back to the blue. Requiring 10 here would have forced the two causes into one
+        # record, which is the figure-that-describes-neither this table exists to avoid. The subtraction is
+        # what the OTHER record has already proved by conservation, so nothing is taken on trust.
+        moved_out = sum(r[2] for (sl, frm, _to), r in WATER_INK_RECLASSIFIED.items()
+                        if sl == slug and frm == what)
+        target = rec[0] - moved_out
+        assert restored == target, (
             f"{slug} {what}: lifting render_hole.{sorted(by_pred)} for ways {sorted(rec[3])} brings the "
-            f"drawn count to {restored}, not the {rec[0]} the preserved book carried. The named refusal "
-            f"is therefore NOT the whole reason the count fell to {rec[1]} -- either it is not a refusal "
-            f"at all (making it False would then remove ink, not restore it), or the ways named do not "
-            f"account for the drop and something else lost ink unrecorded. Name every way whose mark "
+            f"drawn count to {restored}, not the {target} this removal has to account for (the preserved "
+            f"book's {rec[0]} less the {moved_out} appearance(s) another record shows changed ink). The "
+            f"named refusal is therefore NOT the whole reason THIS removal happened -- either it is not a "
+            f"refusal at all (making it False would then remove ink, not restore it), or the ways named do "
+            f"not account for the drop and something else lost ink unrecorded. Name every way whose mark "
             f"went, with the predicate that refuses it.")
     # THE RULE. No waiver, and it is the whole question this test's name asks.
     assert not lost, (
@@ -37213,6 +37684,90 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     for key, (bk, eng, why) in BOOK_PREDATES_THE_ENGINE.items():
         assert isinstance(why, str) and len(why) > 60, f"{key} needs a real reason, got {why!r}"
         assert key[1] in PAT, f"{key} names a drawn class this test does not count: {sorted(PAT)}"
+    # EVERY RECLASSIFICATION RECORD IS PROVED THROUGH THE ENGINE, three ways. See the table for why this
+    # is not a removal and not a gain: the mark is still on the paper in a different ink.
+    for (slug, frm, to), rec in sorted(WATER_INK_RECLASSIFIED.items()):
+        moved, why, ways = rec[2], rec[3], rec[4]
+        assert rec[0] - rec[1] == moved and moved > 0, (
+            f"{slug} {frm} -> {to}: records {rec[0]} -> {rec[1]} with {moved} appearance(s) moved; the "
+            f"figures must be a move of exactly that size")
+        assert isinstance(why, str) and len(why) > 200 and ways, (
+            f"{slug} {frm} -> {to}: a reclassification record needs the figures, a real reason and the "
+            f"way ids that moved, with the predicate that moves each")
+        assert frm in PAT and to in PAT, (
+            f"{slug}: {frm!r} -> {to!r} names a drawn class this test does not count: {sorted(PAT)}")
+        gain = WATER_INK_GAINED_DELIBERATELY.get((slug, to))
+        assert gain and gain[1] - gain[0] == moved, (
+            f"{slug} {frm} -> {to}: the move is {moved} appearance(s) and the gain recorded against "
+            f"{to!r} is {gain and (gain[1] - gain[0])}. The two records describe one event and must agree, "
+            f"or the to-class is carrying an unexamined addition beside the move")
+        if slug not in CORPUS:
+            continue
+        cfg, rh = _engine(slug)
+        byid = {e["id"]: e for e in
+                json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]}
+        base = {hn: rh.render_hole(hn, cfg.HOLES) for hn in cfg.HOLE_NUMS}
+
+        def totals(_rh=rh, _cfg=cfg):
+            cards = "".join(_rh.render_hole(hn, _cfg.HOLES)[0] for hn in _cfg.HOLE_NUMS)
+            return cards.count(PAT[frm]), cards.count(PAT[to])
+
+        # STILL DRAWN -- the mirror of the removal record's MUTED half, and the rule-2 assertion of this
+        # whole change. A ball in a dry ditch is still lost, so deleting the way has to change a card.
+        for wid in sorted(ways):
+            assert wid in byid, (
+                f"{slug} {frm} -> {to}: names way {wid}, which is no longer in the cache. If OSM deleted "
+                f"it the record is dead and should GO -- do not leave it accounting for a move it no "
+                f"longer explains")
+            orig_load = rh.load
+            try:
+                rh.load = _drop_one(orig_load, wid)
+                moved_cards = [hn for hn in cfg.HOLE_NUMS
+                               if rh.render_hole(hn, cfg.HOLES) != base[hn]]
+            finally:
+                rh.load = orig_load
+            assert moved_cards, (
+                f"{slug} {frm} -> {to}: deleting way {wid} changes NO card, so it is not drawn at all and "
+                f"this is a REMOVAL wearing a reclassification's clothes. A class that left the paper is "
+                f"the omission rule 2 forbids; record it in WATER_INK_REMOVED_DELIBERATELY and say what "
+                f"went")
+        # CONSERVATION -- lifting the predicate for exactly these ways must raise the from-class by
+        # `moved` and lower the to-class by `moved`. Both directions, the same number: that is what makes
+        # this a move rather than a loss and a gain that happen to be equal.
+        by_pred = {}
+        for wid, predicate in ways.items():
+            by_pred.setdefault(predicate, set()).add(wid)
+        held = {}
+        try:
+            for predicate, ids in by_pred.items():
+                assert callable(getattr(rh, predicate, None)), (
+                    f"{slug} {frm} -> {to}: render_hole.{predicate} is not callable, so it cannot be what "
+                    f"moves way(s) {sorted(ids)}")
+                held[predicate] = getattr(rh, predicate)
+
+                def lifted(feature, _base=held[predicate], _ids=ids):
+                    return False if feature.get("id") in _ids else _base(feature)
+                setattr(rh, predicate, lifted)
+            back_frm, back_to = totals()
+        finally:
+            for predicate, fn in held.items():
+                setattr(rh, predicate, fn)
+        now_frm, now_to = totals()
+        assert (back_frm - now_frm, now_to - back_to) == (moved, moved), (
+            f"{slug} {frm} -> {to}: turning render_hole.{sorted(by_pred)} off for {sorted(ways)} moves "
+            f"{back_frm - now_frm} appearance(s) back into {frm!r} and takes {now_to - back_to} out of "
+            f"{to!r}; the record says {moved} both ways. If those two numbers differ, ink is being created "
+            f"or destroyed rather than re-described, and one of the two classes is wrong about what it "
+            f"draws")
+        assert now_frm == rec[1], (
+            f"{slug} {frm} -> {to}: the record says {frm!r} stands at {rec[1]} after the move and the "
+            f"engine draws {now_frm}")
+    stale_recl = sorted(k for k, r in WATER_INK_RECLASSIFIED.items()
+                        if k[0] in CORPUS and measured.get((k[0], k[1]), (0, 0))[1] != r[1])
+    assert not stale_recl, (
+        f"WATER_INK_RECLASSIFIED records {stale_recl}, whose from-class no longer stands where the record "
+        f"says. Re-measure: a move that has changed size is a different event and wants describing, and a "
+        f"stale entry would account for the next one on its own.")
     stale_rm = sorted(k for k in WATER_INK_REMOVED_DELIBERATELY
                       if k in measured and measured[k][0] <= measured[k][1])
     assert not stale_rm, (
@@ -40839,7 +41394,11 @@ def test_the_greenside_marsh_reaches_three_holes_and_hole_15_is_refused_by_both_
             _svg, info = rh.render_hole(hn, cfg.HOLES)
             if hn in MERION_MARSH_FRACTION_AT_45:
                 fracs[hn] = seen.get(rh.CORRIDOR_M["water"])
-            if info["water_hazards"] and hn in MERION_MARSH_FRACTION_AT_45:
+            # `wetlands` for the reason given at the REACH half below: this feature is a marsh, it is
+            # drawn in the not-water grey, and `water_hazards` no longer sees it. Holes 14, 16 and 17 each
+            # carry other water, so watching the water key here would have reported them as drawing the
+            # marsh whether they did or not -- and hole 15, which has none, as never drawing it.
+            if info["wetlands"] and hn in MERION_MARSH_FRACTION_AT_45:
                 drawn_on.append(hn)
     finally:
         rh.frac_len_within = orig
@@ -40854,6 +41413,14 @@ def test_the_greenside_marsh_reaches_three_holes_and_hole_15_is_refused_by_both_
         f"bar, which is half the reason 15 is refused and 14 is not")
 
     # The REACH half, with the fraction half neutralised for this feature only.
+    #
+    # THE PROBE IS `wetlands` AND NOT `water_hazards`, and that is a correction rather than a preference.
+    # This search widens the corridor until the card admits the marsh, so the key it watches has to be the
+    # one the marsh LANDS in. Since the wetland/dry-channel split it lands in `wetlands` -- it is not open
+    # water and is drawn in the not-water grey (render_hole.holds_open_water) -- and watching
+    # `water_hazards` no longer detects it at all: the search then measured whatever OTHER water the hole
+    # has and reported hole 14's reach as 480.82 m against the 39.43 m recorded here. merion carries
+    # exactly one drawn wetland, so this key is a clean probe for this feature and nothing else.
     def blind(pts, line, buf):
         return 0.0 if len(pts) == nodes else orig(pts, line, buf)
     reach = {}
@@ -40866,7 +41433,7 @@ def test_the_greenside_marsh_reaches_three_holes_and_hole_15_is_refused_by_both_
                 mid = (lo + hi) / 2.0
                 rh.CORRIDOR_M["water"] = mid
                 _svg, info = rh.render_hole(hn, cfg.HOLES)
-                if info["water_hazards"]:
+                if info["wetlands"]:
                     hi = mid
                 else:
                     lo = mid
@@ -41231,16 +41798,27 @@ def test_no_card_omits_a_watercourse_the_played_line_reaches():
                     continue                      # a synthetic flowline over the water it threads
                 want.append((g["id"], round(d, 2)))
             reachable += len(want)
-            missing = [w for w in want if w[0] not in info["creek_ids"]]
+            # EITHER INK SATISFIES RULE 2, and that is the whole content of this change. A visible
+            # watercourse the line reaches must be DRAWN; whether it is drawn as water or as a channel
+            # that runs dry is a question about DESCRIPTION, and it is graded by
+            # test_one_ink_means_one_thing_in_the_legend_and_only_open_water_is_drawn_in_the_blue.
+            # `intermittent=yes` channels now take the not-water grey (render_hole.runs_dry_in_season):
+            # 13 ways on bay-view, copper-valley and micke-grove over 29 way/hole appearances, and every
+            # one of them is still on the paper. Grading only `creek_ids` here would report all 29 as
+            # omitted hazards, which is false -- they are drawn -- and would push the next reader towards
+            # putting a dry ditch back in the pond blue to make a test go green.
+            inked = set(info["creek_ids"]) | set(info["dry_channel_ids"])
+            blue = svg.count('stroke="#5b9bd0" stroke-width="1.8"')
+            grey = svg.count('stroke="%s" stroke-width="1.8"' % rh.PENALTY_EDGE)
+            missing = [w for w in want if w[0] not in inked]
             if missing:
                 omitted.append((slug, hn, sorted(missing, key=lambda r: r[1]),
-                                info["watercourses"],
-                                svg.count('stroke="#5b9bd0" stroke-width="1.8"')))
-            # ...and every id the card claims to have inked must actually have a polyline on it.
-            elif svg.count('stroke="#5b9bd0" stroke-width="1.8"') < len(info["creek_ids"]):
-                omitted.append((slug, hn, "counted watercourses without ink",
-                                info["watercourses"],
-                                svg.count('stroke="#5b9bd0" stroke-width="1.8"')))
+                                info["watercourses"], info["dry_channels"], blue, grey))
+            # ...and every id the card claims to have inked must actually have a polyline on it, per class,
+            # so a channel counted in one class and drawn in the other cannot pass by a total.
+            elif blue < len(info["creek_ids"]) or grey < len(info["dry_channel_ids"]):
+                omitted.append((slug, hn, "counted channels without ink",
+                                info["watercourses"], info["dry_channels"], blue, grey))
     assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
     assert holes == expected_geometry_holes(), \
         f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
@@ -41249,11 +41827,12 @@ def test_no_card_omits_a_watercourse_the_played_line_reaches():
         f"the whole corpus -- the witness found nothing to check, so this test proves nothing")
     assert not omitted, (
         f"{len(omitted)} card(s) omit a watercourse the played line reaches -- (course, hole, [(way, "
-        f"metres from the played line)], counted watercourses, drawn polylines): "
-        f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}. A ball in a creek the card does not draw is "
-        f"the omission rule 2 forbids. If one of these is refused for a REASON, the reason has to be a "
-        f"named rule this test subtracts -- penalty-area containment or a synthetic NHD flowline over "
-        f"mapped water -- not a count that happens to balance somewhere else")
+        f"metres from the played line)], counted watercourses, counted dry channels, blue polylines, "
+        f"grey polylines): {omitted[:6]}{' ...' if len(omitted) > 6 else ''}. A ball in a creek the card "
+        f"does not draw is the omission rule 2 forbids. Drawn in the not-water grey COUNTS as drawn -- "
+        f"the class is still marked and still in the legend. If one of these is refused for a REASON, the "
+        f"reason has to be a named rule this test subtracts -- penalty-area containment or a synthetic "
+        f"NHD flowline over mapped water -- not a count that happens to balance somewhere else")
 
 
 def test_a_stale_book_cannot_launder_ink_that_went_missing_after_the_engine_drew_it():
@@ -41317,13 +41896,20 @@ def test_a_stale_book_cannot_launder_ink_that_went_missing_after_the_engine_drew
         ["BOOK_LOST_INK", "UNDECLARED_GAP"], "a book below even the recorded removal figure is accepted"
 
 
-# `intermittent=yes` is DELIBERATELY not a reason to refuse a watercourse -- a channel dry in August still
-# prints blue and counts W, because rule 2 says over-warn. The figures that sentence quotes are graded here,
-# because it published "34 of the 43 ways carrying that tag in this corpus are drawn today, on 5 of the 12
-# courses", which conflated the courses that CARRY the tag with the courses that DRAW one.
+# `intermittent=yes` is DELIBERATELY not a reason to refuse a watercourse -- the channel is still DRAWN --
+# but it IS the reason it is drawn in the not-water grey instead of the water blue, and it leaves the
+# footer's W. See render_hole.runs_dry_in_season, which owns the class and the argument. The figures that
+# note quotes are graded here, because they were once published as "34 of the 43 ways carrying that tag in
+# this corpus are drawn today, on 5 of the 12 courses", which conflated the courses that CARRY the tag with
+# the courses that DRAW one.
 # PER COURSE -- (ways carrying the tag, ways DRAWN, way/hole appearances) -- so a tree holding part of the
-# corpus grades what it has. The sentence in render_hole quotes the corpus-wide sums, and those are derived
+# corpus grades what it has. The note in render_hole quotes the corpus-wide sums, and those are derived
 # from this table below rather than typed a second time.
+#
+# "DRAWN" IS MEASURED ACROSS BOTH INKS, and it has to be: the whole point of the reclassification is that
+# these ways keep their mark, so a drawn-set read only from `creek_ids` would have measured 0 for all three
+# courses and reported the class as having left the paper. It has not. The figures below are unchanged by
+# the reclassification, which is the evidence that nothing was omitted -- only re-described.
 INTERMITTENT = {
     "bay-view-golf-club": (13, 7, 16),
     "callippe-preserve-golf-course": (7, 0, 0),
@@ -41347,7 +41933,8 @@ def test_the_intermittent_figures_the_wetland_prose_quotes_are_the_measured_ones
         drawn, appearances = set(), 0
         for hn in cfg.HOLE_NUMS:
             _svg, info = rh.render_hole(hn, cfg.HOLES)
-            hit = ids & (set(info["creek_ids"]) | set(info["water_ids"]))
+            hit = ids & (set(info["creek_ids"]) | set(info["water_ids"])
+                         | set(info["dry_channel_ids"]) | set(info["wetland_ids"]))
             drawn |= hit
             appearances += len(hit)
         got[slug] = (len(ids), len(drawn), appearances)
@@ -41355,10 +41942,13 @@ def test_the_intermittent_figures_the_wetland_prose_quotes_are_the_measured_ones
     want = {s: INTERMITTENT[s] for s in present}
     assert got == want, (
         f"the per-course intermittent figures measure {got}, recorded as {want}. Re-measure the sentence "
-        f"in render_hole.is_drawn_wetland rather than the record -- and keep the quantities distinct: ways "
+        f"in render_hole.runs_dry_in_season rather than the record -- and keep the quantities distinct: ways "
         f"that CARRY the tag, ways DRAWN, and way/hole APPEARANCES are three different numbers, and the "
         f"published sentence once conflated the courses that carry the tag with the courses that draw one")
-    assert any_drawn, "no intermittent watercourse is drawn anywhere, so the over-warn claim is vacuous"
+    assert any_drawn, (
+        "no intermittent watercourse is drawn anywhere, so the claim that this class keeps its mark is "
+        "vacuous -- and that claim is what makes the move off the blue a re-description rather than an "
+        "omission")
     # ...and the corpus-wide sums the prose quotes are DERIVED from the same table, never typed twice.
     if set(present) == set(INTERMITTENT):
         carried = sum(v[0] for v in got.values())
@@ -41370,10 +41960,10 @@ def test_the_intermittent_figures_the_wetland_prose_quotes_are_the_measured_ones
         claim = (f"{carried} ways carry that tag, on {len(present)} of the 12 courses, and {drawn_ways} of "
                  f"them are DRAWN today on {drawn_courses} courses")
         assert claim in flowed, (
-            f"render_hole.is_drawn_wetland no longer contains the measured sentence {claim!r}; the "
+            f"render_hole.runs_dry_in_season no longer contains the measured sentence {claim!r}; the "
             f"per-course table here sums to it")
         assert f"{appearances} way/hole appearances" in flowed, (
-            f"render_hole.is_drawn_wetland no longer records {appearances} way/hole appearances")
+            f"render_hole.runs_dry_in_season no longer records {appearances} way/hole appearances")
 
 
 # The two bay-view ways proposed for removal as "lines of blue over flat ground", and the measurement that

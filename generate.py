@@ -733,8 +733,16 @@ def bank_span(s):
     return f'<span>{" &middot; ".join(notes)}</span>' if notes else ''
 
 
-def penalty_mark(i):
-    """The footer's penalty-area mark -- "penalty area" -- or "". ONE definition for both editions.
+def not_water_mark(i):
+    """The footer's not-water mark -- "penalty area", "wetland", "creek runs dry" -- or "".
+
+    ONE definition for both editions, and it names EVERY class the card drew in the not-water grey rather
+    than only the penalty areas it was written for. That widening is the footer half of the fix the grey
+    ink is the map half of: callippe's shipped book prints 39 W across 18 cards and its whole cache holds
+    ONE `natural=water` polygon, because `natural=wetland` was inked in the water blue and counted in the
+    footer's W. The W now counts open water only, so on 14 of callippe's 18 cards the number it used to
+    carry falls -- and something has to say what is still there, or the correction turns into the omission
+    that rule 2 forbids. This mark is that something.
 
     A MARK AND NOT A COUNT, and the refusal is the whole point. The footer prints "9B 0W" because a
     bunker and a pond are countable places. A non-water penalty area on this corpus is not: 31 of
@@ -746,17 +754,42 @@ def penalty_mark(i):
     which understates a hazard. Neither number is one the data supports, so the card names the class and
     prints no number -- see the `penalty_areas` selector in render_hole.py for the full argument.
 
+    THE OTHER TWO CLASSES GET A MARK FOR THE SAME REASON AND NOT BY ANALOGY. A dry channel is a LINE, and
+    OSM splits a channel at every road crossing and tag change -- the defect render_hole.water_identity
+    exists for -- so a per-way figure would print "3" for one ditch. Wetland is the one class here whose
+    count WOULD be supportable (callippe's twelve polygons share zero OSM nodes, come no closer than 4.3 m
+    and hold a frontier of at most 11.1% of a perimeter within 10 m of a neighbour, so they are separate
+    basins rather than one hollow cut up) and it still prints none, because a third number on this footer
+    would have to earn its width against the span measured below and because "one ink, one meaning in the
+    legend" reads better as one kind of mark than as a count for one member and a word for the others.
+
+    EACH CLASS KEEPS ITS OWN WORD rather than sharing one, and that is a refusal to claim a ruling. "Penalty
+    area" is a Rule 17 term and `golf=penalty_area` is the mapper asserting it; nothing in a `natural=wetland`
+    or `intermittent=yes` tag records that a Committee has marked anything, so printing "penalty area" over
+    callippe's marsh would be a ruling this book cannot support. The three words say what is on the GROUND,
+    which the data does record, and the legend is where the one thing they have in common -- not water, and
+    a ball there is usually lost -- is stated once. See _grey_note.
+
+    "creek runs dry" rather than "dry creek", measured against the alternative on the honesty rule: the tag
+    is `intermittent=yes`, which says the channel is dry for PART of the year, so "dry creek" would claim
+    more than the data does about the day the reader is standing there. Not "intermittent", which is the
+    tag's word and not a twelve-year-old's, and not "seasonal creek", which reads as a feature name rather
+    than as the warning it is.
+
     ITS OWN SPAN, for bank_span's measured reason: `.foot` is a wrapping flex row whose spans are
     `white-space: nowrap`, so a span wider than the row does not wrap, it overflows and the trim line
     cuts it. The span this would otherwise join -- depth, then "NB NW", then the other tees -- is
     already the widest in the corpus (copper-valley 6 at 296.00 px of 323.00, about six characters of
-    room), and this mark is thirteen. As its own span it wraps to a footer line instead, which the green
-    sizing already reserves three of.
+    room), and the longest of these marks is thirteen characters. As its own span it wraps to a footer line
+    instead, which the green sizing already reserves three of. Two classes on one hole would share that
+    span; no hole in this corpus has two, and the join keeps it one span if one ever does.
 
     WHY THE CARD NEEDS IT AT ALL, given the map already inks the class and the guide card explains it:
     without it, a hole whose every hazard is brush prints "9B 0W" and nothing else, and "0W" beside a
     bunker count reads as "nothing else to avoid". That was true of 11 of this book's 18 cards before
-    the class existed. The footer is what a junior reads first.
+    the class existed, and the wetland split would have made it true of 9 of callippe's 18 -- the same
+    nine cards that used to print "0W" over marsh before the marsh was drawn at all, which is how this
+    correction could have walked straight back into the defect it came from.
 
     ONE NUMBER, ONE MEANING, on the card this ships on. A reader takes "2W" for two hazards, so the W it
     sits beside has to be able to bear that: on this book it is now 6 counted, 6 drawn blue marks and 0
@@ -765,7 +798,10 @@ def penalty_mark(i):
     1:1, so the one number on the card means one thing and this mark, which is not a number at all, means
     another.
     """
-    return '<span><b>penalty area</b></span>' if i.get("penalty_areas") else ''
+    words = [w for w, key in (("penalty area", "penalty_areas"),
+                              ("wetland", "wetlands"),
+                              ("creek runs dry", "dry_channels")) if i.get(key)]
+    return f'<span><b>{" &middot; ".join(words)}</b></span>' if words else ''
 
 
 def hole_panel(hole, sheet_label):
@@ -799,7 +835,7 @@ def hole_panel(hole, sheet_label):
     foot = (f'<span>{lead}</span>'
             f'<span>{depth_phrase(s)} &middot; {i["bunkers"]}B {i["waters"]}W{notrees}'
             f' &middot; {esc(others)}</span>'
-            f'{penalty_mark(i)}'
+            f'{not_water_mark(i)}'
             f'{bank_span(s)}')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
@@ -1217,22 +1253,28 @@ def _no_tree_note():
             'ground.</span></div>\n')
 
 
-def _book_draws_penalty_areas():
-    """True when any hole of THIS book draws a non-water penalty area. Derived from what was rendered.
+def _book_draws_not_water(*keys):
+    """True when any hole of THIS book drew a hazard in the not-water grey. Derived from what was rendered.
 
     Mirrors _book_draws_trees: read off render_hole's own per-hole `info`, never off the tags, so the
     legend can only ever promise ink the cards actually carry.
+
+    THE THREE CLASSES ARE ONE QUESTION HERE, because they are one INK and the legend row that names them is
+    one row. Called with no arguments it asks "does this book draw the grey at all", which is what gates
+    that row; called with a subset it answers for those classes, which is what the suite uses to check a
+    book names what it drew rather than what it has tags for.
     """
-    return any(LAYOUTS[h][1].get("penalty_areas") for h in config.HOLE_NUMS if h in LAYOUTS)
+    keys = keys or ("penalty_areas", "wetlands", "dry_channels")
+    return any(LAYOUTS[h][1].get(k) for h in config.HOLE_NUMS if h in LAYOUTS for k in keys)
 
 
-def _penalty_key():
+def _grey_key():
     """The fourth entry in the HOLE-map colour list, or "" -- one wording for both editions.
 
     The list on that row -- "bunkers (tan), water (blue), trees" -- is an ENUMERATION of the map's ink,
     and an enumeration that omits a colour the map uses is false, not merely short. It is also the row a
     reader consults to decode a shape, so the class belongs in it and not only in the row below that
-    defines it. Conditional for _penalty_note's reason: on the twelve books that draw none it would be
+    defines it. Conditional for _grey_note's reason: on the books that draw none it would be
     words spent on a colour the reader will never see, on the card with the least room in the book.
 
     IT NAMES THE COLOUR, in the same shape as its siblings, and the first version of this row did not.
@@ -1240,27 +1282,47 @@ def _penalty_key():
     "(blue)" sat beside it -- on the reasoning that the swatch on the next row shows the ink and a word
     cannot go stale. That reasoning is fine for the SWATCH and wrong for the LIST: shown the rebuilt
     cards, a reader who knows this course asked "what is the purple?" and had no way to get from the mark
-    to the meaning. A key entry a reader cannot enter from the map is not a key entry. Measured in
-    chrome-headless-shell against the shipped stylesheet: ", penalty areas (grey)" is 22 characters and
-    keeps this row at two lines, leaving the card +11.73 px of clearance, so the sibling form costs
-    nothing here and is what ships.
+    to the meaning. A key entry a reader cannot enter from the map is not a key entry.
+
+    IT NAMES THE INK'S MEANING AND NOT ONE OF ITS MEMBERS, and that is what this clause had to change to.
+    It read ", penalty areas (grey)" while the grey drew exactly one class. The grey now also draws wetland
+    and channels that run dry (render_hole.holds_open_water is the split), so naming a member would tell a
+    callippe reader that his marsh is a Rule 17 penalty area -- a ruling nothing in a `natural=wetland` tag
+    records. ", not water (grey)" names the one thing all three members have in common, sits directly after
+    "water (blue)" so the contrast is the reader's way in, and is 18 characters against the 22 it replaces,
+    so the tightest card in the corpus gains room rather than paying for the widening. Measured in
+    chrome-headless-shell against the shipped stylesheet; see _grey_note for the per-book clearances.
     """
-    return ', penalty areas (grey)' if _book_draws_penalty_areas() else ''
+    return ', not water (grey)' if _book_draws_not_water() else ''
 
 
-def _penalty_note():
-    """Name the penalty-area ink, in BOTH editions, ONLY in a book whose cards draw one.
+def _grey_note():
+    """Name the not-water ink, in BOTH editions, ONLY in a book whose cards draw it.
 
     A HAZARD CLASS WITH NO LEGEND ENTRY IS A HAZARD THE READER CANNOT INTERPRET, and this project has
-    now made that mistake in three directions on one class. `golf=penalty_area` -- brush, a canyon floor,
+    now made that mistake in four directions. `golf=penalty_area` -- brush, a canyon floor,
     waste, anything a Committee marks, which since 2019 is what the term covers -- first reached the
     paper in the tree/scrub fill under a legend reading "bunkers (tan), water (blue), trees", so a
     junior was told the hazard is TREES; it was then moved into the water blue and the footer W, so the
     same junior was told there are ten waters on a hole that has none; and then it was given an ink of its
     own that the legend named without naming its colour, which left a reader who knows the course asking
-    "what is the purple?". It is a quiet grey now -- render_hole.PENALTY_FILL, whose value and the
-    measured separation from every ink it touches are recorded at that constant's own definition, not
-    restated here -- and both the list above and the swatch below name it.
+    "what is the purple?". The fourth is the one this row was widened for and it is the worst of them,
+    because it shipped and a reader found it on the ground: `natural=wetland` was inked in the water blue
+    under the legend word "water", so callippe Preserve -- ONE `natural=water` polygon in its whole cache --
+    printed 39 W across 18 cards, and 2,309 of its 7,507 tree markers stood inside what the card called a
+    pond. The owner walked it and asked how a tree got into the water. It is a quiet grey now --
+    render_hole.PENALTY_FILL, whose value and the measured separation from every ink it touches are
+    recorded at that constant's own definition, not restated here -- and both the list above and the swatch
+    below name it.
+
+    ONE ROW FOR THREE CLASSES, because ONE INK MAY MEAN ONLY ONE THING IN A LEGEND. The grey draws
+    non-water penalty areas, wetland and channels that run dry (render_hole.holds_open_water is the split),
+    and this row states the single thing they have in common -- not water, and a ball in it is usually lost.
+    That is the invariant, and it is not "one ink, one tag": three tags sharing an ink is fine when the
+    legend's account of that ink is true of all three, and it is exactly what a reader needs, since the
+    club he chooses does not depend on which of the three it is. What broke before was the other half --
+    an ink whose legend word was true of some of its members and false of the rest.
+    tests/test_phase1_regressions.py grades both halves.
 
     THE SWATCH IS THE RENDERER'S OWN TWO COLOURS, evaluated, never a copy -- the arrangement
     _heat_swatches uses and for its reason: a key that merely agrees with the map today is a key that
@@ -1269,33 +1331,75 @@ def _penalty_note():
     GATED ON WHAT THE BOOK DREW, like _faint_note and _no_fall_note, and here that gate is doing real
     work rather than tidiness. This card is the tightest thing in the book: monarch-bay ships with 1.19
     px of clearance to the bottom of a 3.5x5in `overflow:hidden` box whose last block is the licence,
-    the warranty disclaimer and the contact address, and a legend line costs 10.55 px. One course of the
-    13 carries the tag (trump-national-los-angeles, 34 ways, all `natural=scrub`), and its guide card has
-    35.83 px of clearance -- so the row lands where it is needed and is not spent on the twelve books
-    that would have to pay for it. Every one of those twelve, and both enlarged editions of them, stays
-    byte-identical.
+    the warranty disclaimer and the contact address, and a legend line costs 10.55 px. Six of the thirteen
+    books now draw the grey -- trump-national-los-angeles (34 penalty areas), callippe and merion (wetland),
+    bay-view, copper-valley and micke-grove (channels that run dry) -- and monarch-bay is not one of them,
+    so the tightest card in the corpus still pays nothing. The other seven books, and both enlarged
+    editions of them, stay byte-identical.
 
-    TWO LINES, AND THAT IS THE BUDGET, not a preference. Laid out in chrome-headless-shell against the
-    shipped stylesheet: this row at three lines plus _penalty_key's clause overflows that 35.83 px card
-    by 9.36 and clips the licence block -- the same failure this project has already had twice. At two
-    lines, with _penalty_key's clause at 21 characters, the card ends at +11.73 px. The sentence below is
-    what fits, and it was chosen by measuring four wordings rather than by counting characters.
+    TWO LINES WAS THE OLD BUDGET AND ONE LINE IS THE NEW ONE, measured rather than preferred, because
+    widening the row to three classes also widened the set of books that have to carry it. Laid out in
+    chrome-headless-shell at `emulate_media(media="print")` against each shipped book's own stylesheet, as
+    the gap from the lowest inked text to the bottom of the `overflow:hidden` card box:
+
+        book                          without this row   with it
+        micke-grove-golf-links              +14.73         +1.19     <- the binding one
+        bay-view-golf-club                  +19.39         +5.84
+        copper-valley / merion / trump      +35.83        +22.28
+        callippe-preserve                   +49.38        +35.83
+        monarch-bay (draws no grey)          +1.19         +1.19     <- untouched, still the tightest
+
+    THREE THINGS CAME OUT OF THAT AND ALL THREE ARE IN THE CODE BELOW. First, _grey_key's clause costs
+    ZERO px on every book -- the HOLE-map row absorbs 18 characters without wrapping -- so the enumeration
+    entry is free and is kept. Second, the row's height was being set by its SWATCH COLUMN and not by its
+    text: at the sibling rows' `height="14"` the row cost 17.00 px and micke-grove came out at -2.27,
+    CLIPPING the licence block. The rect is still the same 20x9 as every other swatch on the card; only the
+    svg box's vertical padding is gone (`height="10"`), which drops the cost to 13.54 px -- one line of
+    type, the floor for any row at all -- and micke-grove to +1.19. Third, at that floor the sentence must
+    be ONE line: measured, it wraps somewhere between 69 and 74 characters of visible text, and every
+    two-line wording clips micke-grove by 9.36 and bay-view by 4.70 whatever it says.
+
+    SO +1.19 px IS THE MINIMUM CLEARANCE IN THE CORPUS AFTER THIS CHANGE, on micke-grove, which now ties
+    monarch-bay for tightest card in the book. That is stated as the cost it is: this card has no room for
+    another caveat, and the next one added to guide_panel() will clip a licence block unless something
+    leaves. tests/test_r17_print.py::test_the_print_in_colour_line_costs_the_guide_card_no_room is what
+    refuses it there instead of on paper.
 
     WHAT THE WORDING HAS TO DO, in the order a reader needs it: say it is NOT water, because that is the
-    confusion the ink was invented to end; say what it is on the ground, so it can be recognised; and say
-    what it costs. What it deliberately does NOT do is name which relief option applies -- Rule 17 marks a
-    penalty area red or yellow and the two differ in the relief they allow, while the tag records only
-    that an area is one; the stakes and lines on the course are the authority for that. The ink is a quiet
-    GREY rather than either of those two colours (see render_hole.PENALTY_FILL for the reason and the
-    measurements), so nothing about the mark can be read as a ruling on the relief either.
+    confusion the ink was invented to end; name all three members, so each can be recognised; and say what
+    it costs him. Two casualties of the one-line budget, both recorded rather than quietly dropped. "waste"
+    is gone -- "brush, canyon, waste, wetland, creek runs dry" is 76 characters and clips -- so trump's
+    brush and barranca floors are covered by "brush, canyon". And "relief costs one stroke" is gone, which
+    is NOT a space decision and would have gone anyway: it is true of a `golf=penalty_area`, a mapper
+    asserting a Rule 17 marking, and it is a claim this book cannot support for a marsh or a dry ditch,
+    where nothing in the data records that a Committee has marked anything. A relief figure that is right
+    on one of three members is worse than none. Rule 17 marks a penalty area red or yellow and the two
+    differ in the relief they allow; the stakes and lines on the course are the authority. The ink is a
+    quiet GREY rather than either of those two colours (see render_hole.PENALTY_FILL), so nothing about the
+    mark can be read as a ruling either.
+
+    "creek runs dry" IS THE FOOTER'S OWN PHRASE, not a synonym, and that is deliberate: the footer mark and
+    the legend entry are the two ends of one lookup, and a reader who cannot get from the mark to the key
+    has neither. See not_water_mark for why that phrase rather than "dry creek" -- `intermittent=yes` says
+    the channel is dry for PART of the year, and "dry creek" would claim more than that about the day the
+    reader is standing there.
+
+    "usually lost" IS THE HONEST STRENGTH. A ball in marsh or brush is normally unfindable and that is why
+    rule 2 requires the mark; "always lost" would be false, and "may be hard to find" would understate the
+    thing a junior is deciding against. It is the wording the penalty row already used and it survives the
+    widening unchanged, because it was never a claim about water.
     """
-    if not _book_draws_penalty_areas():
+    if not _book_draws_not_water():
         return ''
-    return ('  <div class="legrow"><svg width="28" height="14">'
-            f'<rect x="2" y="3" width="20" height="9" fill="{render_hole.PENALTY_FILL}" '
+    # `height="10"` and not the sibling rows' 14: the ROW's height is set by whichever of its swatch and
+    # its text is taller, and at 14 this row cost 17.00 px against micke-grove's 14.73 of headroom and
+    # clipped the licence block. The rect is the same 20x9 every other swatch on this card draws; what is
+    # gone is the svg box's vertical padding. See the measurement table above.
+    return ('  <div class="legrow"><svg width="28" height="10">'
+            f'<rect x="2" y="0.5" width="20" height="9" fill="{render_hole.PENALTY_FILL}" '
             f'stroke="{render_hole.PENALTY_EDGE}" stroke-width="1"/></svg>\n'
-            '    <span><b>Penalty area</b> = <b>not water</b>: brush, canyon or waste. A ball there is '
-            'usually lost; relief costs <b>one stroke</b>.</span></div>\n')
+            '    <span><b>Not water</b>: brush, canyon, <b>wetland</b>, <b>creek runs dry</b>. '
+            'Ball usually <b>lost</b>.</span></div>\n')
 
 
 def _faint_note():
@@ -1424,8 +1528,8 @@ def guide_panel():
     <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; red (&ge;5%);
     steeper is always <b>darker</b>. <b>Print in colour</b> &mdash; bunkers vanish in black &amp; white.
     <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue)''' + _penalty_key() + ''', <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add up.</span></div>
-''' + _penalty_note() + '''  <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue)''' + _grey_key() + ''', <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add up.</span></div>
+''' + _grey_note() + '''  <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
   <div class="legrow"><span><b>green N ft above/below</b> = <b>measured</b> height vs the back tee.
     <b>Not</b> a yardage adjustment &mdash; club depends on your ball flight, so <b>you</b>
@@ -2062,7 +2166,7 @@ def coach_map_card(hole):
       <span class="yalt">{row[FRONT_I]} {esc(FRONT_NAME)}</span></div>
   </div>
   <div class="cmap"><div class="minilab">HOLE &middot; tee &rarr; green</div>{lsvg}</div>
-  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_drew_trees(hole) or not _book_draws_trees()) else ' &middot; <b>no tree data</b>'}</span>{penalty_mark(i)}<span>course layout</span></div>
+  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_drew_trees(hole) or not _book_draws_trees()) else ' &middot; <b>no tree data</b>'}</span>{not_water_mark(i)}<span>course layout</span></div>
   {playline}
 </div>'''
 
@@ -2097,10 +2201,10 @@ def coach_about_card():
   <div class="legrow"><span><b>Black numbers</b> = slope % there; over <b>10%</b> is bank or bunker face,
     not putting surface: coloured, not numbered. <b>Grey numbers</b> = yd from the <b>front edge</b>, down
     the middle. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue)''' + _penalty_key() + ''', <b>trees</b>. <b>Left</b> = to
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue)''' + _grey_key() + ''', <b>trees</b>. <b>Left</b> = to
     green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add
     up.</span></div>
-''' + _penalty_note() + _faint_note() + _no_fall_note() + _no_tree_note() + '''
+''' + _grey_note() + _faint_note() + _no_fall_note() + _no_tree_note() + '''
   <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
     conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a
