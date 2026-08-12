@@ -280,13 +280,34 @@ def test_render_hole_carry_cost_comment_matches_the_shipped_books():
     assert said_n_figures == said_before - said_after, (
         f"render_hole.py's own arithmetic doesn't close: {said_before} -> {said_after} is a cost "
         f"of {said_before - said_after}, not the {said_n_figures} the comment states.")
-    assert said_n_figures == len(no_carry), (
-        f"render_hole.py says the landing-area filter costs {said_n_figures} figures; the shipped "
-        f"books print \"{_NO_CARRY}\" on {len(no_carry)} cards ({sorted(no_carry)}), and each is "
-        f"exactly one refused merged window (this corpus never refuses two on the same hole).")
-    assert said_n_cards == len(no_carry), (
-        f"render_hole.py says the filter costs figures on {said_n_cards} cards; "
-        f"{len(no_carry)} shipped cards print the refusal phrase.")
+    # WINDOWS REFUSED AND CARDS MARKED ARE TWO COUNTS, and this test conflated them because they were
+    # equal. The cost figure counts windows the landing rule REFUSED; the mark is printed only where the
+    # sand from that window also REACHES the green, which is a second question the rule does not answer
+    # (see render_hole's reach gate). They coincided for as long as every refusal happened to reach, and
+    # trump-national-los-angeles 16 is the card where that stopped: refused on 5.13 yd of room, silent,
+    # because its sand stops 5.13 yd short of the front. Grading the cost against the MARK count made
+    # this test demand the engine print a claim its own geometry denies.
+    #
+    # So the cost is graded against the figures actually withheld -- before minus after, which is what
+    # the arithmetic above already closes -- and the mark count is graded separately against its own
+    # published figure. Both are still derived from the shipped books; neither is a second copy of the
+    # other.
+    assert said_n_figures >= len(no_carry), (
+        f"render_hole.py says the landing-area filter costs {said_n_figures} figures while the shipped "
+        f"books print \"{_NO_CARRY}\" on {len(no_carry)} cards ({sorted(no_carry)}). Every marked card "
+        f"is a refused window, so the marks can never outnumber the refusals -- one of the two counts "
+        f"is wrong.")
+    assert said_n_cards == said_n_figures, (
+        f"render_hole.py says the filter costs {said_n_figures} figures across {said_n_cards} cards; "
+        f"this corpus never refuses two windows on one hole, so those must be the same number.")
+    m_mark = re.search(r"Of those \d+ refusals, (\d+) print the mark", src)
+    assert m_mark, (
+        "render_hole.py no longer publishes how many of the refused windows PRINT the mark, which is "
+        "the count that stopped equalling the refusal count (looked for \"Of those <N> refusals, <M> "
+        f"print the mark\"). Measured: {len(no_carry)} of {said_n_figures}.")
+    assert int(m_mark.group(1)) == len(no_carry), (
+        f"render_hole.py says {m_mark.group(1)} of its refusals print the mark; the shipped books "
+        f"print \"{_NO_CARRY}\" on {len(no_carry)} cards ({sorted(no_carry)}).")
 
     # render_hole.py's own comments never spell a course's full course.json slug -- they use one
     # fixed shorthand per course throughout the file ("callippe", not "callippe-preserve"; grep

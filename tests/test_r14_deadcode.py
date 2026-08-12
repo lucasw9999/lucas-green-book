@@ -278,8 +278,82 @@ def test_site1_render_hole_output_is_byte_identical():
     """render_hole.render_hole() output for every hole of a real course, hashed and pinned.
 
     Deleting the orphaned `holes=` binding at render_hole.py cannot change what gets drawn -- nothing
-    else in render_hole() reads the name `holes`. The proof is this hash, captured by hand from the
-    unfixed tree, still matching after the line is gone.
+    else in render_hole() reads the name `holes`. The proof of THAT was this hash, captured by hand from
+    the unfixed tree at 0aef283 and unchanged across the deletion.
+
+    RE-PINNED at the 2026-08-10 corpus rebuild, and the value below is the CURRENT engine's render, not
+    the 0aef283 one. The deletion proof is historical: it was discharged at that commit and cannot be
+    re-run from here, because seven later commits deliberately moved this renderer's output. The cause is
+    not inferred -- 29d00ad ("a card measured its carries from one origin and its tick ladder from
+    another") ADDED `carry_origin_known`, `green_gap_yd` and `carry_tee_shift_yd` to the `info` dict that
+    is hashed here, so a digest taken before those keys existed cannot match one taken after, whatever
+    else is or is not equal. The others: fab663a resolved `golf=out_of_bounds`, 03541c8 made
+    `golf=penalty_area` a class the renderer draws, 91d30d0 and a7fc354 moved carry figures, 22d23bf and
+    89c265b changed what the query asks for.
+
+    RE-PINNED AGAIN when `golf=penalty_area` was split out of the water class into a hazard class of its
+    own, for ONE reason and it is measured rather than assumed: the `info` dict gained a `penalty_areas`
+    key. This course carries no penalty area at all -- the value is 0 on all 18 holes -- and removing
+    that single key from the dict before hashing reproduces the previous pin,
+    d786e07749e9c02d4226bfd2594d4d7bf2490fcbf47f67cd67fb7dac62b93d4b, exactly. So no SVG byte and no
+    other `info` value moved on this course; a dict with a new key serialises differently, and that is
+    all this digest is reporting.
+
+    RE-PINNED A THIRD TIME for the same kind of reason, measured the same way: the `info` dict gained
+    `water_ids` and `creek_ids`, the ids of the features each card inked as water. They exist because rule 2
+    was being checked by COUNT and a count cannot see a swap -- a genuine `waterway=stream` was made to lose
+    its blue on copper-valley 3 with an offsetting mark on copper-valley 1, and every water test in the
+    suite passed. The two positive guards now check by IDENTITY instead
+    (test_no_card_omits_a_watercourse_the_played_line_reaches and its area sibling), which needs the ids.
+
+    Proved to be the whole cause, not assumed: stripping those two keys from the dict before hashing
+    reproduces the previous pin, 7ae3e441eb8d2529e3420559d8d25823efb7e85b0814287fab53aa69590eb773, exactly.
+    Separately, hashing the SVGs ALONE with and without the two keys gives identical digests on all twelve
+    geometry courses. No card's bytes moved.
+
+    RE-PINNED A FOURTH TIME, and this is the first re-pin where a CARD really did change: the tee mark no
+    longer names the back tee on a card whose drawn centreline does not span that tee's yardage (see
+    render_hole's note beside `labels`, and tests/test_r18_tee_mark.py). The course this digest hashes,
+    bay-view-golf-club, has 7 such cards -- holes 2, 6, 7, 12, 14, 15 and 16 -- and each of them loses
+    exactly one `<text ... fill="#20402a">BLA</text>`, the label that stood at a pad the Black tee is 21 to
+    89 yd behind.
+
+    Measured rather than assumed, the same way the three re-pins above were: re-inserting that one element
+    into those 7 SVGs -- taking them from the shipped book, which was built by the previous engine -- and
+    hashing them with the NEW `info` reproduces the previous pin,
+    b4ce00b406d01035dbb906bf68ca6cb95af351e1ed9d2c5dd10bbd2907f850b5, exactly. So no `info` value moved,
+    the other 11 cards are byte-identical, and on those 7 the whole difference is the withdrawn label.
+
+    RE-PINNED A FIFTH TIME, for the wetland/dry-channel split -- the change that stopped this engine
+    drawing anything but OPEN WATER in the water blue (render_hole.holds_open_water). Two causes, and both
+    were isolated rather than assumed:
+
+      * `info` GAINED FOUR KEYS -- `wetlands`, `wetland_ids`, `dry_channels`, `dry_channel_ids` -- the
+        counts and the ids of the not-water hazards each card draws. They exist for the reason
+        `water_ids`/`creek_ids` do: the two positive rule-2 guards check by IDENTITY, and after the split
+        a marsh or a dry ditch is in neither of the old two lists, so without these the guards would have
+        reported 29 drawn callippe wetlands and 29 bay-view/copper-valley/micke-grove channels as omitted
+        hazards. Nothing prints a number from any of them (generate.not_water_mark names the class in
+        words instead).
+      * SEVEN OF THIS COURSE'S CARDS REALLY MOVED, and bay-view is the sharpest possible case: all 7 of
+        its drawn watercourses carry `intermittent=yes`, so every blue polyline it had becomes a grey one.
+        Holes 11 through 17 each swap 1 to 3 `stroke="#5b9bd0" stroke-width="1.8"` polylines for the same
+        number at `stroke="#c8c8c8"`. Each card's SVG is the SAME LENGTH before and after -- 38623, 26838,
+        29901, 24066, 43123, 37622 and 32848 bytes -- because the two hex strings are the same width and
+        the marks are otherwise identical: the geometry, the weight and the linecap are untouched, and no
+        card gains or loses a mark. The other 11 cards are byte-identical.
+
+    THE CAUSAL PROOF, run rather than reasoned: strip those four keys from the dict and make
+    render_hole.runs_dry_in_season return False -- which puts the 7 channels back in the blue and is the
+    only behaviour the split changed on this course -- and the digest is
+    8da5717cd04fd50d71180db15b24aaa720a2cb95d45e9b3a4325cc9aa830e128, the previous pin, exactly. So the two
+    causes above are the WHOLE difference and nothing else at this site moved.
+
+    WHAT THE CONSTANT STILL BUYS, which is why it is re-pinned rather than dropped: it catches a FUTURE
+    edit at this site that touches something live. That was always its forward-looking job -- the
+    docstring at the top of this file says a truly dead line cannot make this hash go red-then-green --
+    and it is undiminished by the pin having moved for a reason named above. Re-derived by running the
+    code below, never by copying the digest out of a failure message without asking what moved it.
     """
     slug = _a_course()
     cfg, rh = _bind(slug, "config", "render_hole")
@@ -289,9 +363,11 @@ def test_site1_render_hole_output_is_byte_identical():
         parts.append(svg)
         parts.append(json.dumps(info, sort_keys=True, default=repr))
     digest = _sha(*parts)
-    assert digest == "830da484225e1f46ffee15c879b735fea5e969f014d6ff75c4ab1d566980fbda", (
-        f"render_hole output for {slug} hashed to {digest!r}; expected the value captured by hand "
-        f"from the unfixed tree before deleting the dead `holes=` line at render_hole.py:~438")
+    assert digest == "e1fd176045d71e0541a88ddad3ab01c4d118d449679209bf6aaa2e543cfdb6ee", (
+        f"render_hole output for {slug} hashed to {digest!r}; expected the value re-pinned when wetland "
+        f"and dry channels stopped being drawn in the water blue. If a deliberate engine change moved "
+        f"it, re-derive this digest and say in the docstring which commit moved it -- do not copy it out "
+        f"of this message blind")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -308,9 +384,21 @@ def test_site234_render_green_output_is_byte_identical():
     """render_green.render() output for every hole of a real course, hashed and pinned.
 
     Covers sites 2, 3 and 4 together since all three are unread bindings inside the same function
-    and none of them can change what render() draws. The proof is this hash, captured by hand from
-    the unfixed tree, still matching after all three lines are gone. Site 3 additionally gets its
-    own dedicated behavioural test below (test_site3_...), because it has a real callee to poison.
+    and none of them can change what render() draws. The proof of THAT was this hash, captured by hand
+    from the unfixed tree at 0aef283 and unchanged across all three deletions. Site 3 additionally gets
+    its own dedicated behavioural test below (test_site3_...), which reaches the same conclusion by
+    poisoning a real callee and so does not depend on this digest at all.
+
+    RE-PINNED at the 2026-08-10 corpus rebuild, and the value below is the CURRENT engine's render. The
+    cause is named and checked, not inferred: 30a324f ("the pocket book reassured a mono printer, and the
+    depth ladder was the faintest data on the card") re-inked the depth ladder from `fill="#8a8a8a"` at
+    opacity 0.7 to an opaque `RUNG_INK = "#6b6b6b"` with a white paint-order halo, because at 1,104 of
+    1,104 labels the old grey composited to 2.24:1 against WCAG's 4.5:1. That ink is written into the SVG
+    this digest is taken over -- the current render contains #6b6b6b and no #8a8a8a -- so the pre-30a324f
+    digest cannot match. Four further commits moved this renderer (171d978, fc9f3bc, e3e6bbb, 22d23bf).
+
+    The forward-looking job is unchanged: a future edit at sites 2 or 4 that touches something live moves
+    this digest. Re-derived by running the code below.
     """
     slug = _a_course()
     cfg, rg = _bind(slug, "config", "render_green")
@@ -320,9 +408,10 @@ def test_site234_render_green_output_is_byte_identical():
         parts.append(svg)
         parts.append(json.dumps(summary, sort_keys=True, default=repr))
     digest = _sha(*parts)
-    assert digest == "54103b304652e838c2792e5d963c42d55600c154f0c0685ad7965d45a94291a6", (
-        f"render_green output for {slug} hashed to {digest!r}; expected the value captured by hand "
-        f"from the unfixed tree before deleting the dead lines at render_green.py:~796,800,854")
+    assert digest == "f8d5a61214639afb3b6e8096e7ce578a60aa9b630a6b00df2274394762bd0aa0", (
+        f"render_green output for {slug} hashed to {digest!r}; expected the value re-pinned at the "
+        f"2026-08-10 corpus rebuild. If a deliberate engine change moved it, re-derive this digest and "
+        f"say in the docstring which commit moved it -- do not copy it out of this message blind")
 
 
 def test_site3_render_green_never_subscripts_np_mgrid(monkeypatch):

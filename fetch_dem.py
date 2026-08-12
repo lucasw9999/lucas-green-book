@@ -36,7 +36,9 @@ Run:  COURSE=<slug> python3 fetch_dem_hd.py     # first: 0.4 m where LiDAR allow
       COURSE=<slug> python3 fetch_dem.py        # then: the seamless mosaic for the ones it refused
       ONLY=14,16 ...                            # restrict to specific holes (a comma-separated
                                                 #   list of numbers; ranges are refused, not guessed)
-      OVERWRITE=1 ...                           # replace a good 0.4 m surface on purpose
+      OVERWRITE=1 ...                           # replace a good surface on purpose -- with the coarse
+                                                #   seamless one, or with a blank green when 3DEP's own
+                                                #   reply is refused
 """
 import urllib.request, json, math, io, time, os
 import numpy as np, rasterio
@@ -53,8 +55,10 @@ OUT = f"{DIR}/dem_hd"; os.makedirs(OUT, exist_ok=True)
 # run for, and it then sits in dem_hd/ forever -- which matters because that file is the only on-disk
 # trace of the surface pair's rename window, and evidence a dead run also leaves is not evidence.
 surface_io.sweep_staged(OUT)
-# replace a good 0.4 m surface on purpose. Read through lidar_coverage._env_on, this project's ONE
-# off-vocabulary, NOT for truthiness: bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
+# replace a good surface on purpose -- with the coarse seamless mosaic (keeps_existing_surface), or with
+# a blank green when this stage's own reply is refused (keeps_readable_surface). Read through
+# lidar_coverage._env_on, this project's ONE off-vocabulary, NOT for truthiness:
+# bool(os.environ.get(...)) made OVERWRITE=0, OVERWRITE=false and
 # OVERWRITE=no all mean YES, so the word "false" armed the path that trades every 0.4 m LiDAR green
 # for the coarse seamless mosaic -- the exact loss keeps_existing_surface below exists to prevent. An
 # explicit off must be off, and the vocabulary this flag used to spell for itself was one of five
@@ -100,6 +104,56 @@ def keeps_existing_surface(meta_path, overwrite=False):
     # test for that case, so unifying the polarity above changes nothing in practice.)
     src = str((meta or {}).get("source", "")).strip()
     return bool(src) and not is_seamless(meta) and not meta.get("insufficient")
+
+
+def keeps_readable_surface(meta_path, overwrite=False):
+    """True when meta_path holds a READABLE surface that an INSUFFICIENT fetch here must not replace.
+
+    THE OTHER HALF of keeps_existing_surface above, and it cannot be that function. That one answers
+    "may this stage refresh what is on disk?" and returns False for a seamless meta ON PURPOSE, because
+    filling gaps -- including re-filling its own -- is the whole job. This one answers a different
+    question, and only once the reply is already known to be unusable: "is what is here better than the
+    blank green I am about to write?" For a refused reply the answer is yes even when the record it
+    protects is seamless, which is exactly the case the predicate above must let through.
+
+    THE GAP THAT LEFT: a plain `COURSE=<slug> python3 fetch_dem.py` -- no ONLY=, no OVERWRITE= -- re-
+    fetches every green this stage owns. If 3DEP answers WORSE than last time -- a CONSTANT raster out
+    of coverage (measured at St Andrews; see the note beside `flat` in main()) or more than
+    NAN_FRAC_MAX of the green with no elevation -- the honesty gate marked the new surface
+    insufficient=True and main() committed it anyway, `insufficient` being RECORDED in the meta and
+    never gating the write. render_green.render then returns _blank_green, so a card that printed a real
+    read prints blank, with no flag set and nothing in the output naming what was lost. The retry loop
+    cannot catch it either: it retries on EXCEPTIONS, and a bad-quality reply is a 200 carrying a
+    perfectly valid GeoTIFF.
+
+    THE EXACT MIRROR of fetch_dem_hd.keeps_existing_surface, deliberately down to the rule -- any
+    positively-sourced record that is not itself a refusal, whatever built it -- because it is the same
+    trade seen from this side. That stage must not blank a working seamless fill; this one must not
+    blank a working anything. One idiom for "do not replace a good surface with a worse one", in both
+    producers of dem_hd/.
+
+    WHAT IT STILL PERMITS, which is everything this stage exists to do:
+      * a GAP -- no meta on disk at all -- is filled.
+      * a good surface is replaced by another GOOD one. Only a refused reply is a downgrade, and
+        refreshing a seamless green with a better seamless read stays this stage's job.
+      * a record ALREADY marked insufficient is rebuilt: that IS the gap, and re-fetching it is the
+        repair -- the same reading of `insufficient` keeps_existing_surface makes.
+      * a meta with no source at all stays fillable. Unknown provenance is not protected on a guess,
+        which is the rule both other predicates in this pair of stages keep.
+      * an unreadable file is rebuilt.
+      * OVERWRITE=1 still does it on purpose, so this is a safety net and not a wall.
+
+    A predicate rather than an inline branch so it can be exercised by truth table -- the same reason
+    is_flat_fill, only_holes and both keeps_existing_surface predicates are predicates.
+    """
+    if overwrite or not os.path.exists(meta_path):
+        return False
+    try:
+        with open(meta_path) as f:
+            prev = json.load(f)
+    except (OSError, ValueError):
+        return False                        # unreadable: rebuilding it is the repair
+    return bool(str((prev or {}).get("source", "")).strip()) and not prev.get("insufficient")
 
 
 
@@ -385,7 +439,8 @@ def main():
     # record there is. A suggestion is not a receipt.
     if OVERWRITE:
         print("WARNING: OVERWRITE set -- this run will REPLACE existing green surfaces with the coarse\n"
-              "  seamless mosaic instead of keeping the 0.4 m LiDAR ones. dem_hd/ has no other copy.")
+              "  seamless mosaic instead of keeping the 0.4 m LiDAR ones, and a green whose reply this\n"
+              "  run REFUSES will replace a working surface with a blank one. dem_hd/ has no other copy.")
     # ONLY=14,10 restricts the run to specific holes. Protecting the neighbours' sharp 0.4 m
     # surfaces is no longer its job -- keeps_existing_surface() does that unconditionally now, which
     # also means ONLY= on a hole that already holds a good LiDAR surface writes nothing without
@@ -506,6 +561,27 @@ def main():
         # printed 18 cards of "feeds back (subtle) - 0.0%". A real green is never perfectly flat.
         flat = is_flat_fill(n_in, nan_frac, relief)
         insufficient = bool(n_in == 0 or nan_frac > NAN_FRAC_MAX or flat)
+        # DO NOT TRADE A WORKING SURFACE FOR A REFUSED ONE. This is the reply-QUALITY direction of the
+        # fault the two keeps_* predicates already guard between them: keeps_existing_surface above stops
+        # this stage replacing a good 0.4 m green with the coarse mosaic, and
+        # fetch_dem_hd.keeps_existing_surface stops that stage replacing a working fill with a blank one.
+        # A plain re-run of THIS stage could still blank a green on its own, because `insufficient` was
+        # recorded in the meta below and never gated the commit -- so a worse 3DEP answer (a constant
+        # raster out of coverage, or a green mostly NoData) overwrote a real read with insufficient=True
+        # and the card printed blank, with no flag set and no line naming the surface that was lost.
+        #
+        # Same shape and same escape hatch as fetch_dem_hd's guard: refuse, say so, OVERWRITE=1 to do it
+        # on purpose. A SUFFICIENT reply still replaces whatever is here -- that is gap-filling and
+        # refreshing, which is what this stage is for; only the refused case is a downgrade.
+        #
+        # BEFORE the `flat` notice below on purpose: that notice ends "no slope will be printed", which
+        # is true of the surface being refused and false of the one being kept. The refusal line carries
+        # the same relief figure, so nothing is lost by not printing both.
+        if insufficient and keeps_readable_surface(f"{OUT}/hole{hn:02d}.json", OVERWRITE):
+            print(f"hole {hn:2d}: seamless refused (nan {nan_frac:.3f}, relief {relief*100:.1f} cm, "
+                  f"{n_in} green cell(s)) -- KEEPING the existing surface. "
+                  f"OVERWRITE=1 to replace it with a blank green.")
+            continue
         if flat:
             print(f"hole {hn}: CONSTANT surface across the green ({relief*100:.1f} cm of relief) -- "
                   f"outside 3DEP coverage, not a flat green; no slope will be printed")

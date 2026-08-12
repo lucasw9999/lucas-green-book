@@ -66,8 +66,9 @@ fetch_dem_hd.py         # 0.4 m green surfaces from the raw LiDAR ground returns
                         #    refuses; OVERWRITE=1 to blank it on purpose)
 fetch_dem.py            #   THEN the USGS 3DEP seamless MOSAIC for the greens it refused -- a
                         #   multi-resolution service, so each patch records the source cell measured
-                        #   out of its own pixels instead of a tier (fills gaps;
-                        #   OVERWRITE=1 to replace a good 0.4 m surface on purpose)
+                        #   out of its own pixels instead of a tier (fills gaps; keeps a green that
+                        #   already reads rather than blanking it on a worse reply;
+                        #   OVERWRITE=1 to replace a good surface on purpose)
 fetch_trees.py          # trees from LiDAR returns 2.5-35 m above ground (never on greens/fairways/tees/bunkers)
 fetch_hole_elev.py      # tee-to-green height change from the same LiDAR -> hole_elev.json (--write)
 lidar_coverage.py       # greens & holes vs the tiles' header bboxes, + a dem_hd cross-check
@@ -99,7 +100,7 @@ python3 tools/check_scale.py         # measures the LAID-OUT green scale against
 python3 tools/export_pdf.py --check  # every PDF was exported from its current HTML
 ```
 Run the suite in a **shuffled order** now and then, not just as collected. It rebinds `COURSE` and
-drops modules from `sys.modules` at 109 sites — counted across `tests/*.py` with comments and string
+drops modules from `sys.modules` at 116 sites — counted across `tests/*.py` with comments and string
 literals stripped, so every one of them executes; a plain `grep -c` reads higher, because the suite's
 own comments discuss the idiom — so a test can silently reconfigure the next one, and file order alone
 will never show it: a real `IndexError` in `render_hole` hid behind that for its whole life and only
@@ -112,6 +113,16 @@ The autouse `_bind_a_course` fixture in `tests/conftest.py` restores the `COURSE
 test in this directory, so leakage should be structurally impossible across the whole suite: pytest
 loads `tests/conftest.py` for every test module here, so every one of them inherits it. The shuffle is
 how you find out it still is.
+
+That site count is **generated, not typed** — as is the tracked-file count in
+`legal/10_SOFTWARE_DEPENDENCIES.md`. Both are properties of this repository rather than of any book, so
+any round that adds a test file or a `sys.modules` drop moves one of them; hand-typed, the pair went
+stale three times in a single day. If a test tells you either figure is wrong, do not retype it:
+```bash
+python3 tools/gen_repo_figures.py          # rewrites just those two sentences
+python3 tools/gen_repo_figures.py --check  # exits 1 while either is stale
+```
+The tracked count is the one `git ls-files` reports, so `git add` a new file before republishing.
 
 `tools/check_scale.py` is the important one. It lays each book out in a real browser under print
 media and measures the drawn green there, rather than trusting the SVG's own attributes — a
@@ -184,7 +195,9 @@ also the project's only measurement of how repeatable these surfaces are: see
 **Print in colour.** Colour is a real data channel here, not decoration: ground steeper than 10% is
 shown by colour *only* and deliberately carries no number, and a fairway bunker's sand sits within
 3% grey of the fairway it lies in, so on a mono printer the bunkers all but disappear. Both books say
-so on the guide card.
+so on the guide card — the pocket edition's colour row and the enlarged edition's about card carry the
+same line, and `tests/test_r17_print.py` measures the greyscale collapse off a rendered card rather
+than trusting this paragraph.
 
 ## What's in this repo
 - **Included:** the engine (Python), the build docs, `requirements.txt`, a documented

@@ -184,6 +184,88 @@ def _sand_the_engine_sees(rh, em, line, bunkers):
                                   line_em, buf) > 0.0]
 
 
+def _carry_frame(info, line, tend, gend):
+    """The ONE frame every "yd from the back tee" figure on a card is measured in.
+
+    Four tests in this file re-derive render_hole's carry and landing rules, and each carried its own
+    copy of this frame. When the engine put the carries on the card's own from-tee scale (see
+    render_hole's `carry_scale`), all four went on measuring in the frame it had left: they rebuilt the
+    tee shift from the ROUNDED `arc_yd`, which is up to 0.5 yd out and enough to move a rounded carry by
+    one, and they knew nothing of the scale at all. Both halves now come from what the engine published,
+    in one place, so a fifth copy cannot appear and this one cannot drift from the rule it grades.
+
+    Returns (em, raw_yd, from_tee_yd, off_m):
+
+      em           lat/lon -> local east/north metres, the projection render_hole builds its frame on
+      raw_yd       along-chord yards from where the LINE starts, before any tee model. The 80-300 reach
+                   window is applied to this FIRST, which is what stops the tee model conjuring a carry
+                   the drawn geometry does not support -- see render_hole's note at that gate.
+      from_tee_yd  the same point from the BACK tee: raw * carry_from_tee_scale + carry_tee_shift_yd
+      off_m        metres off the tee-to-green chord, unsigned
+
+    The chord basis, not the polyline, because that is the basis render_hole measures a carry on and the
+    inconsistency it documents as deliberate and conservative.
+    """
+    la0 = sum(q["lat"] for q in line) / len(line)
+    lo0 = sum(q["lon"] for q in line) / len(line)
+
+    def em(la, lo):
+        return ((lo - lo0) * _mlon(la0), (la - la0) * _mlat(la0))
+    tee = em(tend["lat"], tend["lon"])
+    gc = em(gend["lat"], gend["lon"])
+    L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+    ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+    scale, shift = info["carry_from_tee_scale"], info["carry_tee_shift_yd"]
+
+    def raw_yd(la, lo):
+        e, n = em(la, lo)
+        return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144
+
+    def from_tee_yd(la, lo):
+        return raw_yd(la, lo) * scale + shift
+
+    def off_m(la, lo):
+        e, n = em(la, lo)
+        return abs((e - tee[0]) * uy - (n - tee[1]) * ux)
+    return em, raw_yd, from_tee_yd, off_m
+
+
+def _ladder_ink(markup):
+    """The colour THIS artifact inks the depth-ladder numbers with, as an int -- read from the artifact.
+
+    Two shapes exist and any one book is one or the other, because 30a324f moved the ink. Before it each
+    rung <text> carried its own `fill`; after it the fill sits on the enclosing <g>, so the numbers
+    inherit the `paint-order` that lets them carry the white halo which carries the contrast fix -- and
+    no rung <text> has a `fill` at all.
+
+    A test that grades a SHIPPED artifact has to read the ink that artifact was made with. Hard-coding
+    either colour makes the test true of one side of a rebuild and false of the other, which is exactly
+    how three tests here came to pass only because the books were stale.
+
+    The GROUP shape is tried first, because the two patterns are mutually exclusive only in that order:
+    post-fix a rung <text> has no `fill` of its own, so the per-text pattern cannot match it; pre-fix
+    there is no fill-bearing group carrying the ladder's stroke-linejoin, so the group pattern cannot
+    match. Returns None when neither is present, which every caller treats as a finding and not a skip.
+    """
+    m = re.search(r'<g fill="#([0-9a-f]{6})"[^>]*stroke-linejoin="round"><text[^>]*font-size="3\.4"',
+                  markup)
+    if m:
+        return int(m.group(1), 16)
+    m = re.search(r'<text[^>]*font-size="3\.4"[^>]*fill="#([0-9a-f]{6})"', markup)
+    return int(m.group(1), 16) if m else None
+
+
+# The depth ladder's rung numbers, selected by GLYPH SIZE rather than by ink. 3.4 is the ladder's own
+# font-size and the only numeric text on a green card at it -- the compass "N" shares the size and is not
+# a digit -- so this matches both the pre-fix markup (fill on each <text>) and the post-fix markup (fill
+# on the group), verified to return the identical rungs on every shipped card and on cards rendered from
+# the current tree. A colour selector cannot: after 30a324f no rung <text> carries a fill.
+_LADDER_RUNGS = re.compile(r'font-size="3\.4"[^>]*>(\d+)</text>')
+# A ladder GROUP with at least one number in it. Used only to tell "this green is shallower than one
+# rung" (a legitimate skip) from "the selector above has stopped matching" (a finding).
+_LADDER_GROUP = re.compile(r'<g fill="#[0-9a-f]{6}"[^>]*stroke-linejoin="round"><text')
+
+
 def _dist_to_poly(pt, poly, em):
     """Metres from a projected point to a polygon: 0 inside, else nearest edge. Written here rather
     than imported so the test's model choice does not lean on the engine's own geometry code."""
@@ -4446,7 +4528,7 @@ def test_nothing_is_drawn_off_the_putting_surface():
     Three placements, each meaningless or misleading if it strays outside the outline:
       * downhill ARROWS. One poking past the edge says the ball rolls that way off a surface that is
         not green -- a bank or a bunker face. render_green already tests the tip plus a forward head
-        allowance, so this re-tests the ARTIFACT: 12,146 drawn arrows, tips and all three arrowhead
+        allowance, so this re-tests the ARTIFACT: 13,378 drawn arrows, tips and all three arrowhead
         vertices, against the outline drawn beside them.
       * the HOLE map's pin ring, placed at the green's CENTROID. A centroid is not guaranteed to lie
         inside its own polygon -- a strongly kidney-shaped green can put it on the apron -- so this is
@@ -4681,7 +4763,7 @@ def test_the_colour_legend_shows_the_colours_the_map_actually_uses():
 
     NOT asserted, having measured it: that "longer = steeper" holds for every arrow. Length is
     2.2 + 3.4*min(slope/smax, 1) against a 92nd-percentile smax, so the steepest arrows share one
-    length -- 7.4% of 12,146 arrows sit at their green's cap, median 7.6% per green, worst per green
+    length -- 7.3% of 13,378 arrows sit at their green's cap, median 7.3% per green, worst per green
     14.9% (monarch-bay 9). The cap
     is right rather than wrong: without it a single outlier pixel would shrink every other arrow to
     nothing. The card also carries slope numbers and colour, so the tail is not unreadable -- just not
@@ -5063,16 +5145,16 @@ def test_the_gutter_legend_does_not_deny_a_sum_the_engine_computes_exactly():
     (card - to_green) would mix a walked measure with a straight-line one."
 
     Measured off the shipped SVGs against each course's card yardage for the tee the book is built on:
-    72 of the 74 printed par-3 gutter pairs sum exactly to the card, on 43 of 44 holes, across 11 of 11
+    81 of the 83 printed par-3 gutter pairs sum exactly to the card, on 48 of 49 holes, across 12 of 12
     slope courses. The two that do not are both on copper-valley 13, the corpus's one non-straight par 3
     (arc/chord 1.0237), which `par3_exact_from_tee`'s straightness guard refuses on purpose -- so the
-    exceptions are the guard working, not the claim holding. Of the 743 par-4 and par-5 pairs the sum
+    exceptions are the guard working, not the claim holding. Of the 806 par-4 and par-5 pairs the sum
     runs card-54 to card+12, median -3. The warning was right on the rows the engine scales
     proportionally and wrong on exactly the rows it computes exactly.
 
     Scoped rather than deleted, and the scoped sentence is SHORTER than the one it replaces: "on a par 4
-    or 5 they need not add up". "need not" rather than "do not" because 62 sum exactly by coincidence on
-    those 743, and a card should not make a claim about its own arithmetic that its own arithmetic
+    or 5 they need not add up". "need not" rather than "do not" because 64 sum exactly by coincidence on
+    those 806, and a card should not make a claim about its own arithmetic that its own arithmetic
     breaks.
     """
     p3, p3_exact, p3_holes, courses, other, other_exact = 0, 0, set(), set(), [], 0
@@ -5256,7 +5338,7 @@ def test_the_arrow_legend_says_the_length_is_scaled_to_that_green():
 
         smax runs 2.885% (philadelphia 16) to 9.028% (bay-view 8), a 3.13x range
         EVERY book has an internal spread: 1.50x (monarch-bay) ... 3.13x (philadelphia); merion 2.93x
-        193 of 198 greens draw an arrow within 0.05 view units of the 5.6 cap, 190 exactly at it
+        211 of 216 greens draw an arrow within 0.05 view units of the 5.6 cap, 208 exactly at it
         the printed tilt barely tracks it, r = 0.658 over 198 greens: philadelphia 18 prints 2.6%
         with its arrows calibrated to 9.03%, philadelphia 6 prints 4.9% with 7.64% -- the graphic and
         the number rank those two greens OPPOSITELY, in the same book
@@ -5526,7 +5608,7 @@ def test_the_contour_interval_is_the_one_the_legend_states():
             f"edition's '15 cm each' legend is wrong")
 
 
-TREE_BEARING_COURSES = 11    # corpus courses carrying BOTH trees_lidar.json and osm_course.json
+TREE_BEARING_COURSES = 12    # corpus courses carrying BOTH trees_lidar.json and osm_course.json
 
 
 def tree_marker_prose_verdict(quoted, total, n_courses, full_n=None):
@@ -5568,23 +5650,30 @@ def tree_marker_prose_verdict(quoted, total, n_courses, full_n=None):
 # (label, quoted, total, n_courses, must_complain). Figures written with _ separators on purpose: the
 # watcher this table is about greps its two target docstrings for a comma-formatted 6x,xxx literal, and
 # a table full of those would be noise if the regex ever widened to the module.
+# The "full corpus" rows are written at TREE_BEARING_COURSES rather than at a literal count: that
+# constant is what tree_marker_prose_verdict compares against, and the rows exist to exercise the
+# branch on EITHER side of it. Hard-coding 11 made every one of them a partial-corpus row the moment a
+# 12th tree-bearing course was added, which silently retired the full-corpus half of this table --
+# including the stale-HIGH row, the one the water filter actually caused.
 TREE_PROSE_VERDICT_TABLE = [
-    ("the full corpus, prose agrees", {66_123}, 66_123, 11, False),
-    ("the full corpus, prose stale HIGH -- what the water filter caused", {66_738}, 66_123, 11, True),
-    ("the full corpus, prose stale LOW", {66_000}, 66_123, 11, True),
-    ("more courses than the census expects, prose agrees", {66_123}, 66_123, 12, False),
+    ("the full corpus, prose agrees", {66_123}, 66_123, TREE_BEARING_COURSES, False),
+    ("the full corpus, prose stale HIGH -- what the water filter caused", {66_738}, 66_123,
+     TREE_BEARING_COURSES, True),
+    ("the full corpus, prose stale LOW", {66_000}, 66_123, TREE_BEARING_COURSES, True),
+    ("more courses than the census expects, prose agrees", {66_123}, 66_123,
+     TREE_BEARING_COURSES + 1, False),
     ("a partial sweep the prose could still be right about", {66_123}, 40_000, 7, False),
     ("a partial sweep already PAST the published figure -- unwatched before", {66_123}, 66_500, 7,
      True),
     ("a partial sweep exactly at the published figure", {66_123}, 66_123, 7, False),
-    ("no figure quoted at all, full corpus", set(), 66_123, 11, True),
+    ("no figure quoted at all, full corpus", set(), 66_123, TREE_BEARING_COURSES, True),
     ("no figure quoted at all, partial corpus -- unwatched before", set(), 40_000, 7, True),
-    ("two different figures quoted", {66_123, 66_500}, 66_123, 11, True),
+    ("two different figures quoted", {66_123, 66_500}, 66_123, TREE_BEARING_COURSES, True),
 ]
 
 
 def test_the_tree_marker_prose_watcher_is_not_asleep_on_a_partial_corpus():
-    """The watcher over the corpus-wide tree-marker figure ran only when all 11 courses were present.
+    """The watcher over the corpus-wide tree-marker figure ran only when every course was present.
 
     Everywhere else in this suite a corpus-dependent check is marked @needs_corpus so a partial run
     SKIPS visibly. This one was an `if` in the middle of a test that keeps running, so on a partial
@@ -5667,7 +5756,7 @@ def test_no_tree_marker_sits_on_a_playing_surface():
     independently, with a fresh point-in-polygon over osm_course.json rather than by calling the
     function that did the filtering, so a fault in that function cannot vouch for itself.
 
-    68,257 markers across 11 courses, zero on a green, fairway, tee or bunker.
+    75,840 markers across 12 courses, zero on a green, fairway, tee or bunker.
     """
     def inside(px, py, poly):
         c, n = False, len(poly)
@@ -5746,7 +5835,19 @@ def test_no_tree_marker_sits_on_a_playing_surface():
     for fn in ("test_no_tree_marker_sits_on_a_playing_surface",
                "test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one"):
         prose = _func_prose(os.path.join(ROOT, "tests", "test_phase1_regressions.py"), fn)
-        quoted = {int(x.replace(",", "")) for x in re.findall(r"\b(6[0-9],[0-9]{3})\b", prose)}
+        # The corpus-wide marker figure, as a comma-formatted five-digit literal. The pattern used
+        # to be `6[0-9],[0-9]{3}` -- pinned to the sixty-thousands the corpus happened to hold -- so a
+        # 13th course carrying the sweep into the seventy-thousands made it match NOTHING, and the
+        # watcher's own "exactly one figure" arity check fired instead of the staleness it exists to
+        # report. A number the prose cannot state is not a number this can grade. Widened to any
+        # five-digit comma literal, the shape this figure has had in every round, which stays clear of
+        # the four-digit per-course counts quoted beside it (Merion's own marker total).
+        #
+        # NO COMMA-FORMATTED LITERAL MAY APPEAR IN THIS COMMENT: `prose` is the whole docstring of the
+        # function being graded, and any example written here in that form would be read as a second
+        # quoted figure and trip the arity check. That is not hypothetical -- it happened while this
+        # comment was being written.
+        quoted = {int(x.replace(",", "")) for x in re.findall(r"\b([1-9][0-9],[0-9]{3})\b", prose)}
         complaint = tree_marker_prose_verdict(quoted, total, len(seen))
         assert complaint is None, f"{fn} {complaint}"
 
@@ -6542,6 +6643,13 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
       * every package requirements.txt declares, INCLUDING the "# OPTIONAL:" ones, has a row;
       * the tracked-file count the document publishes is the count git reports.
 
+    THAT COUNT IS NO LONGER TYPED. It went stale three times in one day -- a round that adds any
+    tracked file moves it, and none of those rounds was about this document -- so the sentence is
+    generated: `python3 tools/gen_repo_figures.py` republishes it from the same `git ls-files`, and
+    `--check` refuses to say "up to date" while it is wrong. This test keeps counting for itself and
+    pins the generator's answer to its own, so the two cannot disagree and leave that command reporting
+    a clean tree while this is red.
+
     Versions are deliberately NOT asserted. The document records what was verified from installed
     metadata on one machine; requiring the reader's numpy to match would fail the suite for having a
     newer package, which is the machine-pinned-calibration defect this file has fixed five times over.
@@ -6589,7 +6697,22 @@ def test_the_software_licence_record_matches_the_repo_it_describes():
     assert int(said.group(1)) == len(tracked), (
         f"legal/10 publishes {said.group(1)} tracked files; git reports {len(tracked)}. The document "
         f"is a legal record of what this repository redistributes, and it is the only one in legal/ "
-        f"with nothing checking it -- which is why it drifted unnoticed for two rounds.")
+        f"with nothing checking it -- which is why it drifted unnoticed for two rounds.\n"
+        f"  DO NOT RETYPE THE NUMBER. It is generated: run\n"
+        f"    python3 tools/gen_repo_figures.py\n"
+        f"  which rewrites that one sentence from `git ls-files` and leaves the rest of the record "
+        f"alone. Stage a new file first -- git counts the index, so an unstaged file is not tracked "
+        f"yet and republishing before `git add` writes a figure that goes stale as you stage it.")
+    # ...and the generator agrees with the count taken here. One figure, two derivations, pinned equal:
+    # without this, a generator that read the wrong thing would report the record clean while the
+    # assertion above stayed red, which is the position the hand-typed count left three times over.
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import gen_repo_figures
+    assert gen_repo_figures.tracked_files() == len(tracked), (
+        f"tools/gen_repo_figures.py derives {gen_repo_figures.tracked_files()} tracked files and this "
+        f"test counts {len(tracked)} from the same `git ls-files`. The tool writes the sentence this "
+        f"test grades, so a disagreement means `--check` can call legal/10 up to date while this fails "
+        f"-- fix the tool, not the number.")
 
 
 # WHAT "NOT INSTALLED HERE" RAISES. `importlib.metadata.PackageNotFoundError` does NOT subclass
@@ -8074,9 +8197,9 @@ def test_a_printed_carry_never_overstates_what_it_clears():
 
       * Too SHORT is only safe if the card does not promise otherwise, and it used to. The guide said
         "Clearing it needs more than N", which is false where the sand is long:
-        the-reserve 16 prints "carry 177" for sand occupying the line out to 322 yd, so clearing it
-        needs 322. Sand runs a
-        median 23 yd past the printed number and up to 145. The number is right -- it is where the sand
+        the-reserve 16 prints "carry 177" for sand occupying the line out to 321 yd, so clearing it
+        needs 321. Sand runs a
+        median 24 yd past the printed number and up to 144. The number is right -- it is where the sand
         starts -- so the sentence was corrected rather than the figure.
 
         THAT EXAMPLE HAS NOW GONE STALE THREE TIMES, AND IS NO LONGER WRITTEN DOWN. It was
@@ -8093,9 +8216,9 @@ def test_a_printed_carry_never_overstates_what_it_clears():
         below. Nothing here has to be maintained: when the corpus moves, the failure names the card
         that replaced it.
 
-        THE 145 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
+        THE 144 IS NEW AND IT IS THE POINT OF THE EDGE RULE. Moving sand selection off the centroid
         (see render_hole.edge_within) gave the-reserve 16 the 3,562 m^2 waste bunker it had been
-        printing blank ground over, and that card now prints "carry 177" for sand running to 322 -- 145
+        printing blank ground over, and that card now prints "carry 177" for sand running to 321 -- 144
         yd of it. The old worst was philadelphia 1's 95. A card that draws more of the sand it always
         had needs the hedge MORE, not less.
 
@@ -8122,7 +8245,7 @@ def test_a_printed_carry_never_overstates_what_it_clears():
             html = fh.read()
         assert "where fairway sand <b>starts</b>" in html and "can run well past N" in html, (
             f"{ref}: the guide no longer says the sand can run past the printed carry -- "
-            f"on the-reserve 16 that is 145 yd of unstated sand")
+            f"on the-reserve 16 that is 144 yd of unstated sand")
         cfg, rh = _engine(ref)
         try:
             course, geom = rh.load()
@@ -8265,12 +8388,165 @@ def test_a_printed_carry_never_overstates_what_it_clears():
 
 
 @needs_corpus
+def test_both_yd_from_the_back_tee_figures_on_a_card_come_from_one_origin():
+    """A card prints two things "from the back tee". They were measured from two different tees.
+
+    The FROM-TEE GUTTER derives its number by distributing the card's own yardage along the drawn line:
+    `ft_exact = total_yd * arc_from_tee / arc_m`. The CARRY measured the same kind of distance straight off
+    the drawn geometry with no such correction -- `tee_shift_yd` is 0 for every hole that satisfies
+    `tee_ok`, and tee_ok's tolerance is max(15 yd, 5%). So up to 25 yd of origin disagreement passed while
+    the carry printed to the yard, on cards whose legend says "carry N = yd from the back tee" and whose
+    right-hand gutter says "from the tee (walked)". Measured on trump-national-los-angeles: hole 6 printed
+    carry 269 where its own gutter scale gives 275.6, hole 18 172 against 177.7, hole 3 115 against 118.8,
+    hole 5 245 against 240.9 and hole 7 202 against 200.9. Hole 10 was the only card on that course that
+    got a shift at all -- it runs from a forward tee -- and the only one internally consistent.
+
+    Corpus-wide, 125 printed carries sit on tee_ok holes whose drawn line disagrees with the card, and 46
+    of them sit on holes drawn LONGER than the card, where measuring straight off the geometry reads LONG.
+    That is the direction test_a_printed_carry_never_overstates_what_it_clears exists to forbid, and no
+    test graded it, because that test's own ground truth is the same unshifted geometry the engine used.
+
+    THE ORIGIN THIS ASSERTS IS THE GUTTER'S, held to the conservative side. Both figures start from the
+    drawn line's own start; what differed was the model of where the back tee sits relative to it, and the
+    gutter's model is the better one for a tee_ok hole -- on this course every hole's line starts INSIDE a
+    mapped tee polygon (start_at_tee_m is 0.0 on all 18) with the back-tee complex reaching only 3.0-19.0
+    yd behind that start, while the card-versus-arc gap runs to 22 yd. The gap is therefore not AT the tee;
+    it is the mapped centreline cutting a route the card's yardage follows, spread along the hole, which is
+    the case render_hole already describes for castlewood-valley 10 and the case a proportional
+    distribution is the model for.
+
+    Held to the conservative side because too long is the dangerous direction: a junior who believes an
+    overstated carry aims at a hazard. So the scale a carry takes is `min(1, card/arc)` -- it may shorten a
+    carry and never lengthen one. render_hole had already refused a card-derived origin for the carries in
+    the other direction and for this exact reason (see its note on merion 3, where propagating par3_exact's
+    origin would have printed 205 for sand the mapped geometry puts at 184), and this keeps that refusal
+    while removing the two-origin card.
+
+    WHAT IS ASSERTED, per printed carry, in the engine's own frame:
+
+      * the published scale is the closed form `min(1, card/arc)` on a tee_ok hole and 1.0 otherwise, and
+        the published shift is `card - arc` on a forward/past-tee hole and 0.0 otherwise -- each to within
+        the 0.5 yd that `info["arc_yd"]`'s rounding can explain, since the engine builds both from the
+        unrounded arc. Graded the way `carry_origin_known` is, so neither field can drift from the rule it
+        names;
+      * the scale is never above 1.0, which IS the conservative direction stated as a value;
+      * every printed edge is that scale and that shift applied to the along-chord edge of a bunker the
+        engine actually selected. That is the frame check: a printed carry no selected sand reproduces
+        under the card's own frame is a figure from some other origin. Both fields have to come from the
+        card rather than be recomputed here -- rebuilding either from the published integer arc is up to
+        0.5 yd out, which is enough to move a rounded carry by one.
+    """
+    import math
+    problems, missing, checked, seen_courses = [], [], 0, collections.Counter()
+    for ref in CORPUS:
+        cfg, rh = _engine(ref)
+        try:
+            course, geom = rh.load()
+        except Exception:
+            continue
+        import geo
+        loc = cfg.COURSE.get("location") or {}
+        try:
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except SystemExit:
+            continue
+        greens = [e for e in geom
+                  if (e.get("tags") or {}).get("golf") == "green" and e.get("geometry")]
+        bunkers = [g for g in course
+                   if (g.get("tags") or {}).get("golf") == "bunker" and g.get("geometry")]
+        for hn, hole in sorted(lines.items()):
+            line = hole["geometry"]
+            try:
+                _green, gend, tend = geo.match_green(line, greens)
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception:
+                continue
+            card, arc = info["card_yd"], info["arc_yd"]
+            spans = info["line_spans"]
+            scale = info.get("carry_from_tee_scale")
+            shift = info.get("carry_tee_shift_yd")
+            if scale is None or shift is None:
+                missing.append(f"{ref} hole {hn}")
+                continue
+            # BOTH halves of the frame come from the card, not from a reconstruction. `arc_yd` in `info`
+            # is ROUNDED, and the engine builds its scale and its shift from the unrounded arc, so a test
+            # that recomputes either from the published integer is up to 0.5 yd out -- which is exactly
+            # enough to move a rounded carry by one and was the first thing this test got wrong. The
+            # closed forms are still graded below, with that rounding as the stated allowance.
+            want_shift = (card - arc) if (info["fwd_tee"] or info["past_tee"]) else 0.0
+            want = min(1.0, card / (arc or 1)) if spans else 1.0
+            # d(card/arc)/d(arc) * 0.5 is the whole allowance, derived rather than picked.
+            allow = card * 0.5 / max((arc or 1) ** 2, 1) + 1e-9
+            if abs(shift - want_shift) > 0.5 + 1e-9:
+                problems.append(
+                    f"{ref} hole {hn}: carry_tee_shift_yd is {shift:+.3f} where the card ({card}) and the "
+                    f"drawn line ({arc}) give {want_shift:+.1f} (fwd={info['fwd_tee']}, "
+                    f"past={info['past_tee']}) -- beyond the 0.5 yd the arc rounding can explain")
+            if scale > 1.0 + 1e-12:
+                problems.append(
+                    f"{ref} hole {hn}: carry_from_tee_scale is {scale!r} -- above 1.0, so a printed "
+                    f"carry is being LENGTHENED off the drawn geometry. Too long is the dangerous "
+                    f"direction; the scale may only shorten")
+            if abs(scale - want) > allow:
+                problems.append(
+                    f"{ref} hole {hn}: carry_from_tee_scale is {scale:.6f} but the card ({card} yd) and "
+                    f"the drawn line ({arc} yd, spans={spans}) give min(1, card/arc) = {want:.6f} "
+                    f"(allowance {allow:.6f} for the arc rounding)")
+            carries = info.get("carries") or []
+            if not carries:
+                continue
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+            def em(la, lo, _a=la0, _o=lo0):
+                return ((lo - _o) * _mlon(_a), (la - _a) * _mlat(_a))
+            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
+            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
+            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
+            edges = []
+            for g in _sand_the_engine_sees(rh, em, line, bunkers):
+                al = [((em(q["lat"], q["lon"])[0] - tee[0]) * ux
+                       + (em(q["lat"], q["lon"])[1] - tee[1]) * uy) / 0.9144
+                      for q in g["geometry"]]
+                if al:
+                    edges.append((min(al), max(al)))
+            for near, far in carries:
+                checked += 1
+                seen_courses[ref] += 1
+                if not any(round(a * scale + shift) == near for a, _b in edges):
+                    problems.append(
+                        f"{ref} hole {hn}: prints carry {near}, which is not the along-chord near edge of "
+                        f"any sand this card selects put through the card's own from-tee scale "
+                        f"({scale:.5f}) and shift ({shift:+.1f}). Nearest candidates: "
+                        f"{sorted(round(a * scale + shift, 1) for a, _b in edges)[:6]} -- so the two "
+                        f"'yd from the back tee' figures on this card come from different origins")
+                if not any(round(b * scale + shift) == far for _a, b in edges):
+                    problems.append(
+                        f"{ref} hole {hn}: the far edge {far} of a printed carry window is not any "
+                        f"selected bunker's far edge under this card's scale ({scale:.5f}) and shift "
+                        f"({shift:+.1f}) -- the window's two ends are in different frames")
+    assert not missing, (
+        f"render_hole publishes no `carry_from_tee_scale` on {len(missing)} card(s) ({missing[:4]}), so "
+        f"nothing on the card can say which origin its printed carries were measured from. The scale a "
+        f"carry takes has to be published for the same reason green_gap_yd and carry_origin_known are: a "
+        f"test that grades the origin cannot re-derive this frame's chord basis and tee shift without "
+        f"becoming a second copy of them")
+    assert checked >= 50, f"only {checked} printed carries examined -- build the books first"
+    assert_no_course_skipped(
+        seen_courses, "test_both_yd_from_the_back_tee_figures_on_a_card_come_from_one_origin",
+        exempt={"bay-view-golf-club": "prints no carry on any hole -- nothing for this test to check"})
+    assert not problems, (
+        f"{len(problems)} card(s) measure their two 'from the back tee' figures from different "
+        f"origins:\n  " + "\n  ".join(problems[:8])
+        + (f"\n  ...and {len(problems) - 8} more" if len(problems) > 8 else ""))
+
+
+@needs_corpus
 def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     """"carry N" means "fly N and land short of the green". Where the sand runs ON to the green there
     is nowhere to land, and the number invites a shot the hole does not have.
 
     render_hole had already made exactly this argument -- in the comment above its par-3 suppression,
-    about the-reserve 8 ("sand ending 2.24 yd short of the green front ... the near edge is the one
+    about the-reserve 8 ("sand ending 2.23 yd short of the green front ... the near edge is the one
     number on that card a player could act on and be wrong about") and merion 13. But it acted on PAR,
     and no part of that reasoning is a property of par. Re-measured over the 198 geometry cards after
     the WGS84 per-axis migration, SEVEN printed windows on seven PAR 4s had no landing area either --
@@ -8293,7 +8569,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
     test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to, which derives every one
     of them from the corpus and grades the prose in render_hole.py against them. By THIS test's measure
     the worst kept is 17.1187 yd (callippe 8) and the best dropped -0.8540 (monarch-bay 14); by the
-    rule's own, 8.8428 (castlewood-hill 10) and 6.1489 (micke-grove 13). Those read 8.4352 / -0.4795 and
+    rule's own, 8.8377 (castlewood-hill 10) and 6.1489 (micke-grove 13). Those read 8.4352 / -0.4795 and
     8.7456 / 3.4251 until micke-grove 13 stopped printing a carry -- it held BOTH worst-kept records.
 
     Only the FURTHEST printed window is checked here, because the merge already guarantees more than
@@ -8333,19 +8609,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
                 continue
             la0 = sum(q["lat"] for q in line) / len(line)
             lo0 = sum(q["lon"] for q in line) / len(line)
-            def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-            perp = (uy, -ux)
-            # The same signed tee-to-tee shift every printed carry is measured through -- derived from
-            # the card and the arc the engine published, not from a second copy of its rule.
-            shift = ((info["card_yd"] - info["arc_yd"])
-                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-            def along_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
+            em, _raw_yd, along_yd, off_m = _carry_frame(info, line, tend, gend)
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             near, far = carries[-1]                    # the sand nearest the green
             # THE WHOLE OBSTACLE, not the part the carry filters happened to admit. `reach` used to grow
@@ -8360,8 +8624,7 @@ def test_no_printed_carry_invites_a_lay_up_the_hole_has_no_room_for():
             spans = []
             for g in _sand_the_engine_sees(rh, em, line, bunkers):
                 al = [along_yd(q["lat"], q["lon"]) for q in g["geometry"]]
-                of = [abs((em(q["lat"], q["lon"])[0] - tee[0]) * perp[0]
-                          + (em(q["lat"], q["lon"])[1] - tee[1]) * perp[1]) for q in g["geometry"]]
+                of = [off_m(q["lat"], q["lon"]) for q in g["geometry"]]
                 if not al or min(of) > 30.0:
                     continue
                 spans.append((min(al), max(al)))
@@ -8443,23 +8706,12 @@ def test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept():
                 continue          # the two gates that null the whole carry row
             la0 = sum(q["lat"] for q in line) / len(line)
             lo0 = sum(q["lon"] for q in line) / len(line)
-
-            def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-            perp = (uy, -ux)
-            shift = ((info["card_yd"] - info["arc_yd"])
-                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-
-            def along_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
-
-            def off_m(la, lo):
-                e, n = em(la, lo)
-                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            # THE ENGINE'S FRAME, TAKEN FROM THE CARD -- see _carry_frame. This re-derives the landing
+            # rule, so it has to measure in the frame the rule measured in, and rebuilding that frame here
+            # was wrong twice over: the shift came from the ROUNDED `arc_yd` and so was up to 0.5 yd out,
+            # and the scale did not exist here at all, which reported castlewood-valley 1 as a truncated
+            # card when the engine had refused its 82 yd window on the 80 yd floor.
+            em, raw_yd, along_yd, off_m = _carry_frame(info, line, tend, gend)
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
             raw, greenside = [], []
@@ -8469,7 +8721,9 @@ def test_no_card_prints_a_carry_list_that_stops_before_the_sand_it_kept():
                 if not al:
                     continue
                 near, far = min(al), max(al)
-                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                # the 80-300 reach window on BOTH measures, as the engine applies it
+                near_raw = min(raw_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or []))
+                if not (80.0 <= near_raw <= 300.0) or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 (greenside if near > total - 40 else raw).append((near, far))
             raw.sort()
@@ -8520,8 +8774,11 @@ _REFUSED_TABLE_ROW = re.compile(
 # identically in the two files so one pattern reads both. The far edge and the CHAINED REACH are
 # different measurements: the reach is at or past the green front on all nine, the window's own far
 # edge on only four, and a sentence that named neither attached the reach's property to the edge.
+# The COUNT WORD after "of the" is read, not pinned: it moves with the corpus, and pinning it made a
+# 13th course report these claims MISSING rather than stale -- the reading that sends an editor looking
+# for a deleted sentence that is still on the page.
 _FAR_EDGE_CLAIM = re.compile(
-    r"at or past the green front on ([a-z]+) of the nine and short of it by up to "
+    r"at or past the green front on ([a-z]+) of the \w+ and short of it by up to "
     r"(\d+\.\d\d) yd on the other ([a-z]+)")
 _REACH_CLAIM = re.compile(r"every one of the ([a-z]+) REACHES at or past the green front")
 
@@ -8540,12 +8797,13 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
         merion 1          277.97-306.66  front 298.66   -8.00   reach 333.39  -34.74   keeps 172/212/245
         merion 10         226.72-284.12  front 253.45  -30.67   reach 284.12  -30.67   keeps 95/164
         castlewood-v 8    286.65-309.74  front 311.61   +1.87   reach 346.85  -35.24   keeps 195/250
-        copper-valley 3   293.56-312.39  front 315.69   +3.31   reach 327.41  -11.71   keeps 178
+        copper-valley 3   290.87-309.52  front 312.80   +3.28   reach 324.40  -11.61   keeps 176
         monarch-bay 14    273.28-283.35  front 286.78   -6.06   reach 287.63   -0.85   keeps 226
         callippe 12       272.34-293.33  front 293.60   -0.88   reach 324.16  -30.56   keeps nothing
-        micke-grove 3     293.83-309.26  front 296.77  -12.49   reach 309.26  -12.49   keeps nothing
+        micke-grove 3     292.50-307.86  front 295.43  -12.44   reach 307.86  -12.44   keeps nothing
         micke-grove 13    206.71-289.69  front 298.44   +6.15   reach 306.14   -7.70   keeps nothing
-        philadelphia 1    212.11-306.99  front 299.42   -7.65   reach 328.90  -29.48   keeps nothing
+        philadelphia 1    204.71-296.28  front 288.98   -7.38   reach 317.44  -28.45   keeps nothing
+        trump-national 10 266.64-306.81  front 302.23   -4.58   reach 306.81   -4.58   keeps 220
 
     EVERY COLUMN OF THAT TABLE IS NOW DERIVED HERE, because six of the nine rows had gone stale and
     nothing read them. e0648c6 changed two of the metrics at once -- it bounded the landing area by the
@@ -8633,27 +8891,11 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 _svg, info = rh.render_hole(hn, cfg.HOLES)
             except Exception:
                 continue
-            la0 = sum(q["lat"] for q in line) / len(line)
-            lo0 = sum(q["lon"] for q in line) / len(line)
-
-            def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-            perp = (uy, -ux)
-            # The same signed shift every printed carry is measured through, taken from what the engine
-            # published rather than from a second copy of its rule.
-            shift = ((info["card_yd"] - info["arc_yd"])
-                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-
-            def along_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
-
-            def off_m(la, lo):
-                e, n = em(la, lo)
-                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            # The frame the engine published, in one place -- see _carry_frame. Both the tee shift and the
+            # from-tee SCALE come from the card; rebuilding either here left this loop grading a frame the
+            # engine had stopped using, which is how the table below came to record a "keeps" column the
+            # cards no longer print.
+            em, raw_yd, along_yd, off_m = _carry_frame(info, line, tend, gend)
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
             # The engine's own carry filters, re-derived from the OSM rings -- and from the engine's own
@@ -8666,7 +8908,8 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 if not al:
                     continue
                 near, far = min(al), max(al)
-                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                near_raw = min(raw_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or []))
+                if not (80.0 <= near_raw <= 300.0) or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 if near > total - 40:
                     greenside.append((near, far))
@@ -8695,10 +8938,36 @@ def test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green():
                 else:
                     keeps.append(a)
             par = cfg.HOLES[hn][0] if hn in cfg.HOLES else None
+            # THE SAND HAS TO ACTUALLY REACH THE GREEN, which is a second condition and not the one
+            # that refuses the window. `beyond - b <= CARRY_MERGE_GAP_YD` says there is nowhere to
+            # land; it does NOT say the sand runs on to the putting surface, and where the thing that
+            # comes next is more SAND rather than the green front the two part company. This test
+            # demanded the mark on every refusal and separately asserted the words were true, so on
+            # trump-national-los-angeles 16 -- refused on 5.13 yd of room, its sand stopping 5.13 yd
+            # short of the front -- it demanded a claim and then failed the same card for making it.
+            # Both halves are now the same condition, computed with the same chain the reach assertion
+            # below uses, over the same sand.
+            reach_to_green = False
+            if refused:
+                spans_all = []
+                for g in _sand_the_engine_sees(rh, em, line, bunkers):
+                    al = [along_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    of = [off_m(q["lat"], q["lon"]) for q in (g.get("geometry") or [])]
+                    if not al or min(of) > 30.0:
+                        continue
+                    spans_all.append((min(al), max(al)))
+                r, grew = max(b for _a, b in refused), True
+                while grew:
+                    grew = False
+                    for a0, b0 in spans_all:
+                        if a0 <= r + rh.CARRY_MERGE_GAP_YD and b0 > r:
+                            r, grew = b0, True
+                reach_to_green = r >= front
             # The two gates that already null the carries null the mark too: with no corroborated
             # origin the whole along-line frame is untrustworthy, and a par 3 has no lay-up decision
             # to refuse in the first place.
-            want = bool(refused) and bool(info.get("carry_origin_known")) and par != 3
+            want = (bool(refused) and reach_to_green
+                    and bool(info.get("carry_origin_known")) and par != 3)
             checked += 1
             seen_courses[ref] += 1
             for ed, byhole in editions.items():
@@ -8851,12 +9120,12 @@ _STALE_RESERVE8_SHORTFALL = re.compile(r"\bfour" + r"\s+" + r"yards\b", re.I)
 
 @needs_corpus
 def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
-    """the-reserve 8's sand was said to end FOUR YD short of its green front. It is 2.24.
+    """the-reserve 8's sand was said to end FOUR YD short of its green front. It is 2.23.
 
     That hole is the worked example for BOTH carry suppressions -- the par-3 rule and the landing rule --
     so its shortfall is quoted in four passages across render_hole.py and this file. The figure was right
     before the WGS84 per-axis migration; the same commit that re-measured every other number on that card
-    recorded 2.24 (218.03 - 215.79) and then repeated the old one in a NEW comment beside it. A figure
+    recorded 2.23 (217.11 - 214.88) and then repeated the old one in a NEW comment beside it. A figure
     four passages quote and nothing grades goes stale once and then propagates.
 
     Re-derived here from the OSM rings through the engine's own frame -- and from the engine's own sand,
@@ -8865,8 +9134,8 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
     the card does not draw. Required in every passage that states it, so the next migration cannot leave
     one behind.
 
-    Note what the number is and is not: 215.79 is the far edge of the window the CARRY FILTERS keep, so
-    2.24 yd is the shortfall of the printed decision. The full waste complex reaches 234.83 -- 16.81 yd
+    Note what the number is and is not: 214.88 is the far edge of the window the CARRY FILTERS keep, so
+    2.23 yd is the shortfall of the printed decision. The full waste complex reaches 233.85 -- 16.73 yd
     PAST the green front -- once the greenside sand `near_yd > total_yd - 40` drops is counted. Both are
     true of that hole and they answer different questions; the passages quote the first.
     """
@@ -8888,22 +9157,8 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
     la0 = sum(q["lat"] for q in hole) / len(hole)
     lo0 = sum(q["lon"] for q in hole) / len(hole)
 
-    def em(la, lo):
-        return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-    tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-    L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-    ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-    perp = (uy, -ux)
-    shift = ((info["card_yd"] - info["arc_yd"])
-             if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-
-    def along_yd(la, lo):
-        e, n = em(la, lo)
-        return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
-
-    def off_m(la, lo):
-        e, n = em(la, lo)
-        return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+    # One frame, taken from the card -- see _carry_frame.
+    em, raw_yd, along_yd, off_m = _carry_frame(info, hole, tend, gend)
     front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
     total = info["card_yd"]
     raw = []
@@ -8913,7 +9168,8 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
         if not al:
             continue
         near, far = min(al), max(al)
-        if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+        near_raw = min(raw_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or []))
+        if not (80.0 <= near_raw <= 300.0) or not (80.0 <= near <= 300.0) or min(of) > 30.0:
             continue
         if near > total - 40:
             continue
@@ -8955,7 +9211,10 @@ def test_the_reserve_8s_published_shortfall_is_the_figure_that_was_measured():
 _CARRY_FIGURE_COUNT_CLAIMS = (
     r"governing\s+(\d+)\s+printed figures",
     r"in charge of\s+(\d+)(?:\s+printed)?\s+figures",
-    r"\b128\s*->\s*(\d+)\b",
+    # The BEFORE side is not pinned: it is the pre-filter figure count, which moves with the corpus,
+    # and pinning 128 made this pattern match nothing once a 13th course moved it -- so the claim went
+    # UNCOUNTED and the arity floor below reported it deleted rather than stale.
+    r"\bCost: \d+ figures across \d+ of \d+ cards, \d+\s*->\s*(\d+)\b",
 )
 
 
@@ -9151,9 +9410,9 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     is still misleading, because there are TWO measures in play and it named neither:
 
       * THE RULE'S OWN -- `beyond = min(next merged window, greenside sand, green front)`, unrounded
-        edges. The worst kept window the rule can DECIDE is castlewood-hill 10 at 8.8428, bounded by
+        edges. The worst kept window the rule can DECIDE is castlewood-hill 10 at 8.8377, bounded by
         greenside sand, and the best dropped is micke-grove 13 at 6.1489. Margin over the 8.0 bound:
-        0.8428, and that is the thinner of the two, so it is the honest headline.
+        0.8377, and that is the thinner of the two, so it is the honest headline.
       * THE SUPPRESSION TEST'S -- last printed window only, `reach` seeded from the ROUNDED printed far
         edge and chained across strips of grass narrower than CARRY_MERGE_GAP_YD. Worst kept 17.1187
         (callippe 8), a margin of 9.1187.
@@ -9163,15 +9422,17 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     up to 290 costs 0.31 yd -- and that card stopped printing a carry when "the next sand" started
     counting the greenside sand `total_yd - 40` drops. The thinner measure changed hands with it.
 
-    AND THREE KEPT WINDOWS ARE TIGHTER THAN 8.8428, which the sentence's word "worst" denies:
-    copper-valley 17 (8.2538), merion 5 (8.5073), monarch-bay 2 (8.5827). All three are bounded by the
+    AND FOUR KEPT WINDOWS ARE TIGHTER THAN 8.8377, which the sentence's word "worst" denies:
+    copper-valley 17 (8.2538), merion 5 (8.5073), trump-national 14 (8.5661), monarch-bay 2 (8.5827).
+    All four are bounded by the
     NEXT MERGED WINDOW, and the merge guarantees a gap above CARRY_MERGE_GAP_YD between two merged
     windows by construction -- so they are tautological and can never be dropped. Greenside sand gets no
     such guarantee: it never entered the merge, which is why micke-grove 13 could sit at 6.1489. That is
-    exactly why the qualification matters: 8.8428 is the worst of the 82 KEPT windows the rule decides
-    and 8.2538 the worst of all 124 kept, and a reader cannot tell which claim was made.
+    exactly why the qualification matters: 8.8377 is the worst of the 92 KEPT windows the rule decides
+    and 8.2538 the worst of all 141 kept, and a reader cannot tell which claim was made.
 
-    IT SAID FOUR, AND THE FOURTH WAS A PHANTOM. This test used to take every `golf=bunker` way on the
+    IT ALSO SAID FOUR ONCE BEFORE, AND THAT FOURTH WAS A PHANTOM -- a different card from the real
+    trump-national 14 above, which is a 13th course this list predates. This test used to take every `golf=bunker` way on the
     course and apply only the along-line filters, skipping the corridor pre-filter that builds `bunkers`
     in render_hole -- so its population was a strict superset of the engine's, 144 merged windows against
     137, and micke-grove 11 grew a second window at 8.5031 out of two ways the engine never selects.
@@ -9191,12 +9452,13 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
     was never measured for this purpose -- and it should not now be replaced by a measured one, because
     there is nothing here to measure it against. The physical question is "is N yards a landing area for
     a junior's tee shot", which needs dispersion data this project does not have; inventing a number for
-    it would put a guess in charge of 119 printed figures, which is the move this codebase refuses
+    it would put a guess in charge of 134 printed figures, which is the move this codebase refuses
     everywhere else. What the corpus CAN say is that the decision is insensitive to the value: every
-    window the rule decides sits at 6.1489 or below, or 8.8428 or above, so any bound in that 2.6940 yd
+    window the rule decides sits at 6.1489 or below, or 8.8377 or above, so any bound in that 2.6889 yd
     gap produces the identical corpus outcome and 8.0 is not doing arithmetic anybody could tune. That
-    gap was 5.3205 yd wide before the greenside sand was counted, so the bound is MORE load-bearing than
-    it was, not less -- true either way, and it still decides no card. What
+    gap was WIDER before the greenside sand was counted as a bound, so the bound is MORE load-bearing
+    than it was, not less; that earlier width is not re-derivable from this tree and is left unstated
+    rather than restated. It still decides no card either way. What
     was missing was not a better number but a graded one -- so all of them are derived here, and a
     re-fetch that lands a window inside the gap fails HERE instead of quietly picking a side.
     """
@@ -9227,25 +9489,8 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                 _svg, info = rh.render_hole(hn, cfg.HOLES)
             except Exception:
                 continue
-            la0 = sum(q["lat"] for q in line) / len(line)
-            lo0 = sum(q["lon"] for q in line) / len(line)
-
-            def em(la, lo):
-                return ((lo - lo0) * rh.mlon(la0), (la - la0) * rh.mlat(la0))
-            tee = em(tend["lat"], tend["lon"]); gc = em(gend["lat"], gend["lon"])
-            L = math.hypot(gc[0] - tee[0], gc[1] - tee[1]) or 1.0
-            ux, uy = (gc[0] - tee[0]) / L, (gc[1] - tee[1]) / L
-            perp = (uy, -ux)
-            shift = ((info["card_yd"] - info["arc_yd"])
-                     if (info.get("fwd_tee") or info.get("past_tee")) else 0.0)
-
-            def along_yd(la, lo):
-                e, n = em(la, lo)
-                return ((e - tee[0]) * ux + (n - tee[1]) * uy) / 0.9144 + shift
-
-            def off_m(la, lo):
-                e, n = em(la, lo)
-                return abs((e - tee[0]) * perp[0] + (n - tee[1]) * perp[1])
+            # One frame, taken from the card -- see _carry_frame.
+            em, raw_yd, along_yd, off_m = _carry_frame(info, line, tend, gend)
             front = min(along_yd(q["lat"], q["lon"]) for q in green["geometry"])
             total = info["card_yd"]
             in_corr = _sand_the_engine_sees(rh, em, line, bunkers)
@@ -9256,7 +9501,8 @@ def test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to()
                 if not al:
                     continue
                 near, far = min(al), max(al)
-                if near - shift < 80.0 or not (80.0 <= near <= 300.0) or min(of) > 30.0:
+                near_raw = min(raw_yd(q["lat"], q["lon"]) for q in (g.get("geometry") or []))
+                if not (80.0 <= near_raw <= 300.0) or not (80.0 <= near <= 300.0) or min(of) > 30.0:
                     continue
                 if near > total - 40:
                     greenside.append((near, far))   # not a tee carry; still a bound on a lay-up
@@ -9863,14 +10109,14 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     Left is the STRAIGHT distance to the green centre -- the shot you actually have to hit. Right is
     the distance from the tee WALKED along the centreline, which is how a scorecard measures. Two
     different measures, so their sum is not the card. philadelphia 17 is the extreme: card 472, drawn
-    arc 441, and its 300-yd row reads 300 + 118 = 418. Both numbers are individually true. 65 of 252
+    arc 441, and its 300-yd row reads 300 + 118 = 418. Both numbers are individually true. 68 of 270
     cards have a row off by 10 yd or more.
 
     THE PRINTED LEGEND BLAMED THE DOGLEG, AND THE DATA SAYS OTHERWISE. It read "on a dogleg they do
     not add up", which tells a reader on a straight hole that their card should add up. Measured over
     the shipped books with the engine's own straightness rule (arc/chord <= 1.02, render_hole's
-    PAR3_STRAIGHT_MAX and WANDER_MAX): of the 809 printed pairs on STRAIGHT holes, 653 -- 81% -- do
-    not add up, by a median 3 yd, 214 of them by 5 or more and 62 by 10 or more. The worst is 28 yd on
+    PAR3_STRAIGHT_MAX and WANDER_MAX): of the 868 printed pairs on STRAIGHT holes, 701 -- 81% -- do
+    not add up, by a median 3 yd, 242 of them by 5 or more and 65 by 10 or more. The worst is 28 yd on
     philadelphia 12, whose arc/chord is 1.0015 AS PUBLISHED, and which is as straight as a traced
     centreline gets: 300 + 252 = 552 against a 580 card.
 
@@ -9888,10 +10134,10 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
     this docstring nothing asserted.) It is not a dogleg phenomenon at all. The legend named the cause
     instead -- two different measures -- and that was the SECOND wrong version of one sentence: on a
     straight par 3 render_hole computes the from-tee number AS card minus to-green, so those two are the
-    same measure and DO sum exactly, on 72 of the 74 printed par-3 pairs. It is now scoped to a par 4 or
+    same measure and DO sum exactly, on 81 of the 83 printed par-3 pairs. It is now scoped to a par 4 or
     5, where the two measures really do differ, and is shorter than either version it replaces. (The
-    mismatch is not even one-signed -- 125 of 1046 rows
-    sum HIGH, 750 low, 171 exactly. 18 of the 125 high rows sit on holes bent past 1.02, including
+    mismatch is not even one-signed -- 136 of 1118 rows
+    sum HIGH, 800 low, 182 exactly. 20 of the 136 high rows sit on holes bent past 1.02, including
     philadelphia 17 above, so "straight holes overshoot" is false too.)
 
     THE WORKED EXAMPLE READ "300 + 102 = 402" over a card that prints 118, and the count read 196
@@ -10054,7 +10300,7 @@ def test_the_two_gutter_numbers_are_the_two_things_the_card_says_they_are():
                 # the card by ~12), and bounding on the ARC failed too because the from-tee figure is
                 # scaled to the CARD, so on a hole drawn shorter than its card the pair exceeds the
                 # arc. Only the larger of the two is a real ceiling, and against it the whole corpus
-                # fits inside +4 yd.
+                # fits inside +9 yd.
                 #
                 # What was fitted was the slack beside it. The bound read `limit + 4`, and the 4 was
                 # the largest excess this corpus happens to realise -- callippe 1's +4 -- so the bound
@@ -10415,15 +10661,15 @@ def test_a_card_whose_green_edge_is_bank_says_so_beside_the_depth():
     already disclosing its 1.13 yd front bank while saying nothing about 3.06 yd at the back.
 
     THE DATUM IS NOT MOVED, and that is a measured decision rather than a preference. Three candidates,
-    all measured over the 198 shipped greens:
+    all measured over the 216 shipped greens:
 
-      * re-base on `S['putt']` (the natural suggestion): moves ALL 198 printed depths, median 2.74 yd,
+      * re-base on `S['putt']` (the natural suggestion): moves ALL 216 printed depths, median 2.75 yd,
         worst 9.64 (copper-valley 3, 30 -> 20). Most of that is not bank at all -- `putt` is
         `erode(mask, 3) & (slope <= 10)`, so it also trims 1.2 m of collar off BOTH ends of every
         green, which is a statistical device for fitting a plane and not a claim about where the green
         stops.
-      * trim only the leading steep run: moves 12 printed depths, worst 5.33.
-      * trim both ends: moves 28, worst 6.51.
+      * trim only the leading steep run: moves 17 printed depths, worst 5.33.
+      * trim both ends: moves 35, worst 6.51.
 
     ALL FOUR OF THOSE FIGURES ARE DERIVED BELOW, because two of them were wrong in both records at
     once. The median re-basing shift was published as 2.75; it is 2.7399. The both-ends trim was
@@ -10700,8 +10946,20 @@ def test_the_stated_green_depth_and_its_ladder_are_the_same_measurement():
             dm = re.search(r"(\d+)yd deep", blk)
             if not (hm and dm):
                 continue
-            rungs = [int(x) for x in re.findall(r'fill="#8a8a8a"[^>]*>(\d+)</text>', blk)]
+            rungs = [int(x) for x in _LADDER_RUNGS.findall(blk)]
             if not rungs:
+                # A green shallower than one rung draws no number, which is a real skip. A card that
+                # carries a ladder GROUP and yields no numbers is the selector having stopped matching,
+                # and that must never read as "this card has no ladder": the colour selector this used
+                # to carry -- fill="#8a8a8a" on a rung <text> -- matched nothing at all once 30a324f
+                # moved the ink onto the group, so every card fell through this `continue` and the only
+                # thing that spoke up was the coverage floor below, blaming a missing course.
+                if _LADDER_GROUP.search(blk):
+                    problems.append(
+                        f"{ref} hole {hm.group(1)}: the card carries a depth-ladder group but no rung "
+                        f"number was parsed out of it, so the selector has stopped matching the "
+                        f"engine's markup. Fix the selector -- do not let this read as a green with no "
+                        f"ladder, which is how a stale one skipped every card in the corpus")
                 continue
             checked += 1
             seen_courses[ref] += 1   # past the gates: counts WORK, not intent
@@ -10746,6 +11004,19 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
     median disagreement 0.02%, worst 1.10%. Bounded at 5% for glyph-centre and one-decimal rounding
     on rungs that can sit only ~15 pt apart; a genuine axis mix-up would show as a whole aspect
     ratio, far outside it.
+
+    THE LADDER'S INK IS READ FROM THE BOOK, NOT WRITTEN HERE -- see _ladder_ink. It was the literal
+    0x8a8a8a, and 30a324f moved it, so on a rebuilt PDF this test would have found no rungs at all,
+    skipped every slot on `len(rungs) < 3`, and then failed on its coverage floor with a message about
+    courses being skipped rather than about the ladder.
+
+    EXPECT SOMEWHAT FEWER CARDS AFTER THAT REBUILD, and it is the extractor and not this test. The ink
+    now sits under a white halo, so each rung is TWO overlapping runs, and PyMuPDF's `dict` extraction
+    drops some of the overlapped fill runs: 89 of 107 rung labels survived on an 18-green export from
+    this tree (83%). Cards carrying only 2 or 3 rungs can therefore fall under the three-rung gate --
+    16 of the corpus's 216 green cards are in that band -- which is why the floor below is stated with
+    room rather than at the card count. It is a coverage cost, not a loosened bound: every card that IS
+    compared is compared against the same 5%.
     """
     try:
         import fitz
@@ -10758,6 +11029,18 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
         pdf = os.path.join(ROOT, "courses", ref, "greenbook.pdf")
         if not os.path.exists(pdf):
             continue
+        # THE LADDER'S INK, READ FROM THE BOOK THIS PDF WAS PRINTED FROM. It was the literal 0x8a8a8a,
+        # which 30a324f changed -- so this test would have found no rungs at all in a rebuilt PDF, kept
+        # `continue`-ing on `len(rungs) < 3`, and failed on its coverage floor instead of on its subject.
+        # Reading the colour out of the HTML beside the PDF makes the test true of the artifact in front
+        # of it rather than of the one it wishes were there, on either side of a rebuild. See _ladder_ink.
+        html_p = os.path.splitext(pdf)[0] + ".html"
+        ink = _ladder_ink(open(html_p, encoding="utf-8").read()) if os.path.exists(html_p) else None
+        assert ink is not None, (
+            f"{ref}: the depth ladder's ink cannot be read out of greenbook.html, so this test cannot "
+            f"tell a rung from a slope label in the PDF beside it. Neither the group-fill nor the "
+            f"per-text-fill shape of the ladder markup is present -- teach _ladder_ink the new shape "
+            f"rather than letting the rung set come back empty")
         cfg, _rh = _engine(ref)
         cw, ch, gut = cfg.CARD_W_IN*72, cfg.CARD_H_IN*72, cfg.GUTTER_IN*72
         pw, ph = cfg.PAGE_W_IN*72, cfg.PAGE_H_IN*72
@@ -10787,7 +11070,7 @@ def test_the_scale_bar_and_the_depth_ladder_agree_on_a_yard():
                     rungs = sorted(((fitz.Rect(sp["bbox"]).y0 + fitz.Rect(sp["bbox"]).y1)/2,
                                     int(sp["text"].strip()))
                                    for sp in spans
-                                   if sp["text"].strip().isdigit() and sp["color"] == 0x8a8a8a
+                                   if sp["text"].strip().isdigit() and sp["color"] == ink
                                    and int(sp["text"].strip()) % 5 == 0
                                    and s.contains(fitz.Rect(sp["bbox"])))
                     rungs.sort(key=lambda t: t[1])
@@ -16176,11 +16459,22 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
 
     So discriminate the slope layer by FONT RESOURCE instead. Chrome emits each green's SVG text as its
     own Type3 font, and a green's slope labels therefore land in a resource of their own. A resource
-    holding only 1-2 digit values, at least one of them not a multiple of 5, is a slope-label set: the
-    ladder rungs and the gutter ticks are always multiples of 5, and the hole-map yardages are
-    3-digit, so neither can qualify. Measured across the corpus this isolates exactly 252 resources --
-    one per green card, 198 pocket + 54 enlarged -- with a maximum value of 10, the cap. Nothing is
-    intersected with the HTML, so a PDF that disagrees with its source is now visible here.
+    holding only 1-2 digit values is the candidate -- the hole-map yardages and the gutter's to-green
+    radii are 3-digit, so those are excluded arithmetically -- and the depth ladder, which shares the
+    1-2 digit shape, is removed by co-location with its own declared ink. Both steps, and the rules
+    tried and rejected, are argued where they are implemented in slope_label_sets below. That isolates
+    one resource per green card, 18 on every book in this corpus, with a maximum value of 10 -- the
+    engine's own cap. Nothing is intersected with the HTML, so a PDF that disagrees with its source is
+    now visible here.
+
+    AND IT HAS TO ACTUALLY RUN, which for the whole life of the halo it did not. The guard below --
+    every haloed ladder must be identified before any value is called a slope -- failed on the FIRST
+    book of the corpus, so the verdict at the bottom of this test had never once executed, for any
+    course, and the test was a persistent red that looked like a reader crash. The cause was the
+    co-location anchor, not the bound: it compared bounding boxes across two fonts with different
+    vertical metrics, which holds on an upright card and misses on a card rotated for the fold. Fixed by
+    anchoring on the glyph's baseline origin; the measurements are in slope_label_sets. Lowering the
+    guard instead would have reinstated exactly the silent pass this test was rewritten to end.
 
     Sibling coverage, so this test does not have to carry it: PDF-vs-HTML faithfulness is
     test_every_number_printed_in_a_pdf_exists_in_its_html, and staleness is
@@ -16192,19 +16486,83 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         pytest.skip("pymupdf not installed")
     PUTTING_PLAUSIBLE_MAX_PCT = 12
 
-    def slope_label_sets(path):
-        """{(page, font resource): {values}} for the runs that are a green's slope labels."""
-        by = {}
+    def slope_label_sets(path, ink):
+        """{(page, font resource): {values}} for the runs that are a green's slope labels.
+
+        `ink` is the colour THIS book draws its depth-ladder numbers in (see _ladder_ink), and it is
+        what separates the two haloed layers. Before 30a324f the ladder needed no separating: its
+        numbers were `stroke="none"` and so landed in a real font, never in a Type3 resource. Giving
+        them the white halo that carries the contrast fix makes Chrome emit a SECOND Type3 run for
+        them, and measured on an 18-green export from this tree that run carries {5,10,...,40} -- so
+        without this the flagged set becomes [15,20,25,30,35,40] and the test reports "unputtable
+        slopes" for depth-ladder rungs. A failure with the wrong diagnosis sends someone hunting a
+        slope defect that does not exist.
+
+        The two runs of one rung are matched on the glyph's BASELINE ORIGIN, which is the placement
+        point Chrome writes for both passes, and not on the span's bounding box -- see the block below
+        for what that cost when it was the bbox.
+        """
+        by, origins, ladder_at = {}, {}, []
         with fitz.open(path) as d:
             for pg in d:
                 for blk in pg.get_text("rawdict")["blocks"]:
                     for ln in blk.get("lines", []):
                         for sp in ln.get("spans", []):
+                            txt = "".join(c.get("c", "") for c in sp.get("chars", [])).strip()
+                            if not re.fullmatch(r"\d{1,3}", txt):
+                                continue
+                            x, y = round(sp["origin"][0], 1), round(sp["origin"][1], 1)
+                            # the ladder's own ink: the fill run under a rung's halo
+                            if sp.get("color") == ink:
+                                ladder_at.append((pg.number, x, y, txt))
+                                continue
                             if "Type3" not in sp.get("font", ""):
                                 continue
-                            txt = "".join(c.get("c", "") for c in sp.get("chars", [])).strip()
-                            if re.fullmatch(r"\d{1,3}", txt):
-                                by.setdefault((pg.number, sp["font"]), set()).add(int(txt))
+                            key = (pg.number, sp["font"])
+                            by.setdefault(key, set()).add(int(txt))
+                            origins.setdefault(key, []).append((x, y, txt))
+        # A Type3 resource is the LADDER when one of its glyphs is painted over by the ladder's own ink
+        # at the same place. Decided per RESOURCE and not per glyph: `rawdict` drops one of the
+        # overlapped fill runs per ladder, so one match has to be enough, and a resource is per green
+        # card so this cannot over-reach into another card's layer.
+        #
+        # "AT THE SAME PLACE" IS THE BASELINE ORIGIN, NOT THE BOUNDING BOX, and that distinction is the
+        # whole mechanism. Keyed on `bbox` this matched 9 of 18 ladders in every pocket book -- never
+        # more, never fewer -- and 0 of 18 in all three coach books, so the guard below fired on the
+        # first book in the corpus and the verdict at the end of this test had never once executed. The
+        # two runs of a rung come from different fonts: the halo is a Type3 resource (ascender 0.845,
+        # descender -0.144) and the fill is HelveticaNeue (0.951, -0.212). Different vertical metrics
+        # mean their boxes never coincide, and the offset between the two tops is not even constant in
+        # sign: measured on bay-view, +0.10x the glyph size where the card is upright and -0.64x where
+        # the card is rotated 180 degrees for the fold, i.e. 3.7-5.0 pt at these sizes, past any
+        # tolerance loose enough to still be a co-location test. A pocket book lays out exactly half its
+        # 18 green cards rotated (bay-view: pages 0/2/4 upright, 1/3/5 flipped, 9 cards each) and a
+        # coach book rotates every green page -- which is the whole of "exactly 9 of 18" and "0 of 18".
+        # The ORIGIN is the pen position Chrome emits for both passes, and it does not depend on either
+        # font's metrics or on the card's rotation: of the 1200 rungs in this corpus whose halo and fill
+        # runs BOTH survive extraction, all 1200 report bit-identical origins. So the tolerance here is
+        # tight rather than generous.
+        #
+        # WHY CO-LOCATION AND NOT THE OTHER THREE CANDIDATES. Span SIZE separates them arithmetically --
+        # a rung run is 3.4/4.6 of its own card's slope run, measured within 0.2% on all 270 cards -- but
+        # only when both exist, and a green with rungs and no slope label would then be read as a slope
+        # layer, which is the misleading direction. Intersecting with `html_slopes` is the very thing
+        # this test removed: it made a PDF accusable only of printing a slope its HTML also printed, so a
+        # stale export could not be caught. Reading the two layers from a source that does not coalesce
+        # -- `page.get_texttrace()`, which does return all 82 of bay-view's rungs against rawdict's 64 --
+        # is DISQUALIFIED here for a reason outside this test's control: on PyMuPDF 1.27.2.2 it aborts
+        # the interpreter with `Fatal Python error: none_dealloc` partway through this corpus
+        # (reproducibly on micke-grove, the 8th PDF), which would take the whole suite down rather than
+        # fail one test. Co-location leans on none of them: it reads the ladder's declared ink and the
+        # fact that a stroked glyph is painted twice in one place, and the verdict stays read from the
+        # PDF alone.
+        ladder = set()
+        for key, pts in origins.items():
+            if any(key[0] == pn and abs(x - lx) < 0.2 and abs(y - ly) < 0.2 and t == lt
+                   for x, y, t in pts for pn, lx, ly, lt in ladder_at):
+                ladder.add(key)
+        by = {k: v for k, v in by.items() if k not in ladder}
+        _found_ladders.append(len(ladder))
         # `all(x < 100)` alone. An earlier version also required at least one value not a multiple of
         # 5, on the theory that ladder rungs and gutter ticks are always multiples. Measured, that
         # clause excluded 0 of 252 resources -- zero discriminating power -- while carrying all the
@@ -16214,10 +16572,14 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         # 5 -- so the clause was precisely wrong for the case it was written for. Two live cards are one
         # glyph from it: callippe p4 is {5,6} and castlewood-hill p1 is {3,5}.
         #
-        # The real discriminators are the two structural facts: the ladder rungs are drawn with
-        # stroke="none" and land in a Type0 font, so they never enter this dict at all; and the gutter
-        # resource always carries a 3-digit to-green radius alongside its 1-2 digit from-tee number, so
-        # all(x < 100) excludes it.
+        # The other structural discriminator is the gutter's: its resource always carries a 3-digit
+        # to-green radius alongside its 1-2 digit from-tee number, so all(x < 100) excludes it.
+        #
+        # THIS PARAGRAPH USED TO NAME A THIRD, and it was true only because of a defect: "the ladder
+        # rungs are drawn with stroke='none' and land in a Type0 font, so they never enter this dict at
+        # all". They were stroke="none" BECAUSE they sat inside the dashed-line group and could not
+        # carry a halo, which is what made them the faintest data on the card. The moment that was fixed
+        # they entered this dict, and the separation above had to be built.
         return {k: v for k, v in by.items() if all(x < 100 for x in v)}
 
     checked = 0
@@ -16227,11 +16589,42 @@ def test_no_shipped_pdf_prints_an_unputtable_slope():
         html = os.path.splitext(pdf)[0] + ".html"
         if not os.path.exists(html):
             continue
+        _found_ladders = []
         html_slopes = {int(v) for v in re.findall(
             r'font-size="4\.6"[^>]*font-weight="700">(\d+)</text>', open(html, encoding="utf-8").read())}
         if not html_slopes:
             continue      # yardage-mode: the greens are deliberately blank, no slope labels exist
-        sets = slope_label_sets(pdf)
+        # The ladder's ink, from the book this PDF was printed from, and the number of haloed ladder
+        # groups that book carries -- one per green card that draws a rung. Both come from the artifact
+        # rather than from this file, so the pair moves together across a rebuild.
+        src = open(html, encoding="utf-8").read()
+        ink = _ladder_ink(src)
+        assert ink is not None, (
+            f"{os.path.relpath(pdf, ROOT)}: the depth ladder's ink cannot be read out of the HTML "
+            f"beside it, so the ladder layer cannot be told from the slope layer in the PDF. Teach "
+            f"_ladder_ink the new markup shape -- do not let the ladder's rungs be reported as slopes")
+        n_haloed = len(_LADDER_GROUP.findall(src))
+        sets = slope_label_sets(pdf, ink)
+        # A HALOED LADDER MUST HAVE BEEN FOUND AND REMOVED. Without this, a discriminator that stopped
+        # matching would hand every rung value straight to the verdict below and report a green's 15, 20,
+        # 25... as unputtable slopes -- a failure with the wrong diagnosis, which is worse than a clean
+        # one. Self-activating: a pre-halo book carries no such group, so `n_haloed` is 0 and this is
+        # inert; measured on every shipped book in this corpus, 18 groups in the source give exactly 18
+        # identified resources, so equality is what the mechanism actually delivers.
+        #
+        # WHAT IT COSTS AND WHERE IT IS THIN, measured rather than assumed. `rawdict` drops exactly one
+        # of each ladder's fill runs, and always the same one: the `5` rung, 270 of them across the 15
+        # slope-bearing books, 18 per book -- one per green, deterministic, not sampled. Every other rung
+        # keeps its fill run, so a resource is identified by 2-7 co-located rungs and has that much
+        # margin. ONE resource in the corpus has margin 1: micke-grove page 0, a green shallow enough to
+        # draw only {5, 10}, whose `5` is the dropped one. If a future export loses that rung's fill run
+        # too, this guard fires and names the book -- it does NOT quietly hand {5, 10} to the verdict,
+        # and neither value could trip it anyway. That is the intended direction of failure.
+        assert _found_ladders and _found_ladders[0] >= n_haloed, (
+            f"{os.path.relpath(pdf, ROOT)}: the HTML carries {n_haloed} haloed depth-ladder group(s) but "
+            f"only {_found_ladders[0] if _found_ladders else 0} ladder font resource(s) were identified "
+            f"in the PDF, so the depth ladder is NOT being separated from the slope labels. Whatever "
+            f"this test reports below would be rung numbers, not slopes -- fix the separation first.")
         # One resource per green card, so the count is a floor on having found the layer at all. A
         # rewrite that stops emitting per-green fonts, or a discriminator that stops matching, would
         # otherwise silently examine nothing and pass.
@@ -18518,7 +18911,7 @@ def test_each_card_footer_matches_its_own_map():
             #
             # A watercourse is split into several OSM ways at every road crossing and tag change, and
             # those ways are drawn as separate joined polylines that a reader sees as ONE creek. So the
-            # footer counts distinct water (render_hole.watercourse_identity) while the map inks every
+            # footer counts distinct water (render_hole.water_identity) while the map inks every
             # segment, and demanding equality here would force the footer back to counting OSM ways --
             # which is how copper-valley 11 came to print "7W" for two NHD reaches and merion 13 "2W"
             # for two ways both named Cobbs Creek.
@@ -21295,7 +21688,7 @@ def test_fetch_trees_refuses_to_replace_a_tree_layer_with_an_empty_one(tmp_path)
     """A tree fetch that comes back with NOTHING overwrote the stored layer and said nothing a book
     could see.
 
-    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 68,257 project-wide.
+    trees_lidar.json is the only record of the canopy: 5,086 markers on Merion, 75,840 project-wide.
     A re-run can legitimately return zero for reasons that have nothing to do with the trees being
     gone -- a wrong "lidar_crs" projects every point out of its corridor, an osm_geom.json that lost
     its golf=hole ways leaves `hlines` empty, tiles that carry no class-2 return are skipped one by
@@ -22254,7 +22647,7 @@ def test_provenance_does_not_invent_a_reason_a_hole_prints_no_height():
 # this table against the point cloud.
 TEE_SAMPLES_MEASURED = {
     ("bay-view", 3): (4581, 3.572, True),
-    ("bay-view", 16): (1129, 7.836, False),
+    ("bay-view", 16): (1073, 7.622, False),
     ("callippe-preserve", 11): (5068, 2.000, True),
     ("castlewood-hill", 9): (838, 2.755, True),
     ("castlewood-hill", 18): (150, 4.302, True),
@@ -22297,7 +22690,7 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
         flattest pad REFUSED     castlewood-hill 9, then merion 1, merion 11, bay-view 3,
                                  castlewood-hill 18, philadelphia 18
 
-    Measured over all 177 anchors that land on a mapped pad (172 of them carry ground returns; 5 more
+    Measured over all 194 anchors that land on a mapped pad (189 of them carry ground returns; 5 more
     anchors land in no ring and take the box) by running the shipped sampler; so the two rows either side
     of the line pin the constant into (2.13, 2.75] and this test fails if the gate is deleted, stubbed
     out, or the number is moved out of that band. It calls a PURE PREDICATE with recorded numbers -- it
@@ -22307,7 +22700,7 @@ def test_a_tee_pad_that_is_not_level_refuses_to_anchor_a_printed_height():
 
     The FALLBACK branch is asserted too, and asserted to be DIFFERENT: it gates on the count only,
     because there is no containment guarantee and the sampled disc legitimately reaches off a raised tee
-    onto the ground it sits above -- bay-view 16's disc spans 7.8 ft and is accepted on 1,129 returns.
+    onto the ground it sits above -- bay-view 16's disc spans 7.6 ft and is accepted on 1,073 returns.
     Applying the relief gate there would cost five more holes their height for a spread that is an
     artifact of the sampling region, not a property of the tee. What made that defensible rather than
     merely asserted is that the region was fixed instead: as a 15 m box that same sample spanned 31.9 ft
@@ -23860,16 +24253,20 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
     itself, and it is the wrong fix. The right one is to sample the fallback the way the pad branch is
     sampled: over a region the size of a teeing ground, centred on the anchor.
 
-    THE RADIUS IS MEASURED FROM THE CORPUS, not chosen. The pad branch samples the mapped ring
-    intersected with the window, and over all 177 mapped pads the median area of that region is about
-    113 m^2 (12.6% of the 900 m^2 box, which _tee_pads already publishes). A disc of the same area has
-    a radius of 6.0 m. That is the whole derivation, and this test re-runs it.
+    THE RADIUS IS MEASURED FROM THE CORPUS, not chosen, and it MOVES WITH IT. The pad branch samples
+    the mapped ring intersected with the window, and over all 194 mapped pads the median area of that
+    region is about 107 m^2 (11.9% of the 900 m^2 box, which _tee_pads already publishes). A disc of the
+    same area has a radius of 5.84 m. That is the whole derivation, and this test re-runs it. It read
+    177 pads, 113 m^2 and 6.0 m until a 13th course joined the median; the constant was re-typed with
+    it, which is what the failure text below asks for, and no printed integer moved.
 
     AND THE THRESHOLD IS SWEPT CONTINUOUSLY, because a discrete probe would have got this wrong. At
     {2.5, 5, 7.5, 10} m every one of the five looks settled; swept at 0.01 m, merion 9's printed
-    integer flips from 33 to 32 at 5.66 m -- 0.34 m below the shipped radius. That margin is published
+    integer flips from 33 to 32 at 5.66 m -- 0.18 m below the shipped radius. That margin is published
     and graded rather than left to be discovered, which is the same failure a headroom figure in this
     campaign already had (16x published against 10.5x measured, because the grader tested powers of two).
+    It is also the whole exposure of a corpus-derived radius: a 14th course that pulls the median below
+    5.66 m moves merion 9's printed height, and this is what makes that loud instead of silent.
 
     MEASURED COST: 2 of the 5 printed integers move. Both the value that leaves and the value that
     arrives are re-derived here from the point cloud -- neither is copied from the module or from the
@@ -23894,7 +24291,7 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
 
     # 1. THE RADIUS, re-derived from the pad branch's own sampled area. `share` is the fraction of the
     #    TEE_R_M box each mapped ring covers inside the window -- the same rasterisation _tee_pads
-    #    publishes 12.6% from -- so the area is share * the box's area, and no new measurement is needed.
+    #    publishes 11.9% from -- so the area is share * the box's area, and no new measurement is needed.
     box_area = (2 * fhe.TEE_R_M) ** 2
     areas = sorted(v * box_area for g in geom.values() for v in g["share"].values())
     want_r = math.sqrt(median(areas) / math.pi)
@@ -23926,7 +24323,7 @@ def test_the_fallback_tee_sample_is_the_ground_at_the_anchor_not_the_slope_aroun
     #    fallback row records `tee_points` and `tee_z_m`, and those are the producer's own outputs: a
     #    producer sampling the box would record the box's count and the box's median, and both are
     #    measured below and required to be the disc's. The count is the decisive discriminator -- the
-    #    disc holds 984-2211 returns against the box's 8384-17567, a 7.52-9.33x separation on all five --
+    #    disc holds 938-2102 returns against the box's 8384-17567, a 7.94-9.82x separation on all five --
     #    while the medians agree to within 0.01 m on 1 of the five (castlewood-hill 4, 0.0091 m) and to
     #    within 0.05 m on 3, so a z-only check would not have separated them on every hole. What this
     #    states is exactly what it checks: the region the producer SAMPLED, as recorded, is the disc. It
@@ -25038,7 +25435,7 @@ def test_tee_anchor_locates_the_back_tee_or_refuses():
       itself and printed an elevation change of about zero -- plausible-looking, not obviously wrong.
       No course exercises this, so the reversed line is built here explicitly.
 
-    * The mapped line stops short of the back tee on 19 of 198 holes, by up to 103 yd. Sampling there
+    * The mapped line stops short of the back tee on 20 of 216 holes, by up to 103 yd. Sampling there
       measures the fairway. A straight par 3 is recoverable by collinearity; a par 4/5 is not and must
       refuse. Merion 9 moved 11.5 ft (23.0 -> 34.5 ft below) once measured at the real tee, so this is
       not a rounding concern. (Was 22 holes and 138 yd, before valley-hi 17's 220 yd stub was replaced
@@ -25190,10 +25587,11 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     that sibling test now also fails if a book is missing from this sentence or if the date above the
     figures is older than a book file's own mtime. poppy-ridge is here for its SIZE only: it is
     yardage mode, so it is skipped by the reproducibility loop below, which is a separate claim.
-    CURRENT SIZES (2026-08-09): micke-grove 4,326,017; castlewood-hill 4,477,027;
-    merion 5,870,647; monarch-bay 4,934,430; copper-valley 6,084,531; callippe 6,816,742;
-    castlewood-valley 5,836,326; philadelphia 4,604,765; the-reserve 5,110,199;
-    bay-view 4,243,411; valley-hi 4,698,534; poppy-ridge 341,146.
+    CURRENT SIZES (2026-08-11): micke-grove 4,325,678; castlewood-hill 4,476,033;
+    merion 5,869,829; monarch-bay 4,932,913; copper-valley 6,083,617; callippe 6,815,854;
+    castlewood-valley 5,834,804; philadelphia 4,603,640; the-reserve 5,109,233;
+    bay-view 4,242,205; valley-hi 4,697,699; poppy-ridge 341,149;
+    trump-national-los-angeles 6,188,189.
     (Every pocket book lost the same 121 bytes on 2026-08-06: the two dead `.legend` stylesheet
     rules, the fossil of legend_panel() -- see generate.dedication_panel(). poppy-ridge lost 58
     net, those 121 less the 63 its conditional back-cover sentences added. micke-grove then gained 4
@@ -25202,8 +25600,132 @@ def test_cold_build_reproduces_every_book_byte_for_byte():
     Then callippe alone gained 18,480 on 2026-08-09 and the date above moved with it: 89c265b made
     `natural=wetland` a thing the query asks for and the map draws, so its book went from 2 filled
     water polygons to 31 and nine of its cards stopped printing "0W" over hand-mapped marsh 1.0-5.7 m
-    off the played line. Eleven books are still dated 2026-08-06 and are byte-identical; the DATE is
-    graded against every book's own mtime, so one course rebuilding moves it for the whole sentence.)
+    off the played line. Then trump-national-los-angeles was ADDED on 2026-08-10 at 6,126,408 bytes,
+    the corpus's largest book, and the date above moved with it -- a new course moves this date the
+    same way a rebuild does, because the date is graded against every book's own mtime.
+    THEN THE WHOLE CORPUS WAS REBUILT on 2026-08-10, which is why every figure above moved at once and
+    only one did not. A batch of engine fixes had landed and left all sixteen books stale: `golf=penalty_area`
+    is now drawn and counted, `golf=out_of_bounds` resolved, carries and the tick ladder unified on one
+    origin, the guide card asks for colour, and the depth ladder was re-inked for contrast. Twelve pocket
+    books and the three enlarged editions came DOWN by 816 to 1,747 bytes, all of it layout; the exception
+    is trump-national-los-angeles, which gained 61,047 because 34 of its hazards are penalty areas that
+    the renderer had been painting as trees and now draws and counts as hazards. poppy-ridge is the one book
+    whose bytes did not move AT ALL, and that is the honest answer rather than an oversight: it is yardage
+    mode with blank greens, so it has no drawn hazards, no depth ladder and no colour card for any of those
+    fixes to reach. Its 341,146 bytes are unchanged and its HTML is byte-identical.
+    THEN trump-national-los-angeles ALONE MOVED AGAIN, by +725 to 6,188,180, when that class was
+    corrected. `golf=penalty_area` is NOT `golf=water_hazard` renamed: the 2019 Rules of Golf replaced
+    that term and WIDENED it to any area a Committee marks, and all 34 of this course's are
+    `natural=scrub`. So they came out of the water blue and out of the footer W -- 91 W across 18 cards,
+    hole 14 reading "10W" over no water at all, down to 6 on holes 8, 9, 12, 13 and 16, which is the three
+    ponds and nothing else -- and into an ink, a legend row and a footer mark of their own. The third
+    feature to leave the W is way 845375656, a drainage line with 0.974 of its length inside two of
+    those penalty areas, which the card was already marking as brush. The
+    +955 is 84 fill/stroke attributes on the maps, 18 footer marks and one legend row: every viewBox,
+    every path and every text on all 18 cards is bit-identical, because the class kept water's 45 m
+    corridor and so the same polygons frame the same cards. Every other book is byte-identical, all three
+    enlarged editions included, measured by rebuilding all sixteen into a scratch directory and comparing
+    digests -- the legend row is gated on a book actually drawing the class, which is what keeps it off
+    the twelve whose guide cards have no room for it.)
+    THEN MERION ALONE MOVED, by +1,481 to 5,870,442 on 2026-08-11, and the date above moved with it.
+    That course was re-fetched -- 0 elements lost, 1 gained -- and the one gain is way 675572836, a
+    151 m^2 `wetland=marsh` 2.48 m from a green and 10.22 m from hole 17's played length, which
+    render_hole.is_drawn_wetland admits: holes 14, 16 and 17 went 0W to 1W, so the book carries one more
+    filled water polygon on each of three cards and the frames those cards are fitted into moved with it.
+    Every other book was byte-identical.
+    THEN THE WHOLE CORPUS WAS REBUILT AGAIN, later the same day, which is why every figure above moved
+    once more. TWO CAUSES, and they are worth keeping apart because only one of them reaches paper.
+    THE COVER LINE, on twelve books: generate.cover_panel() now calls _scale_size_line(), which prints
+    "SCALE 1:480 OR SMALLER . CARD 3.5 x 5.0 IN" beneath the Rule 4.3 badge -- the Clarification 4.3a/1
+    FAQ recommendation legal/06 records the book as having not followed. It is exactly +198 bytes, and it
+    is the SAME 198 on every one of the twelve distributable pocket books, because neither figure is typed
+    (config.CARD_W_IN/CARD_H_IN and RULE_4_3_SCALE_CAP_IN_PER_5YD) and every course resolves them
+    identically. Directly measured as +198 on the ten pocket books whose maps did not move; on the two
+    that did it is the residue, and merion's is confirmed independently below rather than assumed.
+    poppy-ridge gained 3 and not 198: it is non-distributable, so _scale_size_line()
+    returns "" and what lands is the two-space indent and the newline of the now-empty placeholder line
+    at generate.py's `  {_scale_size_line()}`. Its PDF is byte-identical at 488,639 -- which is the proof
+    those 3 bytes print nothing, and the honest answer to "did poppy-ridge disclose a scale it has no
+    green image for": it did not. The two enlarged editions that carry no engine change -- monarch-bay
+    and philadelphia -- are byte-identical, cover line included, because build_coach() calls
+    coach_cover_panel() and never cover_panel(); that architecture is the whole reason the conforming
+    scale claim cannot reach the one edition built past the cap.
+    THE ENGINE FIXES, on two courses and three cards, which is the part that changes what a golfer reads:
+      * copper-valley -213 net. Its drawn watercourse lines went 10 to 9 and the card that lost one is
+        hole 11, from 4 to 3: NHD `ArtificialPath` way
+        83565232, the synthetic line NHD threads through a lake to keep its flow network connected,
+        lying 0.9528 of its length inside lake way 775614086 -- recorded with its refusing predicate in
+        WATER_INK_REMOVED_DELIBERATELY. Nothing wet left that card: the lake keeps its fill and the
+        footer still reads `8B 3W`. What left is a blue creek drawn across open water. This course has no
+        enlarged edition, so its map delta is the residue -411 rather than a second measurement.
+      * merion -33 net, i.e. the same +198 against -231. Its filled water polygons went 5 to 4 -- hole
+        10's card no longer fills way 225722025, the `natural=water NHD:FTYPE=LakePond` ring with a
+        house inside it (render_hole.MEASURED_NOT_WATER) -- and hole 11's footer went 3W to `7B 2W`
+        over the same two physical waters (render_hole.water_identity). MEASURED TWICE: merion's
+        ENLARGED edition moved -231 EXACTLY, and it carries no cover line of its own, so the enlarged
+        book isolates the engine delta that the pocket book's -33 has the cover line folded into.
+    So three shipped cards in the whole corpus moved ink -- copper-valley 11, merion 10, merion 11 --
+    and the previous note's prediction that merion was "due to move again at the next corpus rebuild and
+    DOWN" is now discharged rather than pending: it moved down by exactly the 231 bytes those two fixes
+    were worth, the built book and the engine agree at 4 filled water polygons, and the two entries in
+    BOOK_PREDATES_THE_ENGINE that recorded the divergence were emptied by this rebuild, which is what
+    that table is designed to do.
+    THEN THE CORPUS WAS REBUILT AGAIN THE SAME DAY, 2026-08-11, for a change that only ever removes, and
+    eight of the figures above moved with it. 0c92cda stops printing the tee NAME on the tee mark of any
+    card whose drawn OSM centreline does not span the hole: the mark stands on the pad the drawn line
+    starts from, and on those cards that pad is not the tee the label named -- up to 103 yd from it. The
+    mark itself, the tee ink, the dashed line and GRN are unchanged, so this is the smallest corpus-wide
+    delta on record, and it is measured card by card rather than inferred from a total. Eight pocket books
+    moved and five did not: bay-view -1,114 (holes 2, 6, 7, 12, 14, 15, 16), merion -955 (2, 3, 5, 6, 8,
+    9), callippe -319 (3, 17), castlewood-valley -319 (10, 18), castlewood-hill -318 (4, 16),
+    philadelphia -159 (17), trump-national-los-angeles -159 (10), valley-hi -159 (6); copper-valley,
+    micke-grove, monarch-bay, the-reserve and poppy-ridge are byte-identical. That is 22 of the 216 pocket
+    cards, each losing exactly ONE `<text ... fill="#20402a">` element and nothing else. Proved per card
+    rather than asserted: deleting that one element from the shipped card yields the rebuilt card
+    byte-for-byte, so no viewBox, path, footer mark, carry or gutter number moved anywhere, and the other
+    194 cards and every non-card panel are unchanged. The element is 159 bytes, or 160 on the four pocket
+    cards whose font-size reaches 10.0 and takes a fourth character, which is what each book's total above
+    is the sum of. The enlarged editions move the same way and are a second check on it: merion_coach -960
+    -- the same six holes, all six at 160 because that edition scales the type past 10.0 --
+    philadelphia_coach -159 (17), monarch-bay_coach byte-identical. legal/03 and legal/05 did not move, and
+    that is correct rather than an oversight: 03 is derived from course.json and the green surfaces, and 05
+    quotes only printed text carrying one of its four legal marks (gen_disclaimers.LEGAL_MARKS), which a
+    three-letter tee name on a hole map never carries.
+    THEN THE WHOLE CORPUS WAS REBUILT ONCE MORE, still 2026-08-11, for TWO changes -- and only one of them
+    reaches a byte, which is the part worth keeping apart. 08f06db takes drawn wetland and
+    `intermittent=yes` channels OUT of the water blue: they take the not-water grey
+    (render_hole.PENALTY_FILL/PENALTY_EDGE), leave the footer's W, and carry a word mark naming the class
+    instead. Every mark stays on the same card in the same frame -- no card loses one. Five books' cards
+    move, 34 cards in all: bay-view 7 (holes 11-17), copper-valley 6 (1, 3, 9, 10, 11, 18), micke-grove 4
+    (2, 3, 7, 8), merion 3 (14, 16, 17), callippe 14. Each moved card is +34, or +29 on merion, and the
+    difference is which ink moved: a recoloured polyline plus a `creek runs dry` span against a recoloured
+    polygon plus a `wetland` span. The guide card gains the grey's legend swatch row, +288, on each book
+    that now draws it. So bay-view +526 (288 + 7x34), copper-valley +492 (288 + 6x34), micke-grove +424
+    (288 + 4x34) and merion +375 (288 + 3x29). CALLIPPE IS +0 AND NOT BYTE-IDENTICAL: its 14 cards were
+    already on disk from a single-course rebuild run earlier the same day to show the owner the result, so
+    what moves here is its cover alone. merion_coach +375 is the second measurement of the engine delta in
+    isolation -- the same three cards and the same row, on an edition that carries no cover line at all.
+    trump-national-los-angeles -30 is the only book that moves on the LEGEND ALONE: it already drew this
+    grey for its 34 `natural=scrub` penalty areas, so its swatch row was REWORDED rather than added, and
+    all 18 of its cards and its 6 W are byte-identical. Footer W, measured before and after: bay-view 21 ->
+    14, copper-valley 32 -> 25, micke-grove 21 -> 17, merion 23 -> 20. Not one B count moved anywhere in
+    the corpus. Callippe's own 39 -> 10 is not measurable from any file on disk -- the 39-W book was
+    overwritten by that single-course rebuild -- and it is the 29 grey polygon appearances its cards still
+    carry, leaving the W that its 10 remaining and its one `natural=water` polygon account for.
+    THE SECOND CHANGE COSTS NOTHING, and that was checked rather than assumed. 3ee65d5 moves the cover's
+    scale line from y="486", where the gold frame's 1.4-unit stroke ran through the capitals, up to y="414"
+    inside the frame. The placeholder line is byte-identical in LENGTH, so no book's size moves from it:
+    the seven pocket books with no engine change -- castlewood-hill, castlewood-valley, monarch-bay,
+    philadelphia, poppy-ridge, the-reserve, valley-hi -- are the same size to the byte with a changed cover
+    panel, and monarch-bay_coach and philadelphia_coach are byte-identical OUTRIGHT, cover included, which
+    is the evidence that the enlarged edition still never carries this line. poppy-ridge is byte-identical
+    too, HTML and PDF both, because it is non-distributable and _scale_size_line() returns "" for it.
+    legal/03 and legal/05 did not move, for the same two reasons as last time: 03 is derived from
+    course.json and the green surfaces, neither of which a rebuild touches, and 05 quotes only the printed
+    blocks carrying one of gen_disclaimers.LEGAL_MARKS. A footer word mark and a legend swatch row carry
+    none, so the new words fall outside what it extracts -- measured on callippe, whose 83 elements
+    containing "wetland" include 7 that also carry a legal mark and not one that survives the
+    smallest-element rule _printed_legal_blocks applies.
 
     Courses carrying HAND-DIGITIZED geometry are handled separately, and that case is itself
     meaningful: a cold start has no cache for fetch_osm.py to preserve those features from, so a
@@ -25812,7 +26334,7 @@ def test_the_geometry_counts_the_comments_quote_are_still_true():
     Pinned as exact values on purpose. If a course is added or a centreline re-traced these SHOULD
     fail, because that is the moment the comments need rewriting; the failure message says so.
     """
-    SHORT, SHORT_YD, OVER, OVER_YD = 19, 103, 2, 36
+    SHORT, SHORT_YD, OVER, OVER_YD = 20, 103, 2, 36
     short, over, total = [], [], 0
     for slug in geometry_courses():
         os.environ["COURSE"] = slug
@@ -26631,8 +27153,8 @@ def test_the_carry_legend_says_sand_because_water_is_not_quantified():
     wording is the load-bearing part, not the computation: it is the difference between an omission and
     an over-claim.
 
-    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 145 yards
-    of it, the-reserve 16 printing "carry 177" for sand reaching 322 -- so a bare "carry N" would read
+    Also requires the extent hedge. Sand can run far past N -- the worst case in the corpus is 144 yards
+    of it, the-reserve 16 printing "carry 177" for sand reaching 321 -- so a bare "carry N" would read
     as the whole obstacle rather than its near edge. (It read 126 until par-3 carries were suppressed,
     which removed the case it named, then 95 until the bunker selector was moved from a feature's
     centroid to its nearest edge and that waste bunker appeared on the card at all; the figure is
@@ -27149,16 +27671,18 @@ def test_one_normalised_spelling_of_build_mode_across_the_engine(tmp_path):
 def test_the_card_only_claims_an_official_scorecard_where_one_is_recorded():
     """The tees card said "Yardages from the official scorecard." on every book. 7 of 11 had none.
 
-    Only 4 courses record an official or printed club scorecard. The other 7 record third-party
-    aggregators -- BlueGolf, NCGA, GolfLink, Wikipedia, Golfify -- so "official" was a claim about
-    provenance the record does not support, printed directly beside the numbers it vouches for. The same
-    book already said the honest version two cards away: the guide card credits "facts from the PUBLISHED
-    scorecard".
+    Only 4 courses record an official or printed club card. The other 7 record a source that does not
+    evidence one, so "official" was a claim about PROVENANCE the record cannot support, printed directly
+    beside the numbers it vouches for. The same book already said the honest version two cards away: the
+    guide card credits "facts from the PUBLISHED scorecard".
 
-    Aggregator data is not the problem and this is not a downgrade for its own sake. bay-view's own source
-    note records that a third-party record was WRONG and had to be corrected against the club's card --
-    which is exactly why the distinction is worth printing rather than papering over. A reader who knows
-    the yardages came from an aggregator can weigh them; one told they came from the club cannot.
+    WHICH CLASS OF RECORD IS WHICH IS THE ONLY THING THAT MOVES HERE, and no figure does. A scorecard
+    number is a fact wherever it is read, and the book prints the same yardages either way; what the fix
+    withdraws is a sentence about where they were read. It is not a downgrade for its own sake and not a
+    verdict on any record's quality: bay-view is the case that makes the distinction worth printing, since
+    its own source note records a per-hole figure that was WRONG and had to be corrected from the club's
+    own card. A reader told the numbers came from the club cannot weigh them; a reader told they came from
+    published scorecard data can.
 
     Derived from sources.scorecard, the same field the provenance record is built from, so the card and
     legal/03 cannot disagree. Asserted in BOTH directions: a course that earned "official" must still say
@@ -27569,7 +28093,7 @@ def test_no_par_3_prints_a_carry():
     them the near edge was actively misleading:
 
       * the-reserve 8 printed "carry 90" for a waste complex running 90 to 216 yd on a 237 yd hole --
-        sand ending 2.24 yd short of the green front. Flying 90 clears nothing; the distance that
+        sand ending 2.23 yd short of the green front. Flying 90 clears nothing; the distance that
         matters is ~215. A 126 yd gap, eight or nine clubs.
       * merion 13 printed "carry 82" on a 128 yd hole for sand running 82 to 113 with the green front
         at 107 -- again no landing area beyond it.
@@ -28363,7 +28887,12 @@ _ELEV_BOUND_FIGS = (
     # carries the same sentence and has since the tool's own range was repaired.
     ("chg_pc_raw", r"worst per.course median\s+measures ([\d.]+) ft",
      "the raw worst per-course median the range's upper end is rounded outward from"),
-    ("chg_pc_med", r"median of those eleven course medians is ([\d.]+) ft",
+    # The COUNT WORD here is not pinned: this read "those eleven course medians", so a 12th verified
+    # course made the pattern match nothing and the grader reported the figure MISSING rather than
+    # stale -- the one reading that sends an editor looking for a deleted sentence that is still there.
+    # The count itself is graded by the "courses" row above, against the corpus, which is where a
+    # wrong one should fail.
+    ("chg_pc_med", r"median of those \w+ course medians is ([\d.]+) ft",
      "the median of the per-course medians"),
     ("chg_med", r"median over all \d+ holes is ([\d.]+) ft", "the corpus median"),
     ("chg_mean", r"the mean ([\d.]+) ft", "the corpus mean"),
@@ -28957,7 +29486,7 @@ def test_water_on_the_card_depends_on_where_the_water_is_not_how_it_was_noded():
     ENDPOINTS happen to sit -- not by where the water is. OSM nodes a way wherever a mapper felt
     like it, so the card's answer depended on an editing accident.
 
-    Found on monarch-bay way 1135575847 (`waterway=stream`, 4 nodes, longest segment 1396.9 m).
+    Found on monarch-bay way 1135575847 (`waterway=stream`, 4 nodes, longest segment 1398.7 m).
     Holes 12 and 18 printed no water at all: the nearest way VERTEX is 273.1 m (h12) and 93.5 m
     (h18) away, both outside the 45 m corridor, while the nearest point ON the way is 0.01 m and
     0.10 m -- the stream runs across both playing lines. Re-noding that identical shape from 4
@@ -29268,6 +29797,21 @@ def _renode_ring(pts, k, skew=False):
     return out
 
 
+def _drop_one(orig_load, way_id):
+    """A render_hole.load replacement that hides ONE way, for attributing ink to a single feature.
+
+    Per-feature attribution has to be behavioural or it is a second copy of the selector: `waters`'
+    reach half is clipped to the PLAYED length of the centreline (see render_hole._seg_near_played_line),
+    which is 30 lines of interval clipping, and the whole reason this suite grades penalty areas at all
+    is that a figure re-derived beside the engine drifted from it. Deleting the way and asking the card
+    what changed cannot drift.
+    """
+    def patched():
+        course, geom = orig_load()
+        return [g for g in course if g.get("id") != way_id], geom
+    return patched
+
+
 def _is_area_water(g, rh):
     """The tag half of the predicate render_hole's `waters` list uses -- wetland IMPORTED, not respelled.
 
@@ -29288,11 +29832,37 @@ def _is_area_water(g, rh):
     `waters` comprehension and there is no named function to borrow.
     test_a_re_noded_water_polygon_does_not_change_what_the_card_prints grades this against that
     comprehension's own source, so a FOURTH class added there fails here rather than narrowing a sweep.
+
+    `golf=penalty_area` IS NOT A FOURTH SPELLING OF THIS PREDICATE, and this docstring said it was. The
+    2019 Rules of Golf replaced "water hazard" and "lateral water hazard" with "penalty area" and WIDENED
+    the term: it now covers any area a Committee marks, brush and canyon included. So the tag is not a
+    tag test here at all -- it is a CALL, render_hole.penalty_area_is_water, imported for the reason
+    is_drawn_wetland is imported, because which half of that split a feature falls in decides whether a
+    card prints it as water and the renderer and this helper may not answer it two ways. All 34 penalty
+    areas in this corpus are `natural=scrub` and so are not water; that half is exercised by mutation in
+    test_a_penalty_area_that_is_not_water_is_neither_counted_as_water_nor_left_undrawn.
+
+    `water=*` is the fifth clause and it is spelled out: a lake/pond/canal subtype on a way whose
+    `natural` key a mapper left off. All 10 features in this corpus carrying it also carry
+    `natural=water`, so it changes nothing here today and is present so that this helper and the
+    selector stay the same shape.
+
+    AND ONE REFUSAL PAST ALL FIVE, imported for the same reason: render_hole.is_measured_not_water, the
+    per-feature record of a polygon MEASURED not to be water (merion way 225722025, a house inside a
+    `natural=water NHD:FTYPE=LakePond` ring). It has to be here or this helper's population would be
+    WIDER than the drawn class in the one direction that matters to the re-noding test: that refusal is
+    keyed on the node count ON PURPOSE, so that a ring somebody re-traces is treated as water again
+    rather than staying refused on a measurement of a shape that no longer exists. Re-noding it therefore
+    DOES change the card -- correctly -- and a sweep that included it would be asserting the opposite of
+    what the refusal is for. Excluding it here is not a narrowing: the card does not draw it.
     """
     t = g.get("tags") or {}
-    return (t.get("golf") in ("water_hazard", "lateral_water_hazard")
-            or t.get("natural") == "water"
-            or rh.is_drawn_wetland(g))
+    return ((t.get("golf") in ("water_hazard", "lateral_water_hazard")
+             or t.get("natural") == "water"
+             or t.get("water")
+             or rh.is_drawn_wetland(g)
+             or rh.penalty_area_is_water(g))
+            and not rh.is_measured_not_water(g))
 
 
 @needs_corpus
@@ -29323,21 +29893,47 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     _is_area_water is a second spelling of it and a second spelling went stale the moment a third class
     was added: 89c265b made `natural=wetland` drawable, the helper did not follow, and NOTHING failed --
     a class the helper omits is simply a class this test stops perturbing. Narrowing a sweep is the
-    quiet failure, so the tag literals and the named predicate are read out of the `waters`
+    quiet failure, so the tag literals and the named predicate are read out of the AREA-HAZARD
     comprehension in render_hole.py and required to appear in the helper.
+
+    THE SELECTOR READ IS `area_hazards` AND NOT `waters`, and the rename is not cosmetic. render_hole now
+    admits the whole class of water-ish hazards with one tag OR at one corridor and then SPLITS it by
+    `holds_open_water`: what is open water keeps the blue and the footer W, and what is not -- drawn
+    wetland -- takes the not-water grey. `waters` is therefore a filtered comprehension with no tag
+    literals in it at all, and pointing this scrape at it found nothing and failed loudly, which is the
+    behaviour this docstring asks for. `area_hazards` is the population that gets re-noded, so it is the
+    one the helper has to match, and the split is graded separately by
+    test_one_ink_means_one_thing_in_the_legend_and_only_open_water_is_drawn_in_the_blue.
+
+    THE MEASURED TUPLE CARRIES BOTH CLASSES for the same anti-narrowing reason. It was
+    (watercourses, waters, water_hazards, blue fills) -- all four of which a wetland re-noding can no
+    longer move -- so this sweep would have gone on perturbing wetland polygons while grading nothing
+    about them. The wetland count and the grey fill are in the tuple now.
     """
     import ast
     import inspect
     rh_src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
     sel = next((ast.get_source_segment(rh_src, n.value) for n in ast.walk(ast.parse(rh_src))
                 if isinstance(n, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "waters" for t in n.targets)), None)
-    assert sel, ("render_hole.py no longer has a `waters = [...]` assignment, so this test cannot tell "
-                 "whether _is_area_water still matches the selector it stands in for")
+                and any(isinstance(t, ast.Name) and t.id == "area_hazards" for t in n.targets)), None)
+    assert sel, ("render_hole.py no longer has an `area_hazards = [...]` assignment, so this test cannot "
+                 "tell whether _is_area_water still matches the selector it stands in for")
     helper = inspect.getsource(_is_area_water)
-    want_tags = sorted({m for m in re.findall(r"'([a-z_]+)'", sel)
-                        if m in ("water_hazard", "lateral_water_hazard", "water", "wetland")})
-    assert want_tags, f"no water tag literal found in render_hole's waters selector:\n{sel}"
+    # DERIVED FROM THE SELECTOR'S OWN COMPARISONS, not filtered through a list of the tags that
+    # happened to exist when this was written. It read
+    #     if m in ("water_hazard", "lateral_water_hazard", "water", "wetland")
+    # which is the defect the docstring above claims to have closed, one level further out: a class
+    # added to render_hole's selector under a name not already in that tuple was dropped BEFORE the
+    # comparison below could miss it, so the sweep narrowed in silence exactly as it did for `wetland`.
+    # `golf=penalty_area` is the class that proved it -- 34 ways on one course, none of them ever
+    # perturbed here or compared below. The whitelist also existed to keep the non-tag literals out
+    # (`tags`, `geometry`, and CORRIDOR_M's own `water` key); anchoring on `get('golf')`/`get('natural')`
+    # does that structurally instead, and grows itself when a fifth class arrives.
+    want_tags = set()
+    for _cmp in re.finditer(r"get\('(?:golf|natural)'\)\s*(?:in\s*(\([^)]*\))|==\s*('[a-z_]+'))", sel):
+        want_tags |= set(re.findall(r"'([a-z_]+)'", _cmp.group(1) or _cmp.group(2)))
+    want_tags = sorted(want_tags)
+    assert want_tags, f"no water tag literal found in render_hole's area_hazards selector:\n{sel}"
     missing = [t for t in want_tags if f'"{t}"' not in helper and f"'{t}'" not in helper]
     # `wetland` is spelled in the helper as the CALL, not as a literal -- that is the point of importing
     # the real predicate rather than re-deriving its tag rules, which run to twenty lines in
@@ -29345,14 +29941,14 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     if "wetland" in missing and _in_code("rh.is_drawn_wetland(g)", helper):
         missing.remove("wetland")
     assert not missing, (
-        f"render_hole's `waters` selector tests tag(s) {missing} that _is_area_water does not, so this "
+        f"render_hole's `area_hazards` selector tests tag(s) {missing} that _is_area_water does not, so this "
         f"test silently stops re-noding a whole class of drawn water -- which is exactly how the "
         f"wetland class went unperturbed here for the life of 89c265b. The selector reads:\n{sel}")
     called = sorted({m for m in re.findall(r"\bis_[a-z_]+(?=\()", sel)})
-    assert called, f"render_hole's `waters` selector no longer calls a named predicate:\n{sel}"
+    assert called, f"render_hole's `area_hazards` selector no longer calls a named predicate:\n{sel}"
     for named in called:
         assert _in_code(named + "(", helper), (
-            f"render_hole's `waters` selector calls {named}() and _is_area_water does not, so this test "
+            f"render_hole's `area_hazards` selector calls {named}() and _is_area_water does not, so this test "
             f"re-nodes a narrower set of polygons than the card actually draws. Import the real "
             f"predicate rather than re-implementing it -- render_hole.{named} is pure and tag-only for "
             f"exactly that reason. The selector reads:\n{sel}")
@@ -29366,8 +29962,9 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
         for hn in cfg.HOLE_NUMS:
             svg, info = rh.render_hole(hn, cfg.HOLES)
             plain[hn] = (info["watercourses"], info["waters"], info["water_hazards"],
-                         svg.count('fill="#a9d3ef"'))
-            counts += info["waters"]
+                         svg.count('fill="#a9d3ef"'),
+                         info["wetlands"], svg.count('fill="%s"' % rh.PENALTY_FILL))
+            counts += info["waters"] + info["wetlands"]
         orig_load = rh.load
         try:
             for k, skew in ((2, False), (5, False), (4, True), (9, True)):
@@ -29393,7 +29990,8 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
                         errors.append((slug, hn, k, skew, repr(e)[:120]))
                         continue
                     got = (info["watercourses"], info["waters"], info["water_hazards"],
-                           svg.count('fill="#a9d3ef"'))
+                           svg.count('fill="#a9d3ef"'),
+                           info["wetlands"], svg.count('fill="%s"' % rh.PENALTY_FILL))
                     holes += 1
                     if got != plain[hn]:
                         moved.append((slug, hn, f"k={k}{' skewed' if skew else ''}",
@@ -29411,11 +30009,12 @@ def test_a_re_noded_water_polygon_does_not_change_what_the_card_prints():
     assert inserted > 4 * expected_geometry_holes(), (
         f"the re-noding only inserted {inserted} vertices across {pairs} passes -- it is not "
         f"actually re-noding anything, so this test would pass on a broken engine")
-    assert counts > 0, "the corpus reports no water at all, so nothing here could move"
+    assert counts > 0, "the corpus reports no area hazard at all, so nothing here could move"
     assert not moved, (
         f"{len(moved)} card(s) print a different water count when the SAME water is re-noded "
         f"-- (course, hole, re-noding, before, after) with the tuple being "
-        f"(watercourses, waters, water_hazards, drawn water areas): {moved[:8]}"
+        f"(watercourses, waters, water_hazards, drawn water areas, wetlands, drawn grey areas): "
+        f"{moved[:8]}"
         f"{' ...' if len(moved) > 8 else ''}")
 
 
@@ -29517,28 +30116,52 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
             def em(la, lo, _mo=mlon, _mla=mla, _la0=la0, _lo0=lo0):
                 return ((lo - _lo0) * _mo, (la - _la0) * _mla)
             line_em = [em(q["lat"], q["lon"]) for q in line]
-            near = []
+            near, wet_near = [], []
             for g in areas:
                 d = min(_dist_to_played_line(em(p["lat"], p["lon"]), line_em)
                         for p in g["geometry"])
                 if d < WATER_CORRIDOR_M:
-                    near.append((g.get("id"), round(d, 2)))
-            reachable += len(near)
+                    # SPLIT BY CLASS, because the two are drawn in different inks and counted under
+                    # different keys now, and a class checked against the other one's ink is a check that
+                    # cannot pass. `holds_open_water` is the engine's own split and is re-derived
+                    # independently by _holds_open_water for
+                    # test_one_ink_means_one_thing_in_the_legend_and_only_open_water_is_drawn_in_the_blue;
+                    # here it is only being asked WHICH ink to grade against, so the engine's answer is the
+                    # right one to use -- grading a pond against the grey would be the bug, not a finding.
+                    (near if rh.holds_open_water(g) else wet_near).append((g.get("id"), round(d, 2)))
+            reachable += len(near) + len(wet_near)
             if named.get((slug, hn)):
                 seen_named[(slug, hn)] = (named[(slug, hn)],
                                           dict(near).get(named[(slug, hn)]),
                                           info["water_hazards"], info["waters"],
                                           svg.count('fill="#a9d3ef"'))
-            # every reachable area water must be among the ones the card counts AND fills
-            if info["water_hazards"] < len(near) or svg.count('fill="#a9d3ef"') < len(near):
-                omitted.append((slug, hn, sorted(near, key=lambda r: r[1]),
+            # EVERY REACHABLE AREA WATER MUST BE AMONG THE ONES THIS CARD INKED, BY IDENTITY. This was a
+            # count comparison -- "at least as many fills as reachable waters" -- and a lower bound cannot
+            # see a SWAP: a card that stops filling a reachable pond and starts filling an unreachable one
+            # keeps its count and loses a hazard. The line sibling
+            # (test_no_card_omits_a_watercourse_the_played_line_reaches) was written for a DEMONSTRATED
+            # instance of that class, so the same strengthening belongs here rather than waiting for one.
+            # The counts are kept alongside, because a count that disagrees with the ids is its own defect.
+            grey = svg.count('fill="%s"' % rh.PENALTY_FILL)
+            if ([w for w, _d in near if w not in info["water_ids"]]
+                    or info["water_hazards"] < len(near)
+                    or svg.count('fill="#a9d3ef"') < len(near)):
+                omitted.append((slug, hn, "open water", sorted(near, key=lambda r: r[1]),
                                 info["water_hazards"], svg.count('fill="#a9d3ef"'),
                                 info["waters"]))
+            # ...AND THE SAME RULE FOR THE WETLAND HALF, against ITS ink and ITS count. Rule 2 does not
+            # care which colour a hazard is drawn in, only that it is drawn: a reachable marsh missing
+            # from the card is the same omission as a missing pond, and it is the omission that shipped.
+            if ([w for w, _d in wet_near if w not in info["wetland_ids"]]
+                    or info["wetlands"] < len(wet_near)
+                    or grey < len(wet_near)):
+                omitted.append((slug, hn, "wetland", sorted(wet_near, key=lambda r: r[1]),
+                                info["wetlands"], grey, info["waters"]))
     assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
     assert holes == expected_geometry_holes(), \
         f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
     assert reachable >= 15, (
-        f"only {reachable} area-water/hole pairs come within {WATER_CORRIDOR_M:g} m of a played line in "
+        f"only {reachable} area-hazard/hole pairs come within {WATER_CORRIDOR_M:g} m of a played line in "
         f"the whole corpus -- the witness found nothing to check, so this test proves nothing")
 
     # THE TWO NAMED CARDS. Skipped only if that course is not built here, and never silently: their
@@ -29558,9 +30181,1101 @@ def test_area_water_the_played_line_reaches_is_never_printed_as_no_water():
             f"fill(s), while way {way} comes {dist} m from the played line. That is water a junior "
             f"can reach, omitted from both the map and the footer")
     assert not omitted, (
-        f"{len(omitted)} card(s) omit area water the played line reaches -- (course, hole, "
-        f"[(way, metres from the played line)], counted area hazards, drawn water fills, printed W): "
-        f"{omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
+        f"{len(omitted)} card(s) omit an area hazard the played line reaches -- (course, hole, class, "
+        f"[(way, metres from the played line)], counted for that class, fills drawn in that class's ink, "
+        f"printed W): {omitted[:6]}{' ...' if len(omitted) > 6 else ''}")
+
+
+def _is_land_penalty_area(g, rh):
+    """(this feature is a `golf=penalty_area` that is NOT water) -- re-derived here, tag by tag.
+
+    A SECOND OPINION on render_hole.is_land_penalty_area, and the reason this test does not simply call
+    it: the whole defect being guarded is that somebody decided `golf=penalty_area` means water, so a
+    test that asks the engine which penalty areas are water asks the accused for the verdict. Three of
+    the four clauses are one tag test each and are written out. The fourth, wet ground, is IMPORTED --
+    render_hole.is_drawn_wetland runs to twenty lines and refuses a 431-acre farmland-classification tile
+    on its own tags, and a second copy of that is the drift this suite keeps removing (see
+    _is_area_water, which imports it for the same reason). is_visible_watercourse likewise: culverted,
+    covered, underground, dam and weir are its rules, not this test's.
+
+    The two spellings are then required to AGREE on every feature of every course, so an engine that
+    starts calling brush water fails here rather than taking this test's population with it.
+    """
+    t = g.get("tags") or {}
+    if t.get("golf") != "penalty_area":
+        return False
+    return not (t.get("natural") == "water" or t.get("water")
+                or rh.is_visible_watercourse(g) or rh.is_drawn_wetland(g))
+
+
+@needs_corpus
+def test_a_penalty_area_that_is_not_water_is_neither_counted_as_water_nor_left_undrawn():
+    """`golf=penalty_area` is NOT `golf=water_hazard` renamed, and a shipped book was built as if it were.
+
+    The 2019 Rules of Golf retired "water hazard" and "lateral water hazard" and put "penalty area" in
+    their place, but the new term is a SUPERSET: it is every water on the course PLUS any area a
+    Committee marks -- brush, canyon, desert, lava. Read as a rename, the tag was drawn in the water blue
+    and added into the footer's W, and trump-national-los-angeles' 18 cards went from 8 W to 91 with
+    hole 14 printing "10W" over no water at all. All 34 of that course's penalty areas are
+    `natural=scrub` and nothing else; its water is three ponds and three streams, and the corrected book
+    prints 6 W -- the three ponds, on the five holes that reach one. (The 8 it started from was not right
+    either: 2 of those came from a drainage line lying inside two of these penalty areas, which
+    test_a_watercourse_inside_a_non_water_penalty_area_is_not_also_counted_as_water covers.) "10W" to a
+    junior is ten waters where there are none, which is rule 1. The fix before it -- leaving them to the
+    scrub fill -- was rule 2: 83 of the pairs are inside the water corridor under a legend reading
+    "trees".
+
+    BOTH HALVES OF THE PROPERTY ARE HERE, because each one alone has a wrong way to pass. "Not water"
+    alone is satisfied by dropping the class off the paper; "drawn" alone is satisfied by the book that
+    shipped. So, per card, with every non-water penalty area DELETED from the course:
+
+      * every water number and every blue mark is UNCHANGED or HIGHER without them -- `waters`,
+        `water_hazards`, `watercourses`, the drawn water fills and the drawn watercourse polylines.
+        Whatever W a card prints, none of it comes from brush. This is what fails on the engine that read
+        the tag as a rename. The direction is one-sided rather than an equality because of the second half
+        of the same correction: a drainage line lying inside one of these areas is drawn and counted as
+        that area (see
+        test_a_watercourse_inside_a_non_water_penalty_area_is_not_also_counted_as_water), so deleting the
+        area un-suppresses the line and the card gains a W it does not print today. Holes 4 and 5 do
+        exactly that, 0W -> 1W. What may never happen is the other direction: brush that ADDS water.
+        Where a card does gain water from the deletion, this test also requires it to be drawing a penalty
+        area today -- otherwise the suppression would have left the ground unmarked.
+      * every tree number and the scrub fill are UNCHANGED too. The class is not quietly back in the
+        landcover fill it came out of, which is the other card this class has been mis-dealt.
+      * the card LOSES ink and count in the penalty class -- so the hazard was on the paper. A card that
+        drew one goes to zero of both, and a polygon counted is a polygon inked (they are equal per
+        card, one feature one path).
+
+    Deletion rather than re-derivation, for _drop_one's reason: the corridor's reach half is clipped to
+    the PLAYED length of the centreline, thirty lines of interval clipping, and a figure re-derived
+    beside the engine is what drifted from it in the first place. Deleting the feature and asking the
+    card what moved cannot drift.
+
+    THE SPLIT ITSELF IS RE-DERIVED, not borrowed -- see _is_land_penalty_area -- and the two spellings
+    are required to agree feature by feature over all 13 courses.
+    """
+    WATER_FILL, WOOD_FILL = 'fill="#a9d3ef"', 'fill="#9cbf86"'
+    CREEK = 'stroke="#5b9bd0" stroke-width="1.8"'
+    tagged, disagreed, errors = [], [], []
+    water_moved, water_freed, trees_moved, not_drawn, ink_count = [], [], [], [], []
+    drawn_cards, holes = 0, 0
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        PEN_FILL = 'fill="%s"' % rh.PENALTY_FILL
+        try:
+            course, _geom = rh.load()
+        except Exception as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        for g in course:
+            mine, theirs = _is_land_penalty_area(g, rh), rh.is_land_penalty_area(g)
+            if mine != theirs:
+                disagreed.append((slug, g.get("id"), dict(g.get("tags") or {}), mine, theirs))
+        ids = {g.get("id") for g in course
+               if _is_land_penalty_area(g, rh) and g.get("geometry")}
+        holes += len(cfg.HOLE_NUMS)
+        if not ids:
+            continue
+        tagged.append((slug, len(ids)))
+        orig_load = rh.load
+
+        def snapshot(_ids=None):
+            def patched(_o=orig_load, _i=_ids):
+                c, geom = _o()
+                return [g for g in c if g.get("id") not in _i], geom
+            rh.load = orig_load if _ids is None else patched
+            out = {}
+            for hn in cfg.HOLE_NUMS:
+                svg, info = rh.render_hole(hn, cfg.HOLES)
+                out[hn] = dict(water=(info["waters"], info["water_hazards"], info["watercourses"],
+                                      svg.count(WATER_FILL), svg.count(CREEK)),
+                               trees=(info["trees"], svg.count(WOOD_FILL)),
+                               pen=(info["penalty_areas"], svg.count(PEN_FILL)))
+            return out
+
+        try:
+            base, gone = snapshot(), snapshot(ids)
+        finally:
+            rh.load = orig_load
+        for hn in sorted(base):
+            b, d = base[hn], gone[hn]
+            if any(x > y for x, y in zip(b["water"], d["water"])):
+                water_moved.append((slug, hn, b["water"], d["water"]))
+            elif b["water"] != d["water"] and not b["pen"][0]:
+                water_freed.append((slug, hn, b["water"], d["water"]))
+            if b["trees"] != d["trees"]:
+                trees_moved.append((slug, hn, b["trees"], d["trees"]))
+            if b["pen"][0] != b["pen"][1]:
+                ink_count.append((slug, hn, b["pen"]))
+            if b["pen"][0]:
+                drawn_cards += 1
+                if d["pen"] != (0, 0):
+                    not_drawn.append((slug, hn, "deleting them left", d["pen"]))
+            elif b["pen"][1]:
+                not_drawn.append((slug, hn, "ink with no count", b["pen"]))
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert holes == expected_geometry_holes(), \
+        f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
+    assert not disagreed, (
+        f"{len(disagreed)} feature(s) where this test's reading of the tags and "
+        f"render_hole.is_land_penalty_area disagree about whether a penalty area is water "
+        f"-- (course, way, tags, mine, engine's): {disagreed[:5]}. One of the two is wrong about the "
+        f"one question this whole class turns on; do not simply adopt the engine's answer")
+    assert tagged, (
+        "no course in the corpus carries a non-water golf=penalty_area, so this test proves nothing. It "
+        "was written for trump-national-los-angeles' 34 of them, every one `natural=scrub`; if a "
+        "re-fetch has dropped the class the shrink guard should have aborted -- that is the finding")
+    assert sum(n for _s, n in tagged) >= 10 and drawn_cards >= 10, (
+        f"only {sum(n for _s, n in tagged)} tagged way(s) on {[s for s, _n in tagged]} and "
+        f"{drawn_cards} card(s) drawing any, which is too small a population for the assertions below "
+        f"to mean much -- the class was 34 ways on 18 cards when this was written")
+    assert not water_moved, (
+        f"{len(water_moved)} card(s) LOSE a water number or a blue mark when a non-water penalty area is "
+        f"deleted, so brush is being counted or inked as water -- (course, hole, before, after) with "
+        f"the tuple (waters, water_hazards, watercourses, water fills, creek lines): {water_moved[:8]}"
+        f"{' ...' if len(water_moved) > 8 else ''}. A penalty area is not a water hazard renamed: since "
+        f"2019 the term covers any area a Committee marks, and every one in this corpus is scrub. Give "
+        f"it its own ink and its own mark -- do not put it back in the W")
+    assert not water_freed, (
+        f"{len(water_freed)} card(s) GAIN water when a non-water penalty area is deleted while drawing no "
+        f"penalty area themselves: {water_freed[:8]}. Gaining is the containment rule un-suppressing a "
+        f"drainage line, which is expected -- but only where the card marks that ground as a hazard. "
+        f"Here it marks nothing, so the suppression left blank ground")
+    assert not trees_moved, (
+        f"{len(trees_moved)} card(s) change a TREE number or the scrub fill when a non-water penalty "
+        f"area is deleted, so the class is back in the landcover fill -- (course, hole, before, after) "
+        f"with the tuple (trees, scrub fills): {trees_moved[:8]}. The legend calls that ink trees")
+    assert not ink_count, (
+        f"{len(ink_count)} card(s) count a different number of penalty areas than they ink "
+        f"-- (course, hole, (counted, inked)): {ink_count[:8]}. One feature is one path")
+    assert not not_drawn, (
+        f"{len(not_drawn)} card(s) do not DRAW the non-water penalty areas they hold: {not_drawn[:8]}. "
+        f"Not counting them as water is only half of it -- a ball in coastal brush is lost, the drawn "
+        f"playing line passes through one on four holes of that course, and rule 2 is never to omit a "
+        f"hazard the golfer can reach")
+
+    # THE FIGURE THE REFUSAL TO PRINT A NUMBER RESTS ON, re-derived rather than trusted. render_hole's
+    # `penalty_areas` selector and generate.not_water_mark both decline to print a per-hole COUNT on the
+    # grounds that these ways are ONE continuous network cut into pieces -- "28 of the 34 share vertices
+    # with a neighbour" -- so a per-way figure would say "10 penalty areas" of ground a golfer calls "the
+    # barranca, left and right". Nothing else in the suite grades that sentence, and it is the whole
+    # argument for a mark instead of a number, so both files' own wording is read back and measured
+    # against the cache. Two rings that share a vertex are the same ground; that is the only claim here.
+    for path, pat in (("render_hole.py", r"(\d+) of the (\d+) share vertices"),
+                      ("generate.py", r"(\d+) of trump-national-los-angeles' (\d+) ways share vertices")):
+        src = open(os.path.join(ROOT, path), encoding="utf-8").read()
+        flowed = " ".join(re.sub(r"(?m)^\s*#\s?", "", src).split())
+        m = re.search(pat, flowed)
+        assert m, (f"{path} no longer states how many of the penalty areas share a boundary, which is "
+                   f"the reason it gives for printing a mark and not a count")
+        said_shared, said_total = int(m.group(1)), int(m.group(2))
+        cfg, rh = _engine("trump-national-los-angeles")
+        course, _g = rh.load()
+        pas = [g for g in course if rh.is_land_penalty_area(g) and g.get("geometry")]
+        at = collections.defaultdict(set)
+        for g in pas:
+            for p in g["geometry"]:
+                at[(round(p["lat"], 7), round(p["lon"], 7))].add(g["id"])
+        adj = collections.defaultdict(set)
+        for ids in at.values():
+            for a in ids:
+                adj[a] |= ids - {a}
+        shared = sum(1 for g in pas if adj[g["id"]])
+        assert (shared, len(pas)) == (said_shared, said_total), (
+            f"{path} says {said_shared} of {said_total} penalty areas share a vertex with a neighbour; "
+            f"measured off the cache now: {shared} of {len(pas)}. If a re-fetch has split them into "
+            f"genuinely separate places, a per-hole COUNT may have become the honest thing to print -- "
+            f"re-read the argument in the `penalty_areas` selector before changing either")
+
+
+@needs_corpus
+def test_a_staked_penalty_area_is_inked_in_its_own_class_and_never_as_trees_or_water():
+    """A `golf=penalty_area` is a HAZARD, and it is its OWN hazard. Neither the scrub fill nor the blue.
+
+    trump-national-los-angeles is mapped in the post-2019 vocabulary: 34 `golf=penalty_area` ways,
+    101-27,778 m^2 each, and EVERY ONE of them also carries `natural=scrub` and nothing else. They are
+    also that course's entire wood/scrub/forest population and it has no OSM tree node and no tree row at
+    all, so the class first fell through `waters` -- which had never heard of the tag -- into `woods`, was
+    painted #9cbf86 at 0.6 opacity and counted in `info["trees"]`. The guide's legend read "bunkers
+    (tan), water (blue), trees", so a junior was told a staked penalty area is TREES: 120
+    penalty-area/hole pairs within 60 m of a played line, 83 of them admitted by the engine's own water
+    gate, 0 counted in any footer, 58 of the 120 drawn as literally nothing, and on holes 2, 4, 6 and 9
+    the drawn playing line passes straight THROUGH one the card leaves blank. (83, not the 98 that lie
+    within 45 m of the centreline unclipped: `any_within` drops what projects behind the tee or past the
+    green, and the difference between those two figures is exactly that clipping.)
+
+    THIS TEST ONCE DEMANDED THE OPPOSITE OF ITS OTHER HALF. It was written to require the class in the
+    WATER blue and the footer W, on the premise that `golf=penalty_area` is `golf=water_hazard` under its
+    2019 name. That premise is false and this test enforced it: the term REPLACED the two water tags and
+    WIDENED them, so it now covers any area a Committee marks -- brush, canyon, desert -- and none of
+    these 34 is water. The book it produced printed 91 W across 18 cards where the course has three
+    ponds and three streams, hole 14 reading "10W" over no water at all. So the demand is now for ink of
+    its own; "never as trees" was right all along and is unchanged.
+
+    THE DISCRIMINATOR IS BEHAVIOURAL, not a second spelling of the selector. Each course renders three
+    ways: as mapped; with the `golf` key stripped from every penalty area, leaving the `natural=scrub`
+    that was doing all the work at the start; and with those ways deleted from the course outright. Then
+
+      * the hazard contributes NOTHING to the tree count or the scrub fill (as-mapped == deleted);
+      * it contributes NOTHING to any water number or the blue fill either -- as-mapped is never ABOVE
+        deleted on W, area hazards or blue fills -- which is what fails on the engine that read the tag as
+        a rename. One-sided rather than an equality, because deleting one of these areas un-suppresses a
+        drainage line that lies inside it and the card GAINS a W it does not print today (holes 4 and 5,
+        0W -> 1W): that is the containment half of the same correction, graded by
+        test_a_watercourse_inside_a_non_water_penalty_area_is_not_also_counted_as_water;
+      * it DOES contribute its own ink and its own count, on the strength of the golf tag alone
+        (as-mapped > deleted, while stripped == deleted) -- so the class is drawn, and it is the HAZARD
+        tag and not the landcover tag that earns the ink;
+      * the stripped pass reproduces the original behaviour (stripped > deleted for trees and scrub ink),
+        which is what stops the first bullet from passing vacuously on a course whose polygons would not
+        have been drawn as scrub anyway;
+      * and no path is painted in two class fills on one card, which is the double-ink risk that comes
+        with moving a class from one list to another.
+
+    ONE FEATURE, ONE CLASS, and the tag is the key rather than membership of `waters`. That is not free:
+    the wood gate is 55 m of fraction only and the penalty/water gate is 45 m of fraction OR reach with
+    the reach half clipped to the played length, so the wood gate is NOT a subset of it. Three
+    penalty-area/hole pairs pass the wood gate and fail the hazard gate, and by the tag they get no ink
+    at all -- hole 7 way 1330719393, hole 14 way 1330769548, hole 16 way 1330769549 -- while every one of
+    those three ways is drawn on another card of the same book. Both halves of that are measured here,
+    because they are the measured COST of the decision and render_hole.py states them beside the code.
+    Keyed on the tag anyway: an out-of-reach feature drawn as nothing is what every other class already
+    does, and an in-play hazard drawn in the wrong class's ink is a false statement to the reader of the
+    legend -- whichever wrong class it is.
+    """
+    WOOD, WATER = 'fill="#9cbf86"', 'fill="#a9d3ef"'
+    # (hole, way) pairs render_hole.py names as the ink this rule withdraws, and the holes each of those
+    # ways is still drawn on. Both are re-derived below; the literals are what the engine's own
+    # comment publishes, so a re-fetch that moves them fails here instead of making that comment false.
+    WITHDRAWN = {(7, 1330719393): [14],
+                 (14, 1330769548): [8, 15, 16],
+                 (16, 1330769549): [13, 17]}
+    tagged_courses, holes, errors = [], 0, []
+    as_trees, as_water, no_ink, dead_mutation, double_inked = [], [], [], [], []
+    earned_ink = 0
+    withdrawn = {}
+    elsewhere = {}
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        PENALTY = 'fill="%s"' % rh.PENALTY_FILL
+        try:
+            course, _geom = rh.load()
+        except Exception as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        pa_ids = {g.get("id") for g in course
+                  if (g.get("tags") or {}).get("golf") == "penalty_area" and g.get("geometry")}
+        orig_load = rh.load
+
+        def rendered(mode, _orig=orig_load, _ids=pa_ids):
+            """{hole: (trees, waters, water_hazards, scrub, blue, penalty count, penalty ink)}."""
+            def patched():
+                c, geom = _orig()
+                out = []
+                for g in c:
+                    if g.get("id") in _ids:
+                        if mode == "deleted":
+                            continue
+                        if mode == "stripped":
+                            g = dict(g, tags={k: v for k, v in (g.get("tags") or {}).items()
+                                              if k != "golf"})
+                    out.append(g)
+                return out, geom
+            rh.load = _orig if mode == "as-mapped" else patched
+            got = {}
+            for hn in cfg.HOLE_NUMS:
+                svg, info = rh.render_hole(hn, cfg.HOLES)
+                got[hn] = (info["trees"], info["waters"], info["water_hazards"],
+                           svg.count(WOOD), svg.count(WATER),
+                           info["penalty_areas"], svg.count(PENALTY))
+                # a feature drawn in two class fills at once is drawn twice -- the double-ink risk
+                # that comes with moving a class from one list to another
+                fills = {}
+                classes = {WOOD.split('"')[1], WATER.split('"')[1], rh.PENALTY_FILL}
+                for d, fill in re.findall(r'<path d="([^"]+)" fill="(#[0-9a-f]{6})"', svg):
+                    if fill in classes:
+                        if fills.setdefault(d, fill) != fill:
+                            double_inked.append((slug, hn, mode, fills[d], fill))
+            return got
+
+        try:
+            base = rendered("as-mapped")
+            stripped = rendered("stripped") if pa_ids else base
+            deleted = rendered("deleted") if pa_ids else base
+        finally:
+            rh.load = orig_load
+        holes += len(base)
+        if pa_ids:
+            tagged_courses.append((slug, len(pa_ids)))
+        for hn in sorted(base):
+            b, s, d = base[hn], stripped[hn], deleted[hn]
+            if (b[0], b[3]) != (d[0], d[3]):
+                as_trees.append((slug, hn, f"trees {d[0]}->{b[0]}, scrub fills {d[3]}->{b[3]}"))
+            if (b[1], b[2], b[4]) > (d[1], d[2], d[4]):
+                as_water.append((slug, hn, f"W {d[1]}->{b[1]}, area hazards {d[2]}->{b[2]}, "
+                                           f"blue fills {d[4]}->{b[4]}"))
+            if b[5] < d[5] or b[6] < d[6]:
+                no_ink.append((slug, hn, f"penalty count {d[5]}->{b[5]}, ink {d[6]}->{b[6]}"))
+            if b[5] > d[5] or b[6] > d[6]:
+                earned_ink += 1
+            if (s[5], s[6]) != (d[5], d[6]):
+                no_ink.append((slug, hn, f"stripping the golf tag left {s[5]} counted / {s[6]} inked "
+                                         f"where deleting it gives {d[5]} / {d[6]}"))
+        if pa_ids and not any((stripped[hn][0], stripped[hn][3]) > (deleted[hn][0], deleted[hn][3])
+                             for hn in base):
+            dead_mutation.append(slug)
+
+        # THE MEASURED COST. Which (hole, way) pairs the wood gate admits and the hazard gate does not --
+        # the ink the hazard tag withdraws. The wood gate is re-derived through the engine's OWN closed
+        # form (frac_len_within at CORRIDOR_M["wood"], which is what `woods` computes), because a second
+        # implementation of a length fraction is the drift this suite keeps removing; the hazard half is
+        # behavioural, one way deleted at a time, so the clipped reach rule is never re-spelled here.
+        if pa_ids:
+            import geo
+            pas = [g for g in course if g.get("id") in pa_ids]
+            loc = cfg.COURSE.get("location") or {}
+            lines = geo.hole_lines(_geom, loc.get("lat"), loc.get("lon"))
+            try:
+                for hn in sorted(base):
+                    line = lines[hn]["geometry"]
+                    la0 = sum(q["lat"] for q in line) / len(line)
+                    lo0 = sum(q["lon"] for q in line) / len(line)
+                    mo, mla = _mlon(la0), _mlat(la0)
+                    ring = {g["id"]: [((p["lon"] - lo0) * mo, (p["lat"] - la0) * mla)
+                                      for p in g["geometry"]] for g in pas}
+                    line_em = [((q["lon"] - lo0) * mo, (q["lat"] - la0) * mla) for q in line]
+                    for g in pas:
+                        if rh.frac_len_within(ring[g["id"]], line_em,
+                                              rh.CORRIDOR_M["wood"]) < 0.35:
+                            continue
+                        rh.load = _drop_one(orig_load, g["id"])
+                        if rh.render_hole(hn, cfg.HOLES)[1]["penalty_areas"] \
+                                == base[hn][5]:
+                            withdrawn[(hn, g["id"])] = slug
+                for (hn, way) in sorted(withdrawn):
+                    seen = []
+                    for other in sorted(base):
+                        rh.load = _drop_one(orig_load, way)
+                        if rh.render_hole(other, cfg.HOLES)[1]["penalty_areas"] < base[other][5]:
+                            seen.append(other)
+                    elsewhere[(hn, way)] = seen
+            finally:
+                rh.load = orig_load
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert holes == expected_geometry_holes(), \
+        f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
+    assert tagged_courses, (
+        "no course in the corpus carries a golf=penalty_area way, so this test proves nothing. It was "
+        "written for trump-national-los-angeles' 34 of them; if a re-fetch has dropped the class, that "
+        "is the finding")
+    assert not dead_mutation, (
+        f"on {dead_mutation} the penalty areas are not drawn as trees even with the golf tag stripped, "
+        f"so 'never inked as trees' below cannot fail and proves nothing -- re-aim it at a course whose "
+        f"penalty areas carry a landcover tag the engine draws")
+    assert not as_trees, (
+        f"{len(as_trees)} card(s) ink or count a staked penalty area as TREES -- the legend beside it "
+        f"reads \"trees\": {as_trees[:8]}{' ...' if len(as_trees) > 8 else ''}")
+    assert not as_water, (
+        f"{len(as_water)} card(s) ink or count a non-water penalty area as WATER: {as_water[:8]}"
+        f"{' ...' if len(as_water) > 8 else ''}. \"Penalty area\" is not \"water hazard\" renamed -- it "
+        f"replaced that term and widened it to any area a Committee marks. Every one of these is scrub")
+    assert not no_ink, (
+        f"{len(no_ink)} card(s) do not draw and count a penalty area in its own class: "
+        f"{no_ink[:8]}{' ...' if len(no_ink) > 8 else ''}")
+    assert not double_inked, (
+        f"{len(double_inked)} feature(s) are painted in TWO class fills on one card -- drawn, and "
+        f"counted, twice: {double_inked[:6]}")
+    assert earned_ink >= 10, (
+        f"only {earned_ink} card(s) in the corpus gain any penalty-area ink, over "
+        f"{sum(n for _s, n in tagged_courses)} tagged ways on {[s for s, _n in tagged_courses]}. The "
+        f"class is fetched and reachable on far more than that -- 83 penalty-area/hole pairs are "
+        f"admitted by the hazard gate on trump-national-los-angeles alone -- so the selector has stopped "
+        f"admitting it")
+    assert set(withdrawn) == set(WITHDRAWN), (
+        f"render_hole.py names {sorted(WITHDRAWN)} as the (hole, way) pairs whose background fill the "
+        f"hazard-tag exclusion withdraws -- the wood gate admits them and the hazard gate does not. "
+        f"Measured now: {sorted(withdrawn)}. Re-measure that comment rather than deleting this.")
+    assert elsewhere == WITHDRAWN, (
+        f"render_hole.py says each withdrawn polygon is still drawn on another card of the same "
+        f"book -- {WITHDRAWN} -- so no polygon loses its ink book-wide. Measured: {elsewhere}. A pair "
+        f"with an EMPTY list is a penalty area this engine now draws nowhere at all, which is the one "
+        f"outcome the exclusion may not have")
+
+
+@needs_corpus
+def test_out_of_bounds_is_fetched_and_deliberately_absent_from_every_card():
+    """`golf=out_of_bounds` is fetched, guarded and NOT drawn, and that has to be a decision on the record.
+
+    OB is stroke-and-distance -- strictly worse for a junior than the penalty areas the same fix put into
+    the blue -- so "the renderer has no concept of it" is not a reason, it is the finding. render_hole.py
+    now carries the argument for leaving it off the paper and this test is its tripwire, so nobody can
+    start drawing it without meeting the two conditions that argument names.
+
+    WHY IT IS NOT DRAWN, in one line each, and all of it re-measured here rather than trusted:
+
+      * Coverage, not geometry. There is ONE such way in the whole corpus -- trump-national-los-angeles
+        way 1330731228, a closed 22-node ring of 13,392 m^2, 140 x 169 m, nearest edge 10.3 m from hole
+        2's played line -- while every hole of all 13 courses has out of bounds, because a property line
+        is a fact of every golf course. Absence of a mark has to be distinguishable from absence of the
+        thing, and one fragment beside two holes cannot be.
+      * It is not the boundary. It contains no centreline vertex of any hole and overlaps no fairway,
+        rough, green, tee or bunker, so it says nothing about where the line runs on the other 16 holes.
+      * It has no ink it can honestly borrow. The legend names bunkers (tan), water (blue) and trees; OB
+        is none of the three, and putting it in the blue would state a penalty area's relief for a
+        stroke-and-distance boundary -- the same shape of false statement as painting a penalty area in
+        the tree fill.
+
+    WHAT IT DOES GET is the strictest fetch guard: census buckets it under its own key, which is in
+    neither VOLATILE_KINDS nor HAZARD_KINDS, so it takes zero tolerance and no rarity exemption by
+    default-deny (graded by test_the_shrink_guard_is_silent_on_every_layer_this_corpus_already_stores),
+    and it is NOT a hazard kind because no card draws it and no abort message should claim hazard ink left
+    one. Keeping a strict guard over a class we decline to draw is the point: when the boundary is one day
+    mapped completely enough to draw, the data must not have gone away in the meantime.
+
+    IF THIS TEST FAILS BECAUSE OB IS NOW BEING DRAWN, that is not a reason to delete it. It is a reason to
+    give the class a legend entry and an ink of its own in BOTH editions' guide cards first, and to be
+    able to say what the absence of the mark means on the holes that carry none.
+    """
+    src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
+    for needle, what in (("out_of_bounds", "the tag it is declining to draw"),
+                         ("1330731228", "the one way in the corpus that forced the decision"),
+                         ("stroke-and-distance", "why it is not a penalty area and cannot take the blue")):
+        assert needle in src, (
+            f"render_hole.py no longer names {what} ({needle!r}). A class that is guarded on the way in "
+            f"and silently dropped on the way out needs the decision written down beside the selectors, "
+            f"or the next reader has to rediscover it from an audit")
+    ways, courses, changed, errors = 0, 0, [], []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, _geom = rh.load()
+        except Exception as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        obs = [g for g in course
+               if (g.get("tags") or {}).get("golf") == "out_of_bounds" and g.get("geometry")]
+        if not obs:
+            continue
+        courses += 1
+        ways += len(obs)
+        orig_load = rh.load
+        try:
+            base = {hn: rh.render_hole(hn, cfg.HOLES) for hn in cfg.HOLE_NUMS}
+            for g in obs:
+                rh.load = _drop_one(orig_load, g["id"])
+                for hn in cfg.HOLE_NUMS:
+                    svg, info = rh.render_hole(hn, cfg.HOLES)
+                    if (svg, info) != base[hn]:
+                        changed.append((slug, hn, g["id"]))
+        finally:
+            rh.load = orig_load
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert ways >= 1 and courses >= 1, (
+        "no course in the corpus carries a golf=out_of_bounds way any more, so this decision has nothing "
+        "to stand on. It was written for trump-national-los-angeles way 1330731228; if a re-fetch has "
+        "dropped it, the shrink guard should have aborted -- that is the finding, not this skip")
+    assert not changed, (
+        f"{len(changed)} card(s) change when a golf=out_of_bounds way is deleted, so OB is reaching the "
+        f"paper: {changed[:8]}. Out of bounds is stroke-and-distance and it is NOT a penalty area, so it "
+        f"may not be drawn in the water blue, the sand tan or the tree green. Give it a legend entry and "
+        f"an ink of its own on BOTH editions' guide cards, and be able to say what a card with no OB mark "
+        f"means, before making this pass again -- see the note beside `treerows` in render_hole.py")
+
+
+# Every fill render_hole.render_hole() can put on a hole map, the word a card's LEGEND has to use for it,
+# and the COLOUR WORD the legend has to identify it by -- or None with the reason it needs none. Keyed by
+# the token as it is SPELLED in the renderer, so a named constant is resolved through the module and a hex
+# is taken as written; the completeness of this table against the renderer's own source is the first thing
+# asserted below, which is what makes a fifth ink fail here instead of shipping unexplained.
+#
+# The exemptions are all one thing: TURF. Fairway, rough, the putting surface and a tee box are the
+# ground the hole is made of, they are what a golfer is aiming AT, and the card's legend has never named
+# them -- a green drawn green needs no key. Every HAZARD, and the one landcover class that hides a ball,
+# has to be named, because those are the marks a reader has to decode before deciding where to aim.
+#
+# THE COLOUR WORD IS A SEPARATE COLUMN because naming the class is not the same as naming the mark. The
+# penalty class shipped for one build as "penalty areas" in a list whose other entries read "(tan)" and
+# "(blue)": the class was named and the reader still had no way in from the page, and someone who knows
+# the course asked "what is the purple?". A legend a reader cannot enter from the mark is not a legend.
+HOLE_MAP_FILL = {
+    '#efe3b8': ("bunkers", "tan", "sand, the tan the legend names first"),
+    '#a9d3ef': ("water", "blue",
+                "OPEN WATER and nothing else: a mapped waterbody, a pre-2019 `golf=water_hazard`, or a "
+                "visible watercourse that is not tagged as running dry -- render_hole.holds_open_water is "
+                "the definition. This entry USED TO READ 'ponds, drawn wetland and water penalty areas', "
+                "and that third of it was the defect: `natural=wetland` was inked here under the legend "
+                "word 'water', so callippe -- ONE `natural=water` polygon in its whole cache -- shipped a "
+                "book printing 39 W across 18 cards with 2,309 tree markers standing in what the card "
+                "called a pond. The false premise was written into THIS TABLE, which is why the legend "
+                "guard below could not see it: a class with no ink of its own has no name to be missing"),
+    '#9cbf86': ("trees", None, "the wood/scrub background fill -- see LEGEND_NAMES_NO_COLOUR"),
+    '#2f7d32': ("trees", None, "tree markers and tree rows -- the same class the wood fill belongs to"),
+    'PENALTY_FILL': ("not water", "grey",
+                     "every hazard this engine draws that holds no open water, which is three classes and "
+                     "ONE meaning: a `golf=penalty_area` that is not water (brush, canyon, waste), drawn "
+                     "wetland, and a watercourse tagged `intermittent=yes`. Named for the meaning and not "
+                     "for a member -- calling callippe's marsh a 'penalty area' would assert a Rule 17 "
+                     "marking nothing in the data records. A quiet grey because the class covers ground on "
+                     "16 of trump's 18 holes and 5.50-51.87% of the drawn card on the 14 callippe cards "
+                     "that carry it, so a loud ink would bury the sand, the water and the line -- see "
+                     "render_hole.PENALTY_FILL for the value and why its own fill, not the edge or the "
+                     "words beside it, is what fails a mono printer"),
+    '#cfe8b2': (None, None, "fairway -- TURF, the ground the hole is made of and what a player aims at"),
+    '#e9f0da': (None, None, "rough -- TURF"),
+    '#7cc45a': (None, None, "the putting surface -- TURF, and the card is turned around it"),
+    '#6aa15a': (None, None, "a tee box -- TURF, and the card labels it with the tee's own name"),
+}
+
+# A drawn class the legend NAMES but gives no colour for, and why that is not fixed here. Recorded rather
+# than waived silently: the rule below is that a reader must be able to get from the mark to the meaning,
+# and one class in the corpus cannot.
+#
+# "trees" is that class. The HOLE-map row reads "bunkers (tan), water (blue), not water (grey),
+# **trees**", and the word "green" appears nowhere on the card in connection with the tree marks -- the
+# only "green" in the colour rows is the steepness ramp on the GREEN panel, which is a different thing.
+# It is left alone because the row is shared by all 13 books and both editions, so rewording it moves
+# every one of them, and the tree marks are the one class here that is not a hazard: the mark is a dot in
+# the shape of a tree canopy on a map full of them, which is a weaker failure than an unexplained hazard
+# fill. It is a real gap, it is sequenced separately, and this record is what stops it being forgotten.
+LEGEND_NAMES_NO_COLOUR = {
+    "trees": ("the HOLE-map row names the class in bold and gives no colour for it, while its siblings "
+              "read (tan), (blue) and (grey). Not a hazard fill, and the row is shared by 13 books and "
+              "both editions, so the wording change belongs with a corpus-wide pass, not with this one."),
+}
+
+# A named ink that NO card in the built corpus carries, and why -- so "the legend explains every ink
+# this book draws" cannot pass by an ink quietly leaving the paper.
+#
+# The `woods` background fill is drawn on 0 of the corpus's 234 cards, and was before this class was
+# split out too. Measured over all 12 geometry courses: 17 non-penalty `natural=wood`/`scrub` /
+# `landuse=forest` ways exist in the caches (merion 8, philadelphia 4, callippe 3, castlewood-hill 2, and
+# none at all on the other eight), and not one of them reaches the 0.35 of its own boundary length inside
+# any hole's 55 m corridor that `woods` requires -- the largest fraction anywhere is merion's 0.245. So
+# the only cards that have ever carried this fill are trump-national-los-angeles', and they carried it
+# for 34 features that are `golf=penalty_area` and now have ink of their own. The legend's word for it,
+# "trees", is still exercised on 12 books through the tree markers and tree rows (#2f7d32), which is why
+# this is a record and not a hole in the test.
+INK_DRAWN_NOWHERE = {
+    '#9cbf86': ("the wood/scrub background fill. 17 non-penalty wood/scrub/forest ways exist in the "
+                "corpus and none reaches the 0.35 length fraction `woods` needs at 55 m (best 0.245, "
+                "merion), so no card draws it; the word 'trees' is exercised by #2f7d32 instead."),
+}
+
+
+@needs_corpus
+def test_every_hazard_ink_a_hole_map_draws_is_named_by_both_editions_legends():
+    """Ink on the paper that the legend does not name is a hazard the reader cannot interpret.
+
+    This project has now shipped that defect twice on one class. `golf=penalty_area` reached the paper
+    first in the #9cbf86 scrub fill, under a legend reading "bunkers (tan), water (blue), trees", so the
+    card told a junior the hazard is TREES; it was then moved into the water blue and the footer W, so the
+    same card told him there are ten waters on a hole with none. Both times the map drew something the
+    key beside it could not explain, and both times nothing failed. render_hole.py's own note beside
+    `golf=out_of_bounds` names the rule -- "a fourth colour needs a fourth legend entry on both editions'
+    guide cards" -- and this is the test of it.
+
+    THE POPULATION IS READ OUT OF THE RENDERER, not listed here: every `fill="..."` in
+    render_hole.render_hole's source, with a named constant resolved through the module. HOLE_MAP_FILL has
+    to classify all of them, so an ink added without a decision about the legend fails on the first
+    assertion below rather than on a reader's card. Then, per book, only the inks that book's cards
+    ACTUALLY carry are required in its legends -- a key for a colour the reader will never see is the
+    clutter that overflowed the tightest guide card in the corpus.
+
+    BOTH EDITIONS, because the two have drifted three times already (the enlarged card once lacked the
+    red ring, the grey ladder and the bunker/water key), and the pocket and enlarged legends are separate
+    literals in generate.py. For the penalty class the requirement is a WORD and a SWATCH: the row's rect
+    is filled from render_hole's own constants, so retuning the ink takes the key with it, and a copied
+    hex is what is forbidden. The four older classes are keyed by a colour word instead -- "bunkers
+    (tan), water (blue)" -- which is what this card has always done and what its width allows.
+
+    Only the LEGEND ROWS count, not the whole card: the About & legal block below them mentions water,
+    trees and a great deal else without defining anything, and would satisfy this test while explaining
+    nothing.
+
+    RENDERED, NOT BUILT. `generate.LAYOUTS` is filled here from render_hole directly instead of through
+    build_deck(), which would render every green of every course off the 0.4 m surfaces for a question
+    that is entirely about the hole map. The rows this skips are the green-specific ones -- (faint), no
+    clear fall, the coarse-lattice note -- and none of them names a hole-map ink.
+    """
+    import inspect
+    _cfg0, _rh0 = _engine(CORPUS[0])
+    src = inspect.getsource(_rh0.render_hole)
+    fill_tokens = set(re.findall(r'fill="(#[0-9a-fA-F]{6})"', src))
+    for name in re.findall(r'fill="\{([A-Za-z_][A-Za-z_0-9]*)\}"', src):
+        v = getattr(_rh0, name, None)
+        if isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+            fill_tokens.add(name)
+    assert fill_tokens, f"no fill literal found in render_hole.render_hole's source"
+    unclassified = sorted(t for t in fill_tokens if t not in HOLE_MAP_FILL)
+    assert not unclassified, (
+        f"render_hole.render_hole() draws fill(s) {unclassified} that HOLE_MAP_FILL does not classify, "
+        f"so nothing here can say whether the card's legend explains them. Add each one with the word a "
+        f"legend must use for it, or with None and the reason it needs none -- and if it is a hazard, add "
+        f"the legend entry to BOTH editions' guide cards (generate.guide_panel and coach_about_card) "
+        f"before adding it here. Ink the legend does not name is the defect the penalty-area class was")
+    stale = sorted(t for t in HOLE_MAP_FILL if t not in fill_tokens)
+    assert not stale, (
+        f"HOLE_MAP_FILL classifies {stale}, which render_hole no longer draws. Drop the entry rather "
+        f"than leave a rule that would cover the next ink on its own")
+
+    def resolve(rh, token):
+        return token if token.startswith("#") else getattr(rh, token)
+
+    missing, unidentified, seen, errors = [], [], {}, []
+    for slug in CORPUS:
+        # `generate` too, and NOT `distribution`: generate holds `from config import ... NAME as
+        # COURSE` at module level, so a stale copy prints the previous course; distribution reads no
+        # COURSE at all, and dropping it would isolate nothing while leaving every holder stale.
+        for m in ("config", "render_hole", "render_green", "generate"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = slug
+        import config as cfg
+        import generate as gen
+        try:
+            for hn in cfg.HOLE_NUMS:
+                gen.LAYOUTS[hn] = gen.render_hole.render_hole(hn, cfg.HOLES)
+        except Exception as e:
+            errors.append((slug, repr(e)[:120]))
+            continue
+        cards = "".join(svg for svg, _i in gen.LAYOUTS.values())
+        legends = {
+            "pocket": (gen.yardage_guide_panel() if cfg.BUILD_MODE == "yardage" else gen.guide_panel()),
+            "enlarged": gen.coach_about_card(),
+        }
+        rows = {k: " ".join(re.sub(r"<[^>]+>", " ", r) for r in
+                            re.findall(r'<div class="legrow">(.*?)</div>', v, re.S)).lower()
+                for k, v in legends.items()}
+        for token, (word, colour, _why) in sorted(HOLE_MAP_FILL.items()):
+            if word is None:
+                continue
+            if f'fill="{resolve(gen.render_hole, token)}"' not in cards:
+                continue
+            seen.setdefault(token, []).append(slug)
+            for edition, text in rows.items():
+                if word not in text:
+                    missing.append((slug, edition, token, word))
+                elif colour is None:
+                    if word not in LEGEND_NAMES_NO_COLOUR:
+                        unidentified.append((slug, edition, token, word, "no colour word recorded"))
+                elif not re.search(rf"{re.escape(word)}\w*\s*\({re.escape(colour)}\)", text):
+                    unidentified.append((slug, edition, token, word, colour))
+    assert not errors, f"{len(errors)} course(s) failed to render or lay out a legend: {errors[:5]}"
+    assert not missing, (
+        f"{len(missing)} (book, edition, ink, word) case(s) where a card draws an ink the guide card's "
+        f"legend rows never name: {missing[:8]}{' ...' if len(missing) > 8 else ''}. A reader shown a "
+        f"hazard and not told what it is guesses, and on this class the guess was 'trees'")
+    assert not unidentified, (
+        f"{len(unidentified)} (book, edition, ink, class, colour) case(s) where the legend NAMES a class "
+        f"the map draws and does not say what colour it is: {unidentified[:8]}. Naming the class is not "
+        f"naming the mark -- the sibling entries read \"bunkers (tan)\" and \"water (blue)\", and an "
+        f"entry without its colour leaves a reader looking at ink with no way into the key. That shipped "
+        f"once and the reader's question was \"what is the purple?\". Write it in the same form as its "
+        f"siblings, or record the class in LEGEND_NAMES_NO_COLOUR with the reason it cannot be")
+    for word, why in LEGEND_NAMES_NO_COLOUR.items():
+        assert any(w == word for w, _c, _y in HOLE_MAP_FILL.values()), \
+            f"LEGEND_NAMES_NO_COLOUR records {word!r}, which is not a class the hole map draws"
+        assert len(why) > 60, f"{word} needs a real reason, got {why!r}"
+    coloured = {w for w, c, _y in HOLE_MAP_FILL.values() if w is not None and c is not None}
+    assert coloured & {HOLE_MAP_FILL[t][0] for t in seen}, (
+        "no class with a required colour word is drawn anywhere, so the colour assertion above is vacuous")
+    named = sorted(t for t, (w, _c, _y) in HOLE_MAP_FILL.items() if w is not None)
+    undrawn = sorted(t for t in named if t not in seen)
+    assert undrawn == sorted(INK_DRAWN_NOWHERE), (
+        f"the named ink(s) drawn on no card in the built corpus are {undrawn}; INK_DRAWN_NOWHERE "
+        f"records {sorted(INK_DRAWN_NOWHERE)}. An ink that has STOPPED being drawn is a class that left "
+        f"the paper and wants explaining; one that has STARTED is now covered by the checks above and "
+        f"the record should go. Either way, re-measure rather than adjusting the table to match")
+    for token, why in INK_DRAWN_NOWHERE.items():
+        assert token in HOLE_MAP_FILL and len(why) > 40, f"{token} needs a real reason, got {why!r}"
+    words = {w for w, _c, _y in HOLE_MAP_FILL.values() if w is not None}
+    exercised = {HOLE_MAP_FILL[t][0] for t in seen}
+    assert exercised == words, (
+        f"the legend word(s) {sorted(words - exercised)} are required by this test of no book, because "
+        f"no ink carrying them is drawn anywhere in the built corpus, so the requirement is untested. "
+        f"That is a class off the paper, which is the finding")
+    assert len(seen.get("PENALTY_FILL", [])) >= 1, (
+        "no book draws the penalty-area ink, so the case this test was written for is not in the corpus")
+    # ...AND THE PENALTY CLASS'S KEY IS A SWATCH, so the key and the map are one colour instruction and
+    # not two that agree today. The four older classes are keyed by a colour WORD -- "bunkers (tan),
+    # water (blue)" -- which is what this card has always done and what its width allows; this one is
+    # keyed by a rect filled from render_hole's own constants, the arrangement _heat_swatches uses. A word
+    # cannot go stale when the ink is retuned and a copied hex can, so the copy is what is forbidden.
+    swatchless = []
+    for slug in seen.get("PENALTY_FILL", []):
+        # `generate` too, and NOT `distribution`: generate holds `from config import ... NAME as
+        # COURSE` at module level, so a stale copy prints the previous course; distribution reads no
+        # COURSE at all, and dropping it would isolate nothing while leaving every holder stale.
+        for m in ("config", "render_hole", "render_green", "generate"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = slug
+        import config as cfg
+        import generate as gen
+        for hn in cfg.HOLE_NUMS:
+            gen.LAYOUTS[hn] = gen.render_hole.render_hole(hn, cfg.HOLES)
+        for edition, card in (("pocket", gen.guide_panel()), ("enlarged", gen.coach_about_card())):
+            for what, ink in (("fill", gen.render_hole.PENALTY_FILL),
+                              ("edge", gen.render_hole.PENALTY_EDGE)):
+                if f'"{ink}"' not in card:
+                    swatchless.append((slug, edition, what, ink))
+    assert not swatchless, (
+        f"{len(swatchless)} guide card(s) name the penalty class but do not SHOW its ink: {swatchless}. "
+        f"The legend row carries a swatch drawn from render_hole.PENALTY_FILL/PENALTY_EDGE, so a retuned "
+        f"ink takes the key with it; a row that only says the word leaves the reader matching a colour "
+        f"name to a 6.6 pt shape, and a hardcoded hex leaves a key that can go stale")
+
+
+def _holds_open_water(g, rh):
+    """(the hole map's BLUE is the honest ink for this feature) -- re-derived here, tag by tag.
+
+    A SECOND OPINION on render_hole.holds_open_water, and the reason this test does not simply call it:
+    the defect being guarded is that the engine decided `natural=wetland` means water, so a test that
+    asks the engine which features are water asks the accused for the verdict. The three refusals and
+    the four admissions are written out from tags. `is_visible_watercourse` and `is_drawn_wetland` are
+    IMPORTED rather than respelled -- culverted/covered/underground/dam/weir are the first one's rules and
+    the 431-acre farmland-tile refusal is the second's, and a second copy of either is the drift this suite
+    keeps removing (see _is_area_water and _is_land_penalty_area, which import them for the same reason).
+
+    The two spellings are then required to AGREE on every feature of every course, so an engine that
+    starts calling marsh water fails here rather than taking this test's population with it.
+    """
+    t = g.get("tags") or {}
+    if rh.is_drawn_wetland(g):
+        return False
+    if t.get("golf") == "penalty_area" and _is_land_penalty_area(g, rh):
+        return False
+    if t.get("intermittent") == "yes" and rh.is_visible_watercourse(g):
+        return False
+    return bool(t.get("golf") in ("water_hazard", "lateral_water_hazard")
+                or t.get("natural") == "water" or t.get("water")
+                or rh.is_visible_watercourse(g))
+
+
+@needs_corpus
+def test_one_ink_means_one_thing_in_the_legend_and_only_open_water_is_drawn_in_the_blue():
+    """THE GUARD THAT WAS MISSING, and the reason this defect survived months of tests that all passed.
+
+    A reader was shown a pond and there was no pond. callippe Preserve holds exactly ONE `natural=water`
+    polygon in its whole cache and its shipped book prints 39 W across 18 cards, because `natural=wetland`
+    was selected by the water selector, filled #a9d3ef and counted in the footer's W; 2,309 of its 7,507
+    tree markers stand inside ground the card had painted as water, which is what the owner saw when he
+    walked it and asked how a tree got into the water.
+
+    WHY NOTHING FAILED. The legend guard above reads its population out of HOLE_MAP_FILL, and that table
+    said `'#a9d3ef': ("water", "blue", "ponds, drawn wetland and water penalty areas")`. The false premise
+    was written into the very table the guard grades against -- wetland having no ink of its own meant
+    there was no unnamed ink to find, and "the legend names every ink the map draws" was true and useless.
+    Every other water test in the suite counted MARKS: at least as many blue fills as reachable hazards,
+    the footer no lower than the map. A count cannot see a class wearing another class's colour.
+
+    SO THIS GRADES THE CHAIN, feature -> ink -> legend word, in the two directions a count cannot:
+
+      1. EVERY FEATURE INKED BLUE IS OPEN WATER, by this file's own tag reading and not the engine's.
+         That is the assertion the owner's complaint is about, and it is what makes the defect a test
+         failure rather than a reading of a card.
+      2. NO TWO LEGEND WORDS SHARE A FILL. This is the invariant stated precisely, and the precision
+         matters because the fix DELIBERATELY shares one grey between three classes: penalty areas,
+         wetland and channels that run dry. "One ink, one TAG" would be false -- it would forbid the
+         fix -- and would also have permitted the defect, since wetland and ponds were two tags in one
+         ink under one word. What must hold is that a fill maps to exactly ONE legend word, and that the
+         word is true of every class drawn in it. Three tags sharing "not water" is fine because all
+         three are not water; wetland sharing "water" was not, because marsh is not water.
+
+    AND IT IS PROVED NON-TAUTOLOGICAL BY MUTATION, because the renderer now SELECTS the blue by the same
+    predicate this test re-derives, so "every blue feature is water" would otherwise be true by
+    construction. The engine is patched back to its shipped behaviour -- holds_open_water admitting drawn
+    wetland -- and assertion 1 must catch it on the course the owner walked. A test that cannot fail on
+    the defect it is named for is not a guard, and this suite has already found four of those.
+    """
+    import copy
+
+    # 1. The two spellings of "this is open water" must agree feature by feature, or the population this
+    #    test grades is not the population the engine draws.
+    disagreed, blue_not_water, grey_is_water, errors = [], [], [], []
+    wetland_seen = dry_seen = penalty_seen = 0
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, _geom = rh.load()
+        except Exception as e:                                   # pragma: no cover - env-dependent
+            errors.append((slug, repr(e)[:100]))
+            continue
+        for g in course:
+            mine, theirs = _holds_open_water(g, rh), rh.holds_open_water(g)
+            if mine != theirs:
+                disagreed.append((slug, g.get("id"), dict(g.get("tags") or {}), mine, theirs))
+        byid = {g.get("id"): g for g in course}
+        for hn in cfg.HOLE_NUMS:
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            for wid in info["water_ids"] + info["creek_ids"]:
+                if not _holds_open_water(byid[wid], rh):
+                    blue_not_water.append((slug, hn, wid, dict(byid[wid].get("tags") or {})))
+            for gid in info["wetland_ids"] + info["dry_channel_ids"]:
+                if _holds_open_water(byid[gid], rh):
+                    grey_is_water.append((slug, hn, gid, dict(byid[gid].get("tags") or {})))
+            wetland_seen += len(info["wetland_ids"])
+            dry_seen += len(info["dry_channel_ids"])
+            penalty_seen += info["penalty_areas"]
+    assert not errors, f"{len(errors)} course(s) failed to load or render: {errors[:5]}"
+    assert not disagreed, (
+        f"{len(disagreed)} feature(s) where this file's tag reading of 'is this open water' and "
+        f"render_hole.holds_open_water disagree: {disagreed[:5]}. One of the two is wrong and the ink on "
+        f"the paper follows the engine's, so fix whichever is wrong -- do not adjust this helper to match")
+    assert not blue_not_water, (
+        f"{len(blue_not_water)} (course, hole, way, tags) case(s) where a card inks a feature in the "
+        f"WATER BLUE that is not open water: {blue_not_water[:8]}. The legend word for #a9d3ef is "
+        f"{HOLE_MAP_FILL['#a9d3ef'][0]!r}, so every feature drawn in it is the card telling a junior "
+        f"there is water there. This is the shipped defect: callippe printed 39 W over 12 hand-mapped "
+        f"wetlands and one pond, with 2,309 tree markers standing in the blue")
+    assert not grey_is_water, (
+        f"{len(grey_is_water)} (course, hole, way, tags) case(s) where a card inks OPEN WATER in the "
+        f"not-water grey: {grey_is_water[:8]}. That is the same defect in the other direction -- a pond "
+        f"drawn as dry ground -- and it is the more dangerous one, because the reader is not warned")
+
+    # 2. Anti-vacuity, on each class separately: a corpus that stopped drawing one of them would make the
+    #    assertions above silent about it, which is exactly how the original defect stayed invisible.
+    assert wetland_seen >= 12, (
+        f"only {wetland_seen} wetland/hole appearance(s) in the whole corpus, so assertion 1 is barely "
+        f"exercised on the class this test was written for. callippe alone drew 29 across 14 cards; "
+        f"re-measure before lowering this")
+    assert dry_seen >= 12, (
+        f"only {dry_seen} dry-channel/hole appearance(s); 29 were measured across bay-view, "
+        f"copper-valley and micke-grove. A class off the paper is the finding, not a reason to relax")
+    assert penalty_seen >= 12, (
+        f"only {penalty_seen} penalty-area/hole appearance(s); trump-national-los-angeles drew 83")
+
+    # 3. ONE FILL, ONE LEGEND WORD. Mechanical, over the table the legend guard grades against, because
+    #    that table is where the false premise lived.
+    by_word = {}
+    for token, (word, _colour, _why) in HOLE_MAP_FILL.items():
+        if word is not None:
+            by_word.setdefault(token, set()).add(word)
+    shared = {t: sorted(w) for t, w in by_word.items() if len(w) > 1}
+    assert not shared, (
+        f"fill(s) {shared} are recorded under more than one legend word. A reader decodes a mark by its "
+        f"colour, so one colour may carry exactly one meaning -- if two classes genuinely share an ink, "
+        f"they share the WORD too and the legend row has to be true of both (as 'not water' is of brush, "
+        f"wetland and a dry channel). Two words on one fill means the card cannot be read")
+    assert HOLE_MAP_FILL['#a9d3ef'][0] == "water", (
+        "the blue's legend word is no longer 'water', so assertion 1's premise -- that a blue mark tells "
+        "the reader there is water there -- needs re-reading before this test means anything")
+    assert HOLE_MAP_FILL['PENALTY_FILL'][0] == "not water", (
+        "the grey's legend word has moved off 'not water'. It is shared by three classes and named for "
+        "the one thing they have in common; a word naming a MEMBER (\"penalty area\") would assert a "
+        "Rule 17 marking over callippe's marsh that nothing in the data records")
+
+    # 4. THE MUTATION, which is what makes the above a guard rather than a restatement of the selector.
+    #    render_hole picks the blue BY holds_open_water, so put the shipped behaviour back -- wetland
+    #    admitted as water -- and require assertion 1 to catch it.
+    cfg, rh = _engine("callippe-preserve-golf-course")
+    course, _geom = rh.load()
+    byid = {g.get("id"): g for g in course}
+    real = rh.holds_open_water
+    caught = 0
+    try:
+        rh.holds_open_water = lambda g: True if rh.is_drawn_wetland(g) else real(g)
+        for hn in cfg.HOLE_NUMS:
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            caught += sum(1 for wid in info["water_ids"] if not _holds_open_water(byid[wid], rh))
+    finally:
+        rh.holds_open_water = real
+    assert caught >= 12, (
+        f"with the engine patched back to inking drawn wetland as water -- the behaviour that shipped 39 W "
+        f"on a course with one water feature -- assertion 1 caught only {caught} blue-but-not-water "
+        f"mark(s) on callippe. It should catch 29. This test cannot fail on the defect it is named for, "
+        f"which means it is grading the selector against itself rather than the ink against the legend")
+
+
+@needs_corpus
+def test_every_card_that_draws_the_not_water_grey_names_the_class_in_its_own_footer():
+    """The card-level half of rule 2 for the grey classes: the map marks it AND the footer says what it is.
+
+    THE REGRESSION THIS EXISTS TO CATCH is the one the fix could most easily have introduced. Wetland and
+    dry channels used to be counted in the footer's W; they are not any more, because they are not water.
+    On 34 cards across five books the W therefore FALLS, and on 20 of them it falls to `0W` -- callippe 2,
+    3, 5, 6, 7, 8, 9, 11, 12 and merion 14, 16, 17 among them. "0B 0W" beside a blank-looking corridor
+    reads as "nothing here to avoid", over ground where a ball is lost. That is a worse card than the one
+    that said there was a pond. The footer mark is what stops the correction becoming an omission, so it
+    is asserted per card rather than trusted to a template.
+
+    BOTH DIRECTIONS. A card that draws the grey must name every class it drew; a card that draws none must
+    print no mark at all, because a legend line spent on ink the reader will never see is the clutter that
+    has twice overflowed the tightest guide card in this corpus -- and a footer mark for a hazard that is
+    not there is a false warning.
+
+    THROUGH THE REAL PANEL, not through not_water_mark() alone. Calling the helper and checking its output
+    against the same `info` it was given proves nothing: the question is whether the mark reaches the card,
+    and it reaches it through generate.hole_panel's footer template. A build_deck() per course costs about
+    a second and is what makes this an assertion about the page.
+    """
+    WORD = {"wetlands": "wetland", "dry_channels": "creek runs dry", "penalty_areas": "penalty area"}
+    missing, spurious, wrong_word, drew, errors = [], [], [], 0, []
+    for slug in CORPUS:
+        for m in ("config", "render_hole", "render_green", "generate"):
+            sys.modules.pop(m, None)
+        os.environ["COURSE"] = slug
+        import config as cfg
+        import generate as gen
+        try:
+            gen.build_deck()
+        except Exception as e:                                   # pragma: no cover - env-dependent
+            errors.append((slug, repr(e)[:120]))
+            continue
+        grey_fill = 'fill="%s" stroke="%s" stroke-width="1.2"' % (gen.render_hole.PENALTY_FILL,
+                                                                  gen.render_hole.PENALTY_EDGE)
+        grey_line = 'stroke="%s" stroke-width="1.8"' % gen.render_hole.PENALTY_EDGE
+        for hn in cfg.HOLE_NUMS:
+            svg, info = gen.LAYOUTS[hn]
+            panel = gen.hole_panel(hn, "x")
+            foot = re.search(r'<div class="foot">(.*?)</div>\s*(?:<|$)', panel, re.S)
+            assert foot, f"{slug} hole {hn}: the hole panel has no footer to read"
+            text = re.sub(r"<[^>]+>", " ", foot.group(1))
+            inked = svg.count(grey_fill) + svg.count(grey_line)
+            present = [k for k in WORD if info.get(k)]
+            if present:
+                drew += 1
+                for k in present:
+                    if WORD[k] not in text:
+                        missing.append((slug, hn, WORD[k], " ".join(text.split())[:90]))
+            if inked and not present:
+                spurious.append((slug, hn, "grey ink with no class counted", inked))
+            if present and not inked:
+                spurious.append((slug, hn, "class counted with no grey ink", present))
+            for k, word in WORD.items():
+                if not info.get(k) and word in text:
+                    wrong_word.append((slug, hn, word, " ".join(text.split())[:90]))
+    assert not errors, f"{len(errors)} course(s) failed to build a deck: {errors[:5]}"
+    assert drew >= 30, (
+        f"only {drew} card(s) in the whole corpus draw a not-water class, so this test barely exercises "
+        f"the rule it states. 52 were measured -- trump 18, callippe 14, bay-view 7, copper-valley 6, "
+        f"micke-grove 4, merion 3. A class off the paper is the finding, not a reason to lower this")
+    assert not missing, (
+        f"{len(missing)} (course, hole, word, footer) case(s) where a card draws a not-water hazard and "
+        f"its footer never names it: {missing[:8]}. Twenty of these cards print `0W`, so without the mark "
+        f"the footer reads as 'nothing else to avoid' over ground a ball is lost in -- which is a worse "
+        f"card than the one that called it a pond")
+    assert not spurious, (
+        f"{len(spurious)} card(s) where the grey INK and the counted class disagree: {spurious[:8]}. "
+        f"One feature is one path and one count; a card that inks a hazard it does not count cannot name "
+        f"it in the footer, and a card that counts one it does not ink names a hazard that is not drawn")
+    assert not wrong_word, (
+        f"{len(wrong_word)} card(s) whose footer names a not-water class the card does not draw: "
+        f"{wrong_word[:8]}. A mark for a hazard that is not there is a false warning, and on the penalty "
+        f"word it would also assert a Rule 17 marking the data does not record")
+
+
+@needs_corpus
+def test_a_watercourse_inside_a_non_water_penalty_area_is_not_also_counted_as_water():
+    """One hazard, one class -- the containment case. A drainage line through staked brush is not a water.
+
+    trump-national-los-angeles way 845375656 is a `waterway=stream` with 187.0 m of its 191.9 m -- 0.974
+    of its length -- inside penalty areas 1330719395 and 1330719396, which are `natural=scrub`. Drawn as a
+    watercourse it supplied 2 of that book's 91 W, on holes 4 and 5, for ground the card was already
+    marking as a penalty area: the same hazard counted once as brush and again as water. The distinction
+    is IN the data and it was the renderer that lost it -- the same OSM mapper tagged this course's three
+    ponds `golf=water_hazard` with `natural=water`.
+
+    THE HALF THAT MATTERS MOST IS THE SECOND ONE. Suppressing a blue line is the omission direction, so
+    this test does not stop at "it left the W": for every hole that loses the line, the card must still
+    draw a penalty area, or the rule has turned a marked hazard into blank ground. Both containing areas
+    are drawn on both holes 4 and 5, so the ink and the footer mark stay and only the WATER claim goes.
+    Measured by turning the rule off through render_hole.PENALTY_CONTAINMENT_MIN rather than by
+    re-deriving which holes are affected -- the corridor's reach half is clipped to the played length and
+    a second copy of that is the drift this suite keeps removing.
+
+    NOTHING SITS NEAR THE BAR, which is the other thing a threshold rule has to show. Every visible
+    watercourse in the corpus is measured here: this course's three come out at 0.974, 0.000 and 0.000,
+    and the other eleven geometry courses have no penalty area at all, so every one of theirs is 0.000.
+    Exactly one feature in 13 courses is above PENALTY_CONTAINMENT_MIN and the next highest is 0.35 below
+    it. A re-fetch that put a real creek near the bar would fail here and want reading, not re-tuning.
+    """
+    WATER_FILL = 'fill="#a9d3ef"'
+    CREEK = 'stroke="#5b9bd0" stroke-width="1.8"'
+    import geo
+    fracs, suppressed, errors = [], [], []
+    still_drawn, reaches_paper, blank = [], [], []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, geom = rh.load()
+        except Exception as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        rings = [g for g in course if rh.is_land_penalty_area(g) and g.get("geometry")]
+        lines = [g for g in course if rh.is_visible_watercourse(g) and g.get("geometry")]
+        if not lines:
+            continue
+        loc = cfg.COURSE.get("location") or {}
+        hl = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        la0 = sum(q["lat"] for h in hl.values() for q in h["geometry"]) / \
+            sum(len(h["geometry"]) for h in hl.values())
+        lo0 = sum(q["lon"] for h in hl.values() for q in h["geometry"]) / \
+            sum(len(h["geometry"]) for h in hl.values())
+        mo, mla = _mlon(la0), _mlat(la0)
+        em = [[((p["lon"] - lo0) * mo, (p["lat"] - la0) * mla) for p in g["geometry"]] for g in rings]
+        mine = {}
+        for g in lines:
+            pts = [((p["lon"] - lo0) * mo, (p["lat"] - la0) * mla) for p in g["geometry"]]
+            f = rh.frac_len_inside_rings(pts, em)
+            mine[g["id"]] = f
+            fracs.append((slug, g["id"], round(f, 3)))
+            if f >= rh.PENALTY_CONTAINMENT_MIN:
+                suppressed.append((slug, g["id"], round(f, 3)))
+        if not any(f >= rh.PENALTY_CONTAINMENT_MIN for f in mine.values()):
+            continue
+        # the cards as they ship, and the cards with the rule switched OFF
+        base = {}
+        for hn in cfg.HOLE_NUMS:
+            svg, info = rh.render_hole(hn, cfg.HOLES)
+            base[hn] = (info["waters"], info["watercourses"], svg.count(WATER_FILL),
+                        svg.count(CREEK), info["penalty_areas"])
+        bar = rh.PENALTY_CONTAINMENT_MIN
+        try:
+            rh.PENALTY_CONTAINMENT_MIN = 1.01          # nothing can be contained: rule off
+            off = {hn: rh.render_hole(hn, cfg.HOLES)[1] for hn in cfg.HOLE_NUMS}
+        finally:
+            rh.PENALTY_CONTAINMENT_MIN = bar
+        for hn in sorted(base):
+            lost = off[hn]["watercourses"] - base[hn][1]
+            if lost <= 0:
+                continue
+            still_drawn.append((slug, hn, lost))
+            # RULE 2: the hole that lost a blue line must still mark the ground as a hazard
+            if not base[hn][4]:
+                blank.append((slug, hn, f"{lost} watercourse(s) suppressed and 0 penalty areas drawn"))
+        # and the suppressed feature must reach the paper nowhere: deleting it changes no card
+        for _s, way, _f in [s for s in suppressed if s[0] == slug]:
+            orig = rh.load
+            try:
+                rh.load = _drop_one(orig, way)
+                for hn in cfg.HOLE_NUMS:
+                    svg, info = rh.render_hole(hn, cfg.HOLES)
+                    if (info["waters"], info["watercourses"], svg.count(WATER_FILL),
+                            svg.count(CREEK), info["penalty_areas"]) != base[hn]:
+                        reaches_paper.append((slug, hn, way))
+            finally:
+                rh.load = orig
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert len(suppressed) == 1, (
+        f"{len(suppressed)} watercourse(s) in the corpus lie inside a non-water penalty area: "
+        f"{suppressed}. This rule was written for exactly one -- trump-national-los-angeles way "
+        f"845375656 at 0.974 -- and it withdraws a water count, so a second one is a case to read "
+        f"rather than a number to accept. Every measured fraction: "
+        f"{sorted((f, s, w) for s, w, f in fracs)[-4:]}")
+    near = sorted(f for _s, _w, f in fracs if f < rh.PENALTY_CONTAINMENT_MIN)
+    assert not near or near[-1] <= rh.PENALTY_CONTAINMENT_MIN - 0.30, (
+        f"a watercourse now measures {near[-1]} against a bar of {rh.PENALTY_CONTAINMENT_MIN}, so the "
+        f"threshold has started deciding cases instead of separating one obvious one. It was chosen "
+        f"because the corpus reads 0.974, 0.000 and 0.000 -- re-read the rule, do not move the bar")
+    assert still_drawn, (
+        "the rule suppresses a watercourse that was on no card anyway, so nothing here is measuring a "
+        "withdrawn water count -- way 845375656 supplied 2 W, on holes 4 and 5")
+    assert not blank, (
+        f"{len(blank)} card(s) lose a blue line to this rule and draw NO penalty area, so a marked "
+        f"hazard became blank ground -- the omission direction, and worse than counting it twice: "
+        f"{blank}. The containing penalty area has to be drawn on the same card, or the line must stay")
+    assert not reaches_paper, (
+        f"a watercourse this rule reclassifies still reaches {len(reaches_paper)} card(s) as water: "
+        f"{reaches_paper[:8]}. It is drawn and counted as the penalty area it lies inside, once")
 
 
 SAND_CORRIDOR_M = _RH_CORRIDOR_M["bunker"]   # the corridor render_hole selects sand on, by nearest EDGE
@@ -31404,7 +33119,17 @@ def test_no_module_carries_a_pasted_duplicate_of_its_own_comment_or_assignment()
       1. no run of consecutive comment lines appears twice in a module. A PAIR is the unit -- single
          lines legitimately repeat (`# +0.5: the sample is a cell CENTRE` marks both sampling sites in
          render_green, and `# noqa: E402` twice in verify_elevation), and a duplicated paragraph
-         always duplicates at least one adjacent pair.
+         always duplicates at least one adjacent pair. Both lines of the pair must carry prose, for the
+         same reason the unit is a pair at all: a bare `#` normalises to nothing, so a one-line paragraph
+         between two of them produces two identical keys from ONE sentence.
+
+         WHAT THAT GIVES UP, stated rather than discovered later: a paragraph that is a single line, pasted
+         at two sites, is now invisible to this check. The rule that would catch it -- one comment line of
+         60+ characters appearing twice -- was measured over every production module and finds three cases
+         that are not pastes to fix here: two ASCII rules in generate.py (lines 194/196 and 1969/1977) and
+         one genuinely repeated sentence in tools/verify_elevation.py (273/351). Adopting it would fail the
+         suite on files outside this change, so it is recorded and not adopted; the verify_elevation pair is
+         worth a look by whoever owns that file.
 
       2. no statement list contains two adjacent identical assignments. That is a dead store by
          construction: with nothing between them the first can never be read. Checked on the AST, so
@@ -31438,8 +33163,19 @@ def test_no_module_carries_a_pasted_duplicate_of_its_own_comment_or_assignment()
         pairs = collections.defaultdict(list)
         for blk in blocks:
             for i in range(len(blk) - 1):
-                key = " ".join((blk[i].string.lstrip("#") + " "
-                                + blk[i + 1].string.lstrip("#")).split())
+                # BOTH lines of the pair have to carry prose of their own, or the "pair" is a single line
+                # wearing a disguise -- which is the exact case the pair unit exists to exclude. A bare `#`
+                # separates paragraphs everywhere in this codebase and normalises to nothing, so a ONE-LINE
+                # paragraph flanked by two of them yields two pairs, (blank, line) and (line, blank), whose
+                # keys are byte-identical. That is not a paste: render_hole.py's single-sentence paragraph
+                # about the bay-view incision measurement was reported as appearing at "[1289, 1290]" --
+                # two overlapping windows on one sentence. Measured over every production module, this is
+                # the only occurrence either way, so requiring prose on both sides costs nothing today.
+                first = blk[i].string.lstrip("#").strip()
+                second = blk[i + 1].string.lstrip("#").strip()
+                if not first or not second:
+                    continue
+                key = " ".join((first + " " + second).split())
                 if len(key) < 60:          # directives and rules, not prose
                     continue
                 pairs[key].append(blk[i].start[0])
@@ -32078,7 +33814,7 @@ _TICK_BANDS = {}
 # input to that ceiling, so a record stating "20.0000 deg N" would compute a 0.5562% ceiling and wave
 # through the whole impossible retired column it exists to refuse. Re-derived off the corpus below
 # whenever the corpus is present, so this literal cannot drift from the ground either.
-_TICK_SOUTHMOST_LAT = 37.4529
+_TICK_SOUTHMOST_LAT = 33.7264
 
 # A latitude NORTH OF EVERY COURSE this corpus holds, used to bound the LIVE column on a clone. That
 # column had no clone-side bound at all: 0.9999 yd in both records passed at every row. The live pair is
@@ -32843,17 +34579,17 @@ def test_the_tick_error_tables_grader_refuses_the_four_edits_it_used_to_wave_thr
 
     # (a) a last-digit step in both records at once
     last_digit = [("0.0013", "0.0014"), ("0.0019", "0.0020"), ("0.0023", "0.0024"),
-                  ("0.2962", "0.2963")]
+                  ("0.3035", "0.3036")]
     # (b) the impossible retired column restored with a latitude that admits it
-    southern = [("at most +0.3008% at the corpus's southernmost hole (37.4529 deg N)",
+    southern = [("at most +0.3629% at the corpus's southernmost hole (33.7264 deg N)",
                  "at most +0.5562% at the corpus's southernmost hole (20.0000 deg N)"),
-                ("| 100 yd tick | 0.2962 yd", "| 100 yd tick | 0.43 yd"),
-                ("| 200 yd tick | 0.5931 yd", "| 200 yd tick | 0.73 yd"),
+                ("| 100 yd tick | 0.3035 yd", "| 100 yd tick | 0.43 yd"),
+                ("| 200 yd tick | 0.6149 yd", "| 200 yd tick | 0.73 yd"),
                 ("| 300 yd tick | 0.8891 yd", "| 300 yd tick | 0.99 yd")]
     # (c) populations, and (d) the forensic figures
-    populations = [("861 radius crossings", "1234 radius crossings"),
-                   ("198 drawn centrelines", "400 drawn centrelines"),
-                   ("over all 589 centreline vertices", "over all 777 centreline vertices")]
+    populations = [("938 radius crossings", "1234 radius crossings"),
+                   ("216 drawn centrelines", "400 drawn centrelines"),
+                   ("over all 643 centreline vertices", "over all 777 centreline vertices")]
     # Each case carries whether it needs the corpus to be refused. (b) does NOT -- being refusable on a
     # clone is the whole point of it, since a clone is where the ungraded latitude let the impossible
     # column back in. The other three are refused by the re-derivation, so on a clone they are skipped
@@ -32864,7 +34600,7 @@ def test_the_tick_error_tables_grader_refuses_the_four_edits_it_used_to_wave_thr
                  southern, [], False)]
              + [(f"a mutated population figure {a!r} -> {b!r} in legal/11", [(a, b)], [], True)
                 for a, b in populations]
-             + [("a mutated population figure in geo.py's note", [], [("861 radius crossings",
+             + [("a mutated population figure in geo.py's note", [], [("938 radius crossings",
                                                                        "999 radius crossings")], True)]
              + [("a forensic figure that is not the measurement", [("0.4334 yd in [100,150)",
                                                                     "0.5000 yd in [100,150)")], [], True),
@@ -32913,7 +34649,7 @@ def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed
     editor gets the note, and they have to be the same measurement" -- and then applied the forensic
     regexes, and the retired pair's relative offset, to `legal/11` ALONE. `geo.py` carries its own copies
     of every one of those figures, so the half of the pair aimed at the next editor was the ungraded half:
-    0.4334 -> 0.9999, 0.72683 -> 0.99999, 0.9714 -> 0.1111 and "+0.2975%" -> "+0.9999%" in `geo.py` all
+    0.4334 -> 0.9999, 0.72683 -> 0.99999, 0.9714 -> 0.1111 and "+0.3393%" -> "+0.9999%" in `geo.py` all
     passed the whole suite. That is the same defect the commit closed, one file over.
 
     And the table's rows were read into a dict comprehension, so a DUPLICATE row won the wrong way round:
@@ -32946,10 +34682,10 @@ def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed
     # legal/11 quotes the same figure and the two have to agree -- so none of them is skipped on a clone.
     cases = [
         ("a duplicate 100 yd row ABOVE the real one, which the dict comprehension let the real one hide",
-         [("| 100 yd tick | 0.2962 yd",
-           "| 100 yd tick | 0.9999 yd | 0.9999 yd | | 100 yd tick | 0.2962 yd")], [], False),
+         [("| 100 yd tick | 0.3035 yd",
+           "| 100 yd tick | 0.9999 yd | 0.9999 yd | | 100 yd tick | 0.3035 yd")], [], False),
         ("legal/11's derived per-radius bounds inflated to admit the impossible retired column",
-         [("cannot be out by more than 0.30 yd, 200 by more than 0.60, or 300 by more than 0.90",
+         [("cannot be out by more than 0.36 yd, 200 by more than 0.73, or 300 by more than 1.09",
            "cannot be out by more than 0.90 yd, 200 by more than 1.60, or 300 by more than 2.90")],
          [], False),
         ("geo.py's copy of the [100,150) green-end forensic figure",
@@ -32959,7 +34695,7 @@ def test_the_tick_error_tables_grader_grades_geo_pys_half_and_refuses_a_shadowed
         ("geo.py's copy of the segment population's global worst",
          [], [("own global worst is 0.9714", "own global worst is 0.1111")], False),
         ("geo.py's copy of the retired pair's worst relative offset",
-         [], [("+0.2975% over these vertices", "+0.9999% over these vertices")], False),
+         [], [("+0.3393% over these vertices", "+0.9999% over these vertices")], False),
     ]
     waved, ran = [], 0
     for what, rec_edits, note_edits, needs_corpus in cases:
@@ -33005,7 +34741,7 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
           calls arithmetically impossible. The reach is stated by the row, so closing it needed no new
           input at all.
 
-      (2) THE PUBLISHED WORST OFFSET WAS COMPARED TO THE CEILING ONLY WITH A CORPUS. "+0.2975%" is the
+      (2) THE PUBLISHED WORST OFFSET WAS COMPARED TO THE CEILING ONLY WITH A CORPUS. "+0.3393%" is the
           figure the impossibility argument is stated in, and the same paragraph derives a ceiling of
           "+0.3008%" for it -- so a worst above its own bound is a contradiction inside one paragraph,
           visible without measuring anything. On a clone "+0.9999%" passed, three and a third times the
@@ -33062,15 +34798,15 @@ def test_the_tick_tables_ceiling_covers_the_LAST_row_and_the_offset_the_ceiling_
          [(f"out to {reach} yd | {retired_far} yd", f"out to {reach} yd | 9.9999 yd")],
          [(f"was {retired_far} yd against", "was 9.9999 yd against")]),
         ("the published worst relative offset above the ceiling the same paragraph derives for it",
-         [("worst relative offset over these 589 vertices is +0.2975%",
-           "worst relative offset over these 589 vertices is +0.9999%")],
-         [("at worst +0.2975% over these vertices", "at worst +0.9999% over these vertices")]),
+         [("worst relative offset over these 643 vertices is +0.3393%",
+           "worst relative offset over these 643 vertices is +0.9999%")],
+         [("at worst +0.3393% over these vertices", "at worst +0.9999% over these vertices")]),
         ("the closing row's LIVE figure at 0.9999 yd, in both records at once",
          [(f"out to {reach} yd | {retired_far} yd | {live_far} yd",
            f"out to {reach} yd | {retired_far} yd | 0.9999 yd")],
          [(f"against {live_far} yd now", "against 0.9999 yd now")]),
         ("the 100 yd tick's LIVE figure at 0.9999 yd, in both records at once",
-         [("| 100 yd tick | 0.2962 yd | 0.0013 yd |", "| 100 yd tick | 0.2962 yd | 0.9999 yd |")],
+         [("| 100 yd tick | 0.3035 yd | 0.0013 yd |", "| 100 yd tick | 0.3035 yd | 0.9999 yd |")],
          [("radii is 0.0013,", "radii is 0.9999,")]),
         ("the 300 yd tick's LIVE figure at 0.9999 yd, in both records at once",
          [("| 300 yd tick | 0.8891 yd | 0.0019 yd |", "| 300 yd tick | 0.8891 yd | 0.9999 yd |")],
@@ -33906,11 +35642,13 @@ def _word_to_int(w):
 def test_the_summary_verdict_counts_books_and_courses_as_different_things():
     """legal/00 is the document a lawyer reads FIRST, and its headline conflated two counts.
 
-    "### All ELEVEN distributed books are CLEAN" -- then eleven COURSE names. There are eleven
+    "### All ELEVEN distributed books are CLEAN" -- then eleven COURSE names. There were eleven
     distributed courses and FOURTEEN distributed books: eleven pocket plus three enlarged coach
     editions (merion, monarch-bay, philadelphia). legal/README.md gets this right in as many words --
-    "All eleven distributed courses - fourteen books to give away (eleven pocket, three enlarged)" --
+    "All <N> distributed courses - <M> books to give away (<N> pocket, three enlarged)" --
     so the two front-door documents disagreed on how many things this project hands out.
+    (The figures above are the ones the defect was found at; every count this test compares is read
+    out of the two documents and off the corpus, so none of them is pinned to that round.)
 
     The only test that read legal/00's list checked its MEMBERSHIP against distribution.py and never
     read the count word, which is exactly the gap legal/00:22's own parenthetical records having been
@@ -33958,10 +35696,17 @@ def test_the_summary_verdict_counts_books_and_courses_as_different_things():
     else:
         assert n_head == len(listed), (
             f"legal/00's heading says {head.group(1)} distributed {noun} and lists {len(listed)}")
-    # and it must not leave the OTHER count unsaid
-    assert re.search(r"\b(fourteen|14)\b", s), (
+    # and it must not leave the OTHER count unsaid. DERIVED from rm_books, not spelled: this read
+    # `\b(fourteen|14)\b` -- the book count of the day, frozen into the probe -- so a 13th course
+    # made legal/00 fail for stating the RIGHT number ("fifteen") while a stale "fourteen" left
+    # anywhere on the page would have satisfied it. The question is whether the reader can learn the
+    # book count, so it has to be asked about the book count there actually is.
+    _book_word = {v: k for k, v in _count_words().items()}.get(rm_books)
+    _spellings = [str(rm_books)] + ([_book_word] if _book_word else [])
+    assert re.search(r"\b(%s)\b" % "|".join(_spellings), s, re.I), (
         f"legal/00 states a course count but never the book count. There are {rm_books} distributed "
-        f"books and the reader of the verdict page cannot learn that")
+        f"books and the reader of the verdict page cannot learn that (looked for any of "
+        f"{_spellings})")
 
     if not CORPUS:
         return
@@ -34665,7 +36410,12 @@ def test_the_suite_reports_its_own_module_drop_count_correctly():
     no figure in this docstring can silently become the live one.
 
     The figure is the evidence for the advice. Understating it by 27% understates how much cross-test
-    state this suite carries, which is the one thing that warning exists to convey."""
+    state this suite carries, which is the one thing that warning exists to convey.
+
+    IT IS NO LONGER TYPED EITHER. Three rounds in one day moved it, none of them about README, so the
+    sentence is generated by `python3 tools/gen_repo_figures.py` -- which counts the same pattern over
+    the same stripped token stream. This test still counts for itself and pins the generator's answer to
+    its own, so one figure never has two derivations that disagree."""
     n = 0
     for p in sorted(glob.glob(os.path.join(ROOT, "tests", "*.py"))):
         with open(p, encoding="utf-8") as fh:
@@ -34678,7 +36428,17 @@ def test_the_suite_reports_its_own_module_drop_count_correctly():
     assert int(m.group(1)) == n, (
         f"README says the suite drops modules from sys.modules at {m.group(1)} sites; counted off the "
         f"token stream (comments and strings stripped, so all of them executable) there are {n}. That "
-        f"figure is the evidence for the shuffled-order advice beside it")
+        f"figure is the evidence for the shuffled-order advice beside it.\n"
+        f"  DO NOT RETYPE THE NUMBER. It is generated: run\n"
+        f"    python3 tools/gen_repo_figures.py\n"
+        f"  which rewrites that one sentence and leaves the rest of README alone.")
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import gen_repo_figures
+    assert gen_repo_figures.drop_sites() == n, (
+        f"tools/gen_repo_figures.py counts {gen_repo_figures.drop_sites()} drop sites and this test "
+        f"counts {n} over the same files. The tool writes the sentence this test grades, so a "
+        f"disagreement means `--check` can call README up to date while this fails -- and the next "
+        f"reader is back to deciding which number to believe. Fix the tool, not README.")
 
 
 def test_every_tracked_module_carries_the_licence_header():
@@ -35259,7 +37019,8 @@ def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_pa
             "callippe": "callippe-preserve-golf-course",
             "the-reserve": "the-reserve-at-spanos-park",
             "micke-grove": "micke-grove-golf-links",
-            "merion": "merion-golf-club"}
+            "merion": "merion-golf-club",
+            "trump-national-los-angeles": "trump-national-los-angeles"}
 
     def fetchable_census(short):
         slug = SLUG[short]
@@ -35283,6 +37044,10 @@ def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_pa
         (r"micke-grove ([\d,]+) trees", "micke-grove", "tree"),
         (r"the-reserve ([\d,]+) waterway ways", "the-reserve", "waterway"),
         (r"merion ([\d,]+) wood", "merion", "wood"),
+        # the figure that justifies calling penalty_area a hazard kind rather than a structural one:
+        # the tolerance argument is "2% of 34 is 0", so 34 has to be 34.
+        (r"2% of trump-national-los-angeles' ([\d,]+) is 0",
+         "trump-national-los-angeles", "penalty_area"),
     ]
     checked = 0
     for pat, short, kind in CLAIMS:
@@ -35321,17 +37086,307 @@ def test_fetch_osms_published_corpus_figures_are_the_ones_the_caches_hold(tmp_pa
 # has to be accounted for, and the pair of figures is what makes a later PARTIAL loss visible: the >= rule
 # below compares against the frozen baseline, so callippe falling 31 -> 20 would pass it and fails here.
 WATER_INK_GAINED_DELIBERATELY = {
-    ("callippe-preserve-golf-course", "water polygon"): (
-        2, 31,
+    ("callippe-preserve-golf-course", "not-water polygon"): (
+        0, 29,
         "89c265b: `natural=wetland` was fetched by nothing and drawn by nothing, so nine of callippe's "
         "shipped cards printed `0W` over hand-mapped seasonal wetland 1.0-5.7 m off the played line -- "
         "a rule 2 violation in a built book. The query now asks for it and render_hole.is_drawn_wetland "
-        "decides which ones a card draws, filled in the same blue as a pond and counted in the same "
-        "footer W. Its watercourse polylines are unchanged at 8, and no other course moved in either "
-        "class; callippe was never one of febbbba's four re-fetched courses, so its old equality was a "
-        "coincidence of the frozen baseline rather than evidence.",
+        "decides which ones a card draws. THE GAIN IS RECORDED AGAINST THE NOT-WATER GREY AND NOT THE "
+        "BLUE, which is the correction to how this entry read: the 29 marks were first added to the water "
+        "blue and the footer's W, and callippe holds exactly ONE `natural=water` polygon in its whole "
+        "cache while its shipped book prints 39 W across 18 cards, with 2,309 of its 7,507 tree markers "
+        "standing inside what the card called a pond. The polygons are the same 29 on the same 14 cards; "
+        "what changed is that they are no longer described as water. Its blue polygons are back to the "
+        "preserved book's 2 and its watercourse polylines are unchanged at 8.",
+    ),
+    ("merion-golf-club", "not-water polygon"): (
+        0, 3,
+        "merion was re-fetched and gained way 675572836, a 151 m^2 `wetland=marsh` 2.48 m from a green "
+        "and 10.22 m from hole 17's played length, which render_hole.is_drawn_wetland admits -- one "
+        "polygon inked on holes 14, 16 and 17. It was first drawn in the water blue and counted in those "
+        "cards' W; it takes the not-water grey now, for the reason recorded on callippe above, and the "
+        "footer names the class in words instead. Merion's watercourse lines are unchanged at 20.",
+    ),
+    ("bay-view-golf-club", "not-water line"): (
+        0, 16,
+        "The reclassification of `intermittent=yes` channels off the water blue -- see "
+        "WATER_INK_RECLASSIFIED for the ways, the conservation check and the argument. All 7 of "
+        "bay-view's drawn channels carry the tag, so every one of its 16 blue polyline appearances "
+        "becomes a grey one: no card loses a mark and no card gains one, and its 8 `natural=water` "
+        "polygons are untouched.",
+    ),
+    ("copper-valley-golf-club", "not-water line"): (
+        0, 9,
+        "The reclassification of `intermittent=yes` channels off the water blue -- see "
+        "WATER_INK_RECLASSIFIED. 5 of copper-valley's drawn channels carry the tag, over 9 appearances. "
+        "The tenth appearance in its preserved book was the NHD `ArtificialPath` way 83565232, which left "
+        "the card earlier and for a different reason (see WATER_INK_REMOVED_DELIBERATELY); the two are "
+        "recorded separately because one feature stopped being drawn and these five did not.",
+    ),
+    ("micke-grove-golf-links", "not-water line"): (
+        0, 4,
+        "The reclassification of `intermittent=yes` channels off the water blue -- see "
+        "WATER_INK_RECLASSIFIED. One way, 83154406, drawn on four cards; all four appearances move from "
+        "the blue to the grey and none leaves the paper.",
     ),
 }
+
+
+# (course, class it LEFT, class it went TO) -> (from-before, from-now, appearances moved, why,
+#                                              {way id: the render_hole predicate that moves it})
+#
+# THE THIRD KIND OF CHANGE, and it needed its own record because the other two describe it falsely.
+# A GAIN says a hazard reached the paper that was not on it; a REMOVAL says a mark left the paper. A
+# RECLASSIFICATION says the mark is still there and is drawn in a different ink because the old ink was a
+# false description -- `intermittent=yes` channels drawn in the pond blue, on a book whose legend called
+# that blue "water".
+#
+# RECORDING ONE AS A REMOVAL WOULD BE A FALSE STATEMENT AND THE SUITE CATCHES IT, which is how this table
+# came to exist rather than being designed up front. The removal record's MUTED half asserts that deleting
+# each named way from the cache changes NO card, on the reasoning that the ink is already gone so the
+# feature cannot matter any more. That is true of way 83565232 and false of every way here: they are still
+# drawn, so deleting one changes the cards it appears on, and the attempt to file them as removals failed
+# on exactly that assertion. The record that fits is the one that says what happened.
+#
+# WHAT EACH ENTRY HAS TO PROVE, and none of it is prose:
+#   * CONSERVATION, measured through the engine. Lifting the named predicate for exactly the named ways
+#     must raise the from-class by `moved` and lower the to-class by `moved`. Not "about the same" -- the
+#     same number, both directions, which is what makes this a move rather than a loss plus a gain that
+#     happen to be equal.
+#   * STILL DRAWN. Deleting each named way must CHANGE a card. This is the mirror image of the removal
+#     record's MUTED half and it is the rule-2 assertion of the whole change: a ball in a dry ditch is
+#     still lost, so the mark may be re-described but never withdrawn.
+#   * AGREEMENT WITH THE GAIN RECORD, so the to-class's gain is this move and not an unexamined addition
+#     sitting beside it.
+WATER_INK_RECLASSIFIED = {
+    ("bay-view-golf-club", "watercourse line", "not-water line"): (
+        16, 0, 16,
+        "All 7 of bay-view's drawn watercourses carry `intermittent=yes` -- the mapper's statement that "
+        "the channel is dry for part of the year -- and every one was drawn in the pond blue and counted "
+        "in the footer's W, on the over-warn reading that a channel dry in August should still print blue. "
+        "That reading is withdrawn at render_hole.runs_dry_in_season: it answers the wrong question, "
+        "because rule 2 asks whether the hazard is SHOWN and not whether it is shown in the water colour. "
+        "A dry ditch drawn as a pond does not over-warn, it misdescribes -- and a reader who walks the "
+        "course and finds no water there learns that the blue on this map cannot be trusted, which costs "
+        "him the blue that is real. All 16 appearances are still on the paper in the not-water grey.",
+        {50256813: "runs_dry_in_season", 50256839: "runs_dry_in_season",
+         50256841: "runs_dry_in_season", 50256873: "runs_dry_in_season",
+         50256874: "runs_dry_in_season", 50256875: "runs_dry_in_season",
+         50256878: "runs_dry_in_season"},
+    ),
+    ("copper-valley-golf-club", "watercourse line", "not-water line"): (
+        9, 0, 9,
+        "The same reclassification as bay-view's, on the 5 of copper-valley's drawn channels that carry "
+        "`intermittent=yes`, over 9 appearances -- see render_hole.runs_dry_in_season for the argument. "
+        "The from-figure is 9 and NOT the preserved book's 10 on purpose: this course had already lost one "
+        "appearance for an unrelated and separately recorded reason (NHD `ArtificialPath` way 83565232, in "
+        "WATER_INK_REMOVED_DELIBERATELY), and folding two causes into one figure is how a record stops "
+        "explaining anything. The chain is 10 -> 9 by that removal, then 9 -> 0 by this move.",
+        {83563564: "runs_dry_in_season", 83568581: "runs_dry_in_season",
+         83578904: "runs_dry_in_season", 83579191: "runs_dry_in_season",
+         83582265: "runs_dry_in_season"},
+    ),
+    ("micke-grove-golf-links", "watercourse line", "not-water line"): (
+        4, 0, 4,
+        "The same reclassification as bay-view's, on the one micke-grove channel that carries "
+        "`intermittent=yes` (way 83154406), drawn on four cards -- see render_hole.runs_dry_in_season. "
+        "This course's 8 `natural=water` polygons and its 17 blue polygon appearances are untouched, so "
+        "the move is visible here in isolation from any change to area water.",
+        {83154406: "runs_dry_in_season"},
+    ),
+}
+
+
+# (course, drawn class) -> (count in the preserved 2026-08-03 book, count now, why it went DOWN,
+#                           {way id: the render_hole predicate that refuses it}).
+#
+# THE MIRROR OF THE GAIN RECORD, AND IT CARRIES ONE BAR MORE. A loss of drawn water ink is the dangerous
+# direction -- normally it means a hazard the card no longer shows -- so this record may not be satisfied
+# by prose alone: it has to NAME the ways it removed and the predicate that refuses each, and the test
+# re-checks that the engine still refuses exactly those. A count cannot tell a reader WHICH mark went, and
+# that is the one thing that decides whether the removal was a correction or an omission.
+WATER_INK_REMOVED_DELIBERATELY = {
+    ("copper-valley-golf-club", "watercourse line"): (
+        10, 9,
+        "An NHD `ArtificialPath` is the line NHD threads through a lake to keep its flow network "
+        "connected -- FCode 55800, not a channel -- and it imports into OSM as `waterway=stream`, so the "
+        "card drew a blue creek line straight ACROSS a lake it had already filled in the same blue. Way "
+        "83565232 lies 0.9528 of its 285.1 m inside lake way 775614086, which hole 11 draws and counts, so "
+        "nothing wet leaves that card: the lake keeps its fill, and the reach identity 18040051001111 is "
+        "shared with ways 83579191 and 83582265 which hole 11 also draws, so the hole stays at 3W. What "
+        "leaves is a false mark -- a stream where there is open water. The rule is conditional on "
+        "containment and never on the FType alone, because 2 of this corpus's 15 synthetic flowlines lie "
+        "inside no mapped waterbody and there the synthetic line is the only mark the water has. "
+        "THIS RECORD STOPS AT 9 AND THE CLASS IS NOW AT 0: the remaining 9 appearances did not leave the "
+        "paper, they changed ink, and that is recorded in WATER_INK_RECLASSIFIED rather than folded in "
+        "here -- one feature stopped being drawn and five did not, and a record that averaged the two "
+        "would explain neither.",
+        {83565232: "is_synthetic_flowline"},
+    ),
+    ("merion-golf-club", "water polygon"): (
+        2, 1,
+        "Way 225722025 is tagged `natural=water NHD:FTYPE=LakePond` and there is a HOUSE inside it, so "
+        "hole 10 no longer draws it. Computed here from public-domain USGS 3DEP LiDAR: its ring returns "
+        "13.77 pt/m^2 against 15.58 in a 45 m collar (0.884) where merion's three genuine waters on the "
+        "same tiles return 0.209, 0.240 and 0.371 of theirs -- open water absorbs the pulse and this ring "
+        "does not -- and 1743 of its 6277 returns stand over 2 m above the class-2 ground inside it, in a "
+        "rigid 11.5 x 12.2 m footprint covering 147 m^2 and rising to 7.18 m with one linear ridge. The "
+        "card printed a water hazard on hole 10 that is a house. See render_hole.MEASURED_NOT_WATER for "
+        "why this one refusal is a recorded id and not a predicate: merion's three NHD LakePond imports "
+        "are tag-identical and two of them are real ponds. This was previously carried inside a GAIN "
+        "record that netted it against the +3 the re-fetched marsh brought in; the marsh is not water and "
+        "is now recorded against the not-water grey, so the two no longer cancel and this removal stands "
+        "on its own figures.",
+        {225722025: "is_measured_not_water"},
+    ),
+}
+
+
+# (course, drawn class) -> (count in the BUILT book, count the ENGINE draws, why they differ).
+#
+# THE BOOK-SIDE AXIS, restored. 39169b9 moved the "now" side of the comparison below off
+# courses/<slug>/greenbook.html and on to what render_hole draws, because a built book is a cached render
+# and the test's verdict was depending on when generate.py last ran. That motivation was right -- merion's
+# own book proves it -- but the commit also claimed the change was "no less strict", and that was FALSE:
+# it dropped the book entirely as an axis. Reproduced by an independent verifier: stripping ONE
+# `fill="#a9d3ef"` from one panel of a copy of copper-valley's book, with the engine untouched, passed both
+# this test and the footer-vs-map test, while the pre-39169b9 basis caught it (25 -> 24).
+#
+# So both axes are graded now. The engine answers "does the map draw this hazard"; the book answers "did
+# the ink survive being written", and ink can be lost between render_hole and the file -- a panel dropped, a
+# card not emitted, a template branch not taken. The bridge assertion is that the two AGREE, and a
+# divergence has to be declared here with both figures rather than reported in a message nobody asserts.
+#
+# EVERY ENTRY IS SELF-CLEARING. A stale book is a build that has not happened yet, so the moment the corpus
+# is rebuilt these figures become equal and the test says to delete the entry. That is deliberate: the
+# allowance is a note about work in flight, not a permanent exemption.
+# THE TABLE IS EMPTY, AND THAT IS THE SELF-CLEARING WORKING RATHER THAN THE RECORD BEING ABANDONED. It held
+# TEN entries, all from one change: every book in the corpus had been written by an engine that drew wetland
+# and `intermittent=yes` channels in the water blue and counted them in the footer's W, and the engine no
+# longer does (render_hole.holds_open_water). Five books held blue ink the engine no longer draws and none
+# held the grey it draws instead. The corpus was then rebuilt and all ten pairs came out equal -- bay-view
+# 16/0 blue and 0/16 grey, callippe 31/2 and 0/29, copper-valley 9/0 and 0/9, merion 4/1 and 0/3,
+# micke-grove 4/0 and 0/4, each built figure now the engine's -- at which point ALLOWANCE_SETTLED demanded
+# every one of them be dropped, and they were. Nothing was waived on the way out: the conservation is proved
+# through the engine by WATER_INK_RECLASSIFIED, and the two departures from "equal and opposite" are both
+# recorded removals of marks that were false -- copper-valley's NHD `ArtificialPath` and merion's
+# `natural=water` ring with a house in it.
+#
+# WHAT THE REBUILD ALSO EXPOSED, and it was a gap in the BOOK-side rule rather than in this table: three of
+# those courses sit below the preserved 2026-08-03 baseline on the blue class they no longer draw --
+# bay-view 16 -> 0, copper-valley 10 -> 0, micke-grove 4 -> 0 -- and BOOK_LOST_INK fired on all three.
+#
+# NOTHING LEFT THE PAPER, and that was settled by counting the two BOOKS per card rather than by trusting
+# the engine's conservation proof. bay-view's 16 blue polylines and micke-grove's 4 are grey polylines on the
+# SAME cards in the built book, hole for hole -- bay-view 11/12/13/14/15/16/17 at 3/1/2/3/3/3/1 and
+# micke-grove 2/3/7/8 at 1 each -- and no card of either course changed how many line marks it carries at
+# all. copper-valley has exactly ONE changed card, hole 11 at 4 blue -> 3 grey, which is the single NHD
+# `ArtificialPath` appearance WATER_INK_REMOVED_DELIBERATELY already accounts for; that card keeps the lake's
+# blue fill. Every water polygon count on all three courses is untouched. So the book axis was reading a
+# conservation-preserving move as a loss, because water_ink_book_findings walked a removal record and no
+# reclassification while the ENGINE side below already walked both.
+#
+# THE BOOK SIDE NOW WALKS THE SAME CHAIN, in the same order, and carries ONE BAR THE ENGINE SIDE CANNOT:
+# the credit for a move is given only where the built book actually HOLDS the arrivals in the to-ink, and
+# withheld as BOOK_MOVED_INK_MISSING where it does not. The engine's conservation proof says render_hole
+# re-inks the mark; it says nothing about whether the file it was written to kept it, which is the one
+# question this axis exists to ask. Without that bar, a build that dropped all 16 of bay-view's channels
+# outright would have been credited on the from-class by the chain and excused on the to-class by an entry in
+# this table -- the two halves of one loss, each waived by a different record. See water_ink_book_findings.
+BOOK_PREDATES_THE_ENGINE = {}
+
+
+def water_ink_book_findings(before, now, built, has_removal, removal_now, allowance, moves=()):
+    """Findings for ONE (course, drawn class) on the BOOK side. Pure, so the rules can be graded directly.
+
+    Three numbers: `before` from the preserved 2026-08-03 book, `now` from what the engine draws, `built`
+    from courses/<slug>/greenbook.html. The engine axis is graded by the caller; this is the book's.
+
+    `moves` is the recorded RECLASSIFICATION chain for this class: one entry per WATER_INK_RECLASSIFIED
+    record whose FROM-class is this one, as (appearances moved, the TO-class's count in the PRESERVED book,
+    the TO-class's count in the BUILT book). Empty for every class with no move recorded, which is all but
+    three of them.
+
+    `bk > eng` WAS PROPOSED AS THE INVARIANT AND IT IS NOT SOUND. The record means "this book is stale", and
+    a stale book can legitimately hold FEWER marks than the engine as well as more -- if the engine has
+    GAINED ink since the build, a book from before that gain is short of it. callippe is the standing
+    example in the other direction: preserved 2, engine 31 after the wetland fix, so a book built before it
+    would hold 2 against 31 and be perfectly honest. Both of today's entries happen to be book > engine,
+    which is exactly the coincidence that would make the wrong rule look right.
+
+    So the rules that ARE sound:
+
+      BOOK_LOST_INK. The book may not hold FEWER marks than the PRESERVED book unless the RECORDED CHAIN
+      lands on the figure it holds. The chain is the ENGINE side's, walked in the same order and for the same
+      reason a class can lose ink twice over: a REMOVAL takes marks off the paper (down to `removal_now`),
+      then a RECLASSIFICATION moves marks into another ink (less `moved`). copper-valley's blue polylines are
+      10 -> 9 by its removal and 9 -> 0 by its move, so 9 and 0 are both figures a record explains and 5 is
+      not. This is the laundering that has to be impossible: ink lost between render_hole and the written
+      file, excused as "the book predates the engine". A stale book cannot explain a deficit against the
+      baseline -- staleness explains a difference from the engine NOW, never from what was already on paper
+      in 2026-08-03.
+
+      THE LANDING IS AN EQUALITY, WHICH IS WHAT MAKES THE CHAIN AN ATTRIBUTION rather than a licence to be
+      short by about that much. A move recorded as 20 appearances where 16 moved leaves the chain at -4 and
+      fires; recorded as 12 it leaves it at 4 and fires. The engine-side arithmetic fires on the same two
+      mis-statements, which is the point of mirroring that chain instead of writing a second rule beside it.
+
+      BOOK_MOVED_INK_MISSING. The credit for a move is conditional on the built book HOLDING THE ARRIVALS:
+      the to-class must carry its own preserved figure PLUS the appearances that moved into it. The engine's
+      conservation check proves that render_hole re-inks the mark, and this axis exists precisely because a
+      file can lose what the renderer drew -- so a book-side deficit may not be waived on the engine's word.
+      The bar is anchored on the PRESERVED book and not on the engine deliberately: a to-class gap against
+      the engine is waivable by BOOK_PREDATES_THE_ENGINE, and that waiver plus a from-class chain credit is
+      how a whole class could otherwise leave the file with both halves of the loss separately excused. It
+      also refuses the netting shape BETWEEN the two classes -- a to-class holding 16 arrivals while 5 of its
+      own preserved marks went missing nets to "no deficit" against its own baseline and fails here.
+
+      WHAT NEITHER RULE CAN SEE ON THIS AXIS, STATED SO IT IS NOT MISTAKEN FOR A GAP IN THE SUITE. Every
+      figure here is a COURSE-LEVEL TOTAL, so a card losing a mark while another card of the same course and
+      class gains one cancels and nothing on THIS axis moves. On the ENGINE side that shape is closed by the
+      positive per-card invariants (test_no_card_omits_a_watercourse_the_played_line_reaches and its area
+      sibling, per card and by identity); those render through render_hole, so they do not reach the FILE.
+      The FILE is reached by a third guard, test_every_shipped_card_is_what_the_engine_produces_now: it
+      re-renders every hole panel in process and requires the shipped greenbook.html to hold it verbatim, so
+      a mark moved between two cards shows up as the FROM card no longer matching. Reproduced: moving one
+      grey polyline out of bay-view's hole 12 panel and into its hole 18 panel in a copy of the built book
+      leaves this axis's total at 16, untouched -- and fails that other test, naming hole 12 (in that
+      reproduction, hole 18 as well, because the insertion point happened to break its panel's own
+      contiguous text too). It runs by default under a plain `pytest tests/` (its @pytest.mark.slow is
+      opt-out via `-m "not slow"`, not opt-in) and is not waived for a stale book -- a stale book is exactly
+      what it exists to catch. What it does NOT reach is the ENLARGED (coach) edition: it opens only
+      greenbook.html, never greenbook_coach.html, so the identical move made against a coach book's cards is
+      covered by neither it nor this axis. This axis notices that a course's totals moved and refuses to let
+      a move go unattributed; the per-card guarantee against the pocket edition's file belongs to that other
+      test, not to this one.
+
+      ALLOWANCE_DIRECTION. An allowance whose book is SHORT of the engine is only possible when the engine
+      has gained against the baseline. If the engine drew a mark then and draws it now, a book written in
+      between cannot be missing it, and "stale" is not the explanation for why it is.
+    """
+    out = []
+    moved = sum(m[0] for m in moves)
+    after_removal = removal_now if has_removal else before
+    if built < before:
+        if has_removal and built == removal_now:
+            pass                      # the removal record's own figure, and it is proved behaviourally
+        elif moves and built == after_removal - moved:
+            # The chain accounts for the deficit ONLY IF the file shows where the ink went. Checked here and
+            # not left to the to-class's own grading, because that grading is waivable and this is not.
+            if any(to_built < to_before + m for m, to_before, to_built in moves):
+                out.append(("BOOK_MOVED_INK_MISSING", before, now, built))
+        else:
+            out.append(("BOOK_LOST_INK", before, now, built))
+    if allowance is None:
+        if built != now:
+            out.append(("UNDECLARED_GAP", before, now, built))
+    elif built == now:
+        out.append(("ALLOWANCE_SETTLED", before, now, built))
+    elif (built, now) != tuple(allowance):
+        out.append(("ALLOWANCE_FIGURES", before, now, built))
+    elif allowance[0] < allowance[1] and now <= before:
+        out.append(("ALLOWANCE_DIRECTION", before, now, built))
+    return out
 
 
 def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
@@ -35412,8 +37467,37 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     # source half above is the part that always runs; this half needs the preserved books (which live
     # outside the repo, so a fresh clone has none) AND the rebuilt ones (courses/ is gitignored).
     ev = os.path.join(os.path.expanduser("~"), EV)
+    # THE FOUR DRAWN HAZARD CLASSES, not the two this test was written with, because the two it had could
+    # not see a class change ink. `intermittent=yes` channels moved off the blue polyline and callippe's
+    # wetland off the blue polygon; with only the blue patterns here that reads as ink LOST, and the record
+    # tables would have had to excuse a loss on courses where nothing left the paper at all. Counting both
+    # inks makes the move visible as the conservation it is -- see WATER_INK_RECLASSIFIED.
+    #
+    # THE GREY PATTERNS CARRY THEIR STROKE WIDTH and the blue ones do not need to, and that is not
+    # symmetry for its own sake: the guide cards' legend swatch is a `<rect>` drawn from these same two
+    # constants (generate._grey_note), so a bare `fill="#f2f2f2"` counts the KEY as well as the map and
+    # every book that draws the grey reads one too high. The map writes stroke-width 1.2 on an area and
+    # 1.8 on a line; the swatch writes 1. Measured: trump-national's built book gives 84 on the bare
+    # pattern against the engine's 83, and 83/83 on this one.
+    # WRITTEN AS LITERALS AND CHECKED AGAINST THE ENGINE, rather than read out of it. `_engine` needs a
+    # course.json to bind to and a fresh clone has none -- courses/ is gitignored -- while the record
+    # tables below are graded with or without data and need PAT either way. Deriving these two from
+    # render_hole unconditionally made this test the ONE failure a stranger cloning the repo saw, which
+    # test_a_fresh_clone_gets_a_clean_suite exists to catch and did. So the pair is spelled out beside the
+    # blue ones, and where there IS a corpus it must equal what the engine draws: a retune moves the
+    # constant and fails here instead of quietly counting a colour no card writes.
+    GREY_FILL, GREY_EDGE = "#f2f2f2", "#c8c8c8"
+    if CORPUS:
+        _cfg_ink, _rh_ink = _engine(CORPUS[0])
+        assert (_rh_ink.PENALTY_FILL, _rh_ink.PENALTY_EDGE) == (GREY_FILL, GREY_EDGE), (
+            f"render_hole draws the not-water class in "
+            f"{(_rh_ink.PENALTY_FILL, _rh_ink.PENALTY_EDGE)}; this test counts {(GREY_FILL, GREY_EDGE)}. "
+            f"Re-point the patterns at the live constants -- a frozen hex counts a colour no card writes "
+            f"and would report every grey mark in the corpus as missing")
     PAT = {"water polygon": 'fill="#a9d3ef"',
-           "watercourse line": 'stroke="#5b9bd0" stroke-width="1.8"'}
+           "watercourse line": 'stroke="#5b9bd0" stroke-width="1.8"',
+           "not-water polygon": ('fill="%s" stroke="%s" stroke-width="1.2"' % (GREY_FILL, GREY_EDGE)),
+           "not-water line": 'stroke="%s" stroke-width="1.8"' % GREY_EDGE}
     have = []
     if os.path.isdir(ev):
         for slug in sorted(os.listdir(ev)):
@@ -35421,28 +37505,238 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
             new = os.path.join(ROOT, "courses", slug, "greenbook.html")
             if os.path.exists(old) and os.path.exists(new):
                 have.append((slug, old, new))
+    # THE "NOW" SIDE IS WHAT THE ENGINE DRAWS, NOT WHAT courses/<slug>/greenbook.html HAPPENS TO HOLD,
+    # and that is a correction. The question is "does the map draw this hazard", and a built book is a
+    # CACHED RENDER of that answer -- so comparing against it made this test's verdict depend on when
+    # somebody last ran generate.py. Measured: with merion re-fetched and the engine refusing one
+    # measured-not-water polygon, the book on disk read 5 water polygons while the engine draws 4, so the
+    # same tree gave two different answers depending on build order. That is the stale-figure class
+    # 4dbe6b2 already had to fix once ("every figure measured off the old books went stale"), and it makes
+    # a LOSS invisible until a rebuild rather than at the moment it is introduced.
+    #
+    # Strictly more timely and no less strict: the preserved 2026-08-03 books are still the baseline, and
+    # a hazard that stops being drawn now fails here on the commit that stops drawing it. The built
+    # figure is carried into the messages so a reader can see whether the book is also behind.
     lost, unrecorded, mismatched = [], [], []
+    book_gap, book_settled, book_lost = [], [], []
     measured = {}
+    nogeom = []
     for slug, old, new in have:
         o = open(old, encoding="utf-8").read()
-        n = open(new, encoding="utf-8").read()
+        if slug not in CORPUS:
+            # A book with no OSM geometry cannot be re-rendered -- poppy-ridge is that case, built in
+            # yardage mode because no post-rebuild LiDAR exists for it. Its preserved book must then
+            # carry NO water ink at all, or the engine-side comparison would be silently skipping a
+            # course that had some. Checked rather than skipped.
+            nogeom.append((slug, {w: o.count(n) for w, n in PAT.items()}))
+            continue
+        cfg, rh = _engine(slug)
+        cards = "".join(rh.render_hole(hn, cfg.HOLES)[0] for hn in cfg.HOLE_NUMS)
+        book = open(new, encoding="utf-8").read()
         for what, needle in PAT.items():
-            before, now = o.count(needle), n.count(needle)
+            before, now = o.count(needle), cards.count(needle)
             measured[(slug, what)] = (before, now)
+            built = book.count(needle)
+            where = f" (the built book holds {built})" if built != now else ""
+            # THE BOOK-SIDE AXIS, in water_ink_book_findings so the rules can be graded directly. The
+            # engine says what the map draws; the book says what got written, and ink can be lost between
+            # the two. See that function for why "the book must hold MORE than the engine" is NOT the
+            # invariant, and what the sound ones are.
+            #
+            # THE RECORDED CHAIN IS BUILT ONCE, here, and both axes walk it: the engine side below subtracts
+            # the same `moved` figures from the same records. Two copies of it drifted apart is how the book
+            # side came to credit a removal and not a reclassification in the first place.
+            moves = [(to, r) for (sl, frm, to), r in sorted(WATER_INK_RECLASSIFIED.items())
+                     if sl == slug and frm == what]
+            said_stale = BOOK_PREDATES_THE_ENGINE.get((slug, what))
+            rm = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
+            for kind, bf, nw, bt in water_ink_book_findings(
+                    before, now, built, rm is not None, rm[1] if rm else None,
+                    (said_stale[0], said_stale[1]) if said_stale else None,
+                    # THE ARRIVALS, MEASURED IN THE TWO BOOKS AND NOT IN THE ENGINE. This axis's question is
+                    # whether the FILE kept the mark, so the to-class figures come from the preserved book
+                    # and the built one -- asking render_hole would be asking the axis that already agrees.
+                    [(r[2], o.count(PAT[to]), book.count(PAT[to])) for to, r in moves]):
+                msg = (f"{slug} {what}: preserved book {bf}, engine {nw}, built book {bt}")
+                if kind == "ALLOWANCE_SETTLED":
+                    book_settled.append(msg)
+                elif kind == "BOOK_LOST_INK":
+                    book_lost.append(msg + " -- the BUILT book holds fewer marks than the PRESERVED one")
+                elif kind == "BOOK_MOVED_INK_MISSING":
+                    book_lost.append(
+                        msg + " -- the built book is at the figure the recorded reclassification chain "
+                              "predicts, but the ink is NOT in the class it is recorded as having moved "
+                              "to: that book is short of "
+                        + ", ".join(f"{to!r} {o.count(PAT[to])}+{r[2]} (holds {book.count(PAT[to])})"
+                                    for to, r in moves))
+                elif kind == "ALLOWANCE_DIRECTION":
+                    book_gap.append(msg + " -- the allowance says the book is short of the engine while "
+                                          "the engine has not gained against the baseline")
+                else:
+                    book_gap.append(msg + f" -- {kind}")
             if now < before:
-                lost.append(f"{slug}: drawn {what} count {before} before the re-fetch, {now} now")
+                # THE DROP MUST BE ACCOUNTED FOR BY THE WHOLE RECORDED CHAIN, and there can be two links
+                # in it: a REMOVAL takes marks off the paper and a RECLASSIFICATION moves them to another
+                # ink. copper-valley's blue polylines went 10 -> 9 by a removal and 9 -> 0 by a move, and
+                # requiring one record to explain both would have meant writing a figure that describes
+                # neither. The chain is walked in that order and the arithmetic has to land exactly on
+                # `now`; anything left over is an unexplained loss and is reported as one. `moves` is the
+                # list built above, so the book axis and this one cannot disagree about what is recorded.
+                said = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
+                chain = said[1] if said else before
+                for _to, r in moves:
+                    chain -= r[2]
+                if said is None and not moves:
+                    lost.append(f"{slug}: drawn {what} count {before} before the re-fetch, "
+                                f"{now} now{where}")
+                elif said is not None and said[0] != before:
+                    mismatched.append(f"{slug} {what}: recorded REMOVAL starts at {said[0]}, the "
+                                      f"preserved book holds {before}{where}")
+                elif chain != now:
+                    mismatched.append(
+                        f"{slug} {what}: the recorded chain accounts for {before} -> {chain} "
+                        f"(removal to {said[1] if said else before}, then "
+                        f"{sum(r[2] for _to, r in moves)} appearance(s) moved to another ink), but the "
+                        f"engine draws {now}{where}")
             elif now > before:
                 said = WATER_INK_GAINED_DELIBERATELY.get((slug, what))
                 if said is None:
-                    unrecorded.append(f"{slug}: drawn {what} count {before} -> {now}")
+                    unrecorded.append(f"{slug}: drawn {what} count {before} -> {now}{where}")
                 elif (said[0], said[1]) != (before, now):
                     mismatched.append(f"{slug} {what}: recorded {said[0]} -> {said[1]}, "
-                                      f"measured {before} -> {now}")
+                                      f"measured {before} -> {now}{where}")
+    # A RECORDED REMOVAL HAS TO ACCOUNT FOR THE WHOLE DROP, BEHAVIOURALLY. This is the extra bar the
+    # removal record carries and the gain record does not, because losing ink is the dangerous direction.
+    #
+    # THE FIRST VERSION OF THIS WAS INVERTIBLE AND IT HID A REAL LOSS. It asserted
+    # `getattr(rh, predicate)(byid[wid])` -- "some named attribute of render_hole is TRUTHY for some named
+    # way" -- which says nothing about whether that way's ink left, whether the named attribute is a
+    # REFUSAL at all, or whether the named ways explain the count. Four wrong records passed it:
+    #
+    #     {83566408: "is_synthetic_flowline"}   a DIFFERENT flowline, inked on no card
+    #     {83565232: "is_visible_watercourse"}  INVERTED -- its truth means the way IS DRAWN
+    #     {83565232: "water_identity"}          not a predicate; returns a truthy tuple
+    #     {83565232: "centroid"}                a plain helper; returns a truthy tuple
+    #
+    # And with the engine patched so the synthetic flowline got its blue back (lake 775614086 dropped from
+    # `water_rings`) while genuine NHD StreamRiver way 83563564 -- reach 18040051002060 -- was silently
+    # dropped from `creeks`, the net stayed 9, the record's (10, 9) still matched, and the waiver excused a
+    # real creek losing its ink. Reproduced: 1 passed.
+    #
+    # SO THE TEST IS NOW BEHAVIOURAL, in two halves that fail for different reasons:
+    #
+    #   MUTED: deleting each named way from the cache must change NO card. Its ink is already absent, so
+    #   removing the feature can have no further effect. Catches a record naming a way that is still drawn.
+    #
+    #   RESTORED: lifting the named refusal for EXACTLY the named ways -- patching render_hole.<predicate>
+    #   to return False for those ids and delegate for everything else -- must bring the count back to
+    #   `before`. This is the half that cannot be faked. It proves the named refusal is (a) a refusal, since
+    #   making it False ADMITS ink rather than removing it, and (b) the WHOLE reason the count fell, since
+    #   any other loss leaves `restored` short of `before`.
+    #
+    # WHY NOT `len(ways) == before - now`, which is the obvious identity: it is FALSE in general and would
+    # have to be waived immediately. `before`/`now` count INK APPEARANCES across every card of the course,
+    # and one way is inked on as many cards as reach it -- merion way 675572836 is a single polygon drawn on
+    # holes 14, 16 and 17, so one way moves the count by three. A multipolygon is worse: philadelphia
+    # relation 16617182 arrives as FOUR ring elements with four ids, each inked wherever it reaches. The
+    # restoration identity above counts appearances on both sides and so holds for every shape.
+    #
+    # WHAT THIS CANNOT SEE, AND WHERE IT IS CAUGHT INSTEAD. These are COURSE-LEVEL TOTALS, so a loss on
+    # one card offset by a gain on another -- same course, same drawn class -- cancels and leaves every
+    # figure here matching. That is not hypothetical: genuine `waterway=stream` way 83563564 was made to
+    # lose its blue on copper-valley card 3 with an offsetting mark on card 1, and all 24 water-related
+    # tests passed. A delta against a baseline can never close that, because the baseline is a count and
+    # the previous engine is gone.
+    #
+    # So it is closed somewhere else, by a POSITIVE invariant that needs no baseline:
+    # test_no_card_omits_a_watercourse_the_played_line_reaches and its area sibling
+    # test_area_water_the_played_line_reaches_is_never_printed_as_no_water require, per card and BY
+    # IDENTITY, that every water the played line reaches is among the features that card inked. An
+    # offsetting gain elsewhere cannot satisfy those, and neither can a swap within one card.
+    #
+    # This test's job is therefore the narrower one it can actually do: notice that a course's totals moved
+    # at all, and refuse to let a move go unaccounted for. Do not widen it to carry rule 2 -- that is what
+    # the two positive guards are for, and a waiver here must never be the reason a card may lose ink.
+    for (slug, what), rec in sorted(WATER_INK_REMOVED_DELIBERATELY.items()):
+        assert len(rec) == 4 and len(rec[2]) > 200 and rec[3], (
+            f"{slug} {what}: a removal record needs both figures, a reason, and the way ids it removed")
+        assert rec[1] < rec[0], f"{slug} {what}: records a removal that is not one: {rec[0]} -> {rec[1]}"
+        assert what in PAT, f"{slug} {what}: names a drawn class this test does not count: {sorted(PAT)}"
+        if slug not in CORPUS:
+            continue
+        cfg, rh = _engine(slug)
+        needle = PAT[what]
+        byid = {e["id"]: e for e in
+                json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]}
+        base = {hn: rh.render_hole(hn, cfg.HOLES) for hn in cfg.HOLE_NUMS}
+        for wid, predicate in sorted(rec[3].items()):
+            assert wid in byid, (
+                f"{slug} {what}: the removal record names way {wid}, which is no longer in the cache. "
+                f"If OSM deleted it the record is dead and should GO -- do not leave it excusing a "
+                f"count it no longer explains")
+            assert callable(getattr(rh, predicate, None)), (
+                f"{slug} {what}: render_hole.{predicate} is not a callable, so it cannot be the reason "
+                f"way {wid} is refused")
+            orig_load = rh.load
+            try:
+                rh.load = _drop_one(orig_load, wid)
+                moved = [hn for hn in cfg.HOLE_NUMS if rh.render_hole(hn, cfg.HOLES) != base[hn]]
+            finally:
+                rh.load = orig_load
+            assert not moved, (
+                f"{slug} {what}: the record says way {wid}'s ink was removed, but DELETING that way from "
+                f"the cache still changes card(s) {moved} -- so it is still being drawn and this record "
+                f"is excusing a loss somewhere else")
+        # RESTORED: lift the named refusals for the named ways only, and require the full count back.
+        by_pred = {}
+        for wid, predicate in rec[3].items():
+            by_pred.setdefault(predicate, set()).add(wid)
+        held = {p: getattr(rh, p) for p in by_pred}
+        try:
+            for predicate, ids in by_pred.items():
+                def lifted(feature, _base=held[predicate], _ids=ids):
+                    return False if feature.get("id") in _ids else _base(feature)
+                setattr(rh, predicate, lifted)
+            try:
+                restored = sum(rh.render_hole(hn, cfg.HOLES)[0].count(needle)
+                               for hn in cfg.HOLE_NUMS)
+            except Exception as e:
+                raise AssertionError(
+                    f"{slug} {what}: making render_hole.{sorted(by_pred)} return False for "
+                    f"{sorted(rec[3])} broke the render ({type(e).__name__}: {e}). A refusal predicate "
+                    f"returning False must simply ADMIT the feature; something that cannot be turned off "
+                    f"is not the reason this ink left") from None
+        finally:
+            for predicate, fn in held.items():
+                setattr(rh, predicate, fn)
+        # THE TARGET IS `before` LESS WHATEVER ANOTHER RECORD ACCOUNTS FOR, because a class can lose ink
+        # for two reasons at once and this half must only be asked to prove ITS one. copper-valley's blue
+        # polylines fell 10 -> 9 by this removal and 9 -> 0 because nine more appearances changed INK
+        # (WATER_INK_RECLASSIFIED), so lifting `is_synthetic_flowline` alone can only ever restore the
+        # course to 1: the other nine are drawn in the grey and lifting a refusal that never touched them
+        # cannot bring them back to the blue. Requiring 10 here would have forced the two causes into one
+        # record, which is the figure-that-describes-neither this table exists to avoid. The subtraction is
+        # what the OTHER record has already proved by conservation, so nothing is taken on trust.
+        moved_out = sum(r[2] for (sl, frm, _to), r in WATER_INK_RECLASSIFIED.items()
+                        if sl == slug and frm == what)
+        target = rec[0] - moved_out
+        assert restored == target, (
+            f"{slug} {what}: lifting render_hole.{sorted(by_pred)} for ways {sorted(rec[3])} brings the "
+            f"drawn count to {restored}, not the {target} this removal has to account for (the preserved "
+            f"book's {rec[0]} less the {moved_out} appearance(s) another record shows changed ink). The "
+            f"named refusal is therefore NOT the whole reason THIS removal happened -- either it is not a "
+            f"refusal at all (making it False would then remove ink, not restore it), or the ways named do "
+            f"not account for the drop and something else lost ink unrecorded. Name every way whose mark "
+            f"went, with the predicate that refuses it.")
     # THE RULE. No waiver, and it is the whole question this test's name asks.
     assert not lost, (
-        "a re-fetch DROPPED drawn water ink a shipped book used to carry, which is the loss this "
+        "drawn water ink a shipped book used to carry is no longer drawn, which is the loss this "
         "test exists to detect -- a hazard the card no longer draws is a hazard the golfer cannot "
-        "see:\n  " + "\n  ".join(lost))
+        "see:\n  " + "\n  ".join(lost)
+        + "\n  If a mark was removed ON PURPOSE because it was FALSE -- a synthetic flowline over open "
+          "water, a polygon measured not to be water -- record it in WATER_INK_REMOVED_DELIBERATELY "
+          "with both figures, the reason, and the way ids with the predicate that refuses each. There "
+          "is no waiver that does not name what went.")
     # THE RECORD. A gain is the fix, but an UNEXAMINED gain is not: every one has to be accounted for,
     # with the figures, so `>=` cannot quietly become "anything upward is fine forever".
     assert not unrecorded, (
@@ -35450,6 +37744,11 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
         "is the right direction -- 89c265b's wetland fix is why this comparison is a direction at all "
         "-- but an unexplained gain is a re-fetch nobody looked at:\n  " + "\n  ".join(unrecorded)
         + "\n  Add it to WATER_INK_GAINED_DELIBERATELY with both figures and the reason.")
+    for slug, counts in nogeom:
+        assert not any(counts.values()), (
+            f"{slug} has a preserved book carrying water ink {counts} and no OSM geometry on disk, so "
+            f"this test cannot re-render it and would be dropping a course that has water to lose. "
+            f"Restore its geometry or grade it another way -- do not let it fall out silently")
     assert not mismatched, (
         "a recorded deliberate gain no longer measures what it records. If the figure FELL, ink was "
         "lost from a course that had already gained it -- which the >= rule above cannot see, because "
@@ -35460,6 +37759,123 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     assert not stale, (
         f"WATER_INK_GAINED_DELIBERATELY records {stale}, which no longer gains anything. Drop the "
         f"entry rather than leave a record that would account for the next gain on its own.")
+    # ...and the same staleness rule for the removal record, which had none. A removal that has STOPPED
+    # happening is a standing pre-authorisation to lose ink of that exact magnitude for any reason at all.
+    assert not book_lost, (
+        "the BUILT book carries less water ink than the preserved 2026-08-03 book, and the recorded chain "
+        "does not account for it:\n  " + "\n  ".join(book_lost)
+        + "\n  This is ink lost between render_hole and the written file, and it CANNOT be excused as a "
+          "stale book: staleness explains a difference from what the engine draws NOW, never a deficit "
+          "against what was already on paper. Either the chain must land on the figure the book holds -- a "
+          "removal in WATER_INK_REMOVED_DELIBERATELY naming the way ids and the predicate that refuses "
+          "each, then a move in WATER_INK_RECLASSIFIED whose ARRIVALS ARE IN THIS BOOK in the to-ink -- or "
+          "a card has quietly stopped printing a hazard.")
+    assert not book_gap, (
+        "the built book and the engine disagree about how much water ink a course carries, and nothing "
+        "declares it:\n  " + "\n  ".join(book_gap)
+        + "\n  This is the axis 39169b9 dropped. The engine says what the map DRAWS; the book says what "
+          "was WRITTEN, and ink can be lost between them -- a panel dropped, a card not emitted, a "
+          "template branch not taken -- which no engine-side count can see. If the book is simply behind "
+          "the engine, record it in BOOK_PREDATES_THE_ENGINE with both figures and the fix it predates; "
+          "rebuilding clears the entry. If the book is behind for any OTHER reason, that is the finding.")
+    assert not book_settled, (
+        "BOOK_PREDATES_THE_ENGINE still records a divergence that has been resolved:\n  "
+        + "\n  ".join(book_settled)
+        + "\n  The corpus has been rebuilt; drop the entry. Left in place it would excuse the next "
+          "book-versus-engine gap on that course and class without anyone looking at it.")
+    for key, (bk, eng, why) in BOOK_PREDATES_THE_ENGINE.items():
+        assert isinstance(why, str) and len(why) > 60, f"{key} needs a real reason, got {why!r}"
+        assert key[1] in PAT, f"{key} names a drawn class this test does not count: {sorted(PAT)}"
+    # EVERY RECLASSIFICATION RECORD IS PROVED THROUGH THE ENGINE, three ways. See the table for why this
+    # is not a removal and not a gain: the mark is still on the paper in a different ink.
+    for (slug, frm, to), rec in sorted(WATER_INK_RECLASSIFIED.items()):
+        moved, why, ways = rec[2], rec[3], rec[4]
+        assert rec[0] - rec[1] == moved and moved > 0, (
+            f"{slug} {frm} -> {to}: records {rec[0]} -> {rec[1]} with {moved} appearance(s) moved; the "
+            f"figures must be a move of exactly that size")
+        assert isinstance(why, str) and len(why) > 200 and ways, (
+            f"{slug} {frm} -> {to}: a reclassification record needs the figures, a real reason and the "
+            f"way ids that moved, with the predicate that moves each")
+        assert frm in PAT and to in PAT, (
+            f"{slug}: {frm!r} -> {to!r} names a drawn class this test does not count: {sorted(PAT)}")
+        gain = WATER_INK_GAINED_DELIBERATELY.get((slug, to))
+        assert gain and gain[1] - gain[0] == moved, (
+            f"{slug} {frm} -> {to}: the move is {moved} appearance(s) and the gain recorded against "
+            f"{to!r} is {gain and (gain[1] - gain[0])}. The two records describe one event and must agree, "
+            f"or the to-class is carrying an unexamined addition beside the move")
+        if slug not in CORPUS:
+            continue
+        cfg, rh = _engine(slug)
+        byid = {e["id"]: e for e in
+                json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]}
+        base = {hn: rh.render_hole(hn, cfg.HOLES) for hn in cfg.HOLE_NUMS}
+
+        def totals(_rh=rh, _cfg=cfg):
+            cards = "".join(_rh.render_hole(hn, _cfg.HOLES)[0] for hn in _cfg.HOLE_NUMS)
+            return cards.count(PAT[frm]), cards.count(PAT[to])
+
+        # STILL DRAWN -- the mirror of the removal record's MUTED half, and the rule-2 assertion of this
+        # whole change. A ball in a dry ditch is still lost, so deleting the way has to change a card.
+        for wid in sorted(ways):
+            assert wid in byid, (
+                f"{slug} {frm} -> {to}: names way {wid}, which is no longer in the cache. If OSM deleted "
+                f"it the record is dead and should GO -- do not leave it accounting for a move it no "
+                f"longer explains")
+            orig_load = rh.load
+            try:
+                rh.load = _drop_one(orig_load, wid)
+                moved_cards = [hn for hn in cfg.HOLE_NUMS
+                               if rh.render_hole(hn, cfg.HOLES) != base[hn]]
+            finally:
+                rh.load = orig_load
+            assert moved_cards, (
+                f"{slug} {frm} -> {to}: deleting way {wid} changes NO card, so it is not drawn at all and "
+                f"this is a REMOVAL wearing a reclassification's clothes. A class that left the paper is "
+                f"the omission rule 2 forbids; record it in WATER_INK_REMOVED_DELIBERATELY and say what "
+                f"went")
+        # CONSERVATION -- lifting the predicate for exactly these ways must raise the from-class by
+        # `moved` and lower the to-class by `moved`. Both directions, the same number: that is what makes
+        # this a move rather than a loss and a gain that happen to be equal.
+        by_pred = {}
+        for wid, predicate in ways.items():
+            by_pred.setdefault(predicate, set()).add(wid)
+        held = {}
+        try:
+            for predicate, ids in by_pred.items():
+                assert callable(getattr(rh, predicate, None)), (
+                    f"{slug} {frm} -> {to}: render_hole.{predicate} is not callable, so it cannot be what "
+                    f"moves way(s) {sorted(ids)}")
+                held[predicate] = getattr(rh, predicate)
+
+                def lifted(feature, _base=held[predicate], _ids=ids):
+                    return False if feature.get("id") in _ids else _base(feature)
+                setattr(rh, predicate, lifted)
+            back_frm, back_to = totals()
+        finally:
+            for predicate, fn in held.items():
+                setattr(rh, predicate, fn)
+        now_frm, now_to = totals()
+        assert (back_frm - now_frm, now_to - back_to) == (moved, moved), (
+            f"{slug} {frm} -> {to}: turning render_hole.{sorted(by_pred)} off for {sorted(ways)} moves "
+            f"{back_frm - now_frm} appearance(s) back into {frm!r} and takes {now_to - back_to} out of "
+            f"{to!r}; the record says {moved} both ways. If those two numbers differ, ink is being created "
+            f"or destroyed rather than re-described, and one of the two classes is wrong about what it "
+            f"draws")
+        assert now_frm == rec[1], (
+            f"{slug} {frm} -> {to}: the record says {frm!r} stands at {rec[1]} after the move and the "
+            f"engine draws {now_frm}")
+    stale_recl = sorted(k for k, r in WATER_INK_RECLASSIFIED.items()
+                        if k[0] in CORPUS and measured.get((k[0], k[1]), (0, 0))[1] != r[1])
+    assert not stale_recl, (
+        f"WATER_INK_RECLASSIFIED records {stale_recl}, whose from-class no longer stands where the record "
+        f"says. Re-measure: a move that has changed size is a different event and wants describing, and a "
+        f"stale entry would account for the next one on its own.")
+    stale_rm = sorted(k for k in WATER_INK_REMOVED_DELIBERATELY
+                      if k in measured and measured[k][0] <= measured[k][1])
+    assert not stale_rm, (
+        f"WATER_INK_REMOVED_DELIBERATELY records {stale_rm}, which no longer removes anything -- the "
+        f"count is back at or above the preserved book's. Drop the entry: left in place it would excuse "
+        f"the next loss of that size, whatever caused it.")
     for key, (before, now, why) in WATER_INK_GAINED_DELIBERATELY.items():
         assert isinstance(why, str) and len(why) > 40, f"{key} needs a real reason, got {why!r}"
         assert now > before, f"{key} records a gain that is not one: {before} -> {now}"
@@ -35613,7 +38029,7 @@ def test_a_resampled_dem_patch_gives_up_its_own_source_grid_with_no_network():
       * against GROUND TRUTH -- a patch this test builds at a cell size it chose (`_resampled_patch`),
         so a detector that merely agreed with the corpus could not pass;
       * against the CORPUS -- the six seamless greens must come back resampled from a grid several
-        pixels wide, and the 192 LiDAR greens must NOT, or the discriminator is decoration.
+        pixels wide, and the 210 LiDAR greens must NOT, or the discriminator is decoration.
 
     The 0.4 m greens are interpolated from a dense point cloud over a Delaunay triangulation, which
     has no rectangular lattice at all: measured, 0.2-19.8% of their second differences land at the
@@ -35921,7 +38337,10 @@ def test_the_source_lattice_detectors_published_figures_are_the_ones_the_corpus_
     # (a) the constant's own comment, and this file's detector test, publish the same four figures
     for where, text, pat in (
             ("render_green's SOURCE_LATTICE_FLAT_MIN comment", src,
-             r"six seamless greens sit at ([\d.]+)-([\d.]+)% \(measured per axis\) and the 192 LiDAR "
+             # The LiDAR-green COUNT is not pinned in this pattern: it moves with the corpus, and pinning
+             # it made a 13th course report the figure MISSING rather than stale. The count itself is
+             # graded on the next line, against the arrays.
+             r"six seamless greens sit at ([\d.]+)-([\d.]+)% \(measured per axis\) and the \d+ LiDAR "
              r"ones at ([\d.]+)-([\d.]+)%"),
             ("this file's detector test", here,
              r"measured, ([\d.]+)-([\d.]+)% of their second differences land at the float32 floor "
@@ -38614,3 +41033,1208 @@ def test_the_back_cover_builder_is_not_called_a_legend_and_no_book_styles_a_clas
         assert not re.search(r"\.legend\b", style), (
             f"{os.path.relpath(path, ROOT)} styles `.legend`, which no element in it carries. The "
             f"fossil of legend_panel(), shipped in every pocket book.")
+
+
+# A PASDA `SEGID` and an NHD `ReachCode` are not the same kind of identifier, and
+# render_hole.water_identity ranked them as if they were. Every value measured in the caches; the
+# shape of each key is what decides where it belongs, not which course happens to carry it.
+#
+#   nhd:reach_code   A REACH. copper-valley's ways 83568581, 83579191 and 83582265 all carry
+#                    18040051001111 -- three OSM ways, one reach, and the reach is the same identifier
+#                    however the ways are later split. This is the identity the docstring describes.
+#   scvwd:ROUTEID    A ROUTE. THIRTEEN bay-view ways carry 490036. Nine pass is_visible_watercourse (the
+#                    other four are PIPED: 50256834/50256835/50256879 `tunnel=yes`, 50256877
+#                    `tunnel=culvert`), and seven of those nine reach a card -- 50256874, 50256875,
+#                    50256873, 50256878, 50256813, 50256839, 50256841, 924.8 m of channel between them.
+#                    One number for one water, whichever subset a card draws.
+#   pasda:SEGID      A RIVER-MILE SEGMENT. merion's two Cobbs Creek segments read
+#                    `758_10.594_11.6195` and `758_6.5182_10.594`: stream 758 from mile 10.594 to
+#                    11.6195, and the same stream 758 from 6.5182 to 10.594. The value CHANGES along one
+#                    creek by construction, so it cannot be a creek's identity -- and ranked above
+#                    `name` it split one creek that OSM names once into two.
+#
+# The cost, measured on the shipped corpus: merion hole 11 printed `3W` over TWO physical waters -- Cobbs
+# Creek (ways 1216255652 and 225722009, both named "Cobbs Creek", different SEGIDs) and Trib 00765 To
+# Cobbs Creek (way 225722014). A junior reads "3W" as three waters to avoid.
+PASDA_SEGID_IS_A_RIVER_MILE_SEGMENT = (
+    ("758_10.594_11.6195", "758_6.5182_10.594"),   # merion, both named "Cobbs Creek"
+)
+
+
+def test_a_river_mile_segment_id_does_not_outrank_the_name_of_the_creek_it_cuts_up():
+    """One creek named once in OSM must count as one water, whatever a river-mile index calls its parts.
+
+    `water_identity`'s docstring promises "the source hydrography's own REACH identifier, else the
+    name". A PASDA `SEGID` is not a reach identifier: it is `<stream>_<start river mile>_<end river
+    mile>`, so it is finer than the creek by construction and changes along it. Ranked above `name` it
+    made merion 11 print `3W` over two physical waters.
+
+    Graded on the KEY THE FUNCTION RETURNS, not on a rendered card, so the rule is pinned where it is
+    written -- and on both directions of it:
+
+      * two ways of ONE named creek with DIFFERENT river-mile SEGIDs must share an identity;
+      * two DIFFERENT named creeks must not, even where a SEGID would have separated them anyway --
+        otherwise a fix that simply dropped SEGID and kept nothing would pass;
+      * a genuine reach code still outranks the name, because a reach is the finer TRUE identity: a
+        named river has many reaches and they are different waters where they run past different holes.
+      * an unnamed way with a SEGID still uses it rather than falling back to its own OSM id, because a
+        river-mile segment id is a worse identity than a reach code and a better one than nothing.
+    """
+    import render_hole as rh
+    for a, b in PASDA_SEGID_IS_A_RIVER_MILE_SEGMENT:
+        wa = {"id": 1, "tags": {"waterway": "stream", "name": "Cobbs Creek", "pasda:SEGID": a}}
+        wb = {"id": 2, "tags": {"waterway": "stream", "name": "Cobbs Creek", "pasda:SEGID": b}}
+        assert rh.water_identity(wa) == rh.water_identity(wb), (
+            f"two ways of ONE creek OSM names 'Cobbs Creek' get different identities because their "
+            f"river-mile segments differ ({a!r} vs {b!r}), so the footer counts one creek twice. A "
+            f"PASDA SEGID is <stream>_<start mile>_<end mile> -- it changes ALONG a creek and cannot "
+            f"be its identity. Rank it below `name`.")
+    # ...and the fix may not be "ignore SEGID and count every unnamed way on its own".
+    ua = {"id": 3, "tags": {"waterway": "stream", "pasda:SEGID": "765_0_0.365"}}
+    ub = {"id": 4, "tags": {"waterway": "stream", "pasda:SEGID": "765_0_0.365"}}
+    assert rh.water_identity(ua) == rh.water_identity(ub), (
+        "two UNNAMED ways carrying the same PASDA SEGID no longer share an identity, so dropping the "
+        "key entirely has made the footer over-count where it used to be right. A segment id is a "
+        "worse identity than a reach code and a better one than an OSM way id.")
+    assert rh.water_identity(ua) != rh.water_identity(
+        {"id": 5, "tags": {"waterway": "stream", "pasda:SEGID": "758_0_0.365"}}), \
+        "two different PASDA streams share an identity"
+    # Two different named creeks stay apart.
+    assert rh.water_identity({"id": 6, "tags": {"name": "Cobbs Creek", "waterway": "stream"}}) \
+        != rh.water_identity({"id": 7, "tags": {"name": "Trib 00765 To Cobbs Creek",
+                                                     "waterway": "stream"}}), \
+        "two differently named creeks share an identity, so the footer would under-count"
+    # A reach code is the finer TRUE identity and still outranks the name.
+    r1 = {"id": 8, "tags": {"name": "Black Creek", "nhd:reach_code": "18040051001111"}}
+    r2 = {"id": 9, "tags": {"name": "Black Creek", "nhd:reach_code": "18040051001539"}}
+    assert rh.water_identity(r1) != rh.water_identity(r2), (
+        "two different NHD REACHES of one named river now share an identity. A reach is a real "
+        "identity and it is finer than the name -- two reaches past two different holes are two "
+        "waters -- so `nhd:reach_code` must stay above `name`.")
+    assert rh.water_identity(r1) == ("nhd:reach_code", "18040051001111")
+
+
+# The multipolygon half of the same count. A relation's OUTER RINGS are flattened into way-shaped
+# elements by fetch_osm._flatten_relations so nothing downstream needs to know about relations -- and the
+# footer, which counts one number per drawn feature, then reads those rings as separate waters.
+#
+# MEASURED in the caches: philadelphia relation 16617182 is the Schuylkill, `natural=water water=river`,
+# flattened into FOUR unnamed outer rings (ways -1661718201 with 155 nodes, -1661718202 with 3,
+# -1661718203 with 190, -1661718204 with 9). Nothing on those rings names them, so no reach code and no
+# name can join them -- but `_from_relation` is already stamped on each one by the flattener, and it is an
+# exact identity rather than a guess. the-reserve relation 1969092 is the same shape with one ring.
+#
+# LATENT, not shipped: the Schuylkill's nearest approach is 523 m, so no card draws it today and no
+# footer has printed `4W` for one river. That is why this is a test and not a correction to a number.
+WATER_RELATION_RINGS = {
+    "philadelphia-country-club": (16617182, 4),
+    "the-reserve-at-spanos-park": (1969092, 1),
+}
+
+
+def test_the_outer_rings_of_one_water_relation_count_as_one_water():
+    """A river mapped as a multipolygon is one water, however many rings the flattener makes of it.
+
+    The footer prints "9B 3W" and a reader takes the W as a number of waters to carry. `water_identity`
+    is what makes that true of a creek split into OSM ways; a relation flattened into rings is the same
+    defect one level up, and the ring carries the answer already -- `_from_relation`.
+
+    Graded on the returned key, and on the direction that matters in each case: rings of ONE relation
+    agree, rings of DIFFERENT relations do not, and a plain way with no relation is unaffected -- so a
+    fix that keyed everything on a constant fails.
+    """
+    import render_hole as rh
+    a = {"id": -1661718201, "tags": {"natural": "water", "water": "river"}, "_from_relation": 16617182}
+    b = {"id": -1661718203, "tags": {"natural": "water", "water": "river"}, "_from_relation": 16617182}
+    c = {"id": -196909217, "tags": {"natural": "water", "water": "river"}, "_from_relation": 1969092}
+    assert rh.water_identity(a) == rh.water_identity(b), (
+        "two outer rings of ONE multipolygon relation get different identities, so a river flattened "
+        "into four rings prints 4W. `_from_relation` is stamped on every ring by "
+        "fetch_osm._flatten_relations and is an exact identity, not a guess.")
+    assert rh.water_identity(a) != rh.water_identity(c), \
+        "rings of two DIFFERENT water relations share an identity, so two rivers would count as one"
+    assert rh.water_identity(a) == ("_from_relation", 16617182)
+    # A relation ring outranks even a reach code: the reach code is a property of the SOURCE
+    # hydrography's linework, and two rings of one mapped waterbody are one waterbody whatever
+    # flowlines cross them.
+    assert rh.water_identity({"id": -1, "tags": {"nhd:reach_code": "X"}, "_from_relation": 7}) \
+        == ("_from_relation", 7)
+    # A plain way is untouched.
+    assert rh.water_identity({"id": 5, "tags": {"natural": "water"}}) == ("id", 5)
+
+
+@needs_corpus
+def test_the_footer_w_counts_physical_waters_and_not_drawn_polygons():
+    """`W` is a count of WATERS, so two marks of one water may not print as two.
+
+    The line half of this was already true -- a creek split into ways is deduplicated by
+    `water_identity`. The AREA half counted `len(waters)`, one per drawn polygon, so a waterbody mapped
+    as a multipolygon would print one W per outer ring.
+
+    Measured through the ENGINE on the real caches rather than argued: for every hole of every course,
+    the number the footer prints may not exceed the number of DISTINCT waters among the features that
+    card draws. Equality is not required and must not be -- a hole legitimately reaching two separate
+    ponds prints 2W -- so this is the one-sided rule, in the direction that is a wrong number.
+    """
+    bad, checked = [], 0
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        for hn in cfg.HOLE_NUMS:
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            checked += 1
+            # `waters` is the count under test; `water_hazards` + `watercourses` is the number of drawn
+            # features. The count may never exceed the feature count either -- that direction would be
+            # a W with no ink behind it.
+            assert info["waters"] <= info["water_hazards"] + info["watercourses"], (
+                f"{slug} h{hn} prints {info['waters']}W over "
+                f"{info['water_hazards'] + info['watercourses']} drawn water feature(s)")
+    assert checked == expected_geometry_holes(), (
+        f"{checked} holes examined where the filesystem declares {expected_geometry_holes()}")
+    # ...and the relation case specifically, on the courses that carry one.
+    for slug, (rel, nrings) in sorted(WATER_RELATION_RINGS.items()):
+        if slug not in CORPUS:
+            continue
+        cfg, rh = _engine(slug)
+        course = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+        rings = [e for e in course if e.get("_from_relation") == rel]
+        assert len(rings) == nrings, (
+            f"{slug} relation {rel} now flattens to {len(rings)} ring(s), not {nrings}. Re-measure "
+            f"this record rather than adjusting the number -- the count it guards is derived from it")
+        assert len({rh.water_identity(g) for g in rings}) == 1, (
+            f"{slug}'s {len(rings)} outer rings of relation {rel} carry "
+            f"{len({rh.water_identity(g) for g in rings})} identities, so that one waterbody would "
+            f"print one W per ring on any hole it reached")
+    assert not bad, bad
+
+
+# NHD threads a SYNTHETIC line through every waterbody so its flow network stays connected: FType
+# `ArtificialPath` (FCode 55800) through a lake, pond or wide river, and `Connector` (33400) across a gap
+# in the linework. Neither is a channel anybody can see. Imported into OSM as `waterway=stream`, they are
+# indistinguishable from a creek by the `waterway` key alone -- which is what `is_visible_watercourse`
+# tests -- so the map drew a blue creek line ACROSS a lake it had already filled in blue.
+#
+# MEASURED over the whole corpus: 14 ArtificialPaths and 1 Connector, on three courses. 13 of the 15 lie
+# 0.914-1.000 of their own length inside a mapped `natural=water` polygon on the same course:
+#
+#   copper-valley  83565232 0.9528 in 775614086  83566408 1.000 in 775441713
+#                  83567182 1.000 in 83584763    83567781 1.000 in 83580398
+#                  83574845 1.000 in 83584474    83583927 0.914 in 83584631
+#   the-reserve    83153285 1.000 in 82588630    83154430 1.000 in -196909217
+#                  83154748 1.000 in 82588630    83158129 1.000 in -196909217
+#                  83158847 1.000 in 82588630    83164289 1.000 in -196909217
+#                  83164563 1.000 in -196909217
+#
+# ...and TWO DO NOT, which is why the rule is containment and not the FType alone: micke-grove 83153363
+# (ArtificialPath, 1627.5 m) and the-reserve 1040957802 (Connector, 24.8 m) measure 0.000 against every
+# water polygon in their caches. Excluding those on the tag would be an OMISSION -- a synthetic path whose
+# waterbody nobody has mapped is the only mark that water has, and rule 2 says over-warn.
+SYNTHETIC_FLOWLINES_IN_THE_CORPUS = {
+    "copper-valley-golf-club": 6,
+    "micke-grove-golf-links": 1,
+    "the-reserve-at-spanos-park": 8,
+}
+# The one that reaches a card today: drawn on copper-valley 11, 0.9528 inside lake way/775614086, which
+# that same card draws and counts. Redundant ink over water already inked.
+SYNTHETIC_ON_A_CARD = ("copper-valley-golf-club", 11, 83565232, 775614086)
+
+
+def test_a_synthetic_nhd_flowline_is_not_a_second_water_on_top_of_the_lake_it_threads():
+    """Tag truth table for the predicate, so it is graded where it is written and not through a card."""
+    import render_hole as rh
+    ap = {"id": 1, "tags": {"waterway": "stream", "gnis:ftype": "ArtificialPath",
+                            "gnis:fcode": "55800", "source": "NHD"}}
+    conn = {"id": 2, "tags": {"waterway": "stream", "gnis:ftype": "Connector", "gnis:fcode": "33400"}}
+    creek = {"id": 3, "tags": {"waterway": "stream", "gnis:ftype": "StreamRiver",
+                               "gnis:fcode": "46003", "intermittent": "yes"}}
+    ditch = {"id": 4, "tags": {"waterway": "ditch", "gnis:ftype": "CanalDitch", "gnis:fcode": "33600"}}
+    plain = {"id": 5, "tags": {"waterway": "stream"}}
+    assert rh.is_synthetic_flowline(ap), "an NHD ArtificialPath is not a channel"
+    assert rh.is_synthetic_flowline(conn), "an NHD Connector is not a channel"
+    for f, why in ((creek, "a StreamRiver is a real creek, intermittent or not"),
+                   (ditch, "a CanalDitch is a dug channel and is real"),
+                   (plain, "a plain waterway=stream carries no NHD FType and must not be guessed at")):
+        assert not rh.is_synthetic_flowline(f), why
+    # Spelled three ways across the corpus's imports, and the predicate must read all of them.
+    for key in ("gnis:ftype", "nhd:ftype", "NHD:FTYPE"):
+        assert rh.is_synthetic_flowline({"id": 6, "tags": {"waterway": "stream",
+                                                          key: "ArtificialPath"}}), key
+    # Being synthetic is NOT on its own a reason to drop it -- the drop is conditional on containment,
+    # which is the corpus check below. `is_visible_watercourse` must be unchanged by this.
+    assert rh.is_visible_watercourse(ap), (
+        "is_visible_watercourse now refuses an ArtificialPath outright. Two of the corpus's fifteen "
+        "lie inside no mapped waterbody at all, and there a synthetic path is the only mark the water "
+        "has -- dropping it on the tag is the omission direction")
+
+
+@needs_corpus
+def test_the_synthetic_flowline_over_a_drawn_lake_loses_its_blue_and_the_lake_keeps_its_count():
+    """The redundant mark goes; the water it lay on keeps its ink and its W. Measured on the corpus.
+
+    Both halves matter and they pull opposite ways. Dropping the line must not drop the WATER -- the lake
+    is still filled and still counted, so nothing a junior can reach leaves the page -- and it must not
+    drop the COUNT either, because on copper-valley 11 the path shares NHD reach 18040051001111 with ways
+    83579191 and 83582265, which that card also draws. So this is an ink-only correction there, and the
+    test pins it as one rather than trusting that it is.
+    """
+    slug, hn, path_id, lake_id = SYNTHETIC_ON_A_CARD
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} not built")
+    cfg, rh = _engine(slug)
+    course = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    byid = {e["id"]: e for e in course}
+    assert path_id in byid and lake_id in byid, (
+        f"{slug} no longer carries way {path_id} and/or {lake_id}; re-measure this record")
+    assert rh.is_synthetic_flowline(byid[path_id]), (
+        f"way {path_id} is no longer tagged as a synthetic NHD flowline -- re-measure")
+    base = {n: rh.render_hole(n, cfg.HOLES) for n in cfg.HOLE_NUMS}
+    # The lake is still inked and still counted on the hole the path used to double.
+    assert base[hn][1]["water_hazards"] >= 1, (
+        f"{slug} h{hn} draws no area water at all now; the lake the path lay on has left the card")
+    assert base[hn][1]["waters"] >= 1, f"{slug} h{hn} prints 0W with water drawn"
+    # THE PATH REACHES NO CARD, proved by DELETING it from the cache and requiring every card to be
+    # byte-identical. That is the instrument the out-of-bounds decision is graded with, and unlike a
+    # re-derived selector it cannot drift from the engine.
+    orig_load = rh.load
+    try:
+        rh.load = _drop_one(orig_load, path_id)
+        moved = [n for n in cfg.HOLE_NUMS if rh.render_hole(n, cfg.HOLES) != base[n]]
+    finally:
+        rh.load = orig_load
+    assert not moved, (
+        f"deleting synthetic NHD flowline way {path_id} still changes {slug} card(s) {moved}, so it is "
+        f"reaching the paper. It lies 0.9528 of its length inside lake way {lake_id}, which the same "
+        f"card fills in blue and counts -- a creek drawn across a lake")
+    # ...and the DELETION INSTRUMENT ITSELF WORKS on this course, or the assertion above is vacuous:
+    # dropping the lake the path lay on MUST move a card.
+    try:
+        rh.load = _drop_one(orig_load, lake_id)
+        lake_moved = [n for n in cfg.HOLE_NUMS if rh.render_hole(n, cfg.HOLES) != base[n]]
+    finally:
+        rh.load = orig_load
+    assert lake_moved, (
+        f"deleting lake way {lake_id} changes no {slug} card, so _drop_one is not reaching this "
+        f"engine and the refusal above proves nothing")
+    # ...and the corpus population is what the record says it is.
+    for s, n_expected in sorted(SYNTHETIC_FLOWLINES_IN_THE_CORPUS.items()):
+        if s not in CORPUS:
+            continue
+        c2, r2 = _engine(s)
+        els = json.load(open(os.path.join(c2.COURSE_DIR, "osm_course.json")))["elements"]
+        got = sum(1 for e in els if r2.is_synthetic_flowline(e))
+        assert got == n_expected, (
+            f"{s} now has {got} synthetic NHD flowline(s), not {n_expected}. Re-measure the record "
+            f"above -- the containment figures in it are what the rule stands on")
+
+
+# A feature tagged as water that is a BUILDING, and the reason it takes a recorded per-feature refusal
+# rather than a rule. See render_hole.MEASURED_NOT_WATER for the measurement; this is the guard on it.
+#
+# THE RECORD HAS TO EXPIRE IF THE GROUND CHANGES. A refusal keyed on an OSM way id is a claim about one
+# polygon as it was measured, so the two things that would falsify it -- the way being deleted, and the way
+# being redrawn over something else -- must fail here rather than pass silently. The engine's own side of
+# that is the shape check (a redrawn ring is treated as water again, which is the over-warn direction);
+# this is the loud half.
+MEASURED_NOT_WATER_EVIDENCE = {
+    # id: (slug, node count, ring m^2, density ratio inside/window, tall-return footprint m)
+    225722025: ("merion-golf-club", 13, 455.9, 0.884, (11.5, 12.2)),
+}
+# Merion's three genuine waters, as the CONTROL the ratio above is read against: LiDAR does not return
+# from open water, so a real pond reads far below its surroundings and this ring does not.
+MERION_WATER_RETURN_RATIOS = {285224863: 0.209, 118824332: 0.240, 118837675: 0.371}
+
+
+def test_the_water_polygon_that_is_a_building_is_refused_and_the_two_real_ponds_are_not():
+    """merion way 225722025 is `natural=water NHD:FTYPE=LakePond` and there is a house inside it.
+
+    The refusal is per-feature and that is a decision, not laziness. All three of merion's NHD LakePond
+    imports carry structurally IDENTICAL tags -- same `NHD:FCode` 39004, same `NHD:Elevation`
+    0.00000000000, same `NHD:Resolution` High, same `NHD:FDate` 2001/08/17, same `source=NHD` -- so no tag
+    test can separate the building from the two genuine ponds, and OSM maps no building there either (43
+    building ways in that cache, none within 60 m of this ring). The only discriminator is a measurement,
+    and it is recorded where the refusal is.
+
+    What this test pins is that the refusal stays NARROW: it must remove that one way and nothing else,
+    and above all not the two real ponds beside it or the hand-mapped lateral hazard.
+    """
+    import render_hole as rh
+    for wid, (_slug, nodes, _a, _r, _f) in MEASURED_NOT_WATER_EVIDENCE.items():
+        assert wid in rh.MEASURED_NOT_WATER, f"way {wid} is no longer refused"
+        good = {"id": wid, "tags": {"natural": "water"},
+                "geometry": [{"lat": 0.0, "lon": 0.0}] * nodes}
+        assert rh.is_measured_not_water(good), f"way {wid} is no longer matched by its own record"
+        # A REDRAWN ring must NOT inherit the refusal: the measurement described the old shape.
+        for delta in (-1, +1):
+            redrawn = dict(good, geometry=[{"lat": 0.0, "lon": 0.0}] * (nodes + delta))
+            assert not rh.is_measured_not_water(redrawn), (
+                f"way {wid} keeps its refusal after being redrawn with {nodes + delta} nodes instead of "
+                f"{nodes}. The recorded measurement is of ONE shape; a re-noded or re-traced ring has "
+                f"not been measured, and treating it as water again is the over-warn direction")
+    for wid in MERION_WATER_RETURN_RATIOS:
+        assert wid not in rh.MEASURED_NOT_WATER, (
+            f"merion way {wid} is a genuine water and is being refused as measured-not-water")
+        assert not rh.is_measured_not_water(
+            {"id": wid, "tags": {"natural": "water"}, "geometry": [{"lat": 0.0, "lon": 0.0}] * 13})
+    # Nothing else may join the table without a recorded reason long enough to be one.
+    for wid, why in rh.MEASURED_NOT_WATER.items():
+        assert wid in MEASURED_NOT_WATER_EVIDENCE, (
+            f"way {wid} was added to MEASURED_NOT_WATER without being added here. A per-feature refusal "
+            f"to draw water needs its measurement recorded in both places or it becomes a list nobody "
+            f"can audit")
+        assert isinstance(why, tuple) and len(why) == 2 and len(why[1]) > 200, (
+            f"way {wid}'s record is {why!r}; it needs the node count and the measurement in prose")
+
+
+@needs_corpus
+def test_no_card_draws_water_over_the_merion_building_and_every_real_water_survives():
+    """Measured on the corpus, and in both directions -- the refusal must remove ink, and only that ink."""
+    wid = 225722025
+    slug, nodes, area_m2, ratio, _f = MEASURED_NOT_WATER_EVIDENCE[wid]
+    if slug not in CORPUS:
+        pytest.skip(f"{slug} not built")
+    cfg, rh = _engine(slug)
+    course = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    byid = {e["id"]: e for e in course}
+    assert wid in byid, (
+        f"{slug} no longer carries way {wid}. If a mapper has deleted the phantom pond, this refusal is "
+        f"dead and should GO -- do not leave it behind covering the next way that gets that id")
+    assert len(byid[wid]["geometry"]) == nodes, (
+        f"way {wid} now has {len(byid[wid]['geometry'])} nodes, not the {nodes} that were measured. "
+        f"Re-measure it against the LiDAR before deciding what it is; the engine has already stopped "
+        f"refusing it, which is the safe direction and a wrong number on a card")
+    # The tags that make it look like water are still there -- otherwise the refusal is doing nothing
+    # and the finding has quietly become an OSM fix.
+    t = byid[wid]["tags"]
+    assert t.get("natural") == "water", (
+        f"way {wid} is no longer tagged `natural=water`, so nothing would draw it as water anyway and "
+        f"this refusal is dead weight. Drop it and record that OSM was fixed")
+    # Deleting it from the cache must change NOTHING: it already reaches no card.
+    base = {n: rh.render_hole(n, cfg.HOLES) for n in cfg.HOLE_NUMS}
+    orig_load = rh.load
+    try:
+        rh.load = _drop_one(orig_load, wid)
+        moved = [n for n in cfg.HOLE_NUMS if rh.render_hole(n, cfg.HOLES) != base[n]]
+    finally:
+        rh.load = orig_load
+    assert not moved, (
+        f"deleting way {wid} still changes {slug} card(s) {moved}, so a water hazard that is a house is "
+        f"reaching the paper. Its ring returns LiDAR at {ratio:.3f} of the surrounding window's density "
+        f"where merion's three genuine waters read 0.209-0.371, and 1743 of those returns stand more "
+        f"than 2 m above the class-2 ground inside it")
+    # ...and every genuine water on that course still reaches the cards it used to.
+    for real in sorted(MERION_WATER_RETURN_RATIOS):
+        if real not in byid:
+            continue
+        try:
+            rh.load = _drop_one(orig_load, real)
+            real_moved = [n for n in cfg.HOLE_NUMS if rh.render_hole(n, cfg.HOLES) != base[n]]
+        finally:
+            rh.load = orig_load
+        if real == 285224863:
+            assert real_moved, (
+                f"deleting merion way {real}, a hand-mapped golf=lateral_water_hazard, changes no card: "
+                f"a real water hazard has stopped being drawn")
+
+
+# merion's greenside marsh (way 675572836) is drawn on holes 14, 16 and 17 and NOT on 15 -- while being
+# CLOSER to 15's OSM centreline (34.57 m) than to 14's (39.43 m). Two separate readings of this have
+# concluded from that that hole 15 was missing from the list. It is not: the corridor distance that invites
+# the conclusion is measured WITH THE END CAPS, and the selector's reach half is clipped to the PLAYED
+# length, where the marsh's nearest approach sits at arc 0.0 -- at the tee, behind the line.
+#
+# Every figure here is read out of the engine below, never re-derived beside it, which is the whole point:
+# the two halves of `waters` are measured differently and that asymmetry is what the trap is made of.
+MERION_MARSH = 675572836
+MERION_MARSH_DRAWN_ON = (14, 16, 17)
+MERION_MARSH_FRACTION_AT_45 = {14: 0.3582, 15: 0.2469, 16: 1.0, 17: 1.0}
+MERION_MARSH_PLAYED_REACH_M = {14: 39.43, 15: 265.91, 16: 142.29, 17: 10.22}
+# The OTHER axis: nearest EDGE to the raw OSM `golf=hole` centreline with the end caps included, on
+# geo.mlat/mlon -- the project's one figure of the Earth, imported rather than restated for the reason at
+# the top of this file. This is the pair of figures that makes hole 15 look closer than hole 14, so it is
+# pinned beside the played-length one and the prose has to name which it is quoting. 39.5 shipped once for
+# hole 14: a crude spherical earth rounded the wrong way off 39.4333.
+MERION_MARSH_CENTRELINE_M = {14: 39.43, 15: 34.57, 16: 13.02, 17: 9.62}
+MERION_MARSH_AREA_M2 = 151.27
+
+
+@needs_corpus
+def test_the_greenside_marsh_reaches_three_holes_and_hole_15_is_refused_by_both_halves():
+    """The marsh is closer to hole 15 than to hole 14 and belongs on 14's card, not 15's. Measured.
+
+    Guards a piece of PROSE as much as a behaviour, because the prose is what got this wrong twice. Read
+    out of the engine two ways:
+
+      * the FRACTION half, by spying on render_hole.frac_len_within with the marsh's own node count;
+      * the REACH half, by neutralising the fraction half for the marsh alone and binary-searching
+        CORRIDOR_M['water'] for the smallest corridor that still admits it. That is the engine's own
+        clipped measure -- `_seg_near_played_line` is 30 lines of interval clipping and a second copy
+        beside it is exactly the drift this suite exists to prevent.
+    """
+    if "merion-golf-club" not in CORPUS:
+        pytest.skip("merion not built")
+    cfg, rh = _engine("merion-golf-club")
+    course = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    marsh = next((e for e in course if e["id"] == MERION_MARSH), None)
+    assert marsh is not None, (
+        f"merion no longer carries way {MERION_MARSH}. That is a lost hazard 2.48 m from a green, not a "
+        f"reason to delete this test -- the shrink guard should have refused the re-fetch")
+    assert rh.is_drawn_wetland(marsh), "the marsh is no longer a wetland this engine draws"
+    nodes = len(marsh["geometry"])
+
+    orig = rh.frac_len_within
+    seen = {}
+
+    def spy(pts, line, buf):
+        r = orig(pts, line, buf)
+        if len(pts) == nodes:
+            seen[buf] = r
+        return r
+    drawn_on, fracs = [], {}
+    try:
+        rh.frac_len_within = spy
+        for hn in cfg.HOLE_NUMS:
+            seen.clear()
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            if hn in MERION_MARSH_FRACTION_AT_45:
+                fracs[hn] = seen.get(rh.CORRIDOR_M["water"])
+            # `wetlands` for the reason given at the REACH half below: this feature is a marsh, it is
+            # drawn in the not-water grey, and `water_hazards` no longer sees it. Holes 14, 16 and 17 each
+            # carry other water, so watching the water key here would have reported them as drawing the
+            # marsh whether they did or not -- and hole 15, which has none, as never drawing it.
+            if info["wetlands"] and hn in MERION_MARSH_FRACTION_AT_45:
+                drawn_on.append(hn)
+    finally:
+        rh.frac_len_within = orig
+    for hn, want in sorted(MERION_MARSH_FRACTION_AT_45.items()):
+        assert fracs.get(hn) is not None, f"the fraction half was never measured for hole {hn}"
+        assert abs(fracs[hn] - want) < 5e-4, (
+            f"hole {hn}'s boundary-length fraction inside {rh.CORRIDOR_M['water']} m is "
+            f"{fracs[hn]:.4f}, recorded as {want}. Re-measure the prose in "
+            f"render_hole.is_drawn_wetland and tests/test_r16_wetland.py rather than the record")
+    assert fracs[15] < 0.35 <= fracs[14], (
+        f"hole 15's fraction {fracs[15]:.4f} and hole 14's {fracs[14]:.4f} no longer straddle the 0.35 "
+        f"bar, which is half the reason 15 is refused and 14 is not")
+
+    # The REACH half, with the fraction half neutralised for this feature only.
+    #
+    # THE PROBE IS `wetlands` AND NOT `water_hazards`, and that is a correction rather than a preference.
+    # This search widens the corridor until the card admits the marsh, so the key it watches has to be the
+    # one the marsh LANDS in. Since the wetland/dry-channel split it lands in `wetlands` -- it is not open
+    # water and is drawn in the not-water grey (render_hole.holds_open_water) -- and watching
+    # `water_hazards` no longer detects it at all: the search then measured whatever OTHER water the hole
+    # has and reported hole 14's reach as 480.82 m against the 39.43 m recorded here. merion carries
+    # exactly one drawn wetland, so this key is a clean probe for this feature and nothing else.
+    def blind(pts, line, buf):
+        return 0.0 if len(pts) == nodes else orig(pts, line, buf)
+    reach = {}
+    held = rh.CORRIDOR_M["water"]
+    try:
+        rh.frac_len_within = blind
+        for hn in sorted(MERION_MARSH_PLAYED_REACH_M):
+            lo, hi = 0.5, 900.0
+            for _ in range(44):
+                mid = (lo + hi) / 2.0
+                rh.CORRIDOR_M["water"] = mid
+                _svg, info = rh.render_hole(hn, cfg.HOLES)
+                if info["wetlands"]:
+                    hi = mid
+                else:
+                    lo = mid
+            reach[hn] = hi
+    finally:
+        rh.frac_len_within = orig
+        rh.CORRIDOR_M["water"] = held
+    for hn, want in sorted(MERION_MARSH_PLAYED_REACH_M.items()):
+        assert abs(reach[hn] - want) < 0.05, (
+            f"hole {hn}'s reach over the PLAYED length is {reach[hn]:.2f} m, recorded as {want} m")
+    assert reach[15] > 45.0 > reach[17], (
+        f"hole 15's played-length reach {reach[15]:.2f} m and hole 17's {reach[17]:.2f} m no longer sit "
+        f"either side of the {held} m corridor")
+    # THE OTHER AXIS, on the project's own earth model, because the prose quotes both and the pair that
+    # invites the wrong conclusion is this one. Nearest EDGE (segment-to-segment, not vertex-to-segment --
+    # re-noding a ring must not move a published figure) to the raw OSM centreline, end caps included.
+    from geo import mlat as _ml, mlon as _mo
+    mg = marsh["geometry"]
+    la0 = sum(q["lat"] for q in mg) / len(mg)
+    lo0 = sum(q["lon"] for q in mg) / len(mg)
+    ml, mo = _ml(la0), _mo(la0)
+
+    def _em(q):
+        return ((q["lon"] - lo0) * mo, (q["lat"] - la0) * ml)
+
+    def _sd(px, py, ax, ay, bx, by):
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / l2))
+        return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+    def _ss(a, b, c, d):
+        return min(_sd(a[0], a[1], c[0], c[1], d[0], d[1]), _sd(b[0], b[1], c[0], c[1], d[0], d[1]),
+                   _sd(c[0], c[1], a[0], a[1], b[0], b[1]), _sd(d[0], d[1], a[0], a[1], b[0], b[1]))
+    M = [_em(q) for q in mg]
+    lines = {(e["tags"] or {}).get("ref"): e["geometry"] for e in course
+             if (e.get("tags") or {}).get("golf") == "hole" and e.get("geometry")}
+    for hn, want in sorted(MERION_MARSH_CENTRELINE_M.items()):
+        H = [_em(q) for q in lines[str(hn)]]
+        got = min(_ss(M[k], M[(k + 1) % len(M)], H[i], H[i + 1])
+                  for k in range(len(M)) for i in range(len(H) - 1))
+        assert abs(got - want) < 0.005, (
+            f"hole {hn}'s nearest-edge distance to the marsh over the raw OSM centreline is {got:.4f} m, "
+            f"recorded as {want} m. Re-measure the prose in render_hole.is_drawn_wetland and "
+            f"tests/test_r16_wetland.py -- and use geo.mlat/mlon: 39.5 shipped for hole 14 because a "
+            f"crude spherical earth rounded 39.4333 the wrong way")
+    area = abs(sum(M[i][0] * M[(i + 1) % len(M)][1] - M[(i + 1) % len(M)][0] * M[i][1]
+                   for i in range(len(M)))) / 2.0
+    assert abs(area - MERION_MARSH_AREA_M2) < 0.02, (
+        f"the marsh measures {area:.3f} m^2 by shoelace, recorded as {MERION_MARSH_AREA_M2}")
+    assert MERION_MARSH_CENTRELINE_M[15] < MERION_MARSH_CENTRELINE_M[14], (
+        "hole 15 is no longer CLOSER than hole 14 on the centreline axis, which is the whole trap the "
+        "prose exists to defuse -- re-read it rather than adjusting these numbers")
+
+    # ...and the conclusion the two halves add up to.
+    assert tuple(drawn_on) == MERION_MARSH_DRAWN_ON, (
+        f"the marsh is drawn on holes {tuple(drawn_on)}, recorded as {MERION_MARSH_DRAWN_ON}. If hole 15 "
+        f"is now in that list, do NOT add it to the prose -- measure why: the marsh lies BEHIND 15's tee "
+        f"(nearest approach at arc 0.0), so admitting it means the played-length clip has stopped working")
+
+
+# Everything from this marker to the end of
+# test_the_monarch_bay_sketch_has_one_length_and_the_engine_agrees_with_the_geodesic DOCUMENTS superseded
+# figures, and is excluded from that test's own "nobody still publishes them" scan. The marker is a string
+# so the scan can find its own start.
+SUPERSEDED_FIGURES_ARE_DOCUMENTED_FROM_HERE = "# ---- superseded LiDAR figures documented below ----"
+# ---- superseded LiDAR figures documented below ----
+# The two LiDAR-derived refusals this branch publishes rest on figures that were WRONG ONCE, in two
+# different ways, and both ways are pinned here.
+#
+# UNITS. monarch-bay and bay-view tiles are NAD83(2011) / California zone 3 (ftUS) with NAVD88 (ftUS) --
+# ftUS on all three axes. A scratch probe transformed EPSG:4326 into the tile CRS and then read the result
+# as METRES, so every published distance was 0.3048x and every density 10.7639x (exactly 1/0.3048^2) out.
+# merion's tiles are metres, which is why the house measurement was unaffected. The conversion has to come
+# from the CRS, never from the tile's name -- geo.vertical_scale already says so for Z and records the
+# 3.28x slope error that guessing caused.
+#
+# A SECOND COPY OF ONE LENGTH. monarch-bay way 1135575847's longest segment was published as 1396.9 m in
+# two places and 1441 m in a third, for one segment in one file. Measured: 1398.7 m, identically on
+# geo.mlat/mlon and on a WGS84 geodesic, so all three were wrong and the file disagreed with itself.
+MONARCH_BAY_SKETCH = {
+    "id": 1135575847,
+    "segments_m": (39.9, 8.9, 1398.7),
+    "total_m": 1447.5,
+}
+# Tiles whose horizontal axis is NOT metres, with the factor. Pinned so a course added on a foot delivery
+# cannot have metre figures published for it by the same mistake.
+LIDAR_HORIZONTAL_UNIT = {
+    "monarch-bay-golf-club": 0.3048006096,
+    "bay-view-golf-club": 0.3048006096,
+    "merion-golf-club": 1.0,
+}
+
+
+def test_the_monarch_bay_sketch_has_one_length_and_the_engine_agrees_with_the_geodesic():
+    """One segment, one figure, on the project's own earth model AND on a geodesic.
+
+    Every published length in this repo is measured on geo.mlat/mlon. That model is planar, so a 1.4 km
+    span is exactly where it could drift from the ellipsoid -- and this segment is the longest single span
+    in the corpus. Both are computed here and both are required to agree with the record, so neither a
+    second copy of the figure nor a model disagreement can go unnoticed.
+    """
+    if "monarch-bay-golf-club" not in CORPUS:
+        pytest.skip("monarch-bay not built")
+    cfg, _rh = _engine("monarch-bay-golf-club")
+    els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    way = next((e for e in els if e["id"] == MONARCH_BAY_SKETCH["id"]), None)
+    assert way is not None, f"monarch-bay no longer carries way {MONARCH_BAY_SKETCH['id']}"
+    g = way["geometry"]
+    la0 = sum(q["lat"] for q in g) / len(g)
+    ml, mo = _mlat(la0), _mlon(la0)
+    planar = [math.hypot((b["lon"] - a["lon"]) * mo, (b["lat"] - a["lat"]) * ml)
+              for a, b in zip(g, g[1:])]
+    from pyproj import Geod
+    geod = Geod(ellps="WGS84")
+    ellip = [geod.inv(a["lon"], a["lat"], b["lon"], b["lat"])[2] for a, b in zip(g, g[1:])]
+    want = MONARCH_BAY_SKETCH["segments_m"]
+    assert len(planar) == len(want), (
+        f"way {MONARCH_BAY_SKETCH['id']} now has {len(g)} nodes and {len(planar)} segments, not "
+        f"{len(want)}. Re-measure the refusal in render_hole rather than this record -- the whole point "
+        f"of that refusal is that a 4-node sketch cannot carry a width")
+    for i, (p, e, w) in enumerate(zip(planar, ellip, want)):
+        assert abs(p - w) < 0.1, (
+            f"segment {i} measures {p:.1f} m on geo.mlat/mlon, recorded as {w} m. Three copies of this "
+            f"figure existed and disagreed; re-measure and fix ALL of them")
+        assert abs(e - w) < 0.1, (
+            f"segment {i} measures {e:.1f} m on a WGS84 geodesic against {w} m on the record -- the "
+            f"planar model and the ellipsoid have diverged on the corpus's longest span")
+    assert abs(sum(planar) - MONARCH_BAY_SKETCH["total_m"]) < 0.1
+    # ...AND THE FIGURE MUST BE SPELLED THE SAME EVERYWHERE IT APPEARS, which is the half that catches the
+    # actual defect: three copies existed and one disagreed. The three superseded spellings are named so a
+    # revert is caught, and THIS FUNCTION'S OWN SOURCE IS STRIPPED before the search -- it necessarily
+    # contains them, and the first version of this check failed on itself. Same device as
+    # tests/test_r17_clean.py's SELF exclusion, and for the same reason.
+    import inspect
+    longest = f"{max(want):.1f}"
+    myself = inspect.getsource(test_the_monarch_bay_sketch_has_one_length_and_the_engine_agrees_with_the_geodesic)
+    superseded = (f"{1398.7 - 1.8:.1f}", f"{1441} m", f"{1445.8:.1f}")
+    for rel in ("render_hole.py", "tests/test_phase1_regressions.py"):
+        src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+        # Strip the region that DOCUMENTS the defect -- the narrative comment, the record, and this
+        # function -- from the region that must not PUBLISH it. They are contiguous, and the first two
+        # versions of this check failed on their own evidence.
+        if myself in src:
+            i = src.index(SUPERSEDED_FIGURES_ARE_DOCUMENTED_FROM_HERE)
+            src = src[:i] + src[src.index(myself) + len(myself):]
+        for wrong in superseded:
+            assert wrong not in src, (
+                f"{rel} still publishes {wrong!r} for monarch-bay way {MONARCH_BAY_SKETCH['id']}; the "
+                f"measured longest segment is {longest} m and the total {MONARCH_BAY_SKETCH['total_m']} m. "
+                f"One segment gets ONE figure -- three copies of it existed and one of them disagreed")
+
+
+@needs_corpus
+def test_a_lidar_figure_is_published_in_metres_and_the_unit_comes_from_the_crs():
+    """A foot delivery read as metres is a 3.28x distance error and a 10.76x density error.
+
+    Not hypothetical and not old: figures published from monarch-bay and bay-view this round were out by
+    exactly 1/0.3048^2 in density because a scratch probe read ftUS tile coordinates as metres. The unit is
+    a property of the CRS and this asserts it is read from there -- the same rule geo.vertical_scale states
+    for Z, where guessing from the CRS NAME once inflated every slope by 3.28x.
+    """
+    from pyproj import CRS
+    import geo
+    # TWO GATES, AND THEY ARE DIFFERENT JOBS. `@needs_corpus` above skips a tree with no course data at
+    # all -- courses/ is gitignored, so a stranger who clones this repo has the engine and none of the
+    # data, and a test that FAILS there makes our red indistinguishable from theirs. This second gate is
+    # narrower and is not covered by the first: laz/ is the one thing that can be re-downloaded, so a tree
+    # can legitimately hold courses with no point cloud, and then there is no unit to read from any CRS.
+    # The anti-vacuous floor at the bottom is the third job again -- it stops this passing by checking
+    # nothing on a tree that DOES have tiles.
+    have = [slug for slug in sorted(LIDAR_HORIZONTAL_UNIT)
+            if glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz"))]
+    if not have:
+        pytest.skip("no course named in LIDAR_HORIZONTAL_UNIT has LiDAR tiles here; laz/ is gitignored "
+                    "and re-downloadable, so its absence is an environment, not a defect")
+    checked = 0
+    for slug in have:
+        want = LIDAR_HORIZONTAL_UNIT[slug]
+        tiles = sorted(glob.glob(os.path.join(ROOT, "courses", slug, "laz", "*.laz")))
+        import laspy
+        src = None
+        for t in tiles:
+            with laspy.open(t) as f:
+                src = f.header.parse_crs()
+                if src:
+                    break
+        assert src is not None, f"{slug}'s tiles carry no CRS; nothing may be published from them"
+        crs = src if hasattr(src, "axis_info") else CRS.from_user_input(src)
+        got = crs.axis_info[0].unit_conversion_factor
+        assert abs(got - want) < 1e-9, (
+            f"{slug}'s tiles are {crs.name!r}, whose horizontal axis converts to metres by {got}, "
+            f"recorded as {want}. Every distance, area and density published from this course has to be "
+            f"multiplied through that factor -- re-check any figure quoting it")
+        # Z must agree with the project's one answer, and for these deliveries that is the same factor.
+        assert abs(geo.vertical_scale(src) - want) < 1e-9, (
+            f"{slug}: geo.vertical_scale says {geo.vertical_scale(src)} where the horizontal axis says "
+            f"{got}. A LAS file's Z shares the horizontal unit unless the CRS is compound and says "
+            f"otherwise; a disagreement here means one of the two is being guessed")
+        checked += 1
+    assert checked == len(have), (
+        f"{checked} of the {len(have)} course(s) with tiles here were actually checked -- a course was "
+        f"skipped inside the loop, so this proves less than it claims")
+    # The specific error, stated as an arithmetic fact so the message is self-explaining.
+    assert abs(1.0 / 0.3048006096 ** 2 - 10.7638673) < 1e-4
+
+
+# Containment of every synthetic NHD flowline in its course's mapped water, as render_hole's OWN
+# frac_len_inside_rings measures it on geo.mlat/mlon. Published once as 0.948/0.912 off a crude spherical
+# earth (a flat 111132 m/deg and 111320*cos), which is the second copy of the ground scale geo.py exists to
+# prevent -- the same mistake that published 39.5 m for a 39.4333 m distance. The tightest value is the
+# load-bearing one: it is what stands between this rule and the 0.90 bar.
+# KEYED BY COURSE, so a tree holding some of the corpus grades what it has instead of failing for what it
+# has not. The figures are per-way; the course is what decides whether they are reachable at all. This is
+# the same rule as the derived floors at the top of this file: never pin a test to this machine's twelve.
+SYNTHETIC_CONTAINMENT = {
+    "copper-valley-golf-club": {83565232: 0.9528, 83566408: 1.0, 83567182: 1.0, 83567781: 1.0,
+                                83574845: 1.0, 83583927: 0.9140},
+    "micke-grove-golf-links": {83153363: 0.0},
+    "the-reserve-at-spanos-park": {83153285: 1.0, 83154430: 1.0, 83154748: 1.0, 83158129: 1.0,
+                                   83158847: 1.0, 83164289: 1.0, 83164563: 1.0, 1040957802: 0.0},
+}
+SYNTHETIC_CONTAINMENT_TIGHTEST = 0.9140
+
+
+@needs_corpus
+def test_the_containment_that_licenses_the_flowline_rule_is_measured_on_the_projects_own_earth():
+    """The margin between the tightest contained flowline and the 0.90 bar, from the engine's own measure.
+
+    Uses render_hole.frac_len_inside_rings itself -- a second copy of an arc-length containment measure is
+    the drift this whole round has been correcting -- and geo.mlat/mlon for the projection, which is what
+    the engine's own `em` is built from. Containment is a ratio of lengths along one line, so the choice of
+    projection ORIGIN cannot move it; the SCALE can, which is exactly how 0.948 and 0.912 were published
+    for 0.9528 and 0.9140.
+    """
+    present = [s for s in sorted(SYNTHETIC_CONTAINMENT) if s in CORPUS]
+    if not present:
+        pytest.skip("none of the courses carrying a synthetic NHD flowline is built here")
+    want_all = {w: v for s in present for w, v in SYNTHETIC_CONTAINMENT[s].items()}
+    seen = {}
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+        syn = [e for e in els if rh.is_synthetic_flowline(e) and e.get("geometry")]
+        if not syn:
+            continue
+        rings_src = [e for e in els if e.get("geometry") and len(e["geometry"]) > 2
+                     and ((e.get("tags") or {}).get("natural") == "water"
+                          or (e.get("tags") or {}).get("water"))]
+        la0 = syn[0]["geometry"][0]["lat"]
+        lo0 = syn[0]["geometry"][0]["lon"]
+        ml, mo = _mlat(la0), _mlon(la0)
+
+        def em(q):
+            return ((q["lon"] - lo0) * mo, (q["lat"] - la0) * ml)
+        rings = [[em(q) for q in r["geometry"]] for r in rings_src]
+        for e in syn:
+            seen[e["id"]] = rh.frac_len_inside_rings([em(q) for q in e["geometry"]], rings)
+    assert seen, "no synthetic NHD flowline found in the corpus, so this rule has nothing to stand on"
+    assert set(seen) == set(want_all), (
+        f"the synthetic flowlines in the built courses {present} are {sorted(seen)}; the record holds "
+        f"{sorted(want_all)}. Re-measure rather than adjusting the record")
+    for wid, want in sorted(want_all.items()):
+        assert abs(seen[wid] - want) < 5e-4, (
+            f"way {wid}'s containment measures {seen[wid]:.4f}, recorded as {want}. Publish the engine's "
+            f"own figure on geo.mlat/mlon -- a crude spherical earth published 0.948 for 0.9528 once")
+    contained = sorted(v for v in seen.values() if v >= rh.PENALTY_CONTAINMENT_MIN)
+    want_contained = sum(1 for v in want_all.values() if v >= rh.PENALTY_CONTAINMENT_MIN)
+    assert len(contained) == want_contained, (
+        f"{len(contained)} of {len(seen)} flowlines are contained; the record for {present} says "
+        f"{want_contained}")
+    assert abs(min(contained) - SYNTHETIC_CONTAINMENT_TIGHTEST) < 5e-4, (
+        f"the tightest contained flowline measures {min(contained):.4f}, recorded as "
+        f"{SYNTHETIC_CONTAINMENT_TIGHTEST}")
+    assert min(contained) > rh.PENALTY_CONTAINMENT_MIN, (
+        f"the tightest contained flowline is {min(contained):.4f}, at or below the "
+        f"{rh.PENALTY_CONTAINMENT_MIN} bar -- the rule's margin is gone and the two uncontained ones "
+        f"(which must keep their blue) are no longer separated from it by a clear gap")
+    uncontained = sorted(v for v in seen.values() if v < rh.PENALTY_CONTAINMENT_MIN)
+    want_unc = sorted(v for v in want_all.values() if v < rh.PENALTY_CONTAINMENT_MIN)
+    assert uncontained == want_unc, (
+        f"the uncontained flowlines measure {uncontained}, not {want_unc}. The rule rests on there being "
+        f"NOTHING near the bar; a value between 0 and 0.90 is a new case to measure, not a value to record")
+
+
+@needs_corpus
+def test_no_card_omits_a_watercourse_the_played_line_reaches():
+    """The line-water sibling of test_area_water_the_played_line_reaches_is_never_printed_as_no_water.
+
+    THE HOLE THIS CLOSES, and it was a demonstrated omitted hazard. Every water check in the suite
+    compared COURSE-LEVEL TOTALS against the preserved books, so any loss and gain within one course and
+    one drawn class cancelled. Patching the engine so genuine `waterway=stream` way 83563564 lost its blue
+    on copper-valley card 3, offset by one extra polyline on copper-valley card 1, left the total at 9, the
+    removal record's (10, 9) still matching, MUTED still passing and RESTORED still returning 10 -- and all
+    24 water-related tests passed. A real creek's ink was gone from a shipped card and nothing saw it.
+
+    A delta against a baseline can never close that, at any granularity, because the baseline is a count.
+    So this is the POSITIVE INVARIANT instead: for every card, every visible watercourse the played line
+    reaches must be among the features that card inked. Stated per card and BY IDENTITY, so neither an
+    offsetting gain on another card, nor a swap within one card, nor a swap for an unreachable feature of
+    the same class can satisfy it.
+
+    REACHABILITY IS MEASURED HERE, NOT ASKED OF THE ENGINE, exactly as the area sibling does it: the hole
+    line comes from geo.hole_lines and the distance from `_dist_to_played_line`, which is a VERTEX witness
+    and so can only OVER-state how far a feature is. That direction is what makes it safe -- it can lose
+    this test power, never manufacture a failure. The engine's own reach test walks SEGMENTS, so the set it
+    selects is a superset of the set demanded here.
+
+    THE TWO NAMED REFUSALS ARE SUBTRACTED, because they are the two reasons a reachable watercourse may
+    legitimately carry no blue, and both are recorded rules rather than accidents: a channel 0.90+ contained
+    in a non-water `golf=penalty_area` is that area's drainage path and takes its ink, and a synthetic NHD
+    flowline 0.90+ contained in mapped water is redundant with the water it threads. Both are measured with
+    render_hole.frac_len_inside_rings -- the engine's own function, not a copy.
+    """
+    import geo
+    omitted, holes, reachable, errors = [], 0, 0, []
+    for slug in CORPUS:
+        cfg, rh = _engine(slug)
+        try:
+            course, geom = rh.load()
+            loc = cfg.COURSE.get("location") or {}
+            lines = geo.hole_lines(geom, loc.get("lat"), loc.get("lon"))
+        except (Exception, SystemExit) as e:
+            errors.append((slug, repr(e)[:100]))
+            continue
+        streams = [g for g in course if rh.is_visible_watercourse(g) and (g.get("geometry") or [])]
+        pa_src = [g for g in course if rh.is_land_penalty_area(g) and (g.get("geometry") or [])]
+        wr_src = [g for g in course if (g.get("geometry") or []) and len(g["geometry"]) > 2
+                  and ((g.get("tags") or {}).get("natural") == "water"
+                       or (g.get("tags") or {}).get("water"))]
+        for hn in cfg.HOLE_NUMS:
+            hole = lines.get(hn)
+            if hole is None:
+                errors.append((slug, hn, "geo.hole_lines has no line for this hole"))
+                continue
+            line = hole["geometry"]
+            try:
+                svg, info = rh.render_hole(hn, cfg.HOLES)
+            except Exception as e:
+                errors.append((slug, hn, repr(e)[:100]))
+                continue
+            holes += 1
+            la0 = sum(q["lat"] for q in line) / len(line)
+            lo0 = sum(q["lon"] for q in line) / len(line)
+            mo, ml = _mlon(la0), _mlat(la0)
+
+            def em(la, lo, _mo=mo, _ml=ml, _la0=la0, _lo0=lo0):
+                return ((lo - _lo0) * _mo, (la - _la0) * _ml)
+            line_em = [em(q["lat"], q["lon"]) for q in line]
+            pa_rings = [[em(q["lat"], q["lon"]) for q in g["geometry"]] for g in pa_src]
+            wr_rings = [[em(q["lat"], q["lon"]) for q in g["geometry"]] for g in wr_src]
+            want = []
+            for g in streams:
+                d = min(_dist_to_played_line(em(p["lat"], p["lon"]), line_em) for p in g["geometry"])
+                if d >= WATER_CORRIDOR_M:
+                    continue
+                pts = [em(p["lat"], p["lon"]) for p in g["geometry"]]
+                if rh.frac_len_inside_rings(pts, pa_rings) >= rh.PENALTY_CONTAINMENT_MIN:
+                    continue                      # that penalty area's drainage path -- its ink, its mark
+                if (rh.is_synthetic_flowline(g)
+                        and rh.frac_len_inside_rings(pts, wr_rings) >= rh.PENALTY_CONTAINMENT_MIN):
+                    continue                      # a synthetic flowline over the water it threads
+                want.append((g["id"], round(d, 2)))
+            reachable += len(want)
+            # EITHER INK SATISFIES RULE 2, and that is the whole content of this change. A visible
+            # watercourse the line reaches must be DRAWN; whether it is drawn as water or as a channel
+            # that runs dry is a question about DESCRIPTION, and it is graded by
+            # test_one_ink_means_one_thing_in_the_legend_and_only_open_water_is_drawn_in_the_blue.
+            # `intermittent=yes` channels now take the not-water grey (render_hole.runs_dry_in_season):
+            # 13 ways on bay-view, copper-valley and micke-grove over 29 way/hole appearances, and every
+            # one of them is still on the paper. Grading only `creek_ids` here would report all 29 as
+            # omitted hazards, which is false -- they are drawn -- and would push the next reader towards
+            # putting a dry ditch back in the pond blue to make a test go green.
+            inked = set(info["creek_ids"]) | set(info["dry_channel_ids"])
+            blue = svg.count('stroke="#5b9bd0" stroke-width="1.8"')
+            grey = svg.count('stroke="%s" stroke-width="1.8"' % rh.PENALTY_EDGE)
+            missing = [w for w in want if w[0] not in inked]
+            if missing:
+                omitted.append((slug, hn, sorted(missing, key=lambda r: r[1]),
+                                info["watercourses"], info["dry_channels"], blue, grey))
+            # ...and every id the card claims to have inked must actually have a polyline on it, per class,
+            # so a channel counted in one class and drawn in the other cannot pass by a total.
+            elif blue < len(info["creek_ids"]) or grey < len(info["dry_channel_ids"]):
+                omitted.append((slug, hn, "counted channels without ink",
+                                info["watercourses"], info["dry_channels"], blue, grey))
+    assert not errors, f"{len(errors)} failure(s) gathering the corpus: {errors[:5]}"
+    assert holes == expected_geometry_holes(), \
+        f"examined {holes} holes but {expected_geometry_holes()} are present -- holes were skipped"
+    assert reachable >= 20, (
+        f"only {reachable} watercourse/hole pairs come within {WATER_CORRIDOR_M:g} m of a played line in "
+        f"the whole corpus -- the witness found nothing to check, so this test proves nothing")
+    assert not omitted, (
+        f"{len(omitted)} card(s) omit a watercourse the played line reaches -- (course, hole, [(way, "
+        f"metres from the played line)], counted watercourses, counted dry channels, blue polylines, "
+        f"grey polylines): {omitted[:6]}{' ...' if len(omitted) > 6 else ''}. A ball in a creek the card "
+        f"does not draw is the omission rule 2 forbids. Drawn in the not-water grey COUNTS as drawn -- "
+        f"the class is still marked and still in the legend. If one of these is refused for a REASON, the "
+        f"reason has to be a named rule this test subtracts -- penalty-area containment or a synthetic "
+        f"NHD flowline over mapped water -- not a count that happens to balance somewhere else")
+
+
+def test_a_stale_book_cannot_launder_ink_that_went_missing_after_the_engine_drew_it():
+    """The book-side rules, graded on water_ink_book_findings directly.
+
+    THE HOLE THIS CLOSES. BOOK_PREDATES_THE_ENGINE accepted ("copper-valley", "water polygon"): (24, 25) --
+    the built book MISSING one fill relative to the engine -- and passed. That is the omitted-hazard
+    direction: a real ink loss between render_hole and the written file, laundered as "the book predates the
+    engine". Graded here rather than through the artifacts, because making it fail through them would mean
+    editing a built book or the preserved evidence, and both are read-only records.
+
+    `bk > eng` was proposed as the one-line fix and is NOT sound -- see water_ink_book_findings. A stale book
+    can honestly hold FEWER marks than the engine when the engine has GAINED since the build. The rules that
+    hold are that the book may not be short of the PRESERVED book without a recorded chain that lands on the
+    figure it holds, and that an allowance claiming the book is short of the engine needs the engine to have
+    gained against the baseline.
+
+    THE SECOND HALF grades the RECLASSIFICATION link of that chain, which the book side did not walk until
+    the corpus was rebuilt and three courses fell below the 2026-08-03 baseline on a blue class whose every
+    mark is still on the same cards in the grey. The credit is not free: a move counts on this axis only
+    where the built book HOLDS THE ARRIVALS, because "the engine re-inks it" is the other axis's answer and
+    this one is asking whether the file kept it.
+    """
+    def kinds(**kw):
+        args = dict(before=10, now=10, built=10, has_removal=False, removal_now=None, allowance=None,
+                    moves=())
+        args.update(kw)
+        return [k for k, *_ in water_ink_book_findings(**args)]
+
+    # THE VERIFIER'S CASE, exactly: book short of the engine, declared as stale, engine not gained. BOTH
+    # rules catch it, which is the right answer -- it is a deficit against the baseline AND an allowance
+    # pointing the wrong way -- so the assertion is that both fire, not that one does.
+    got = kinds(before=25, now=25, built=24, allowance=(24, 25))
+    assert set(got) == {"BOOK_LOST_INK", "ALLOWANCE_DIRECTION"}, (
+        f"a built book missing a mark the engine draws, declared as 'the book predates the engine', gives "
+        f"{got}. That is ink lost between the renderer and the file and it must be refused")
+    # The DIRECTION rule on its own: the book is short of the engine and the engine has NOT gained against
+    # the baseline, so staleness cannot be the explanation -- even where the baseline itself is that low.
+    assert kinds(before=24, now=25, built=24, allowance=(24, 25)) == [], (
+        "a book short of the engine where the engine HAS gained against the baseline is refused; that is "
+        "the honest stale-book case")
+    assert kinds(before=25, now=25, built=25, allowance=(25, 25)) == ["ALLOWANCE_SETTLED"]
+
+    # TODAY'S TWO REAL ENTRIES must both pass.
+    assert kinds(before=10, now=9, built=10, has_removal=True, removal_now=9,
+                 allowance=(10, 9)) == [], "copper-valley's real stale-book entry is refused"
+    assert kinds(before=2, now=4, built=5, allowance=(5, 4)) == [], \
+        "merion's real stale-book entry is refused"
+    # AFTER THE REBUILD both must settle, and the record must then be demanded gone.
+    assert kinds(before=10, now=9, built=9, has_removal=True, removal_now=9,
+                 allowance=(10, 9)) == ["ALLOWANCE_SETTLED"], \
+        "a rebuilt book that now agrees with the engine does not demand its allowance be dropped"
+    assert kinds(before=10, now=9, built=9, has_removal=True, removal_now=9) == [], \
+        "a rebuilt copper-valley with its allowance dropped and its removal recorded is refused"
+    assert kinds(before=2, now=4, built=4, allowance=(4, 4)) == ["ALLOWANCE_SETTLED"], \
+        "an allowance left behind after the book and engine agree is not reported as settled"
+
+    # A STALE BOOK SHORT OF THE ENGINE IS LEGITIMATE WHEN THE ENGINE HAS GAINED -- callippe's shape, a book
+    # written before the wetland fix. This is why `bk > eng` would have been the wrong rule.
+    assert kinds(before=2, now=31, built=2, allowance=(2, 31)) == [], (
+        "a book written before a deliberate GAIN is refused for holding less than the engine. That is the "
+        "honest stale-book case in the other direction, and the reason `bk > eng` is not the invariant")
+    # An undeclared divergence in either direction is still a finding.
+    assert kinds(before=10, now=9, built=10) == ["UNDECLARED_GAP"]
+    assert kinds(before=10, now=11, built=10) == ["UNDECLARED_GAP"]
+    # And a loss the removal record DOES account for is allowed, in the one shape that means.
+    assert kinds(before=10, now=9, built=9, has_removal=True, removal_now=9) == []
+    assert kinds(before=10, now=9, built=8, has_removal=True, removal_now=9) == \
+        ["BOOK_LOST_INK", "UNDECLARED_GAP"], "a book below even the recorded removal figure is accepted"
+
+    # THE RECLASSIFICATION LINK OF THE CHAIN. Three courses came out of the rebuild below the 2026-08-03
+    # baseline on the blue polyline they no longer draw, with every one of those marks on the same cards in
+    # the not-water grey. The engine side walked removal-then-move already; this side walked the removal only,
+    # and so read a conservation-preserving move as a hazard leaving the paper.
+    #
+    # bay-view's real shape: 16 blue appearances, all 16 moved, and the built book holds 16 grey where the
+    # preserved book held none.
+    assert kinds(before=16, now=0, built=0, moves=((16, 0, 16),)) == [], (
+        "a class whose whole count MOVED to another ink, with the arrivals in the built book, is read as a "
+        "book-side loss -- that is the finding the rebuild produced on three courses where nothing left the "
+        "paper, and the reason this axis needed the engine side's chain")
+    # copper-valley's: the removal FIRST, then the move, and only the figures the chain lands on are accepted.
+    assert kinds(before=10, now=0, built=0, has_removal=True, removal_now=9, moves=((9, 0, 9),)) == [], \
+        "the removal-then-move chain does not clear copper-valley, whose blue went 10 -> 9 -> 0"
+    assert kinds(before=10, now=0, built=9, has_removal=True, removal_now=9,
+                 moves=((9, 0, 9),)) == ["UNDECLARED_GAP"], (
+        "a book sitting at the REMOVAL's figure with the move not yet built is behind the engine, which is "
+        "the finding; it is not a mark lost off the paper")
+    assert kinds(before=10, now=0, built=5, has_removal=True, removal_now=9,
+                 moves=((9, 0, 9),)) == ["BOOK_LOST_INK", "UNDECLARED_GAP"], (
+        "a figure NO link of the chain lands on is accepted. The chain has to ATTRIBUTE the count the book "
+        "holds, not merely bound how far it may fall")
+
+    # WHAT AN UNCONDITIONAL CREDIT WOULD LAUNDER, and the bar that refuses it. A build that dropped bay-view's
+    # 16 channels outright -- neither ink written -- leaves the from-class at exactly the figure the chain
+    # predicts. A move is only a move if the file holds the marks in the ink they moved to.
+    assert kinds(before=16, now=0, built=0, moves=((16, 0, 0),)) == ["BOOK_MOVED_INK_MISSING"], (
+        "a built book holding NEITHER the blue nor the grey is credited to the reclassification -- a whole "
+        "class off the paper, waved through by the record that says it was re-inked")
+    # ...and the netting shape ACROSS the two classes: the arrivals are there, five of the to-class's own
+    # preserved marks are not, and measured against its own baseline the to-class shows no deficit at all.
+    assert kinds(before=16, now=0, built=0, moves=((16, 5, 16),)) == ["BOOK_MOVED_INK_MISSING"], (
+        "a to-class holding the 16 arrivals while 5 of its own preserved marks went missing passes; the "
+        "arriving gain is netting out a loss on the other side of the same move")
+    assert kinds(before=16, now=0, built=0, moves=((16, 5, 21),)) == [], (
+        "the honest case is refused -- the to-class holds its own preserved 5 AND the 16 that moved in")
+    # A MOVE MIS-STATED IN EITHER DIRECTION fails, so this cannot become a licence to be short by about that
+    # much. The engine-side chain rejects the same two mis-statements, which is why it is mirrored.
+    assert kinds(before=16, now=0, built=0, moves=((20, 0, 20),)) == ["BOOK_LOST_INK"], \
+        "a move recorded LARGER than the deficit it explains is accepted"
+    assert kinds(before=16, now=0, built=0, moves=((12, 0, 12),)) == ["BOOK_LOST_INK"], \
+        "a move recorded SMALLER than the deficit it explains is accepted"
+    # NO RECORD AT ALL is the case the rule exists for, and a to-class that merely happens to have gained
+    # cannot supply the missing record.
+    assert kinds(before=16, now=0, built=0) == ["BOOK_LOST_INK"], \
+        "a class that fell to zero against the preserved book with nothing recorded is accepted"
+    # A BOOK WRITTEN BEFORE THE MOVE still holds the blue, so the arrivals are legitimately absent from it.
+    # The landing bar conditions a CREDIT and must not turn into a finding against a book not asking for one.
+    assert kinds(before=16, now=0, built=16, moves=((16, 0, 0),)) == ["UNDECLARED_GAP"], (
+        "a book that predates the move is reported as having lost the arrivals; the landing check only "
+        "gates the credit for a deficit, and this book has no deficit")
+
+
+# `intermittent=yes` is DELIBERATELY not a reason to refuse a watercourse -- the channel is still DRAWN --
+# but it IS the reason it is drawn in the not-water grey instead of the water blue, and it leaves the
+# footer's W. See render_hole.runs_dry_in_season, which owns the class and the argument. The figures that
+# note quotes are graded here, because they were once published as "34 of the 43 ways carrying that tag in
+# this corpus are drawn today, on 5 of the 12 courses", which conflated the courses that CARRY the tag with
+# the courses that DRAW one.
+# PER COURSE -- (ways carrying the tag, ways DRAWN, way/hole appearances) -- so a tree holding part of the
+# corpus grades what it has. The note in render_hole quotes the corpus-wide sums, and those are derived
+# from this table below rather than typed a second time.
+#
+# "DRAWN" IS MEASURED ACROSS BOTH INKS, and it has to be: the whole point of the reclassification is that
+# these ways keep their mark, so a drawn-set read only from `creek_ids` would have measured 0 for all three
+# courses and reported the class as having left the paper. It has not. The figures below are unchanged by
+# the reclassification, which is the evidence that nothing was omitted -- only re-described.
+INTERMITTENT = {
+    "bay-view-golf-club": (13, 7, 16),
+    "callippe-preserve-golf-course": (7, 0, 0),
+    "copper-valley-golf-club": (18, 5, 9),
+    "micke-grove-golf-links": (4, 1, 4),
+    "the-reserve-at-spanos-park": (1, 0, 0),
+}
+
+
+@needs_corpus
+def test_the_intermittent_figures_the_wetland_prose_quotes_are_the_measured_ones():
+    """Four numbers in one sentence, each read off the corpus rather than remembered."""
+    present = [s for s in sorted(INTERMITTENT) if s in CORPUS]
+    if not present:
+        pytest.skip("no course carrying `intermittent=yes` is built here")
+    got, any_drawn = {}, False
+    for slug in present:
+        cfg, rh = _engine(slug)
+        els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+        ids = {e["id"] for e in els if (e.get("tags") or {}).get("intermittent") == "yes"}
+        drawn, appearances = set(), 0
+        for hn in cfg.HOLE_NUMS:
+            _svg, info = rh.render_hole(hn, cfg.HOLES)
+            hit = ids & (set(info["creek_ids"]) | set(info["water_ids"])
+                         | set(info["dry_channel_ids"]) | set(info["wetland_ids"]))
+            drawn |= hit
+            appearances += len(hit)
+        got[slug] = (len(ids), len(drawn), appearances)
+        any_drawn = any_drawn or bool(drawn)
+    want = {s: INTERMITTENT[s] for s in present}
+    assert got == want, (
+        f"the per-course intermittent figures measure {got}, recorded as {want}. Re-measure the sentence "
+        f"in render_hole.runs_dry_in_season rather than the record -- and keep the quantities distinct: ways "
+        f"that CARRY the tag, ways DRAWN, and way/hole APPEARANCES are three different numbers, and the "
+        f"published sentence once conflated the courses that carry the tag with the courses that draw one")
+    assert any_drawn, (
+        "no intermittent watercourse is drawn anywhere, so the claim that this class keeps its mark is "
+        "vacuous -- and that claim is what makes the move off the blue a re-description rather than an "
+        "omission")
+    # ...and the corpus-wide sums the prose quotes are DERIVED from the same table, never typed twice.
+    if set(present) == set(INTERMITTENT):
+        carried = sum(v[0] for v in got.values())
+        drawn_courses = sum(1 for v in got.values() if v[1])
+        drawn_ways = sum(v[1] for v in got.values())
+        appearances = sum(v[2] for v in got.values())
+        src = open(os.path.join(ROOT, "render_hole.py"), encoding="utf-8").read()
+        flowed = " ".join(src.split())
+        claim = (f"{carried} ways carry that tag, on {len(present)} of the 12 courses, and {drawn_ways} of "
+                 f"them are DRAWN today on {drawn_courses} courses")
+        assert claim in flowed, (
+            f"render_hole.runs_dry_in_season no longer contains the measured sentence {claim!r}; the "
+            f"per-course table here sums to it")
+        assert f"{appearances} way/hole appearances" in flowed, (
+            f"render_hole.runs_dry_in_season no longer records {appearances} way/hole appearances")
+
+
+# The two bay-view ways proposed for removal as "lines of blue over flat ground", and the measurement that
+# refused the proposal. DETRENDED incision: fit a plane to the bank ground returns and measure how far the
+# bed sits BELOW it. A bed-vs-bank ANNULUS must not be used -- a transect across either way falls 5-6 m over
+# 80 m, so an annulus averages the up-slope and down-slope sides and reads ~0 whatever the channel does.
+# Controls from the SAME chain that nobody proposes removing are in the table, and they are what settle it.
+BAY_VIEW_DETRENDED_INCISION_M = {
+    50256874: 0.509,     # proposed for removal -- 8 stations, min +0.090
+    50256875: 0.863,     # proposed for removal -- 2 stations, min +0.709
+    50256873: 2.389,     # control, kept -- 12 stations, min +1.018
+    50256813: 0.955,     # control, kept -- 18 stations, min +0.491
+}
+BAY_VIEW_PROPOSED_FOR_REMOVAL = (50256874, 50256875)
+
+
+@needs_corpus
+@pytest.mark.slow
+def test_the_two_bay_view_channels_proposed_for_removal_are_depressions_and_keep_their_ink():
+    """A refusal to refuse, with the measurement that justifies it, so it cannot be re-proposed blind.
+
+    Both ways were reported as having median incision -0.10 m and -0.11 m -- no channel, flat ground -- and
+    proposed for removal from the map. Measured here from class-2 GROUND returns, in true metres (bay-view's
+    tiles are ftUS on all three axes), with the bank surface FITTED and the bed's residual taken below it:
+    both are depressions, at every scale, and way 50256875's 0.94 m is indistinguishable from control way
+    50256813's 1.00 m -- a feature that stays. No measurement separates the proposed pair from a kept one.
+
+    Removing them would take hazard ink off bay-view 14 and 15, so the ink stays: rule 2's direction is
+    over-warn, and it is not close.
+    """
+    import laspy
+    from pyproj import CRS, Transformer
+    import geo
+    if "bay-view-golf-club" not in CORPUS:
+        pytest.skip("bay-view not built")
+    cfg, rh = _engine("bay-view-golf-club")
+    tiles = sorted(glob.glob(os.path.join(cfg.COURSE_DIR, "laz", "*.laz")))
+    if not tiles:
+        pytest.skip("bay-view has no LiDAR tiles here")
+    src = None
+    for t in tiles:
+        with laspy.open(t) as f:
+            src = f.header.parse_crs()
+            if src:
+                break
+    crs = src if hasattr(src, "axis_info") else CRS.from_user_input(src)
+    hf = crs.axis_info[0].unit_conversion_factor
+    vf = geo.vertical_scale(src)
+    assert abs(hf - 0.3048006096) < 1e-9 and abs(vf - hf) < 1e-9, (
+        f"bay-view's tiles are {crs.name!r} with factors h={hf} v={vf}; every figure below is in metres "
+        f"and depends on that conversion")
+    fwd = Transformer.from_crs("EPSG:4326", src, always_xy=True)
+    hdrs = []
+    for t in tiles:
+        with laspy.open(t) as f:
+            hdrs.append((t, f.header.mins[:2], f.header.maxs[:2]))
+    cache, HALF, BED = {}, 30.0 / hf, 5.0 / hf
+    els = json.load(open(os.path.join(cfg.COURSE_DIR, "osm_course.json")))["elements"]
+    byid = {e["id"]: e for e in els}
+    import numpy as np
+    measured = {}
+    for wid, want in sorted(BAY_VIEW_DETRENDED_INCISION_M.items()):
+        g = byid[wid]["geometry"]
+        la0 = sum(q["lat"] for q in g) / len(g)
+        ml, mo = _mlat(la0), _mlon(la0)
+        st = [(g[0]["lat"], g[0]["lon"])]
+        for i in range(len(g) - 1):
+            seg = math.hypot((g[i+1]["lon"] - g[i]["lon"]) * mo, (g[i+1]["lat"] - g[i]["lat"]) * ml)
+            for k in range(1, max(1, int(seg / 20.0)) + 1):
+                t = k / max(1, int(seg / 20.0))
+                st.append((g[i]["lat"] + (g[i+1]["lat"] - g[i]["lat"]) * t,
+                           g[i]["lon"] + (g[i+1]["lon"] - g[i]["lon"]) * t))
+        res = []
+        for la, lo in st:
+            cx, cy = fwd.transform(lo, la)
+            got = []
+            for tp, mn, mx in hdrs:
+                if mx[0] < cx - HALF or mn[0] > cx + HALF or mx[1] < cy - HALF or mn[1] > cy + HALF:
+                    continue
+                if tp not in cache:
+                    las = laspy.read(tp)
+                    cache[tp] = (np.asarray(las.x), np.asarray(las.y), np.asarray(las.z),
+                                 np.asarray(las.classification))
+                px, py, pz, cl = cache[tp]
+                m = ((px >= cx - HALF) & (px <= cx + HALF) & (py >= cy - HALF) & (py <= cy + HALF)
+                     & (cl == 2))
+                if m.any():
+                    got.append((px[m], py[m], pz[m]))
+            if not got:
+                continue
+            px, py, pz = (np.concatenate([o[i] for o in got]) for i in range(3))
+            d2 = (px - cx) ** 2 + (py - cy) ** 2
+            bed, fit = d2 <= BED * BED, (d2 > BED * BED) & (d2 <= HALF * HALF)
+            if bed.sum() < 20 or fit.sum() < 50:
+                continue
+            X = np.column_stack([(px[fit] - cx) * hf, (py[fit] - cy) * hf, np.ones(int(fit.sum()))])
+            coef, *_ = np.linalg.lstsq(X, pz[fit] * vf, rcond=None)
+            res.append(float(coef[2]) - float(np.median(pz[bed]) * vf))
+        assert res, f"way {wid}: no station had enough class-2 ground to fit a surface"
+        measured[wid] = float(np.median(res))
+        assert abs(measured[wid] - want) < 0.06, (
+            f"way {wid}'s detrended incision measures {measured[wid]:+.2f} m, recorded as {want:+.2f}. "
+            f"Re-measure the note in render_hole beside `creeks` rather than the record")
+    for wid in BAY_VIEW_PROPOSED_FOR_REMOVAL:
+        assert measured[wid] > 0.0, (
+            f"way {wid} is no longer a depression ({measured[wid]:+.2f} m below the fitted bank surface). "
+            f"That was the whole basis for keeping its ink; re-open the question rather than acting on "
+            f"either the old claim or this record")
+    kept = min(measured[w] for w in measured if w not in BAY_VIEW_PROPOSED_FOR_REMOVAL)
+    assert max(measured[w] for w in BAY_VIEW_PROPOSED_FOR_REMOVAL) >= kept - 0.10, (
+        f"the proposed pair now measure clearly shallower than the shallowest KEPT way of the same chain "
+        f"({measured}). The refusal rested on there being no measurement that separates them")

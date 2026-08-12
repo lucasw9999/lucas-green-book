@@ -122,8 +122,8 @@ NOT_WATER = ('dam', 'weir', 'lock_gate', 'sluice_gate', 'fish_pass')
 HIDDEN_LOCATION = ('underground', 'underwater')
 
 
-def watercourse_identity(feature):
-    """A key that is the same for every OSM way belonging to ONE physical watercourse.
+def water_identity(feature):
+    """A key that is the same for every OSM feature belonging to ONE physical water.
 
     "3W" beside "14B" is read as "there are three waters on this hole", and it was counting OSM WAYS.
     A creek is routinely split into several ways at every road crossing and tag change, so one stream
@@ -131,20 +131,64 @@ def watercourse_identity(feature):
     code 18040051001111 -- one reach -- and merion 13 printed 2W for two ways both named "Cobbs Creek".
     20 of 198 cards printed a bigger W than there is water.
 
-    The key is already in the data on 137 of the corpus's 179 waterways: the source hydrography's own
-    reach identifier, else the name. A way with neither is counted on its own, because nothing available
-    says it is the same water as its neighbour -- guessing from shared endpoints would merge a tributary
-    into the creek it joins.
+    WHAT THE FOOTER'S W COUNTS, decided here because it was being decided in two places: PHYSICAL WATERS,
+    not marks and not features. A reader is choosing what to carry, so the honest unit is "how many waters
+    are on this hole", and one creek drawn as four joined blue polylines is one of them. The map still inks
+    every feature -- that is rule 2, and no counted water may lack ink -- so the two numbers legitimately
+    differ and the card prints only the one a player uses. `waters` in render_hole() is that count; the
+    guide card's legend is what has to say which number it is, and generate.py owns that wording.
+
+    APPLIES TO AREAS AS WELL AS LINES, which it did not, and that is the multipolygon half. The line half
+    was deduplicated here while the area half counted `len(waters)` -- one per drawn polygon -- so a
+    waterbody mapped as a MULTIPOLYGON printed one W per outer ring. Measured: philadelphia relation
+    16617182 is the Schuylkill, flattened by fetch_osm._flatten_relations into FOUR unnamed outer rings
+    (ways -1661718201/-1661718202/-1661718203/-1661718204), and it would print `4W` for one river on any
+    hole it reached. It reaches none today -- 523 m at its nearest -- so this closes a latent wrong number
+    rather than correcting a shipped one, and no card's bytes move for it.
+
+    The key is already in the data. In rank order, coarsest-TRUE first, and the rank is the whole content
+    of this function -- each step down is a weaker claim about what "the same water" means:
+
+      _from_relation   THE SAME MAPPED WATERBODY. Stamped on every flattened ring by the flattener, so it
+                       is exact rather than inferred, and it outranks even a reach code: a reach code
+                       describes the source hydrography's LINEWORK, and two rings of one mapped waterbody
+                       are one waterbody whatever flowlines cross them.
+      nhd:reach_code   A REACH -- one number for one water however the ways are later split.
+                       copper-valley ways 83568581, 83579191 and 83582265 all read 18040051001111.
+      scvwd:ROUTEID    A ROUTE -- same property, and the corpus's clearest case. THIRTEEN bay-view ways
+                       read 490036. Nine pass is_visible_watercourse; the other four are refused by the
+                       PIPED rule (50256834, 50256835 and 50256879 `tunnel=yes`, 50256877
+                       `tunnel=culvert`). Seven of the nine reach a card -- 50256874, 50256875, 50256873,
+                       50256878, 50256813, 50256839, 50256841, 924.8 m of channel between them -- and the
+                       remaining two (50256837, 50256872) are visible but out of reach of every hole. One
+                       route id for all thirteen, whichever subset a given card draws.
+      name             What OSM calls it. Coarser than a reach and weaker, but a creek named once is one
+                       creek.
+      pasda:SEGID      A RIVER-MILE SEGMENT, and it used to sit with the reach codes. merion's two Cobbs
+                       Creek ways read `758_10.594_11.6195` and `758_6.5182_10.594` -- stream 758, miles
+                       10.594-11.6195 and 6.5182-10.594. The value CHANGES ALONG one creek by
+                       construction, so it cannot be that creek's identity. Above `name` it split a creek
+                       OSM names once into two, and merion 11 printed `3W` over TWO physical waters:
+                       Cobbs Creek (both those ways) and Trib 00765 To Cobbs Creek (way 225722014). Kept
+                       BELOW the name rather than dropped, because for an unnamed PASDA way it is still a
+                       better identity than that way's own OSM id.
+      id               The way itself. A feature with none of the above is counted on its own, because
+                       nothing available says it is the same water as its neighbour -- guessing from
+                       shared endpoints would merge a tributary into the creek it joins.
 
     Deduplicates the COUNT only. Every segment is still DRAWN: a golfer looking at the card should see
     all the blue that is there, and the honesty rule that matters is that no counted water lacks ink.
     """
+    if feature.get('_from_relation'):
+        return ('_from_relation', feature['_from_relation'])
     t = feature.get('tags') or {}
-    for k in ('nhd:reach_code', 'pasda:SEGID', 'scvwd:ROUTEID'):
+    for k in ('nhd:reach_code', 'scvwd:ROUTEID'):
         if t.get(k):
             return (k, t[k])
     if t.get('name'):
         return ('name', t['name'])
+    if t.get('pasda:SEGID'):
+        return ('pasda:SEGID', t['pasda:SEGID'])
     return ('id', feature.get('id'))
 
 
@@ -157,6 +201,129 @@ def is_visible_watercourse(feature):
     if t.get('tunnel') in PIPED or t.get('covered') in PIPED:
         return False
     return t.get('location') not in HIDDEN_LOCATION
+
+
+# NHD'S OWN FTYPE FOR A LINE IT INVENTED. The National Hydrography Dataset is a flow NETWORK, so it has to
+# stay connected where there is no channel to follow: `ArtificialPath` (FCode 55800) is the line it threads
+# through a lake, pond or wide river to carry flow across the open water, and `Connector` (33400) is the
+# line it draws across a gap in its own linework. Neither is a channel. Nobody standing on the hole can see
+# one, because what is there is the LAKE.
+#
+# Imported into OSM these arrive as `waterway=stream`, which is exactly what a creek is, so the `waterway`
+# key cannot tell them apart -- and the map drew a blue creek line straight across a lake it had already
+# filled in the same blue, then had the reach available to count as water.
+#
+# THREE SPELLINGS, because three imports are present in this corpus: `gnis:ftype`, `nhd:ftype` and
+# `NHD:FTYPE`. Keyed on the FType word rather than the FCode number so the test reads as the statement it
+# is, and both are recorded above for whoever checks it against USGS's published domain.
+#
+# At module scope beside PIPED / NOT_WATER / WETLAND_LAND_CLASS and for their reason: it is graded by truth
+# table rather than through a rendered card, and fetch_osm's census reads the same one predicate.
+SYNTHETIC_FTYPE = ('ArtificialPath', 'Connector')
+_FTYPE_KEYS = ('gnis:ftype', 'nhd:ftype', 'NHD:FTYPE')
+
+
+def is_synthetic_flowline(feature):
+    """True when this `waterway` is a line NHD invented to keep its network connected, not a channel.
+
+    SAYS ONLY WHAT IT IS, and deliberately does not say to drop it -- that is `runs_inside_drawn_water`'s
+    job one level up, and the split is the whole safety of this rule. Measured over the corpus: 14
+    ArtificialPaths and 1 Connector on three courses, and 13 of the 15 lie 0.914-1.000 of their own length
+    inside a mapped `natural=water` polygon on the same course. TWO DO NOT -- micke-grove 83153363
+    (ArtificialPath, 1627.5 m) and the-reserve 1040957802 (Connector, 24.8 m) both measure 0.000 against
+    every water polygon in their caches. A synthetic path whose waterbody nobody has mapped is the ONLY
+    mark that water has, so refusing it on the tag alone would be an omission, and rule 2 says over-warn.
+
+    THE TWO ARE NOT IN THE SAME POSITION, and saying "those two keep their blue" was wrong about one of
+    them. micke-grove 83153363 carries no tunnel tag, so `is_visible_watercourse` admits it and it would be
+    inked on any hole it reached; it reaches none today. the-reserve 1040957802 carries `tunnel=culvert`, so
+    the PIPED rule that predates this predicate already refuses it on BOTH engines -- it never had blue to
+    keep. It is still evidence for the rule, because it shows the FType alone cannot be the discriminator,
+    but it is not evidence that this rule preserves anything.
+
+    That is also why `is_visible_watercourse` above is untouched: it answers "can this be seen", and a
+    flowline over unmapped water stands in for water that can be.
+    """
+    t = feature.get('tags') or {}
+    if not t.get('waterway'):
+        return False
+    return any(t.get(k) in SYNTHETIC_FTYPE for k in _FTYPE_KEYS)
+
+
+# A FEATURE TAGGED AS WATER THAT IS NOT WATER, REFUSED ONE AT A TIME AND ONLY ON A MEASUREMENT.
+#
+# This is the shape of rule this project least wants -- a list, not a rule -- so the reason it is a list
+# is recorded before the list is. Every other refusal in this module is a predicate over tags, because a
+# predicate cannot go stale and a list can. Here no predicate exists:
+#
+#   * merion has THREE `natural=water NHD:FTYPE=LakePond` ways and their tags are structurally IDENTICAL:
+#     way 225722025, 118824332 and 118837675 each carry `NHD:FCode` 39004, `NHD:Elevation`
+#     0.00000000000, `NHD:Resolution` High, `NHD:FDate` 2001/08/17 and `source=NHD`, and differ only in
+#     their ComID / Permanent_ / ReachCode. Two of them are genuine ponds. Any tag test that removed the
+#     third would remove all three.
+#   * OSM does not map the building either. That cache holds 43 `building` ways and not one is within
+#     60 m of this ring, so there is no second OSM feature to key on.
+#
+# So the honest answer is a per-feature refusal that carries its measurement, and the measurement is the
+# project's own method: public-domain USGS 3DEP LiDAR, computed here (tiles USGS_LPC_PA_17County_D24_*).
+#
+# WHAT WAS MEASURED, for way 225722025. Open water absorbs the 1064 nm pulse, so a water surface returns
+# far fewer points than the ground around it. Return density INSIDE the 13-node ring (455.9 m^2 by
+# shoelace) against the density of a 45 m collar around it:
+#
+#     way 225722025  this ring                       13.77 / 15.58 pt/m^2  = 0.884
+#     way 285224863  hand-mapped lateral hazard        2.79 / 13.32        = 0.209
+#     way 118824332  genuine NHD LakePond              5.75 / 23.92        = 0.240
+#     way 118837675  genuine NHD LakePond              8.57 / 23.09        = 0.371
+#
+# The three genuine waters on the same course, flown on the same tiles, return a fifth to a third of
+# their surroundings. This ring returns essentially all of it -- there is no water surface in it.
+#
+# AND WHAT IS THERE INSTEAD. Of the 6277 returns inside, 4510 are class 2 (ground) confined to
+# 89.42-90.57 m, so dry mapped ground runs through the whole ring. The other 1743 stand more than 2 m
+# above that ground (median 89.61 m) in a rigid
+# 11.5 x 12.2 m footprint occupying 147 m^2 of the 456 m^2 ring, rising to 7.18 m with a single linear
+# ridge along its centre -- read off a 1.2 m height-above-ground raster. A water surface is flat and
+# 456 m^2 of it does not contain a 12 m pitched roof.
+#
+# "NO CLASS 9 (WATER) RETURNS" IS NOT PART OF THIS EVIDENCE, and an earlier version of this note offered
+# it as if it were. Measured: merion's delivery assigns NO class 9 anywhere -- an 805,499-point sample
+# across four of its tiles yields classes {1, 2, 7, 17, 18} only -- so the absence of a water class at
+# this ring says nothing that could have come out differently. A clause that cannot fail is worse than no
+# clause. The classification IS informative on the deliveries that use it (monarch-bay's carries class 9),
+# and this one does not, which is itself worth knowing about the method's limits: on merion the answer has
+# to come from return DENSITY and from the shape of what returned, and it does.
+#
+# THE RECORD EXPIRES WITH THE SHAPE IT DESCRIBES. The value is (node count when measured, the
+# measurement), and is_measured_not_water below matches on the node count: a ring somebody re-traces or
+# re-nodes has NOT been measured, so it goes back to being drawn and counted as water. That is the
+# over-warn direction, chosen deliberately -- the cost is a wrong number on one card, the alternative is
+# a refusal outliving its evidence and hiding a real pond. The loud half of that expiry is in
+# tests/test_phase1_regressions.py, which fails if the way is deleted, re-noded, or has its
+# `natural=water` tag fixed in OSM, and says to drop the entry rather than adjust it.
+MEASURED_NOT_WATER = {
+    225722025: (13,
+                "merion-golf-club. A small pitched-roof building on mown turf, inside a 13-node "
+                "`natural=water NHD:FTYPE=LakePond` ring of 455.9 m^2. Public-domain USGS 3DEP LiDAR, "
+                "computed here: the ring returns 13.77 pt/m^2 against 15.58 in a 45 m collar (0.884), "
+                "where merion's three genuine waters on the same tiles return 0.209, 0.240 and 0.371 of "
+                "theirs -- open water absorbs the pulse and this ring does not. 4510 of its 6277 returns "
+                "are class 2 ground at 89.42-90.57 m; the remaining 1743 stand "
+                "over 2 m above that ground in a rigid 11.5 x 12.2 m footprint covering 147 m^2 "
+                "and rising to 7.18 m with one linear ridge. Classification is NOT evidence here: "
+                "this delivery assigns no class 9 anywhere. The card printed a water hazard on hole 10 that "
+                "is a house."),
+}
+
+
+def is_measured_not_water(feature):
+    """True when this exact feature has been MEASURED not to be water, so no card may draw it as water.
+
+    Matches on the node count as well as the id, so the refusal cannot outlive the shape it was measured
+    on -- see MEASURED_NOT_WATER for why that direction is the safe one.
+    """
+    rec = MEASURED_NOT_WATER.get(feature.get('id'))
+    return bool(rec) and len(feature.get('geometry') or []) == rec[0]
 
 
 # A LAND-CLASSIFICATION DATASET'S OWN LABEL FOR THE SAME POLYGON, on a way that also carries
@@ -212,16 +379,47 @@ def is_drawn_wetland(feature):
 
     WHAT IT CANNOT DECIDE, said plainly. A mis-tagged SMALL wetland with no import provenance is
     indistinguishable from a real one and is drawn -- including merion way 675572836, a 151 m^2
-    `wetland=marsh` 2.48 m from a green and 9.6 m from hole 17's played line, which will take merion
-    14, 16 and 17 from 0W to 1W the next time that course is fetched. (It was offered as a second
+    `wetland=marsh` 2.48 m from a green and 10.22 m from hole 17's played length, which TOOK merion 14, 16
+    and 17 from 0W to 1W when that course was re-fetched. (It was offered as a second
     counter-example on the grounds that its centroid sits inside a green. The two polygons do not
     intersect: 0.0 m^2 of overlap, 2.48 m apart. What falls inside the green is the MEAN OF ITS
     VERTICES, which is not a property of the shape -- re-noding the ring moves it, which is exactly
     why frac_len_within replaced a vertex fraction on this same path.) Drawing a greenside wet hollow
-    a junior can reach is the side of that doubt this book takes, the same side it already takes for
-    `intermittent=yes`: PIPED, NOT_WATER and HIDDEN_LOCATION deliberately omit it, so a channel that
-    is dry in August still prints blue and counts W -- 34 of the 43 ways carrying that tag in this
-    corpus are drawn today, on 5 of the 12 courses.
+    a junior can reach is the side of that doubt this book takes -- DRAWN, always; the question of which
+    INK it is drawn in is a separate one and is answered by holds_open_water. The comparison that stood
+    here is withdrawn as false: it said this is "the same side it already takes for `intermittent=yes`:
+    PIPED, NOT_WATER and HIDDEN_LOCATION deliberately omit it, so a channel that is dry in August still
+    prints blue and counts W". A dry channel no longer prints blue and no longer counts W -- it is still
+    drawn, in the not-water grey, and the reversal is argued at runs_dry_in_season, which now owns that
+    class and the figures that were quoted here.
+
+    HOLE 15 IS NOT IN THAT LIST AND MUST NOT BE ADDED, and the trap is worth writing down because two
+    readings of this marsh have now fallen into it. The marsh is 34.57 m from hole 15's OSM centreline --
+    CLOSER than hole 14's 39.43 m, which IS in the list -- so the list looks wrong. It is not. Both halves
+    of the `waters` selector refuse hole 15, measured through the engine:
+
+      * the boundary-length FRACTION inside 45 m is 0.2469 against the 0.35 bar (hole 14's is 0.3582);
+      * the REACH half is clipped to the PLAYED length, and over that length the marsh is 265.91 m away,
+        because its nearest approach lies at arc 0.0 -- at the tee, behind the played line. A ball struck
+        from there travels away from it.
+
+    The two distances differ because `frac_in` measures against dist_pt_seg, which clamps per segment and
+    so keeps a 45 m half-disc behind the tee and past the green, while `any_within` does not -- the
+    asymmetry documented at the `waters` selector. Every figure in this paragraph is a corridor
+    measurement; the list above is about W TRANSITIONS, and 14, 16 and 17 is exactly what moved.
+
+    WHICH AXIS EACH FIGURE IS ON, because they are not interchangeable and one of them was published a
+    round mis-rounded. Two measures appear here and both are nearest-EDGE distances on geo.mlat/mlon, this
+    project's one figure of the Earth:
+
+      OSM CENTRELINE, END CAPS INCLUDED -- the raw `golf=hole` way, no clipping:
+          h14 39.43   h15 34.57   h16 13.02   h17 9.62      (marsh area 151.27 m^2, 35 nodes)
+      THE DRAWN PLAYED LINE, as `any_within` clips it -- what actually decides a card:
+          h14 39.43   h15 265.91  h16 142.29  h17 10.22
+
+    They coincide on hole 14 (its nearest approach is mid-line) and diverge by 132x on hole 15. So
+    "10.22 m from hole 17" is the played-length figure and 9.62 m is the centreline one; the prose used to
+    print 9.6 and call it the played line, which is the wrong axis under the right number.
     """
     t = feature.get('tags') or {}
     if t.get('natural') != 'wetland':
@@ -229,6 +427,374 @@ def is_drawn_wetland(feature):
     if any(k in t for k in WETLAND_LAND_CLASS):
         return bool(t.get('wetland'))
     return True
+
+
+# `golf=penalty_area` IS NOT `golf=water_hazard` UNDER A NEW NAME, and a shipped book assumed it was.
+#
+# The 2019 Rules of Golf did retire "water hazard" and "lateral water hazard" and put "penalty area" in
+# their place, but the replacement is a SUPERSET, not a rename: a penalty area is every water on the
+# course PLUS any area a Committee chooses to mark as one -- native brush, a canyon floor, desert,
+# lava. `golf=water_hazard` meant water. `golf=penalty_area` does not, and nothing in the tag says
+# which of the two a given feature is.
+#
+# MEASURED IN THE CACHES, over all 13 courses. trump-national-los-angeles is the only one that carries
+# the tag at all, and ALL 34 of its penalty areas are `natural=scrub` and nothing else -- native brush
+# ribbons and barranca floors on a coastal bluff, 101 to 27,778 m^2 each (shoelace area of each ring in
+# its own local metric frame), and 31 of the 34 share vertices with a neighbour: the 34 ways form only 5
+# connected areas and the largest single area is 28 of them, so they are one continuous non-turf network
+# cut into pieces rather than 34 places. Not one of them is water. That
+# course's water is three small ponds
+# (ways 215463946, 215463948, 215463950 -- `golf=water_hazard` with `natural=water`) and three visible
+# streams (ways 845375651, 845375656, 845375657 -- `waterway=stream`; four further stream ways carry
+# `tunnel=culvert` and is_visible_watercourse refuses them, correctly).
+#
+# DRAWN AS WATER, those 34 took the book's 18 footers from 8 W to 91 and hole 14 to "10W" over no water
+# at all. That is rule 1 -- a number the data does not support -- and "10W" tells a junior there are ten
+# waters where there are none. The corrected book prints 6 W, on holes 8, 9, 12, 13 and 16: the three
+# ponds, each counted on the two holes that reach it, and nothing else (see `creeks` for the third
+# feature that left the W, a drainage line inside two of these penalty areas). Painted in the scrub fill instead, as they were before, it was rule 2:
+# 83 of the pairs are inside the water corridor and the legend beside them reads "trees". Both are
+# wrong. The class needs its own answer, and the only evidence available to give it one is the
+# feature's own tags:
+#
+#   * a penalty area that IS water -- open water, a water subtype, a watercourse a golfer can see, or
+#     wet ground a card should draw -- is water. It takes the blue, the footer W and the 45 m corridor,
+#     because it is the thing the blue already means.
+#   * a penalty area that is not water is a PENALTY AREA: drawn, in ink of its own, with a legend entry
+#     of its own and its own footer mark. See `penalty_areas` in render_hole() for the ink, the
+#     corridor and the reason there is no per-hole COUNT.
+#
+# Two pure, tag-only predicates at module scope, beside is_visible_watercourse and is_drawn_wetland and
+# for their reasons: they can be graded by truth table rather than through a rendered card, fetch_osm's
+# census and this renderer cannot disagree about which half a feature falls in, and the suite grades
+# the split by importing these rather than respelling them.
+def penalty_area_is_water(feature):
+    """True when a `golf=penalty_area` is WATER, so the blue and the footer W are the honest ink for it.
+
+    Water by the definitions this engine ALREADY uses, never by a new one invented here: `natural=water`
+    (the open-water tag `waters` selects on), a `water=*` subtype (a lake/pond/canal classification on a
+    way whose `natural` key a mapper left off), `is_visible_watercourse` (a stream or ditch that is not
+    culverted, covered, underground, or a dam or weir), or `is_drawn_wetland` (marsh a card should draw,
+    with that predicate's own refusal of a land-classification tile intact). Anything else is not water,
+    and is_land_penalty_area below gets it.
+
+    ORDER OF THE FOUR DOES NOT MATTER because this is a classification, not a draw list -- whichever
+    clause fires, the feature is water and `waters` or `creeks` already inks and counts it. What matters
+    is that all four appear here AND on the drawing side: a penalty area this predicate calls water and
+    no selector admits would be a hazard drawn as nothing, which is the omission direction. That is why
+    `waters` gained the `water=*` clause with this change. Measured: 10 features in this corpus carry
+    `water=*` (bay-view 2, copper-valley 1, philadelphia 5, the-reserve 2) and every one of the 10 also
+    carries `natural=water`, so the clause admits nothing new today and no book moves for it; it is here
+    so that the split above is EXHAUSTIVE and no penalty area can fall between the two halves.
+
+    NO COURSE IN THIS CORPUS HAS A WATER PENALTY AREA -- all 34 are scrub -- so this half is exercised by
+    truth table and by mutation (see the suite), not by the corpus. It is written anyway because the
+    corpus is not the population: the tag is the current spelling, a mapper anywhere may use it for a
+    pond, and the branch that would then be missing is the one that keeps a pond out of the brush ink.
+    """
+    t = feature.get('tags') or {}
+    if t.get('golf') != 'penalty_area':
+        return False
+    return bool(t.get('natural') == 'water' or t.get('water')
+                or is_visible_watercourse(feature) or is_drawn_wetland(feature))
+
+
+def is_land_penalty_area(feature):
+    """True when a `golf=penalty_area` is NOT water -- brush, canyon, waste: its own hazard class.
+
+    The complement of penalty_area_is_water WITHIN the tag, so the two are exhaustive and disjoint by
+    construction and no feature can be drawn twice or dropped. Keyed on the TAG and not on membership
+    of `waters`: which class a hazard belongs to is a fact about the ground, not about which hole is
+    being drawn, and a feature out of reach of this hole would otherwise be classed one way here and
+    the other way on the next card.
+    """
+    return ((feature.get('tags') or {}).get('golf') == 'penalty_area'
+            and not penalty_area_is_water(feature))
+
+
+def runs_dry_in_season(feature):
+    """True when a drawn watercourse's OWN TAGS say its channel is not always flowing.
+
+    `intermittent=yes` is the mapper's statement that the channel carries water for part of the year and
+    is dry for the rest of it. This engine used to draw one in the same blue as a lake and count it in the
+    same footer W, on the over-warn reading of rule 2 -- a channel dry in August still prints blue. That
+    reading is withdrawn, and the reason is that it was answering the wrong question: rule 2 asks whether
+    the hazard is SHOWN, not whether it is shown in the water colour. A dry ditch drawn as a pond does not
+    over-warn, it MISDESCRIBES -- and a reader who walks the course and finds no water there learns that
+    the blue on this map cannot be trusted, which costs him the blue that is real. Drawn in the grey the
+    non-water hazard classes already use (see PENALTY_FILL), the ditch keeps its mark, keeps its legend
+    entry and loses only the claim that there is water in it.
+
+    ONLY A WATERCOURSE THIS ENGINE WOULD OTHERWISE DRAW, so this is a re-classification and never a new
+    admission: `is_visible_watercourse` still decides whether a channel reaches the paper at all, and its
+    refusals (culverted, covered, underground, a dam or a weir) are untouched.
+
+    NO AREA IS TESTED FOR IT. `intermittent=yes` on a POLYGON says the waterbody dries seasonally -- a
+    vernal pool, a stock pond in August -- and a mapped basin with a shoreline is a place a ball is lost
+    whether or not it is holding water this week; the polygon IS the evidence of a waterbody. A LINE has no
+    surface at all, which is what makes its own tag the only thing that can say what it is. Measured over
+    the corpus: no `natural=water` or `water=*` polygon on any of the twelve carries the tag, so the
+    scoping costs nothing today and is written for the principle.
+
+    MEASURED, over all twelve caches that hold geometry, and these are the figures is_drawn_wetland used to
+    quote before this class took them over: 43 ways carry that tag, on 5 of the 12 courses, and 13 of
+    them are DRAWN today on 3 courses -- bay-view 7, copper-valley 5, micke-grove 1 -- over 29 way/hole
+    appearances. (An earlier version of the sentence read "34 of the 43 ... on 5 of the 12 courses", which
+    conflated the courses that CARRY the tag with the courses that draw one.) Those 29 marks turn grey and
+    leave the footer's W; the other 30 ways are already refused by `is_visible_watercourse` or lie out of
+    reach of every hole, so nothing about them moves.
+    """
+    return (is_visible_watercourse(feature)
+            and (feature.get('tags') or {}).get('intermittent') == 'yes')
+
+
+def holds_open_water(feature):
+    """True when OPEN WATER is what this feature is -- the one and only thing a hole map's blue means.
+
+    ONE INK, ONE MEANING, and this predicate is where that rule is written down for the blue. The defect
+    it closes is not a missing warning; it is a false description that survived every test the suite had,
+    because the false premise had been written into the table the tests read. `natural=wetland` was
+    selected by the water selector's own OR, filled #a9d3ef, counted in the footer's W and covered by the
+    legend word "water" -- so callippe Preserve, whose cache holds ONE `natural=water` polygon, shipped a
+    book printing 39 W across 18 cards over 12 hand-mapped seasonal wetlands, and 2,309 of its 7,507 tree
+    markers stood inside ground the card had painted as a pond. The owner walked it and asked why there
+    was a tree in the water. There is no water there.
+
+    THE BLUE IS NOW EXACTLY: a mapped waterbody (`natural=water`, or a `water=*` lake/pond/canal subtype
+    on a way whose `natural` key a mapper left off), a feature the mapper tagged as a water hazard under
+    the pre-2019 vocabulary (`golf=water_hazard`, `golf=lateral_water_hazard`), or a watercourse a golfer
+    can see that is not tagged as running dry. Everything else this engine draws as a hazard is NOT open
+    water and takes the grey -- see PENALTY_FILL, which is no longer only the penalty-area ink.
+
+    THE THREE REFUSALS COME FIRST AND THEY ARE THE POINT, so the classification cannot be satisfied by a
+    water-ish tag sitting beside a stronger statement that the ground is dry:
+
+      * `is_drawn_wetland`   -- marsh and seasonal wetland. Public-domain USGS 3DEP LiDAR, computed here,
+                                over all twelve of callippe's polygons: ZERO empty cells and full ground
+                                returns in every one (all-return ratios 1.09-1.68, 5.6-11.7 ground
+                                pt/m^2), where open water absorbs the pulse and leaves a void. None of
+                                them held open water on the flight. They are wet ground.
+      * `is_land_penalty_area` -- brush, a canyon floor, waste. All 34 in this corpus are `natural=scrub`.
+      * `runs_dry_in_season` -- a channel whose own tags say it is dry for part of the year.
+
+    EXHAUSTIVE AND DISJOINT AGAINST THE GREY BY CONSTRUCTION, the property is_land_penalty_area was given
+    for the same reason: every hazard this engine admits is either open water or one of the three above, so
+    no feature can be inked twice or fall between the two classes and be drawn as nothing. That is what
+    lets the suite check the rule by asking whether any BLUE feature fails this predicate, instead of by
+    counting marks -- a count cannot see a class wearing another class's colour.
+
+    KEYED ON THE FEATURE AND NOT ON WHICH HOLE IS BEING DRAWN, like the two predicates above it: what a
+    hazard is made of is a fact about the ground, and a feature out of reach of this hole would otherwise
+    be classed one way here and the other way on the next card.
+    """
+    if is_drawn_wetland(feature) or is_land_penalty_area(feature) or runs_dry_in_season(feature):
+        return False
+    t = feature.get('tags') or {}
+    return bool(t.get('golf') in ('water_hazard', 'lateral_water_hazard')
+                or t.get('natural') == 'water' or t.get('water')
+                or is_visible_watercourse(feature))
+
+
+# THE NOT-WATER INK, named here rather than written inline like the other four fills, because the
+# guide cards' legend swatch is generated from it (generate._grey_note) and a hazard whose key and
+# whose map are two separate hex strings is a key that can go stale.
+#
+# A QUIET GREY, AND THAT IS A DECISION ABOUT THE WHOLE CARD RATHER THAN ABOUT ONE CLASS. On
+# trump-national-los-angeles the penalty areas cover ground on 16 of 18 holes -- the drawn playing line
+# runs INSIDE one for 1 to 154 m on those sixteen -- and on callippe the wetland covers 5.50% to 51.87% of
+# the drawn card on the 14 of 18 cards that carry it (shoelace area of the drawn rings against the
+# viewBox). So whatever colour this takes, it takes over most of two books. A loud ink would bury the three
+# things a player is choosing between: the sand, the water and the line. Grey says "this is here, it is not
+# turf, and it is not water" without competing with them. Two louder versions were built first and both
+# failed for the same reason in different directions: violet was unreadable (a reader who knows this
+# course asked "what is the purple?"), and the Rules' own red -- Rule 17 marks a penalty area with red or
+# yellow stakes -- was legible but dominated all eighteen cards. Understated is the point, and what
+# "understated" costs on a black-and-white printer is measured below rather than assumed.
+#
+# THREE CLASSES SHARE IT, AND THAT SHARING IS THE FIX RATHER THAN A COMPROMISE. `is_land_penalty_area`
+# (brush, canyon, waste), `is_drawn_wetland` (marsh and seasonal wetland) and `runs_dry_in_season` (a
+# channel whose own tags say it is dry for part of the year) are three different things on the ground and
+# ONE thing to a reader choosing a club: ground that is not turf, will probably cost him the ball, and has
+# no water in it. Their common property is the whole content of the ink, and it is stated as a predicate --
+# see holds_open_water, whose complement this is. What is NOT allowed, and is the defect this ink was
+# widened to end, is a class wearing the BLUE's meaning: wetland was selected by the water OR, filled
+# #a9d3ef, counted in the footer's W and covered by the legend word "water", so callippe -- one
+# `natural=water` polygon in its whole cache -- shipped 39 W across 18 cards, with 2,309 of its 7,507 tree
+# markers standing inside ground the card had painted as a pond.
+# ONE INK, ONE MEANING IN THE LEGEND is therefore the rule this constant carries, and "one ink, one TAG" is
+# not: the legend names this grey once, as ground that is not water, and all three classes are members of
+# that one meaning. tests/test_phase1_regressions.py grades both halves -- that no BLUE feature fails
+# holds_open_water, and that no two legend words share a fill.
+#
+# THE VALUE IS THE OWNER'S INSTRUCTION AND NOT A DERIVATION: near white, "just a tiny grey", asked for
+# twice, and asked for again when the wetland classes were split off the blue ("For some kind of a light,
+# little creek, which is not actually water, maybe just use the light gray... You don't put the water
+# colour, which is really confusing"). #f2f2f2 is grey 242, thirteen levels off white paper. This constant
+# was ONCE derived instead -- placed at the midpoint of the widest gap in the card's own grey ladder -- and
+# that derivation is gone from here along with the value it produced, because a constant carrying two
+# derivations carries two values as far as the next reader is concerned. Git holds the retired one; this
+# note holds the live one. A SECOND grey was designed for the wetland classes before this instruction
+# arrived and is not in this file: the card's own luma ladder has exactly one slot that clears the
+# 12-level mono bar against every ink on it, 115 to 126, which is darker than the putting surface, the tee
+# and the played line, and it would have sat under 2,309 tree markers at luma 103. The arithmetic is worth
+# keeping even though the value is not, because it is the reason a reader should not expect a light hazard
+# fill on this card ever to clear that bar.
+#
+# AND IT DOES NOT SURVIVE A MONO PRINTER. That is the plain statement, and it is not the one this note
+# used to make. In Rec.709 luma over white -- the matrix `filter: grayscale(1)` applies, and the one a
+# printer's mono conversion approximates -- the fill sits 5.08 levels of 255 from the rough it most often
+# lies on, 1.99%, and 5 levels as the page rounds them (242 against 237, sampled off a rendered card).
+# The bunker-in-fairway collapse the guide card's PRINT IN COLOUR line exists for is 3.66 levels in that
+# same matrix, 3.00 as the page rounds it (7.32 levels and 2.87% in Rec.601). So this pair is TIGHTER
+# than the one that warning was written for, on a hazard that costs a stroke under Rule 17. Three
+# sentences that stood here are withdrawn as false: "107 off the rough" (it is 5.08), "the fairway
+# pairing is the tightest and is the one that matters" (the rough pairing is nearly four times tighter),
+# and "the fill clears the mono bar everywhere" (on rough it clears nothing). None of them was measured,
+# and the retune that introduced them shipped with no test.
+#
+# THAT FAILURE NOW COSTS MORE THAN IT DID, and it is stated rather than left for the next reader, because
+# widening this ink to the wetland classes widened what a mono print loses. The fill against the ROUGH is
+# 5.08 levels and the fill against area WATER is 37.91, so a mono reader can tell wetland from a pond
+# (which is the whole point of the split) and cannot reliably tell wetland from the turf around it. The
+# three things that carry the class instead are the same three the penalty areas already relied on, and all
+# three are now doing work on five more books: the EDGE below at 36.92 levels off that rough and 22.79 off
+# the fairway; the card's own FOOTER, which names the class in text on every hole that draws one (see
+# generate.not_water_mark); and both editions' legends, which name the grey and say it is not water (see
+# generate._grey_key and generate._grey_note). The fill is what a colour reader sees; the boundary and the
+# words are what a mono reader is left with. That makes the guide card's instruction to print in colour
+# load-bearing on this ink rather than advisory, which is the honest way to state a near-white hazard fill.
+#
+# EVERY PAIR THIS INK TOUCHES, so the record is complete rather than spot-checked -- a spot check is how
+# a 21x error survived. Each row is an ink's Rec.709 luma over white and its distance from this FILL and
+# from the EDGE below, in levels of 255. UNDER-BAR marks a pair inside the 12 levels
+# tests/test_r17_print.py takes as "these two would tell apart in mono". Every figure here is re-derived
+# from the two constants by that file's
+# test_render_hole_publishes_the_penalty_inks_real_separation_from_every_ink_it_touches, and the marks
+# with them, so a retune cannot leave one behind or claim a clearance by leaving a row unmarked:
+#
+#     rough                     #e9f0da             236.92  fill   5.08 ( 1.99%)  edge  36.92  FILL-UNDER-BAR
+#     white paper, every halo   #fff                255.00  fill  13.00 ( 5.10%)  edge  55.00
+#     bunker                    #efe3b8             226.45  fill  15.55 ( 6.10%)  edge  26.45
+#     fairway                   #cfe8b2             222.79  fill  19.21 ( 7.53%)  edge  22.79
+#     rough edge                #cdd9b4             211.78  fill  30.22 (11.85%)  edge  11.78  EDGE-UNDER-BAR
+#     wood over paper           #9cbf86@0.6/#ffffff 209.67  fill  32.33 (12.68%)  edge   9.67  EDGE-UNDER-BAR
+#     water                     #a9d3ef             204.09  fill  37.91 (14.87%)  edge   4.09  EDGE-UNDER-BAR
+#     wood over rough           #9cbf86@0.6/#e9f0da 202.44  fill  39.56 (15.52%)  edge   2.44  EDGE-UNDER-BAR
+#     bunker edge               #c9b477             180.06  fill  61.94 (24.29%)  edge  19.94
+#     tick ring                 #b4b4b4             180.00  fill  62.00 (24.31%)  edge  20.00
+#     wood fill, raw            #9cbf86             179.44  fill  62.56 (24.53%)  edge  20.56
+#     putting surface           #7cc45a             173.04  fill  68.96 (27.04%)  edge  26.96
+#     fairway edge              #79b356             159.95  fill  82.05 (32.17%)  edge  40.05
+#     wood edge                 #7ea36a             151.02  fill  90.98 (35.68%)  edge  48.98
+#     water edge, creek         #5b9bd0             145.22  fill  96.78 (37.95%)  edge  54.78
+#     tee                       #6aa15a             144.18  fill  97.82 (38.36%)  edge  55.82
+#     centre line               #8a8a8a             138.00  fill 104.00 (40.78%)  edge  62.00
+#     tree, tree row            #2f7d32             103.00  fill 139.00 (54.51%)  edge  97.00
+#     tee edge                  #3f6b34              93.67  fill 148.33 (58.17%)  edge 106.33
+#     pin                       #c0392b              84.69  fill 157.31 (61.69%)  edge 115.31
+#     from-tee number           #7a4a12              80.16  fill 161.84 (63.47%)  edge 119.84
+#     green outline / to-green  #2f5a26              77.10  fill 164.90 (64.67%)  edge 122.90
+#     tee label                 #20402a              55.61  fill 186.39 (73.09%)  edge 144.39
+#
+# SO WHAT CARRIES THESE CLASSES IN BLACK AND WHITE IS NOT THE FILL, and rule 2 rests on those things rather
+# than on the ink. Two of them: the EDGE below, 36.92 levels off the rough and 22.79 off the fairway, and
+# the card's own WORDS -- the footer names the class on every hole that draws one and both editions'
+# legends name the grey and say it is not water (generate.not_water_mark, generate._grey_note). The fill is
+# what a colour reader sees; the boundary and the words are what a mono reader is left with. That makes the
+# guide card's instruction to print in colour load-bearing on this class rather than advisory, which is
+# the honest way to state a near-white hazard fill and was the sentence this note was missing.
+#
+# THE FILL ITSELF LOSES NOTHING TO THE CONVERSION, which is a different claim and is the one that is
+# true: a pure grey is its own luma under every matrix -- R=G=B means the colour and greyscale renderings
+# of this ink are identical by construction. Its CONTRAST is what collapses. Both halves are sampled off
+# a rendered card by test_a_mono_print_cannot_tell_a_penalty_area_from_the_rough_it_lies_on.
+#
+# THE EDGE is #c8c8c8, grey 200, 42 levels below its own fill, because the BOUNDARY is the part a player
+# acts on: relief is measured from where the ball last crossed it. It reads against the fill it encloses
+# rather than against the turf, which is what lets it stay quiet, and it is 62 levels off the dashed
+# centre line. IT IS ALSO THE WHOLE MARK FOR A DRY CHANNEL, which is why the class uses the edge rather
+# than the fill: a `runs_dry_in_season` watercourse is a LINE, so it has no interior for a near-white fill
+# to sit in, and drawn in #f2f2f2 at 5.08 levels off the rough it would be a hazard drawn as nothing. At
+# #c8c8c8 and the same 1.8 stroke the blue creeks use it is 36.92 levels off that rough. Where the EDGE
+# does not carry is in the table too: 4.09 levels off area water and 2.44 off the wood fill composited over
+# rough. Neither costs a warning -- water is drawn OVER this class in its own blue and counted in the
+# footer's W, and no card in the corpus draws the wood fill at all -- but neither is a separation, and they
+# are marked rather than left out. An earlier version of this paragraph claimed 120 levels against "the
+# brown cart path": this module draws no cart path, and the only brown on a hole map is the from-tee
+# gutter NUMBER.
+#
+# The trade the instruction asks for, the right way round: on ROUGH this region is found by its EDGE,
+# because its fill is 5.08 levels off the turf beneath it; on fairway both carry (fill 19.21, edge
+# 22.79). The wording here had those two reversed, and reversed the conclusion with them.
+#
+# FLAT AND OPAQUE, not hatched or translucent, and that is measured too. A hatch would say "staked" more
+# literally, and on this course it would also invent structure: 44 of its same-card penalty pairs OVERLAP
+# and 70 more abut at 0.00 m, so any texture or transparency stacks where the polygons stack and draws a
+# mottled patchwork over ground that is one continuous brush ribbon. Flat opaque renders the patchwork as
+# the single region it is. A `<pattern>` would also need an id inside a document that inlines 36 SVGs --
+# one fixed id makes 17 of the 18 definitions dead and silently resolves every card to the first, and a
+# per-hole id forces the legend swatch to carry a SECOND copy of the pattern, which is two definitions of
+# one ink and the drift the derived swatch exists to prevent.
+PENALTY_FILL = "#f2f2f2"
+PENALTY_EDGE = "#c8c8c8"
+
+# HOW MUCH OF A WATERCOURSE HAS TO LIE INSIDE A NON-WATER PENALTY AREA before the card treats it as that
+# area's drainage line rather than as separate water. See runs_inside_a_penalty_area below for the rule
+# and frac_len_inside_rings for the measure. 0.90 is not a tuned number: the three visible watercourses
+# in this corpus measure 0.974, 0.000 and 0.000, so nothing sits anywhere near the bar, and the bar is
+# set high because the consequence of crossing it is that a feature stops being counted as water.
+PENALTY_CONTAINMENT_MIN = 0.90
+
+
+def frac_len_inside_rings(pts, rings, step_m=2.0):
+    """Fraction of polyline `pts`' own LENGTH that lies inside any ring in `rings`. Planar metres.
+
+    SHAPE-BASED, NOT VERTEX-BASED, which is the property this whole file has had to fix three times
+    (frac_in, the wetland centroid, the green-binding mean). The polyline is walked at a fixed ARC-LENGTH
+    step and each step's midpoint is tested, so the answer depends on where the line and the rings ARE,
+    not on where a mapper happened to click on either of them: re-noding the line does not move a sample,
+    and point-in-polygon is a property of a ring's outline rather than of its vertices.
+
+    The step is a DISCRETISATION and is stated as one. At 2 m over the one feature in this corpus the rule
+    fires on -- a 191.9 m channel measuring 0.974 -- the worst a mis-placed sample can cost is one step,
+    0.010 of the fraction, against a 0.074 margin to PENALTY_CONTAINMENT_MIN and a 0.974 gap to the next
+    watercourse. Anything that made that margin thin would be a new case to measure, not a step to shrink.
+
+    A bounding box rejects most rings before any edge is touched, which is what keeps this affordable: it
+    runs per hole over every penalty area on the course, and returns immediately when there are none --
+    twelve of the thirteen courses.
+    """
+    if not rings or len(pts) < 2:
+        return 0.0
+    boxes = [(min(x for x, _ in R), min(y for _, y in R), max(x for x, _ in R), max(y for _, y in R))
+             for R in rings]
+
+    def in_any(x, y):
+        for (x0, y0, x1, y1), R in zip(boxes, rings):
+            if x < x0 or x > x1 or y < y0 or y > y1:
+                continue
+            inside = False
+            for i in range(len(R)):
+                ax, ay = R[i]
+                bx, by = R[(i + 1) % len(R)]
+                if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / ((by - ay) or 1e-12):
+                    inside = not inside
+            if inside:
+                return True
+        return False
+
+    total = inside_len = 0.0
+    for (ax, ay), (bx, by) in zip(pts, pts[1:]):
+        seg = math.hypot(bx - ax, by - ay)
+        total += seg
+        if seg <= 0.0:
+            continue
+        n = max(1, int(math.ceil(seg / step_m)))
+        for k in range(n):
+            t = (k + 0.5) / n
+            if in_any(ax + (bx - ax) * t, ay + (by - ay) * t):
+                inside_len += seg / n
+    return (inside_len / total) if total else 0.0
 
 
 def par3_exact_from_tee(par, arc_m, chord_m):
@@ -318,8 +884,9 @@ CARRY_MERGE_GAP_YD = 8.0
 #
 # Every feature class this module draws is selected by how near it comes to the hole's centreline, and
 # each class has its own half-width -- a wood is a background fill that may legitimately start 55 m out,
-# a fairway is not. Those eight numbers were eleven literals at eleven call sites -- water's 45 spelled
-# four times over -- and nothing anywhere said what the WIDEST of them was. tools/check_osm_bbox.py needs
+# a fairway is not. Those eight numbers are what thirteen literals at thirteen call sites would otherwise
+# be -- water's 45 spelled four times over, twice of them now by the penalty class, which shares it --
+# and nothing anywhere said what the WIDEST of them was. tools/check_osm_bbox.py needs
 # exactly that figure: it asks whether the
 # OSM fetch box covers what the cards draw, and it carried its own `CORRIDOR_M = 45.0` with the comment
 # "render_hole.in_corridor's drawing buffer". 45 was never the widest -- OSM tree nodes are taken to
@@ -627,7 +1194,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
 
         The whole segment, not its endpoints. Testing endpoints only made the answer depend on how
         finely a mapper happened to node the way rather than on where the water is: monarch-bay way
-        1135575847 is a 4-node stream whose longest segment is 1396.9 m, and it CROSSES the playing
+        1135575847 is a 4-node stream whose longest segment is 1398.7 m, and it CROSSES the playing
         lines of holes 12 and 18 (nearest point 0.01 m and 0.10 m) while its nearest vertex is
         273.1 m and 93.5 m away. Both cards printed no water. Re-noding the identical shape to 72
         points made both report it. So distance is measured point-to-SEGMENT.
@@ -733,27 +1300,275 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # 775614088, whose nearest approach over the played length is 255.4 m (16.1 m unclipped). That is
     # the over-report direction and it predates this gate.
     #
-    # WETLAND JOINS THIS LIST RATHER THAN GETTING ITS OWN. `natural=wetland` a card should draw (see
-    # is_drawn_wetland) is selected by the same OR, at the same 45 m, filled in the same blue and
-    # counted in the same footer W as a pond -- because the legend a 12-year-old reads says "water
-    # (blue)" for all of it, and a ball in marsh is lost or unplayable exactly as a ball in a pond is.
-    # Giving it a class of its own would mean a new legend entry, a second corridor to justify and a
-    # second number on the card; giving it this one costs nothing but the ink it owes. Measured on
-    # callippe, the course this omission was found on: 14 of 18 cards gain water (9 of them from 0W),
-    # and nothing else on any card moves -- same bunkers, same trees, same yardage rows, same carries,
-    # same from-tee gutters; only the water counts and the frames the new ink is fitted into.
-    waters =[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
+    # WETLAND IS ADMITTED BY THIS SELECTOR AND THEN LEAVES THE BLUE, and the second half of that is a
+    # correction to what stood here. `natural=wetland` a card should draw (see is_drawn_wetland) is
+    # selected by the same OR, at the same 45 m -- because a ball that finds marsh is lost or unplayable
+    # exactly as a ball in a pond is, and rule 2 says show it -- and it is then filled in the NOT-WATER
+    # GREY and counted separately from the footer's W. It used to be "filled in the same blue and counted
+    # in the same footer W as a pond", on the reasoning that the legend a 12-year-old reads says "water
+    # (blue)" for all of it. That reasoning had it backwards: the legend said "water" because the ink said
+    # water, and the ink was wrong. Callippe Preserve holds exactly ONE `natural=water` polygon in its
+    # whole cache and its shipped book prints 39 W across 18 cards; 2,309 of its 7,507 tree markers stand
+    # inside a wetland the card had painted as a pond, which is what the owner saw when he asked how a tree
+    # got into the water. Measured for the split, on callippe: 14 of 18 cards change ink and footer, the
+    # book's 39 W becomes 10, and nothing else on any card moves -- same bunkers, same trees, same yardage
+    # rows, same carries, same from-tee gutters, same frames. Rule 2 is untouched: every polygon that was
+    # drawn is still drawn, and every card that has one still names the class in its footer.
+    #
+    # A `golf=penalty_area` JOINS THIS LIST ONLY WHEN IT IS WATER, and that is a correction. It was
+    # admitted here unconditionally, on the premise that the tag is `golf=water_hazard` under its
+    # post-2019 name. It is not: "penalty area" replaced the two hazard tags above AND widened them, so
+    # the term now covers any area a Committee marks, water or not. See penalty_area_is_water, which is
+    # what this OR calls, and `penalty_areas` below, which draws the rest in its own ink. On this corpus
+    # the water half is empty -- all 34 penalty areas are `natural=scrub` -- so what this clause does
+    # here today is keep the DECISION in one place: a pond a mapper tags in the current vocabulary
+    # cannot fall out of the blue.
+    #
+    # `water=*` IS TESTED TOO, for that exhaustiveness and for nothing else: the split between the two
+    # penalty classes has to leave no feature in neither, and a lake/pond/canal subtype on a way whose
+    # `natural` key a mapper omitted is the one water signal the clauses above would miss. Measured over
+    # the corpus: 10 features carry `water=*` (bay-view 2, copper-valley 1, philadelphia 5, the-reserve
+    # 2) and all 10 also carry `natural=water`, so it admits nothing new and no book's bytes move for it.
+    #
+    # ...AND ONE FEATURE IS REFUSED BY MEASUREMENT, past every tag test above, because its tags say water
+    # and the ground says building. See MEASURED_NOT_WATER for the LiDAR and for why this one refusal is a
+    # recorded id rather than a predicate: merion's three NHD LakePond imports are tag-identical and two
+    # of them are real ponds, so no tag test can separate them. Last, so the tag clauses stay readable as
+    # the classification they are and the exception reads as the exception it is.
+    #
+    # ONE SELECTOR, THEN ONE SPLIT BY WHAT THE FEATURE IS. The OR below answers "is this a water-ish
+    # hazard this hole can reach at all"; `holds_open_water` then answers "is it water", and the two lists
+    # are exhaustive and disjoint by construction so no admitted hazard can be inked twice or dropped. The
+    # split is deliberately NOT a second selector: a second corridor would be a second number to justify,
+    # and -- measured -- the SET of polygons this book draws does not move at all for the split. Every
+    # feature that was blue is still drawn, on the same cards, in the same frames; what changes is which
+    # of two inks it takes and which of two footer marks counts it.
+    area_hazards=[g for g in course if (g.get('tags',{}).get('golf') in ('water_hazard','lateral_water_hazard')
              or g.get('tags',{}).get('natural')=='water'
-             or is_drawn_wetland(g)) and g.get('geometry')
+             or g.get('tags',{}).get('water')
+             or is_drawn_wetland(g)
+             or penalty_area_is_water(g)) and g.get('geometry')
+             and not is_measured_not_water(g)
              and (frac_in(g, CORRIDOR_M['water'])>=0.35 or any_within(g, CORRIDOR_M['water']))]
+    waters  =[g for g in area_hazards if holds_open_water(g)]
+    wetlands=[g for g in area_hazards if not holds_open_water(g)]
 
-    creeks =[g for g in course if is_visible_watercourse(g) and g.get('geometry') and any_within(g, CORRIDOR_M['water'])]
+    # A PENALTY AREA THAT IS NOT WATER IS ITS OWN CLASS: its own ink, its own legend entry, its own
+    # footer mark, and never the footer's W. See is_land_penalty_area for what the class is and why the
+    # engine may not treat the tag as a respelling of `water_hazard`.
+    #
+    # DRAWN, not merely reclassified, and that is rule 2. On trump-national-los-angeles -- the only
+    # course of the 13 that carries the tag -- 83 penalty-area/hole pairs are inside this corridor, the
+    # drawn playing line passes straight THROUGH one on holes 2, 4, 6 and 9, and a ball in coastal brush
+    # is gone. Left to the `woods` fill below (all 34 carry `natural=scrub`) it was inked #9cbf86 under a
+    # legend reading "bunkers (tan), water (blue), trees", which told a junior the hazard is TREES; and
+    # 58 of the 120 pairs within 60 m were drawn as nothing at all, because that gate is a FRACTION,
+    # which the frac_in note above condemns in its own words for a hazard.
+    #
+    # THE SAME 45 m CORRIDOR AND THE SAME OR AS WATER, deliberately, and it is the only defensible
+    # choice of the three available. The question a corridor answers is "can a ball off this hole reach
+    # it", which does not depend on what the hazard is made of -- the note above refuses to claim a pond
+    # at 45 m is more reachable than a ditch at 45 m, and brush at 45 m is no different. The `woods`
+    # gate's 55 m is a BACKGROUND-FILL rule by its own comment, measured as a fraction only, so widening
+    # to it would select a hazard by how much of it happens to lie near the line. And a third number
+    # would mean a second corridor to justify with nothing to justify it from. One consequence worth
+    # stating: because the gate is identical to the water gate, the SET of polygons this book draws does
+    # not move at all -- every one of the 83 pairs that was blue is now this ink, no pair loses its ink,
+    # and every frame is bit-identical. Only the colour, the class and the count change.
+    #
+    # THERE IS NO PER-HOLE COUNT, and that refusal is the point of the fix. The footer prints "NB NW"
+    # because a bunker and a pond are countable places; these are not. 31 of the 34 ways share vertices
+    # with a neighbour, so they are ONE continuous non-turf network -- brush ribbons and barranca floors
+    # -- cut into pieces at tag and mapping boundaries, and a per-way count says "10 penalty areas on
+    # hole 14" of ground a golfer would call "the barranca, left and right". That is the defect
+    # water_identity exists for, one class over, and here it has no reach code and no name to
+    # deduplicate on; deduplicating by contiguity instead would report 1 where a hole has brush on BOTH
+    # sides, which is the understating direction on a hazard. So the card names the class and refuses
+    # the number -- rule 1 -- and generate.penalty_mark prints a mark, not a total. `info` carries the
+    # count for the suite to grade the ink against; nothing prints it.
+    penalty_areas=[g for g in course if is_land_penalty_area(g) and g.get('geometry')
+                   and (frac_in(g, CORRIDOR_M['water'])>=0.35 or any_within(g, CORRIDOR_M['water']))]
+
+    # ONE HAZARD, ONE CLASS -- APPLIED TO CONTAINMENT, which is the second half of the same correction.
+    # A `waterway` line running THROUGH ground that is itself classified as a non-water penalty area is
+    # that area's drainage path, not a separate water: the same hazard, counted once as a penalty area and
+    # again in the footer's W. So it takes the containing class and leaves the W, exactly as the polygons
+    # above did.
+    #
+    # THE ONE FEATURE IN THIS CORPUS IT FIRES ON is trump-national-los-angeles way 845375656, a
+    # `waterway=stream` with 187.0 m of its 191.9 m -- 0.974 of its length -- inside penalty areas
+    # 1330719395 and 1330719396. It supplied 2 of that book's 91 W, on holes 4 and 5, and both of those
+    # penalty areas are drawn on both of those cards, so the ground keeps its hazard ink and its footer
+    # mark; what it loses is the claim that there is WATER there. The course's other two visible
+    # watercourses measure 0.000 and 0.000 and are untouched, and neither is within reach of any hole
+    # anyway. No other course in the corpus has a penalty area, so `rings` is empty for all twelve and
+    # this costs them a single length test that returns immediately.
+    #
+    # KEYED ON THE CONTAINING CLASSIFICATION and not on what the channel looks like, because the tags are
+    # the only evidence this engine has: the same OSM mapper who drew these 34 areas as scrub penalty
+    # areas tagged the three ponds `golf=water_hazard` with `natural=water` in the same edit, so the
+    # distinction is IN the data and it was the renderer that erased it. The direction of the residual is
+    # the safe one: a genuine creek inside a staked native area would lose its blue line and its W and
+    # would still be drawn as a penalty area with a penalty mark on the footer -- reclassified, never
+    # omitted, and the relief is one stroke either way.
+    #
+    # AREA WATER IS DELIBERATELY NOT SUBJECT TO THIS. A pond has a surface of its own and is a pond
+    # whether or not the brush around it is staked; a line has no surface at all, which is what makes the
+    # ground it crosses the only thing that can say what it is. Measured, and it is not close: this
+    # course's three ponds have 8 of 27, 6 of 36 and 18 of 43 of their vertices inside a penalty area --
+    # 0.22 to 0.42 -- because the rings abut their banks. Not one is contained, so the same test applied
+    # to them would change nothing; it is scoped out on the principle, not on the margin.
+    pa_rings=[[em(p['lat'], p['lon']) for p in g['geometry']]
+              for g in course if is_land_penalty_area(g) and g.get('geometry')]
+    def runs_inside_a_penalty_area(g):
+        return frac_len_inside_rings([em(p['lat'], p['lon']) for p in g['geometry']],
+                                     pa_rings) >= PENALTY_CONTAINMENT_MIN
+
+    # ONE WATER, ONE MARK -- the same rule as runs_inside_a_penalty_area above, applied to the class of
+    # line that has no channel at all. See is_synthetic_flowline: NHD threads an `ArtificialPath` through a
+    # lake and a `Connector` across a gap in its own linework purely to keep its flow network connected,
+    # and those import into OSM as `waterway=stream`. So the card drew a blue creek line straight ACROSS a
+    # lake it had already filled in the same blue, and had the reach available to count as a water.
+    #
+    # CONDITIONAL ON CONTAINMENT, NEVER ON THE FTYPE ALONE, and that is the whole safety of it. Measured
+    # over the corpus: 13 of the 15 synthetic flowlines lie 0.914-1.000 of their own length inside a mapped
+    # `natural=water` polygon on their own course, and TWO lie inside none -- micke-grove 83153363
+    # (1627.5 m) and the-reserve 1040957802 (24.8 m), both 0.000. Where nobody has mapped the waterbody,
+    # the synthetic line is the ONLY mark that water has; dropping it on the tag would omit a hazard, and
+    # rule 2 says over-warn. Those two keep their blue.
+    #
+    # THE ONE FEATURE IN THIS CORPUS IT FIRES ON is copper-valley way 83565232, 0.9528 of its 285.1 m inside
+    # lake way 775614086. It was drawn on hole 11, which draws and counts that same lake -- so this is an
+    # INK-ONLY correction there: the path shares NHD reach 18040051001111 with ways 83579191 and 83582265,
+    # which hole 11 also draws, so the reach keeps its identity and the hole stays at 3W. What leaves is the
+    # false mark, a stream drawn over open water.
+    #
+    # MEASURED AGAINST THE WHOLE COURSE'S WATER, not against this hole's `waters`, and the two are the same
+    # answer here: a line contained in a lake can only come within the corridor if the lake does, and the
+    # lake is then admitted by the same OR. Using the course keeps the classification a fact about the
+    # ground rather than about which hole is being drawn -- the reason is_land_penalty_area is keyed on the
+    # tag and not on membership of `waters`.
+    #
+    # The same 0.90 bar as the penalty containment, deliberately, so the engine has ONE answer to "this
+    # line belongs to that area rather than to itself". 0.914 is the tightest measurement in the corpus and
+    # the next one down is 0.000, so nothing sits near the bar.
+    water_rings=[[em(p['lat'], p['lon']) for p in g['geometry']]
+                 for g in course if g.get('geometry') and len(g['geometry']) > 2
+                 and ((g.get('tags') or {}).get('natural') == 'water' or (g.get('tags') or {}).get('water'))]
+    def runs_inside_drawn_water(g):
+        return (is_synthetic_flowline(g)
+                and frac_len_inside_rings([em(p['lat'], p['lon']) for p in g['geometry']],
+                                          water_rings) >= PENALTY_CONTAINMENT_MIN)
+    # A THIRD REFUSAL WAS PROPOSED FOR THIS LIST AND IS REFUSED, because the measurement does not support
+    # it. bay-view ways 50256874 (165 m, holes 14-15) and 50256875 (30 m, holes 14-15) were put forward as
+    # "lines of blue over flat ground" -- mapped watercourses with no channel, median incision -0.10 m and
+    # -0.11 m, negative at p90 as well -- and proposed for removal.
+    #
+    # Measured here from class-2 GROUND returns, in true metres (bay-view's tiles are ftUS), three ways:
+    #
+    #   * bed-vs-bank ANNULUS is confounded by regional slope and must not be used: a transect across
+    #     either way shows a monotonic fall of 5-6 m over 80 m, so an annulus averages the up-slope and
+    #     down-slope sides and returns roughly zero whatever the channel does. That measure is the only
+    #     one that yields a negative number here, and only at its 10th percentile on 50256874.
+    #   * DETRENDED -- fit a plane to the bank ground returns and ask how far the bed sits BELOW it, which
+    #     is the measure that separates a channel from a hillside -- gives, at three scales:
+    #         way 50256874   +0.29 / +0.51 / +0.98 m     (min over stations +0.09)
+    #         way 50256875   +0.58 / +0.86 / +1.53 m     (min over stations +0.71)
+    #     Both are depressions below the surrounding surface at every scale, not flat ground.
+    #   * AND THE CONTROLS SETTLE IT. On the same measure at the same scale, two ways of the SAME chain
+    #     that nobody proposes removing read +2.39 m (50256873) and +0.96 m (50256813). 50256875's +0.86 m
+    #     is indistinguishable from 50256813's +0.96 m, so no measurement separates the proposed pair from
+    #     a feature that stays.
+    #
+    # AND THE ROUTE CARRIES WATER. Both are part of `scvwd:ROUTEID` 490036, and way 50256839 of that same
+    # route returns 3 of 5 stations as a TOTAL LiDAR void -- in-disc 7.24 / 0.30 / 6.49 pt/m^2 against
+    # reference 25.11 / 27.31 / 30.03, ratios 0.288 / 0.011 / 0.216 -- which is open water. A route that
+    # holds water 300 m downstream is not flat ground upstream.
+    #
+    # So the ink stays. Removing it would take a hazard off bay-view 14 and 15, which is the omission
+    # direction, and rule 2 says over-warn when the evidence is this far from agreeing.
+    # ...AND THE SAME SPLIT THE AREA HAZARDS GET, one line up in kind: `is_visible_watercourse` decides
+    # which channels reach the paper, then `holds_open_water` decides which of them are water. A channel
+    # tagged `intermittent=yes` is dry for part of the year, so it takes the not-water grey and leaves the
+    # footer's W -- see runs_dry_in_season, which is where that reversal is argued. Exhaustive and disjoint,
+    # so no channel this engine admits can lose its mark: 13 ways on 3 courses change ink over 29 way/hole
+    # appearances, and not one of them stops being drawn.
+    channels=[g for g in course if is_visible_watercourse(g) and g.get('geometry')
+             and any_within(g, CORRIDOR_M['water']) and not runs_inside_a_penalty_area(g)
+             and not runs_inside_drawn_water(g)]
+    creeks    =[g for g in channels if holds_open_water(g)]
+    dry_creeks=[g for g in channels if not holds_open_water(g)]
     tees   =[g for g in course if g.get('tags',{}).get('golf')=='tee' and g.get('geometry') and in_corridor(g, CORRIDOR_M['tee'])]
     fairways=[g for g in course if g.get('tags',{}).get('golf')=='fairway' and g.get('geometry') and frac_in(g, CORRIDOR_M['fairway'])>=0.40]
     roughs  =[g for g in course if g.get('tags',{}).get('golf')=='rough' and g.get('geometry') and frac_in(g, CORRIDOR_M['rough'])>=0.40]
+    # ONE FEATURE, ONE CLASS. A penalty area is excluded here even though `natural=scrub` is true of it,
+    # or the same polygon would be drawn twice -- hazard ink under landcover green -- and counted twice,
+    # once as a hazard and once in the tree total that decides the "no tree data" caveat. Keyed on the
+    # HAZARD TAG and not on membership of `waters` or `penalty_areas` above, and that choice is NOT free:
+    # the gates are measured differently -- 55 m of fraction only here, against 45 m of fraction OR reach
+    # up there, the reach half clipped to the PLAYED length -- so three penalty-area/hole pairs pass this
+    # one and fail that one, and by the tag they get no ink at all. They are hole 7 way 1330719393, hole
+    # 14 way 1330769548 and hole 16 way 1330769549, and every one of the three is drawn as a PENALTY AREA
+    # on another card of the same book (way 1330719393 on hole 14; 1330769548 on 8, 15 and 16; 1330769549
+    # on 13 and 17), so no polygon loses its ink book-wide -- only its appearances on the holes this
+    # engine judges it out of reach of.
+    #
+    # Keyed on the tag anyway, because the alternative is worse than losing background fill on three
+    # cards: painting a staked penalty area #9cbf86 tells a 12-year-old reading the legend beside it that
+    # the hazard is TREES, and it would say hazard on one card and trees on the next for the same ground.
+    # An out-of-reach feature drawn as nothing is what every other class here already does; an in-play
+    # hazard drawn as the wrong class is a false statement. What class a hazard is does not depend on
+    # which hole is being drawn.
     woods   =[g for g in course if (g.get('tags',{}).get('natural') in ('wood','scrub') or g.get('tags',{}).get('landuse')=='forest')
+              and g.get('tags',{}).get('golf')!='penalty_area'
               and g.get('geometry') and frac_in(g, CORRIDOR_M['wood'])>=0.35]
     treerows=[g for g in course if g.get('tags',{}).get('natural')=='tree_row' and g.get('geometry') and frac_in(g, CORRIDOR_M['treerow'])>=0.35]
+
+    # `golf=out_of_bounds` IS FETCHED AND IS DELIBERATELY NOT DRAWN. There is exactly one in this whole
+    # corpus -- trump-national-los-angeles way 1330731228, a closed 22-node ring of 13,392 m^2, 140 x 169
+    # m, whose nearest edge is 10.3 m from hole 2's played line and 30.9 m from hole 1's, and which
+    # overlaps no fairway, rough, green, tee or bunker and contains no centreline vertex of any hole. OB
+    # is stroke-and-distance, which is strictly worse for a junior than the penalty areas above -- those
+    # cost one stroke, this costs a stroke and the ground -- so the reason for leaving it off the paper
+    # has to be better than "nobody wrote the code".
+    #
+    # IT IS A COVERAGE PROBLEM, NOT A GEOMETRY ONE, and that is what settles it. Every hole of every one
+    # of the 13 courses has out of bounds: the property line is a fact of every golf course. OSM has
+    # mapped ONE fragment beside two holes of one of them. A hazard mark's meaning depends on the
+    # completeness of its source -- absence of the mark has to be distinguishable from absence of the
+    # thing -- and here it cannot be: drawing this one would tell a reader that this is the only place in
+    # 13 books where a ball can go OB, which is false on 233 of the 234 holes. That is the same reasoning
+    # the "no tree data" caveat exists for, and unlike the canopy there is no per-hole record of where the
+    # boundary was surveyed and where it was not, so the caveat cannot be written either.
+    #
+    # AND IT HAS NO INK IT CAN HONESTLY BORROW. The card's legend names four classes -- bunkers (tan),
+    # water (blue), penalty areas (their own ink) and trees. OB is not sand, not water, not landcover, and
+    # NOT a penalty area: the relief and the stroke count differ -- a penalty area costs one stroke and
+    # lets you drop, OB is stroke and distance and sends you back -- so putting it in either hazard ink
+    # would state the wrong RULE as confidently as the scrub fill stated the wrong class. A fifth colour
+    # needs a fifth legend entry on both editions' guide cards (generate.py), and ink on the paper that
+    # the legend does not name is exactly the defect the penalty-area class above was: a reader is shown
+    # a hazard and told what it is not. That the penalty class has since been given ink and a legend
+    # entry of its own is the PRECEDENT for how OB would have to be done, not a colour it may share.
+    #
+    # NOR IS THIS POLYGON THE BOUNDARY. It is an area beside two holes, not a line around a course, so it
+    # says nothing about where the line is on the other 16 -- a boundary drawn on 2 of 18 cards is not a
+    # boundary.
+    #
+    # SO WHAT IT GETS IS THE STRICTEST FETCH GUARD AND NO PAPER, which is the right way round. fetch_osm's
+    # census buckets it as `out_of_bounds`, a kind in neither VOLATILE_KINDS nor HAZARD_KINDS, so it has
+    # zero tolerance and no rarity exemption by default-deny and losing it aborts a re-fetch. It is NOT a
+    # hazard kind, because nothing draws it and no message should tell a human that hazard ink left a
+    # card when none did. Keeping the strict guard over a class we decline to draw is deliberate: the day
+    # the boundary is mapped completely enough to draw, the data must not have quietly gone away in the
+    # meantime.
+    #
+    # REVISIT WHEN, and only when, both halves exist: a boundary complete enough that its absence on a
+    # card means something, and a legend entry and ink of its own on both editions.
+    # test_out_of_bounds_is_fetched_and_deliberately_absent_from_every_card is the tripwire -- it fails
+    # the moment any of this starts reaching the paper, and says to add the legend entry rather than to
+    # delete the test.
+
     def in_corr_pt(lat, lon, buf):
         pe, pn = em(lat, lon)
         return min(dist_pt_seg(pe, pn, line_em[i][0], line_em[i][1], line_em[i+1][0], line_em[i+1][1])
@@ -821,11 +1636,15 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # frame around the corridor + every tree marker so no tree/tee/green is clipped.
     # big background fills (rough, woods) are NOT in the bounds -- they clip cleanly
     # at the frame edge instead of zooming the whole hole out. Water is drawn WHOLE and framed to the
-    # corridor, which is the same treatment one step finer -- see corridor_pts.
+    # corridor, which is the same treatment one step finer -- see corridor_pts. A non-water penalty area
+    # is framed the same way for the same reason -- it is selected by REACH, so its own extent says
+    # nothing about how big the hole is, and these run to 27,778 m^2 -- and keeping the two classes on one
+    # rule is also what makes this fix ink-neutral: the polygons are the ones that were in `waters`, they
+    # contribute the same frame points, so every card's frame and every coordinate on it is unchanged.
     allpts=[proj(p['lat'],p['lon']) for p in line]
     for g in bunkers+tees+fairways+treerows+[green]:
         allpts+=poly_pts(g)
-    for g in waters:
+    for g in waters+penalty_areas:
         allpts+=corridor_pts(g, CORRIDOR_M['water'])
     allpts+=[proj(la,lo) for la,lo in tree_src]
     xs=[p[0] for p in allpts]; ys=[p[1] for p in allpts]
@@ -898,9 +1717,83 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     fair_svg ="".join(f'<path d="{path(g)}" fill="#cfe8b2" stroke="#79b356" stroke-width="1.2"/>' for g in fairways)
     rough_svg="".join(f'<path d="{path(g)}" fill="#e9f0da" stroke="#cdd9b4" stroke-width="0.5"/>' for g in roughs)
     wood_svg ="".join(f'<path d="{path(g)}" fill="#9cbf86" fill-opacity="0.6" stroke="#7ea36a" stroke-width="0.5"/>' for g in woods)
+    # OPAQUE, and at a HEAVIER outline than water's, because this is a hazard and not a background fill and
+    # because its boundary is what relief is measured from. The same treatment `waters` gets one line down
+    # otherwise -- see PENALTY_FILL for the colour, the value and why the fill is flat. Drawn AFTER the
+    # turf fills and BEFORE the water: a hazard may not be hidden under fairway or rough, and where the
+    # two hazard classes ever meet, water is the more specific statement and keeps the top.
+    parea_svg="".join(f'<path d="{path(g)}" fill="{PENALTY_FILL}" stroke="{PENALTY_EDGE}" '
+                      f'stroke-width="1.2"/>' for g in penalty_areas)
+    # WETLAND IS THE SAME INK AND THE SAME WEIGHT AS A PENALTY AREA, because to a reader they are one thing
+    # -- ground that is not turf and holds no water. A separate near-white grey for it was designed and
+    # refused; see PENALTY_FILL for the owner's instruction and for the luma arithmetic that says this card
+    # has no light slot clearing the mono bar anyway. Its own list rather than concatenated into
+    # `penalty_areas`, because the footer names the two classes separately and a reader who sees "penalty
+    # area" on a callippe card would be told a Rule 17 marking that nothing in the data records.
+    wet_svg  ="".join(f'<path d="{path(g)}" fill="{PENALTY_FILL}" stroke="{PENALTY_EDGE}" '
+                      f'stroke-width="1.2"/>' for g in wetlands)
     water_svg="".join(f'<path d="{path(g)}" fill="#a9d3ef" stroke="#5b9bd0" stroke-width="1"/>' for g in waters)
+    # A WATERCOURSE IS DRAWN AS A LINE OF ONE WEIGHT, AND ITS WIDTH IS REFUSED. A `waterway` way is a
+    # CENTRELINE: OSM carries no width on any of the 185 in this corpus, so the only honest mark for one is
+    # a line that says "water crosses here" and not "water is this wide".
+    #
+    # THE CASE THAT ASKS FOR MORE, and the measurement that refuses it. monarch-bay way 1135575847 is a
+    # 4-node `waterway=stream` 1447.5 m long -- its last segment is a SINGLE straight 1398.7 m span, the
+    # figure _seg_near_played_line quotes -- and its own `source` tag records it as traced off aerial imagery
+    # rather than surveyed. The played lines of
+    # holes 12 and 18 come 1.0 m and 0.3 m from it, so both cross it, and it is drawn and counted on both
+    # (1W each). Nothing is omitted. It was put forward as a ~50-60 m wide water-filled tidal channel that
+    # the hairline understates, with an earlier LiDAR reading calling the hole 12 crossing "flat mown turf".
+    #
+    # Measured here from public-domain USGS 3DEP LiDAR, a +/-100 m cross-section at the hole 12 crossing in
+    # 5 m bins over a 20 m along-channel window. THE TILES ARE ftUS ON ALL THREE AXES -- NAD83(2011) /
+    # California zone 3 (ftUS) + NAVD88 (ftUS) -- so every figure below is converted through the CRS's own
+    # axis factor (0.3048006096) before it is published. The first version of this note was NOT: it read
+    # the tile coordinates as metres, which made every distance 0.3048x and every density 10.7639x wrong.
+    # Class-2 GROUND, so vegetation returns cannot move the profile:
+    #
+    #   * IT IS A CHANNEL, so the "mown turf" reading is wrong. Ground runs 3.00 m at -100 m and about
+    #     3.5 m from -60 to -35, drops through 2.71 and 0.84 to a TROUGH from -22 m to +20 m -- about 42 m
+    #     wide -- whose bed sits between -0.03 and +0.36 m, i.e. AT DATUM, then climbs back through 1.29,
+    #     2.25 and 3.33 to 5.1-5.4 m at +50 to +80 and 4.36 m at +100 m. The banks stand 3.0 m (west) and
+    #     4.4 m (east) above that bed.
+    #   * AND THERE IS NO OPEN WATER ON THE FLIGHT: return density is 28.34-80.51 pt/m^2 across the whole
+    #     200 m against a nominal (p75) of 33.34, with NO void anywhere -- the 74.6-80.5 spikes at -50 to
+    #     -35 are multi-return vegetation, not water. That is consistent with a tidal bed exposed at low
+    #     water, which is when a coastal delivery is flown, and it means the flight cannot measure the
+    #     wetted width either.
+    #   * THE HOLE 18 CROSSING HAS NO COVERAGE AT ALL, so it cannot be measured. The 3000-ft cell
+    #     containing it, w6072n2076, is not one of the seven tiles on disk, and the transect returns ZERO
+    #     points. (An earlier wording here said a tile's bounding box overlaps it and holds no points
+    #     there. That is misleading: w6075n2076's bbox does overlap the axis-aligned window and does hold
+    #     16,249 points inside it, all of them 58+ m east of the 20 m along-channel strip. The coverage
+    #     claim is about the cell that was never fetched, not about a neighbour's bounding box.)
+    #
+    # THE CORRECTED TROUGH IS WIDER THAN THE ERRONEOUS ONE AND CLOSER TO THE CLAIM IT REFUSES, said plainly
+    # rather than left for the next reader to notice: 42 m against the 25 m first published, against a
+    # proposed 50-60 m. It does not change the answer, and the reason is what the 42 m IS -- a topographic
+    # trough at low water, measured at ONE station on ONE of the two crossings. It is not a wetted width,
+    # and no wetted width exists in any source on this flight.
+    #
+    # AND NO SOURCE CARRIES A WIDTH. No `width` tag; and OSM maps this water as LINES, not as a surface --
+    # queried over the surrounding box, there is no `natural=water` polygon and no `waterway=riverbank` for
+    # it, only this stream, two `waterway=tidal_channel` ways 496 m and 807 m away, and the sea edge as
+    # `natural=coastline`. So a band would have banks that no source has: one LiDAR station of trough width,
+    # none at the other crossing, hung on a 1398.7 m straight sketch. That is rule 1 -- a number the data
+    # does not support -- and the hazard is already drawn and already counted, so refusing costs no warning.
+    #
+    # WHAT WOULD LICENSE IT: a mapped bank (a `natural=water` polygon or `waterway=riverbank`), which would
+    # make it AREA water and need nothing new here; or a width measured from LiDAR at enough stations along
+    # the reach to carry its shape, recorded per course the way the elevation products already are.
     creek_svg="".join('<polyline points="'+" ".join(f"{TX(x):.1f},{TY(y):.1f}" for x,y in poly_pts(g))
                       +'" fill="none" stroke="#5b9bd0" stroke-width="1.8" stroke-linecap="round"/>' for g in creeks)
+    # A DRY CHANNEL IS THE SAME LINE IN THE NOT-WATER GREY, at the same 1.8 weight, and it takes the EDGE
+    # constant rather than the fill: a line has no interior, so #f2f2f2 at 5.08 levels off the rough would
+    # be a hazard drawn as nothing, while #c8c8c8 is 36.92 off it and survives a mono print. See
+    # runs_dry_in_season for why the class exists and PENALTY_FILL's note for both figures.
+    dry_creek_svg="".join('<polyline points="'+" ".join(f"{TX(x):.1f},{TY(y):.1f}" for x,y in poly_pts(g))
+                      +f'" fill="none" stroke="{PENALTY_EDGE}" stroke-width="1.8" stroke-linecap="round"/>'
+                      for g in dry_creeks)
     bunk_svg ="".join(f'<path d="{path(g)}" fill="#efe3b8" stroke="#c9b477" stroke-width="0.8"/>' for g in bunkers)
     green_svg=f'<path d="{path(green)}" fill="#7cc45a" stroke="#2f5a26" stroke-width="2"/>'
     trow_svg ="".join('<polyline points="'+" ".join(f"{TX(x):.1f},{TY(y):.1f}" for x,y in poly_pts(g))
@@ -927,11 +1820,11 @@ def render_hole(hnum, HOLES, font_scale=1.0):
         y=min(max(y, fs), VBH-3)
         return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{fs:.1f}" text-anchor="middle" '
                 f'paint-order="stroke" stroke="#fff" stroke-width="{fs*0.24:.1f}" fill="{fill}" font-weight="700">{sn}</text>')
-    # place labels CLEAR of the features: GRN above the green top, BLA below the tee box,
+    # place labels CLEAR of the features: GRN above the green top, the tee name below the tee box,
     # so neither covers the green or the tee.
     grn_y = gtop - FS*0.35 if gtop - FS*0.35 > FS else gbot + FS
     bla_y = ty + FS*1.1 if ty + FS*1.1 < VBH-2 else ty - FS*0.6
-    labels=txt(tx, bla_y, back_tee, "#20402a") + txt(gcx, grn_y, "GRN", "#2f5a26")
+    grn_label = txt(gcx, grn_y, "GRN", "#2f5a26")
 
     # Distance ticks. LEFT number (green) = yds to the GREEN, the straight-line distance a
     # rangefinder reads. RIGHT number (brown) = yds from the BACK tee, measured ALONG the drawn
@@ -954,7 +1847,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
            for i in range(len(pts_em)-1)]
     arc_m = sum(seg) or 1.0
     arc_yd = arc_m / 0.9144
-    # Does the drawn line actually span the hole? On 21 of 198 holes it does not: 19 stop short of
+    # Does the drawn line actually span the hole? On 22 of 216 holes it does not: 20 stop short of
     # the back tee and 2 OVERSHOOT it (OSM traced past the tee). Was 22/20/2 until valley-hi 17's
     # too-tight osm_bbox was widened on 2026-07-31 and the re-fetch replaced a hand-drawn 220 yd stub
     # with the real 360 yd centreline, moving that hole into the spanning set. Either way no from-tee distance
@@ -979,6 +1872,37 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # The mirror case: a line traced PAST the tee. Same conclusion -- the length difference is at the
     # tee end -- so the same signed shift and the same from-tee derivation apply.
     past_tee = not tee_ok and line_traced_past_the_tee(arc_yd, total_yd, L/0.9144)
+
+    # THE TEE MARK NAMES THE BACK TEE ONLY WHERE THE LINE RUNS FROM IT, which is `tee_ok` and nothing
+    # weaker. The mark is drawn at the DRAWN LINE's start, and the label asserted that pad IS the tee
+    # the card headlines -- on all 216 cards, including the 22 where the line's own length says it
+    # cannot be. Merion 5 is the case: the card headlines 501 Championship, the traced centreline walks
+    # 397.9 yd (the Middle tee's 394 yd route), the line starts INSIDE mapped tee way 285155689, and
+    # the card put "CHA" on that pad -- telling a junior standing on it that they were on a tee that is
+    # 103 yd behind them, beside carries this file measures correctly FROM that real tee (276 / 297,
+    # through tee_shift_yd below). Two claims 103 yd apart on one card.
+    #
+    # WHY THE NAME IS DROPPED RATHER THAN MOVED OR CHANGED, each alternative measured:
+    #   * MARKING THE TRUE BACK TEE needs a position no source gives. On merion 5 the shortfall wants a
+    #     pad 94.5 m behind the line's start along the hole axis; the nearest candidates sit 57.8 m and
+    #     84.9 m back by centroid and the closer one carries `ref=2` -- it is hole 2's tee. The frame is
+    #     also fitted to the features it draws, so a mark 94 m outside it would rescale every card.
+    #   * NAMING THE PAD THE LINE STARTS ON rests on the forward-tee yardage match alone, which
+    #     line_runs_from_a_forward_tee's own measurement calls weak (it fires on 41% of decoys). This
+    #     course's hole 10 is the counter-example: its line starts on the REAR-MOST of the hole's pads
+    #     (the other four lie +18 to +98 m DOWN the hole) while the yardage match names Blue, so naming
+    #     the nearest pad would print a second wrong name.
+    #   * A GENERIC WORD would still be a claim, because the POSITION is the claim: the label points at
+    #     one of the 2 to 5 tee pads these cards draw, beside a headline naming one tee, so any word
+    #     pinned there says "this pad is the one". Only removing it removes that.
+    # Nothing else about the tee end changes: the pads keep their tee ink, the dashed line still starts
+    # on the one the route runs from, and the green stays at the top of the frame with GRN on it. What a
+    # reader loses on those 22 cards is a sentence the data never supported. par3_straight is
+    # deliberately NOT an alternative licence -- it recovers the tee's DISTANCE by collinearity, not the
+    # mark's position, and merion 9's mark would still stand 70 yd in front of the tee it named.
+    # Graded by tests/test_r18_tee_mark.py, which measures the pad against the tee rather than the
+    # label against a string.
+    labels = (txt(tx, bla_y, back_tee, "#20402a") if tee_ok else "") + grn_label
 
     # A PAR 3 is the one case where the from-tee distance needs no model at all -- see
     # par3_exact_from_tee for why, and why par 4/5 are excluded. This also CORRECTS the 64 par-3 rows
@@ -1211,25 +2135,113 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # clubs against, and worse than the empty gutter it sat beside. Shift by the same tee-to-tee gap
     # the from-tee gutter numbers are derived through, BEFORE the filters, so the 80-300 yd window and
     # the greenside test judge back-tee distances too. That also fixes two spurious carries: merion 9's
-    # greenside bunker lands at 215 on a 231 yd hole and is correctly dropped, and valley-hi 6's at 303
+    # greenside bunker lands at 216 on a 231 yd hole and is correctly dropped, and valley-hi 6's at 304
     # is past anyone's tee shot.
     # Signed, and correct in both directions: positive where the line starts at a forward tee, negative
     # where it was traced past the back tee.
     tee_shift_yd = (total_yd - arc_yd) if (fwd_tee or past_tee) else 0.0
-    # Where the GREEN starts, along the same chord and through the same shift as every carry below.
+    # ONE ORIGIN PER CARD, AND IT IS THE FROM-TEE GUTTER'S.
+    #
+    # A card prints two things "from the back tee" and they were measured from two different tees. The
+    # gutter derives its number by distributing the card's own yardage along the drawn line
+    # (`ft_exact = total_yd * arc_from_tee / arc_m`); every carry above took the same kind of distance
+    # straight off the geometry with no correction at all, because `tee_shift_yd` is 0 for every hole that
+    # satisfies tee_ok -- and tee_ok's tolerance is max(15 yd, 5%). So up to 25 yd of origin disagreement
+    # passed while the carry printed to the yard, on a card whose legend reads "carry N = yd from the back
+    # tee" beside a gutter labelled "from the tee (walked)". On trump-national-los-angeles: hole 6 printed
+    # carry 269 where its own gutter scale gives 275.6, hole 18 172 against 177.7, hole 3 115 against
+    # 118.8, hole 5 245 against 240.9, hole 7 202 against 200.9. Hole 10 was the only card there that got a
+    # shift at all -- it runs from a forward tee -- and the only one internally consistent. Corpus-wide 125
+    # printed carries sit on tee_ok holes whose line disagrees with the card.
+    #
+    # THE GUTTER'S MODEL IS THE BETTER ONE for a tee_ok hole, which is why it is the one both figures now
+    # use. Both already start from the drawn line's own start; what differed is where the back tee is taken
+    # to be relative to it. On this course every hole's line starts INSIDE a mapped tee polygon
+    # (start_at_tee_m is 0.0 on all 18) with the back-tee complex reaching only 3.0-19.0 yd behind that
+    # start, while the card-versus-arc gap runs to 22 yd. So the gap is not AT the tee: it is the mapped
+    # centreline cutting a route the card's yardage follows, spread along the hole -- the castlewood-valley
+    # 10 case described below, and exactly what a proportional distribution models. An ADDITIVE shift is
+    # right only where the difference is known to sit at the tee end, which is what fwd_tee and past_tee
+    # establish and what tee_ok does not.
+    #
+    # CLAMPED AT 1.0, so it may only ever SHORTEN a carry. Too long is the dangerous direction -- it tells
+    # a player they have room they do not have, and a junior who believes an overstated carry aims at a
+    # hazard -- and this file already refused a card-derived origin for the carries in that direction, for
+    # this reason: see the merion 3 note above, where propagating par3_exact's origin would have printed 205
+    # for sand the mapped geometry puts at 184. Where the drawn line is SHORT of the card the scale would
+    # be above 1 and is refused, so those carries keep the conservative figure they printed; where the line
+    # is LONG of the card the scale is below 1 and the carry comes down. That is the half that was actually
+    # unsafe: 46 of those 125 windows sit on holes drawn longer than the card, where measuring straight off
+    # the geometry reads LONG.
+    #
+    # Measured cost over all 13 courses, no book rebuilt. The from-tee gutter is UNTOUCHED -- not one of its
+    # 889 printed numbers moves on any of the 216 cards -- and no hole SVG changes a byte, so this moves the
+    # figure that was wrong and leaves the one that was right alone. 38 printed carry figures come down, on
+    # 35 cards of 9 courses, every one of them DOWN, by a median 2 yd and at most 6 (philadelphia 2,
+    # 239 -> 233). On this course: hole 5's 245 -> 240 and hole 7's 202 -> 201, the two the audit found
+    # reading long, while holes 3, 6, 18 and 10 keep every figure they printed -- their lines are SHORT of
+    # the card, where the scale would be above 1 and is refused.
+    #
+    # ONE card changes structurally, 135 printed windows -> 134: castlewood-valley 1 loses "carry 82",
+    # because sand at raw 82.0 is 79.36 yd from the back tee on the card's own scale and the 80 yd floor
+    # this block applies to both measures refuses it. Nothing is hidden -- the bunker is still drawn and
+    # still counted in that footer's NB -- and 80 yd off the tee is not a driving decision, which is what
+    # the floor says. No card gains a window (see the reach-window note below, which is what stops the
+    # scale conjuring one) and no card's "sand to the green" mark moves.
+    #
+    # green_front_yd, which is published and not printed, moves on 90 cards because it now goes through the
+    # same frame -- which is the point: the landing rule has to compare a scaled window against a scaled
+    # green front, or the fix would introduce one level down the very mismatch it removes one level up.
+    #
+    # THE THREE PUBLISHED COUNTS OF "how many printed figures CARRY_MERGE_GAP_YD governs" NOW READ 134,
+    # and the rebuild this note was waiting for is the reason. They are graded against the SHIPPED pocket
+    # books -- test_every_published_count_of_the_printed_carry_figures_is_what_the_books_print counts
+    # `carry <b>...</b>` out of the HTML, because the claim is about figures a READER CAN SEE -- so while
+    # the books still printed 135 and this engine printed 134, the four statements were deliberately left
+    # at 135 and that test held the pair together. The corpus has now been rebuilt on this engine and the
+    # books print 134, so all four moved with it in one commit: the two headline sentences, the
+    # "Cost: ... 146 -> 134" line, and the sibling in tests/test_phase1_regressions.py. Re-derived by
+    # counting the digits inside `carry <b>...</b>` across the thirteen rebuilt pocket books, never by
+    # subtracting one from the old figure.
+    #
+    # Published in `info` for the reason green_gap_yd and carry_origin_known are: the test that grades
+    # which origin a printed carry came from cannot re-derive this frame's chord basis and tee shift
+    # without becoming a second copy of them. Both halves are published, because both are built from the
+    # UNROUNDED arc and a test rebuilding either from the published integer `arc_yd` is up to 0.5 yd out --
+    # enough to move a rounded carry by one, which is the first thing that test got wrong. See
+    # test_both_yd_from_the_back_tee_figures_on_a_card_come_from_one_origin.
+    carry_scale = min(1.0, total_yd / arc_yd) if tee_ok else 1.0
+    def from_tee_yd(along_m):
+        """Along-chord metres from the LINE's start -> yd from the BACK tee, in this card's one frame.
+
+        Every figure the carry block measures goes through here -- the sand's two edges and the green
+        front alike -- so the landing rule below cannot end up comparing a scaled window against an
+        unscaled green front. That drift is the whole defect this frame exists to remove, one level down.
+        """
+        return along_m / 0.9144 * carry_scale + tee_shift_yd
+    # Where the GREEN starts, along the same chord and through the same frame as every carry below.
     # min() over the whole ring rather than only its near-the-chord part: a green offset from the chord
     # projects SHORT, which understates the landing area and so refuses more carries, not fewer. That is
     # the safe direction for a number a junior clubs against. Published in `info` for the same reason
     # green_gap_yd is -- a test that grades the landing decision needs it, and computing it there would
     # be a second copy of this frame's projection, chord basis and tee shift.
-    green_front_yd = min(((em(p['lat'], p['lon'])[0]-tee[0])*ux
-                          + (em(p['lat'], p['lon'])[1]-tee[1])*uy) / 0.9144 + tee_shift_yd
+    green_front_yd = min(from_tee_yd((em(p['lat'], p['lon'])[0]-tee[0])*ux
+                                     + (em(p['lat'], p['lon'])[1]-tee[1])*uy)
                          for p in green['geometry'])
     carries = []
     # ...and the sand the greenside filter drops, kept rather than thrown away. It is not a tee carry,
     # which is all `near_yd > total_yd - 40` establishes, but it is still ground a lay-up has to land
     # short of. See the landing block below for what it is used for and why it is not simply excluded.
     greenside = []
+    # EVERY span of sand near the chord, before ANY of the carry filters. The two lists above answer
+    # "is this a tee carry?" and "is this greenside sand?", and both drop sand for reasons that are
+    # about the CARRY DECISION -- too near the tee to club against, past CARRY_MAX_YD, behind a forward
+    # tee. None of those reasons bear on the different question the `sand to the green` mark asks,
+    # which is simply "does the sand run on to the putting surface from here". Answering that off the
+    # filtered lists understates the reach and would withdraw the mark from cards that have earned it.
+    # Kept to the same 30 m off-chord bound the carry frame uses, because that is the frame this whole
+    # block measures in.
+    sand_spans = []
     for g in bunkers:
         alongs, offs = [], []
         for p in (g.get('geometry') or []):
@@ -1239,14 +2251,30 @@ def render_hole(hnum, HOLES, font_scale=1.0):
             offs.append(abs(dx*perp[0] + dy*perp[1]))
         if not alongs:
             continue
-        near_yd = min(alongs)/0.9144 + tee_shift_yd
-        far_yd  = max(alongs)/0.9144 + tee_shift_yd
-        # The shift is only trustworthy for sand well UP the hole, where the direction from the back
-        # tee is nearly the chord direction. Close to the tee the back tee's unknown lateral offset
-        # dominates, and shifting swept in bunkers lying BEHIND the forward tee: merion 5 grew a
-        # "carry 81" and "105" from sand at -22 and +2 yd along its own line. So the reach test must
-        # also pass on the UNSHIFTED distance -- a carry has to be a real carry from the mapped tee too.
-        if min(alongs)/0.9144 < CARRY_MIN_YD:
+        near_yd = from_tee_yd(min(alongs))
+        far_yd  = from_tee_yd(max(alongs))
+        if min(offs) <= CARRY_OFF_M:
+            sand_spans.append((near_yd, far_yd))
+        # THE 80-300 REACH WINDOW HAS TO PASS ON BOTH MEASURES: the raw distance along the drawn line and
+        # the modelled distance from the back tee. The tee model may shorten a printed carry or withdraw
+        # one; it may never conjure one the drawn geometry does not itself support.
+        #
+        # This end of that rule is the older half. The shift is only trustworthy for sand well UP the hole,
+        # where the direction from the back tee is nearly the chord direction; close to the tee the back
+        # tee's unknown lateral offset dominates, and shifting swept in bunkers lying BEHIND the forward
+        # tee -- merion 5 grew a "carry 81" and "105" from sand at -22 and +2 yd along its own line.
+        #
+        # The CEILING is the same principle at the far end, and it is what keeps the from-tee scale from
+        # inventing a figure. Two cards had sand just past CARRY_MAX_YD on the raw measure that the scale
+        # pulled back inside it: castlewood-valley 1 at raw 306.09 -> 296 and the-reserve 1 at raw 302.45
+        # -> 299. Both are true distances and both would have printed, and the second is why the bound is
+        # here rather than argued away: its window is kept by the landing rule on 0.07 yd of grass -- the
+        # next greenside sand starts 8.07 yd past its far edge against an 8.0 yd bar -- and the sand
+        # complex then chains 21.17 yd PAST the green front. "carry 299" on a 348 yd hole would have been
+        # an invitation to land in an 8 yd strip between two bunkers, which is the exact defect the
+        # landing rule exists to refuse. Neither card loses anything to this bound: those two are the only
+        # printed carries in the corpus whose raw near edge is past 300 at all.
+        if not (CARRY_MIN_YD <= min(alongs)/0.9144 <= CARRY_MAX_YD):
             continue
         if not (CARRY_MIN_YD <= near_yd <= CARRY_MAX_YD) or min(offs) > CARRY_OFF_M:
             continue
@@ -1270,22 +2298,22 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # becomes the one number on that card a player could act on and be wrong about.
     #
     # That argument was already written down here -- see the par-3 note below, on the-reserve 8 (sand
-    # ending 2.24 yd short of its green) and merion 13 (sand ending PAST its green front). It was
+    # ending 2.23 yd short of its green) and merion 13 (sand ending PAST its green front). It was
     # keyed on PAR, and none of it is a property of par. Re-measured over the 198 geometry cards after
     # the WGS84 per-axis migration, seven windows on seven PAR 4s had no landing area either:
     #
     #     merion 10        carry 227, sand to 284.1, green front 253.4  ->  -30.7 yd
-    #     micke-grove 3    carry 294, sand to 309.3, green front 296.8  ->  -12.5
-    #     philadelphia 1   carry 212, sand to 307.0, green front 299.4  ->   -7.6
+    #     micke-grove 3    carry 293, sand to 307.9, green front 295.4  ->  -12.4
+    #     philadelphia 1   carry 205, sand to 296.3, green front 289.0  ->   -7.3
     #     callippe 12      carry 272, sand to 293.3, green front 293.6  ->    0.3
     #     castlewood-v 8   carry 287, sand to 309.7, green front 311.6  ->    1.9
-    #     copper-valley 3  carry 294, sand to 312.4, green front 315.7  ->    3.3
+    #     copper-valley 3  carry 291, sand to 309.5, green front 312.8  ->    3.3
     #     monarch-bay 14   carry 273, sand to 283.4, green front 286.8  ->    3.4
     #
     # Three of those are NEGATIVE: on merion 10 the sand ends 30 yd past the green front, because the
     # card (306 yd) and the mapped green disagree by 53 yd, so a greenside pair straddling the green
     # slipped past the `total_yd - 40` greenside test. philadelphia 1 is the case that motivated this:
-    # three bunkers 3.8 yd apart merging into 212 -> 307 on a 325 yd hole whose green front is at 299.
+    # three bunkers 3.6 yd apart merging into 205 -> 296 on a 325 yd hole whose green front is at 289.
     #
     # THE BAR IS CARRY_MERGE_GAP_YD, not a new threshold -- picking one would have been a guess. That
     # constant already declares a gap this small along the played line to be one obstacle rather than two
@@ -1298,9 +2326,9 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # in play and it named neither:
     #
     #   * by the RULE'S OWN measure -- `beyond = min(next merged window, greenside sand, green front)`,
-    #     unrounded edges -- worst KEPT that the rule can decide 8.8428 (castlewood-hill 10, bounded by
-    #     greenside sand), best DROPPED 6.1489 (micke-grove 13, likewise). Margin over the bound: 0.8428,
-    #     and that is the thinnest real margin, so it is the honest headline for a bound governing 119
+    #     unrounded edges -- worst KEPT that the rule can decide 8.8377 (castlewood-hill 10, bounded by
+    #     greenside sand), best DROPPED 6.1489 (micke-grove 13, likewise). Margin over the bound: 0.8377,
+    #     and that is the thinnest real margin, so it is the honest headline for a bound governing 134
     #     printed figures.
     #   * by the SUPPRESSION TEST's measure -- last PRINTED window only, `reach` seeded from the ROUNDED
     #     far edge and then chained across any strip of grass narrower than CARRY_MERGE_GAP_YD, which is
@@ -1312,12 +2340,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # a carry at all -- see the greenside paragraph below -- so both figures are history, and it is the
     # thinner of the two measures that changed hands: it is now the rule's own.
     #
-    # "worst KEPT" also needed qualifying: 3 kept windows are tighter than 8.8428 -- copper-valley 17 at
-    # 8.2538, merion 5 at 8.5073, monarch-bay 2 at 8.5827. Every one is bounded
+    # "worst KEPT" also needed qualifying: 4 kept windows are tighter than 8.8377 -- copper-valley 17 at
+    # 8.2538, merion 5 at 8.5073, trump-national 14 at 8.5661, monarch-bay 2 at 8.5827. Every one is bounded
     # by the NEXT MERGED WINDOW, and the merge guarantees a gap above CARRY_MERGE_GAP_YD between two
-    # merged windows by construction, so those are TAUTOLOGICAL and can never be dropped. 8.8428 is
-    # the worst of the 82 KEPT windows the rule decides, and 8.2538 the worst of all 124 kept;
-    # 95 of the corpus's 137 windows are decidable at all. (That list said FOUR,
+    # merged windows by construction, so those are TAUTOLOGICAL and can never be dropped. 8.8377 is
+    # the worst of the 92 KEPT windows the rule decides, and 8.2538 the worst of all 141 kept;
+    # 109 of the corpus's 158 windows are decidable at all. (That list said FOUR,
     # naming micke-grove 11 at 8.5031, and the counts said 86 and 132. All three came from a test that
     # re-derived the rule over every golf=bunker way on the course, skipping the corridor pre-filter
     # `bunkers` is built with -- so micke-grove 11's second window is sand this engine never selects,
@@ -1327,11 +2355,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # And the value is inherited rather than measured ON PURPOSE. The physical question -- "is N yards a
     # landing area for a junior's tee shot" -- needs dispersion data this project does not have, so a
-    # measured replacement would be a guess in charge of 119 figures. What the corpus can say is that the
-    # decision is insensitive to the value: every window the rule decides is at 6.1489 or below or 8.8428
-    # or above, so any bound inside that 2.6940 yd gap gives the identical outcome. That gap USED to be
-    # 5.3205 yd wide, so counting the greenside sand has made the bound more load-bearing, not less --
-    # honest either way, and 8.0 still decides no card. All of the above is
+    # measured replacement would be a guess in charge of 134 figures. What the corpus can say is that the
+    # decision is insensitive to the value: every window the rule decides is at 6.1489 or below or 8.8377
+    # or above, so any bound inside that 2.6889 yd gap gives the identical outcome. That gap was WIDER
+    # before the greenside sand was counted as a bound, so counting it has made the value more
+    # load-bearing rather than less -- the earlier width is not re-derivable from this tree and is left
+    # unstated rather than restated. Either way 8.0 still decides no card. All of the above is
     # re-derived and graded by test_the_landing_bound_publishes_the_metric_each_of_its_margins_belongs_to,
     # which also fails if a re-fetch closes the gap and makes the value start deciding cards.
     #
@@ -1367,33 +2396,44 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # but CARRY_MERGE_GAP_YD already declares a gap that small to be ONE obstacle rather than two
     # decisions, so that sand is part of the same complex, and beyond the whole complex there are 57.83
     # yd of fairway before the 381.09 green front. The card's legend already says sand can run well past
-    # N (the-reserve 16 prints "carry 177" for sand reaching 322). Refusing there would withdraw a
+    # N (the-reserve 16 prints "carry 177" for sand reaching 321). Refusing there would withdraw a
     # correct carry, which is the one thing this rule must not do.
     #
-    # Cost: 9 figures across 9 of 198 cards, 128 -> 119; four cards lose their only carry row
+    # Cost: 11 figures across 11 of 216 cards, 145 -> 134; four cards lose their only carry row
     # (philadelphia 1, micke-grove 3 and 13, callippe 12) and no course loses all of them. Nothing is
     # hidden -- the bunkers stay drawn and stay counted in the footer's "NB". Only the false invitation
     # goes.
+    # BOTH SIDES OF THAT PAIR MOVED AT THE 2026-08-10 REBUILD, and only re-deriving both kept the
+    # arithmetic honest: it read 146 -> 135, and correcting the after-figure alone would have made the
+    # stated cost 12 while this filter still withdraws 11. The before-figure is the count with this
+    # filter's refusal disabled, measured on this engine, and it came down to 145 for the same reason the
+    # after-figure came down to 134 -- castlewood-valley 1's "carry 82" is refused by the 80 yd floor in
+    # the scaled frame, which happens upstream of here, so it never reaches either side of this pair.
     #
-    # AND THE CARD SAYS SO, because withdrawing the figure silently left a different fault. Nine windows
-    # in this corpus have no landing area: merion 1 is one of them -- its fourth merged window is the
-    # refused one, and the three it keeps (172, 212, 245) are the three it prints. On five of the nine
-    # (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14) an EARLIER carry
+    # Of those 11 refusals, 10 print the mark. Those two counts were the same number for as long as
+    # every refused window happened to have sand running on to its green, and they are NOT the same
+    # question -- see the reach gate below, and trump-national-los-angeles 16, the one card that is
+    # refused and silent.
+    #
+    # AND THE CARD SAYS SO, because withdrawing the figure silently left a different fault. Ten windows
+    # in this corpus have no landing area AND sand that reaches the green: merion 1 is one of them -- its fourth merged window is the
+    # refused one, and the three it keeps (172, 212, 245) are the three it prints. On six of the ten
+    # (merion 1 and 10, castlewood-valley 8, copper-valley 3, monarch-bay 14, trump-national 10) an EARLIER carry
     # survives, so the printed list just ended before the sand did and nothing distinguished "no more
     # sand" from "sand we declined to number".
     #
     # `sand_to_green` is that statement, and it carries no digit ON PURPOSE. Both edges are supported
     # numbers and both are wrong to print: the near edge is the lay-up invitation this rule exists to
     # withdraw, and the far edge of the refused WINDOW is
-    # at or past the green front on four of the nine and short of it by up to 8.75 yd on the other five
+    # at or past the green front on five of the ten and short of it by up to 8.75 yd on the other five
     # -- merion 10's is 284 with the front at 253, philadelphia 1's is 307 with the front at 299 -- so
     # clubbing to "clear" it either flies the green or lands in the sand that carries on past it.
     # Too long is the direction this file already calls the dangerous one (see the par3_straight
     # note below).
     #
     # THAT SENTENCE USED TO SAY "on all nine", WHICH IS THE OTHER METRIC'S PROPERTY. "at or past on all
-    # nine" is true of the chained REACH below and false of the window's own far edge, which falls SHORT
-    # on five of the nine -- callippe 12 by 0.27, castlewood-valley 8 by 1.87, monarch-bay 14 by 3.43,
+    # of them" is true of the chained REACH below and false of the window's own far edge, which falls SHORT
+    # on five of the ten -- callippe 12 by 0.27, castlewood-valley 8 by 1.87, monarch-bay 14 by 3.43,
     # copper-valley 3 by 3.31 and micke-grove 13 by 8.75. e0648c6 grew this set from eight cards to nine
     # and the card it added was that worst counter-example, so the sentence became false on the majority
     # of the cases it names while reading as though it had been re-checked. Which is why the reason for
@@ -1402,13 +2442,56 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     #
     # Measured with the greenside sand the `total_yd - 40` filter drops, and across a strip of
     # grass narrower than CARRY_MERGE_GAP_YD where there is one (micke-grove 13's 6.15 yd),
-    # every one of the nine REACHES at or past the green front, which makes the wording true
+    # every one of the ten REACHES at or past the green front, which makes the wording true
     # rather than a hedge.
+    #
+    # ...AND ON ONE CARD IT DID NOT, WHICH IS WHY THE MARK IS NOW GATED ON THAT REACH RATHER THAN
+    # INHERITING IT. Refusing a window and SAYING "sand to the green" are two claims, and only the
+    # first one follows from `beyond - b <= CARRY_MERGE_GAP_YD`: that test says the window has no
+    # LANDING AREA, i.e. that whatever comes next comes within 8 yd of it -- and "whatever comes next"
+    # is `min(next window, next greenside sand, green front)`. Where the thing that comes next is the
+    # GREEN FRONT, the two claims coincide and the words are true. Where it is more SAND, they do not:
+    # the chain has to actually run on to the green, and nothing checked that it did.
+    #
+    # trump-national-los-angeles 16 is the case. Its three windows are 120.06-198.26, 246.80-259.23
+    # and 275.98-288.51 against a green front at 293.64, so the last one is refused on 5.13 yd of room
+    # -- correctly, there is nowhere to land -- and the card said "sand to the green" over sand that
+    # STOPS 5.13 yd short of it. The bunker that would have closed the gap (way 759031458, 278.48-297.73,
+    # which does straddle the front) lies 42.8 m off the CHORD against CARRY_OFF_M's 30, so the carry
+    # frame never sees it; it IS drawn on the card, because the drawing corridor is measured off the
+    # polyline instead. So the map showed sand running to the green while the only thing that could
+    # justify the words was outside the frame that had to justify them.
+    #
+    # THE GATE IS THE SAME CHAIN THE TEST SUITE ALREADY MEASURES, and it is deliberately computed from
+    # this frame's own windows -- no new corridor, no new constant. A refused window earns the mark only
+    # if the sand from its far edge reaches green_front_yd, chaining across gaps no wider than
+    # CARRY_MERGE_GAP_YD, which is the constant that already declares a gap that narrow to be one
+    # obstacle. Where it does not reach, the window is still REFUSED -- the carry figure is still
+    # withheld, which is the safe half -- and the card simply says nothing, which is what it did before
+    # the mark existed. Withholding a figure needs no justification on the card; asserting where the
+    # sand goes does.
+    #
+    # Cost, measured: one card in the corpus loses the phrase (trump-national-los-angeles 16), no card
+    # gains one, and no carry figure moves anywhere. The other ten refusals all reach their green front
+    # and are unaffected.
     kept, no_landing = [], []
     for i, (a, b) in enumerate(merged):
         nxt = ([merged[i+1][0]] if i+1 < len(merged) else []) + [n for n, f in greenside if f > b]
         beyond = min(nxt + [green_front_yd])
-        (kept if beyond - b > CARRY_MERGE_GAP_YD else no_landing).append((a, b))
+        if beyond - b > CARRY_MERGE_GAP_YD:
+            kept.append((a, b))
+            continue
+        # Refused. Does the sand actually run ON to the green from here? Chain forward over every
+        # window this frame holds -- the tee-carry ones and the greenside ones alike -- across gaps no
+        # wider than CARRY_MERGE_GAP_YD, and require the reach to make the green front.
+        reach, grew = b, True
+        while grew:
+            grew = False
+            for a0, b0 in sand_spans:
+                if a0 <= reach + CARRY_MERGE_GAP_YD and b0 > reach:
+                    reach, grew = b0, True
+        if reach >= green_front_yd:
+            no_landing.append((a, b))
     carries = [(round(a), round(b)) for a, b in kept]
     # A CARRY NEEDS AN ORIGIN THE GEOMETRY CORROBORATES. Every distance above is measured along the line
     # from where the line STARTS, shifted by tee_shift_yd. That shift only exists when tee_ok, fwd_tee or
@@ -1449,7 +2532,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # card, and on two of them the near edge was actively misleading:
     #
     #   * the-reserve 8 printed "carry 90" for a 128-vertex waste complex running from 90 to 216 yd on
-    #     a 237 yd hole -- sand ending 2.24 yd short of the green front (218.03 - 215.79). Flying 90
+    #     a 237 yd hole -- sand ending 2.23 yd short of the green front (217.11 - 214.88). Flying 90
     #     clears nothing; the distance that matters is ~215. A 126 yd gap, eight or nine clubs, and the
     #     near edge is the one number on that card a player could act on and be wrong about. (The figure
     #     read "four yd" until the WGS84 per-axis migration re-measured it, and travelled into a NEW
@@ -1483,7 +2566,7 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # did, or all 12 pocket books change bytes for a purely cosmetic reason.
     vb=f"0 0 {round(VBW,1):g} {VBH:.1f}"
     svg=(f'<svg viewBox="{vb}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">'
-         f'{wood_svg}{rough_svg}{fair_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
+         f'{wood_svg}{rough_svg}{fair_svg}{parea_svg}{wet_svg}{dry_creek_svg}{water_svg}{creek_svg}{bunk_svg}{center}{tee_svg}{green_svg}{pin}'
          f'{trow_svg}{tdot_svg}{rings}{labels}</svg>')
     # COUNT WHAT THIS CARD DRAWS. An earlier attempt counted "features whose nearest hole is this
     # one, within 90 m" so that the per-hole numbers would sum to no more than the course holds
@@ -1501,10 +2584,59 @@ def render_hole(hnum, HOLES, font_scale=1.0):
     # printed it over five separate lines of Cobbs Creek. The guide's legend calls all of it "water
     # (blue)", so the footer was contradicting both the map beside it and the legend that explains it.
     info=dict(bunkers=len(bunkers),
-              # distinct PHYSICAL waters: the area hazards plus the deduplicated watercourses. See
-              # watercourse_identity -- counting OSM ways made one split creek read as several.
-              waters=len(waters)+len({watercourse_identity(g) for g in creeks}),
+              # DISTINCT PHYSICAL WATERS -- see water_identity for what that unit is and why the card
+              # prints it rather than a feature count. Counting OSM ways made one split creek read as
+              # several; counting drawn polygons made one multipolygon river read as one W per outer ring.
+              # Areas and lines go through ONE set for that reason: a `natural=water` ring and a
+              # `waterway` line of the same NHD reach are the same water seen twice, and two counts that
+              # deduplicate separately cannot notice it.
+              waters=len({water_identity(g) for g in waters + creeks}),
               water_hazards=len(waters), watercourses=len(creeks),
+              # WHICH FEATURES THIS CARD INKED AS WATER. Nothing prints these and nothing may: the card
+              # names classes, not OSM ids. They exist so the suite can check rule 2 by IDENTITY instead
+              # of by COUNT, which is the difference between catching an omission and missing it.
+              #
+              # A count-based rule-2 check is a LOWER BOUND -- "at least as many marks as reachable
+              # waters" -- and a lower bound cannot see a SWAP. A card that stops drawing a reachable
+              # creek and starts drawing an unreachable one has the same count and one hazard fewer on
+              # the page. Worse, a course-level total cannot even see a swap between two CARDS: a genuine
+              # `waterway=stream` was made to lose its blue on copper-valley 3 while an offsetting mark
+              # appeared on copper-valley 1, and every water test in the suite passed. These two keys are
+              # what closed that, so they are part of the safety argument and not debug residue.
+              #
+              # Sorted tuples so a card's record is stable and comparable; ids only, because the suite
+              # already holds the cache and can look up anything else it needs.
+              water_ids=tuple(sorted(g['id'] for g in waters)),
+              creek_ids=tuple(sorted(g['id'] for g in creeks)),
+              # THE NOT-WATER HAZARDS THIS CARD DRAWS, one key per class. NOTHING PRINTS A NUMBER FROM ANY
+              # OF THEM, and that is the same refusal `penalty_areas` below already carries: the footer
+              # prints "9B 0W" because a bunker and a pond are countable places, and it names these classes
+              # in words instead (generate.not_water_mark). These three keys exist for two consumers only --
+              # that mark, which asks whether the hole has any at all, and the suite, which grades the ink
+              # against them by IDENTITY rather than by count, because a count cannot see a swap.
+              #
+              # NONE OF THEM IS ADDED INTO `waters`: a footer that counted marsh as water is the defect
+              # these classes were split out of, and it is what took callippe's book to 39 W on a course
+              # whose whole cache holds ONE `natural=water` polygon.
+              #
+              # THE WETLAND FIGURE IS DEDUPLICATED THROUGH `water_identity` and the other two are not, and
+              # the reason is measured rather than stylistic. A marsh mapped as two named ways is one marsh,
+              # so the W's own unit is the right one here too. It also happens to make no difference on this
+              # corpus: callippe's twelve polygons share ZERO OSM nodes, come no closer than 4.3 m to one
+              # another and reach 672.8 m apart, and the longest frontier any pair holds within 10 m of a
+              # neighbour is 11.1% of the smaller perimeter -- they touch at corners, they are not one
+              # hollow cut into pieces, and none of them carries a name or a reach code. So the identity
+              # count and the feature count agree, and the unit is chosen for the case where they would not.
+              wetlands=len({water_identity(g) for g in wetlands}),
+              wetland_ids=tuple(sorted(g['id'] for g in wetlands)),
+              dry_channels=len(dry_creeks),
+              dry_channel_ids=tuple(sorted(g['id'] for g in dry_creeks)),
+              # Non-water penalty areas this card DRAWS. The card prints no number for them and must not
+              # -- see the `penalty_areas` selector for why 28 contiguous ways are not 28 places -- so
+              # this key exists for two consumers only: generate.not_water_mark, which asks whether the
+              # hole has any at all, and the suite, which grades the ink against it. It is NOT added into
+              # `waters`: a footer that counted brush as water is the defect this class was split out of.
+              penalty_areas=len(penalty_areas),
               tees=len(tees),
               trees=len(treenodes)+len(woods)+len(treerows),length_m=round(L),aspect=round(VBW/VBH,3),
               arc_yd=round(arc_yd), card_yd=total_yd, green_gap_yd=round(green_gap_yd, 2),
@@ -1512,6 +2644,12 @@ def render_hole(hnum, HOLES, font_scale=1.0):
               tee_ticks=tee_ok or par3_straight or fwd_tee or past_tee,
               line_spans=tee_ok, par3_straight=par3_straight, fwd_tee=fwd_tee, past_tee=past_tee,
               carry_origin_known=origin_known,
+              # The one frame every "yd from the back tee" figure on this card is measured in -- see
+              # carry_scale. 1.0 means "straight off the drawn geometry"; below 1.0 means the drawn line
+              # is longer than the card and the carry has been brought back on to the card's own scale.
+              # It can never exceed 1.0, which is the conservative direction stated as a value.
+              carry_from_tee_scale=carry_scale,
+              carry_tee_shift_yd=tee_shift_yd,
               start_at_tee_m=round(start_at_tee_m, 1),
               from_tee_rows=ft_rows,
               from_tee_floor_yd=ft_floor,

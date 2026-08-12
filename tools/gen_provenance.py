@@ -225,8 +225,8 @@ def _elevation(slug):
 
     PRINTED and MEASURED are different numbers, and this returned only the second while the table
     published it as the first. generate.py suppresses any measured change under PRINT_FLOOR_FT as level,
-    so a row in hole_elev.json is NOT a figure on a card: across the corpus 171 measured holes print on
-    114 of 198 cards, and the two counts differ on 9 of 11 courses. Valley Hi measured 17 of 18 and its
+    so a row in hole_elev.json is NOT a figure on a card: across the corpus 186 measured holes print on
+    126 of 216 cards, and the two counts differ on 9 of 11 courses. Valley Hi measured 17 of 18 and its
     row said "the other 1 print no height" while the book prints ONE height and withholds seventeen,
     sixteen of them measured fine. Micke Grove and The Reserve measured all 18, so their rows carried no
     caveat at all while 14 and 12 cards print nothing.

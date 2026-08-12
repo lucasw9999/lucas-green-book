@@ -44,9 +44,9 @@ percentage points, which is larger than the 0.84% pixel anisotropy the green car
 corrected for.
 
 Green depth is the one **length** the book derives from these scales and prints as a whole number.
-Recomputed on the true scales, the retired figure was out by a median of 0.040 yd, a p95 of 0.094 yd
-and a worst case of 0.111 yd (−0.138% to +0.297% relative), and on **four** cards that put the printed integer on the wrong
-side of the half yard — each printed **one yard deeper** than the ground:
+Recomputed on the true scales, the retired figure was out by a median of 0.038 yd, a p95 of 0.094 yd
+and a worst case of 0.111 yd (−0.138% to +0.312% relative), and on **five** cards that put the printed integer on the wrong
+side of the half yard:
 
 | Card | Printed before | Prints now | Ground length |
 |---|---|---|---|
@@ -54,11 +54,19 @@ side of the half yard — each printed **one yard deeper** than the ground:
 | `micke-grove-golf-links` hole 13 | 20 yd | 19 yd | 19.450 yd |
 | `monarch-bay-golf-club` hole 1 | 35 yd | 34 yd | 34.451 yd |
 | `the-reserve-at-spanos-park` hole 7 | 33 yd | 32 yd | 32.438 yd |
+| `trump-national-los-angeles` hole 16 | 22 yd | 23 yd | 22.504 yd |
 
-Two of those four — `copper-valley` 16 and `micke-grove` 13 — had been moved the **wrong way** by an
+Four of the five printed **one yard deeper** than the ground. `trump-national-los-angeles` 16 is the
+exception and points the OTHER way — the retired pair ran long in latitude and short in longitude, so
+on a green whose depth axis is mostly east–west it UNDERSTATED the length, and 22.504 yd is 0.004 yd
+above the half-yard boundary. The record said "each printed one yard deeper" for as long as every
+mover happened to lie one way; that was a property of the corpus, not of the model, and this is what
+it looks like when it stops holding.
+
+Two of the first four — `copper-valley` 16 and `micke-grove` 13 — had been moved the **wrong way** by an
 earlier partial fix, which corrected the raster's pixel anisotropy while leaving the datum wrong.
 `monarch-bay-golf-club` hole 1 is one of the greens that falls back to the seamless DEM; the other
-three are 0.4 m LiDAR. The model error was the same either way — it was not a data‑quality difference.
+four are 0.4 m LiDAR. The model error was the same either way — it was not a data‑quality difference.
 
 **This list is re‑measured, not transcribed.**
 `tests/test_phase1_regressions.py::test_the_earth_model_and_the_cards_it_rounds_the_other_way_reach_the_READER`
@@ -78,14 +86,14 @@ The hole map gained more than the green card did. A "150 to the green" tick is n
 point: `render_hole.py` places it where the drawn centreline **crosses the circle of that radius about
 the green centroid**. So the error a reader can feel at that tick is the printed radius against the
 **true WGS84 geodesic** from the green centroid to the point the tick landed on — measured below at
-every one of the **861** radius crossings the 198 drawn centrelines have, and over all **589**
+every one of the **938** radius crossings the 216 drawn centrelines have, and over all **643**
 centreline vertices for the last row:
 
 | Tick radius | Retired model, worst | Now, worst |
 |---|---|---|
-| 100 yd tick | 0.2962 yd | 0.0013 yd |
-| 150 yd tick | 0.4426 yd | 0.0018 yd |
-| 200 yd tick | 0.5931 yd | 0.0021 yd |
+| 100 yd tick | 0.3035 yd | 0.0013 yd |
+| 150 yd tick | 0.4592 yd | 0.0018 yd |
+| 200 yd tick | 0.6149 yd | 0.0021 yd |
 | 250 yd tick | 0.7421 yd | 0.0022 yd |
 | 300 yd tick | 0.8891 yd | 0.0019 yd |
 | any centreline vertex, out to 595.8 yd | 1.5502 yd | 0.0023 yd |
@@ -96,19 +104,29 @@ quietly applied.** It read `~100 yd | 0.43 | 0.0003`, `~200 | 0.73 | 0.0013`, `~
 
 The retired column was **arithmetically impossible**. Because the retired pair scaled latitude and
 longitude by one constant and its cosine, any length it measured was out by a fraction lying between its
-two axis errors: the retired pair's **worst relative offset over these 589 vertices is +0.2975%**, and
-it is **at most +0.3008% at the corpus's southernmost hole (37.4529 deg N)** — that ceiling is
-`111320 / geo.mlat`. A 100 yd radius therefore cannot be out by more than 0.30 yd, 200 by more than
-0.60, or 300 by more than 0.90 — and 0.43, 0.73 and 0.99 each exceed the bound for their row. None of
+two axis errors: the retired pair's **worst relative offset over these 643 vertices is +0.3393%**, and
+it is **at most +0.3629% at the corpus's southernmost hole (33.7264 deg N)** — that ceiling is
+`111320 / geo.mlat`. A 100 yd radius therefore cannot be out by more than 0.36 yd, 200 by more than
+0.73, or 300 by more than 1.09 — and 0.99 exceeds the bound for its row. None of
 them can be the error a reader felt **at** the tick they were printed against. A reader holding a card
-with a 100 yd tick was told his was out by up to 0.43 yd; the true worst at that tick was 0.2962 yd.
+with a 100 yd tick was told his was out by up to 0.43 yd; the true worst at that tick was 0.3035 yd.
+
+**That ceiling MOVED SOUTH with the corpus, and the argument above is weaker than it was — stated here
+rather than left for a reader to discover.** Until a Rancho Palos Verdes course was added the corpus's
+southernmost hole was at 37.4529 deg N, where the ceiling is +0.3008% and the per-radius bounds are
+0.30 / 0.60 / 0.90 yd; on those, all three of 0.43, 0.73 and 0.99 exceeded their row. At 33.7264 deg N
+the ceiling is +0.3629% and only 0.99 still does. The ARITHMETIC is unchanged — the ceiling is
+`111320 / geo.mlat` evaluated at the corpus's southern edge, and a more southerly course legitimately
+raises it — but the refutation now rests on one row rather than three, and on the MEASUREMENT (0.3035,
+0.6149, 0.8891 at those ticks, every one re-derived) rather than on the bound alone. Both are graded
+against the corpus; neither is a figure anybody typed.
 
 **Where those four figures came from is only partly recoverable, and this record no longer claims more
 than it can derive.** Until 2026-08-04 both records asserted that all four "reproduce as the worst error
 anywhere in the 50-yard **band above** each tick". Three of them do, measured to the green **end** rather
 than the green centroid: **0.4334** yd in [100,150), **0.9855** in [300,350) and **1.5535** over every
 vertex — the 0.43, 0.99 and 1.55 rows. The 200 yd row's **0.73 is not in that population at all** (its
-worst in [200,250) is 0.6804); it reproduces only as the worst error over consecutive-vertex **segment
+worst in [200,250) is 0.69898); it reproduces only as the worst error over consecutive-vertex **segment
 lengths** in [200,250), 0.72683 — and that population's own global worst is 0.9714, not the 1.55 the same
 old table published. **No single population reproduces all four.** What holds for all four without any
 population at all is the arithmetic in the paragraph above.

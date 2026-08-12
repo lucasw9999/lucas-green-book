@@ -58,6 +58,25 @@ IG_QR = _data_uri(os.path.join(ROOT, "lucaswu.golf_qr_small.png"))
 
 DISTRIBUTABLE = distribution.is_distributable(config.COURSE)
 
+# THE COVER ADDRESS's fitting constants. Both covers draw the address through _addr_line(), which is
+# where every one of these is argued for; they are module-level so the estimator and the sizing rule
+# cannot end up with two copies of the same number.
+ADDR_CHAR_EM = 0.60          # advance per character, as a fraction of the font size (upper-case)
+ADDR_LETTER_SPACING = 1.0    # SVG adds this after EVERY character, so it is per-character too
+ADDR_USABLE_UNITS = 292.0    # 95% of the gold frame's 307.4-unit inner span
+ADDR_MAX_FS = 9.0            # what every cover printed before there was a rule; never enlarge past it
+ADDR_MIN_FS = 6.0            # the cover's own smallest type is the 6.2-unit copyright line
+
+# Clarification 4.3a/1's own ceiling (3/8 in : 5 yd == 1:480) -- see _scale_size_line() below for why
+# this is printed on the cover. This is the RULE's number, not the tighter internal design target
+# render_green.py sizes every green under (0.36 in : 5 yd, ~4% inside this cap; see its own
+# `legal_kf = 0.36 * px_m / 4.572`): every shipped green is at or under both, so the Rule's own
+# ceiling is the literal, checkable claim, and it is the same figure tools/check_scale.py gates
+# every green against (`LIMIT_IN_PER_5YD`) -- if a green were ever built past it that gate fails, so
+# this word cannot go stale without the build's own Rule 4.3 gate going red first.
+# tests/test_r18_scale.py pins it against tools/check_scale.py's copy.
+RULE_4_3_SCALE_CAP_IN_PER_5YD = 0.375
+
 # THE REASON A BOOK MAY NOT BE SHARED IS STATED IN TWO RECORDS, and nothing tied their WORDS together.
 # The left half of each pair is what the card prints; the right half is what distribution.py's own reason
 # for the SAME refusal has to claim -- that reason is what tools/gen_provenance.py writes into
@@ -487,14 +506,14 @@ def green_honesty(hole, s):
     # "overall" is doing real work, not decoration. The ONLY definition of a slope percentage in any
     # of the 15 books is the legend's "Black numbers = slope % there" -- per-cell slope, drawn by
     # render_green's slope labels -- and this figure is a DIFFERENT quantity: a least-squares plane over
-    # the whole putting surface (render_green.green_summary). Measured over all 198 greens by parsing
-    # the shipped SVGs, it prints below every black number on the same card on 134 of them, median
-    # 0.5 pp over all 198 and worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black
+    # the whole putting surface (render_green.green_summary). Measured over all 216 greens by parsing
+    # the shipped SVGs, it prints below every black number on the same card on 149 of them, median
+    # 0.6 pp over all 216 and worst 5.3 pp -- copper-valley 6 prints a footer of 0.7% beside black
     # numbers 6,7,8,8,10,10,10, on a green whose median local slope is 4.8% over the whole surface
     # (those seven labelled points median 8). The 4.8% belongs to the SURFACE, not to those labels: this
     # sentence hung it off "black numbers ... whose own", which reads as though the labels themselves
     # average 4.8 and so understates the very gap the example exists to show.
-    # On 106 of the 170 greens that carry
+    # On 119 of the 186 greens that carry
     # no (faint) and no no-clear-fall qualifier, so nothing on the card warns the reader either. A
     # junior applying the card's only definition reads copper-valley 6 as dead flat. One word
     # distinguishes the two and adds no legend row -- card space is the binding constraint here, with
@@ -568,22 +587,22 @@ def elev_phrase(hole):
     DEM -- a different product, delivered in metres, fetched over the network rather than read off
     disk. It reads the green POLYGON this pipeline reads; at the tee it reads the whole mapped tee ring
     where this pipeline reads the pad inside a 15 m window, so at the tee the comparison carries a
-    region difference too, on 55 of 177 pads. That inflates the spread rather than hiding it, which
+    region difference too, on 55 of 194 pads. That inflates the spread rather than hiding it, which
     makes every figure below an upper bound and this floor conservative -- the reason for trusting the
     spread, not a reason to lower the floor.
 
-    MEASURED by `python3 tools/verify_elevation.py --all` on 2026-08-05, all 171 holes reached, 11
-    courses, printed by that tool's own `_print_corpus`: across 171 holes the two disagree by a corpus
-    median 0.067 ft, a corpus mean 0.201 ft and a worst 2.46 ft (philadelphia 5). The worst any single
-    course medians is 0.62 ft (philadelphia), and the median of the 11 per-course medians is 0.069 ft --
+    MEASURED by `python3 tools/verify_elevation.py --all` on 2026-08-10, all 186 holes reached, 12
+    courses, printed by that tool's own `_print_corpus`: across 186 holes the two disagree by a corpus
+    median 0.065 ft, a corpus mean 0.189 ft and a worst 2.46 ft (philadelphia 5). The worst any single
+    course medians is 0.62 ft (philadelphia), and the median of the 12 per-course medians is 0.068 ft --
     quoted to three decimals because at two they both read 0.07 and the whole point of naming both is
     that they are not one figure. Two holes exceed 2 ft and none exceeds 3. So a
     printed "green 2 ft above" would still sit inside the spread between two honest sources on those
-    holes, and 22 of the 171 fall in the 2-4 ft band where that spread decides whether anything prints
+    holes, and 23 of the 186 fall in the 2-4 ft band where that spread decides whether anything prints
     at all -- which is why the floor is not lowered to look more precise.
 
     A CORPUS MEDIAN AND A MEDIAN OF PER-COURSE MEDIANS ARE DIFFERENT FIGURES, and this paragraph
-    presented one as the other: its "median 0.09 ft" was described as a median across 171 holes and was
+    presented one as the other: its "median 0.09 ft" was described as a median across all holes and was
     in fact the median of eleven per-course medians. Both are named above now, and both are printed by
     the tool. So was every other figure here re-derived, because the set that stood here reproduced
     nowhere: "mean 0.27 ft" was produced by NO CODE PATH in this project -- a grep found this sentence
@@ -611,16 +630,18 @@ def carry_phrase(info):
     """"carry 172 / 212 / 245" -- the near edge of each bunker window a tee shot must clear.
 
     Plus the one thing the list could not say by ending: render_hole withdraws a carry wherever the sand
-    leaves no room to land short of the green (see its `no_landing` block), and on five of the nine
+    leaves no room to land short of the green (see its `no_landing` block), and on six of the ten
     cards that fires on, an EARLIER carry survives -- so "carry 95 / 164" read as the whole story while a
     closer, uncarryable cluster went unnamed. The mark states that refusal and prints NO number, because
     both edges of the refused window are numbers a player would club against and be wrong: the near one
     invites the lay-up the rule just withdrew, and the far one is
-    at or past the green front on four of the nine and short of it by up to 8.75 yd on the other five,
+    at or past the green front on five of the ten and short of it by up to 8.75 yd on the other five,
     while the sand COMPLEX behind it -- the greenside sand the carry filter drops, chained across any
-    strip of grass narrower than CARRY_MERGE_GAP_YD -- means every one of the nine REACHES at or past
-    the green front. The "all nine" belongs to the complex, not to the window edge; this sentence used
-    to attach it to the edge, where it was false on five of the nine cards it named. Both figures are
+    strip of grass narrower than CARRY_MERGE_GAP_YD -- means every one of the ten REACHES at or past
+    the green front. That reach is now a CONDITION of printing the mark and not merely a property of
+    the set: a refused window whose sand stops short of the green is refused silently (see
+    render_hole's reach gate). The "all of them" belongs to the complex, not to the window edge; this
+    sentence used to attach it to the edge, where it was false on five of the cards it named. Both figures are
     graded against the corpus by
     test_a_card_that_withholds_a_carry_says_the_sand_reaches_the_green.
 
@@ -712,6 +733,77 @@ def bank_span(s):
     return f'<span>{" &middot; ".join(notes)}</span>' if notes else ''
 
 
+def not_water_mark(i):
+    """The footer's not-water mark -- "penalty area", "wetland", "creek runs dry" -- or "".
+
+    ONE definition for both editions, and it names EVERY class the card drew in the not-water grey rather
+    than only the penalty areas it was written for. That widening is the footer half of the fix the grey
+    ink is the map half of: callippe's shipped book prints 39 W across 18 cards and its whole cache holds
+    ONE `natural=water` polygon, because `natural=wetland` was inked in the water blue and counted in the
+    footer's W. The W now counts open water only, so on 14 of callippe's 18 cards the number it used to
+    carry falls -- and something has to say what is still there, or the correction turns into the omission
+    that rule 2 forbids. This mark is that something.
+
+    A MARK AND NOT A COUNT, and the refusal is the whole point. The footer prints "9B 0W" because a
+    bunker and a pond are countable places. A non-water penalty area on this corpus is not: 31 of
+    trump-national-los-angeles' 34 ways share vertices with a neighbour and the 34 form only 5 connected
+    areas, the largest of them 28 ways, so they are one continuous
+    non-turf network -- brush ribbons and barranca floors -- cut into pieces at mapping boundaries, and
+    the per-way figure would print "10" on hole 14 for ground a golfer would call "the barranca, left
+    and right". Deduplicating by contiguity instead reports 1 where a hole has brush down BOTH sides,
+    which understates a hazard. Neither number is one the data supports, so the card names the class and
+    prints no number -- see the `penalty_areas` selector in render_hole.py for the full argument.
+
+    THE OTHER TWO CLASSES GET A MARK FOR THE SAME REASON AND NOT BY ANALOGY. A dry channel is a LINE, and
+    OSM splits a channel at every road crossing and tag change -- the defect render_hole.water_identity
+    exists for -- so a per-way figure would print "3" for one ditch. Wetland is the one class here whose
+    count WOULD be supportable (callippe's twelve polygons share zero OSM nodes, come no closer than 4.3 m
+    and hold a frontier of at most 11.1% of a perimeter within 10 m of a neighbour, so they are separate
+    basins rather than one hollow cut up) and it still prints none, because a third number on this footer
+    would have to earn its width against the span measured below and because "one ink, one meaning in the
+    legend" reads better as one kind of mark than as a count for one member and a word for the others.
+
+    EACH CLASS KEEPS ITS OWN WORD rather than sharing one, and that is a refusal to claim a ruling. "Penalty
+    area" is a Rule 17 term and `golf=penalty_area` is the mapper asserting it; nothing in a `natural=wetland`
+    or `intermittent=yes` tag records that a Committee has marked anything, so printing "penalty area" over
+    callippe's marsh would be a ruling this book cannot support. The three words say what is on the GROUND,
+    which the data does record, and the legend is where the one thing they have in common -- not water, and
+    a ball there is usually lost -- is stated once. See _grey_note.
+
+    "creek runs dry" rather than "dry creek", measured against the alternative on the honesty rule: the tag
+    is `intermittent=yes`, which says the channel is dry for PART of the year, so "dry creek" would claim
+    more than the data does about the day the reader is standing there. Not "intermittent", which is the
+    tag's word and not a twelve-year-old's, and not "seasonal creek", which reads as a feature name rather
+    than as the warning it is.
+
+    ITS OWN SPAN, for bank_span's measured reason: `.foot` is a wrapping flex row whose spans are
+    `white-space: nowrap`, so a span wider than the row does not wrap, it overflows and the trim line
+    cuts it. The span this would otherwise join -- depth, then "NB NW", then the other tees -- is
+    already the widest in the corpus (copper-valley 6 at 296.00 px of 323.00, about six characters of
+    room), and the longest of these marks is thirteen characters. As its own span it wraps to a footer line
+    instead, which the green sizing already reserves three of. Two classes on one hole would share that
+    span; no hole in this corpus has two, and the join keeps it one span if one ever does.
+
+    WHY THE CARD NEEDS IT AT ALL, given the map already inks the class and the guide card explains it:
+    without it, a hole whose every hazard is brush prints "9B 0W" and nothing else, and "0W" beside a
+    bunker count reads as "nothing else to avoid". That was true of 11 of this book's 18 cards before
+    the class existed, and the wetland split would have made it true of 9 of callippe's 18 -- the same
+    nine cards that used to print "0W" over marsh before the marsh was drawn at all, which is how this
+    correction could have walked straight back into the defect it came from.
+
+    ONE NUMBER, ONE MEANING, on the card this ships on. A reader takes "2W" for two hazards, so the W it
+    sits beside has to be able to bear that: on this book it is now 6 counted, 6 drawn blue marks and 0
+    watercourse lines, from three ponds of 3,080-4,497 m^2 lying 62.7 to 377.9 m apart with no shared
+    vertex -- three separate waters, each counted on the two holes that reach it. Features and marks agree
+    1:1, so the one number on the card means one thing and this mark, which is not a number at all, means
+    another.
+    """
+    words = [w for w, key in (("penalty area", "penalty_areas"),
+                              ("wetland", "wetlands"),
+                              ("creek runs dry", "dry_channels")) if i.get(key)]
+    return f'<span><b>{" &middot; ".join(words)}</b></span>' if words else ''
+
+
 def hole_panel(hole, sheet_label):
     row = HOLES[hole]
     par, hcp = row[0], row[1]
@@ -743,6 +835,7 @@ def hole_panel(hole, sheet_label):
     foot = (f'<span>{lead}</span>'
             f'<span>{depth_phrase(s)} &middot; {i["bunkers"]}B {i["waters"]}W{notrees}'
             f' &middot; {esc(others)}</span>'
+            f'{not_water_mark(i)}'
             f'{bank_span(s)}')
     return f'''<div class="panel hole">
   <div class="sheettab">{esc(sheet_label)}</div>
@@ -790,6 +883,93 @@ def _title_lines(raw):
         lines.append(cur)
     return lines
 
+def _addr_width_units(addr, fs):
+    """How wide `addr` will print on the cover, in viewBox units, at font size `fs`.
+
+    One character costs `fs * ADDR_CHAR_EM` of advance plus the address line's own `letter-spacing="1"`,
+    which SVG adds after EVERY character. Measured in chrome-headless-shell over all thirteen covers,
+    the real per-character advance runs 0.575-0.590 of the font size for upper-case Helvetica, so 0.60
+    over-predicts every one of them by 1.4% (the widest, trump-national-los-angeles) to 8.2% (the
+    narrowest, bay-view). Over-prediction is the safe direction for a clipping guard and
+    tests/test_r17_print.py measures that it stays that way on every cover.
+
+    Counted on the RAW address, not on esc()'d output: `&` becomes five characters of markup and one
+    glyph, and the count wanted here is glyphs.
+    """
+    return len((addr or "").strip()) * (fs * ADDR_CHAR_EM + ADDR_LETTER_SPACING)
+
+
+def _addr_line(addr_y):
+    """The cover's address line, sized so it cannot cross the gold frame. Shared by BOTH covers.
+
+    THE SIZE WAS A FIXED 9 AND NOTHING MEASURED IT. Inside a 221.3 pt inner frame,
+    "1 OCEAN TRAILS DR, RANCHO PALOS VERDES, CA 90275" prints 2.965 in wide with 3.93 pt of clearance a
+    side -- next tightest Castlewood at 10.46 pt, median 24.85 -- so the first address a character or
+    two longer crosses the rule, on the first page anyone opening the book or the PDF sees. The TITLE
+    two lines above has had a width-aware estimator (`274.0 / (maxch * 0.52)`) since it was written;
+    the address had none.
+
+    A CLIPPING GUARD, NOT A LAYOUT CHANGE, and the bound is set so it stays one. ADDR_USABLE_UNITS is
+    95% of the frame's 307.4-unit inner span, which leaves 5.76 pt a side of the estimate and -- because
+    _addr_width_units over-predicts -- 7.0 pt of real clearance on the tightest address. Twelve of the
+    thirteen estimate at or under it and keep the 9.0 they already had; only the thirteenth shrinks, to
+    8.7. That the bound lands between Castlewood's estimate (288.0) and trump's (300.8) is deliberate
+    and is disclosed rather than dressed up as derivation: restyling twelve covers that already clear
+    the frame buys nothing, and the two figures are here so the next person can see how much room the
+    bound has on each side.
+
+    The 6.0 FLOOR is the cover's own smallest type: the copyright line prints at 6.2 units. Walked in
+    the browser, the guard holds the frame with 5 pt to spare out to 64 characters and keeps the address
+    inside it out to 67; the corpus's longest is 48, whose estimate at the old fixed 9 was 307.2 units
+    against a 307.4-unit inner span -- ONE character from crossing the gold rule. Past 67 the address
+    crosses, and the test walks that budget rather than trusting this paragraph -- so a 68-character
+    address fails loudly there instead of quietly on paper.
+
+    ONE IMPLEMENTATION, for the reason _title_lines gives for being shared: the two covers carried
+    identical copies of this line, and a fix applied to one of them leaves the enlarged edition -- the
+    one printed for a coach -- with the defect.
+    """
+    fs = max(ADDR_MIN_FS, min(ADDR_MAX_FS,
+                              (ADDR_USABLE_UNITS / max(1, len((ADDR or "").strip()))
+                               - ADDR_LETTER_SPACING) / ADDR_CHAR_EM))
+    # A tenth of a unit, rounded DOWN: rounding to nearest would put the estimate back over
+    # ADDR_USABLE_UNITS (8.68786 -> 8.7 costs 0.3 units more than the bound allows), and `:g` keeps the
+    # attribute the covers already emitted -- font-size="9", not font-size="9.0" -- so the twelve books
+    # that need no fitting are byte-identical to what they shipped.
+    fs = math.floor(fs * 10.0) / 10.0
+    return (f'<text x="175" y="{addr_y:.1f}" text-anchor="middle" '
+            f'font-family="Helvetica,Arial,sans-serif" font-size="{fs:g}" '
+            f'letter-spacing="{ADDR_LETTER_SPACING:g}" fill="#9fb4a3">{esc(ADDR).upper()}</text>')
+
+
+# The cover's decorative double border, in card units of the 350x500 viewBox. The gold rule and the
+# hairline inside it, shared by BOTH covers for the reason _addr_line gives for being shared.
+#
+# THESE ARE STROKES, AND A STROKE HAS WIDTH -- which is the whole reason this is a named helper with a
+# paragraph attached. The outer rule's path runs along y=483, and 1.4 units of stroke centred on it
+# INKS 482.3 to 483.7; the hairline's path at y=479 inks 478.7 to 479.3. Any cover text placed by
+# comparing its baseline to 483 or 479 is being placed against a line that is not where the ink is.
+# That is exactly how the scale/size line came to be struck through: at y="486" its BASELINE sat 3.0
+# units below the path at 483, which reads as clearance, while its capitals rise 4.75 units above that
+# baseline and so inked 481.3 to 486.2 -- enclosing every one of the 1.4 units the rule actually
+# prints. Rasterised off the shipped greenbook.pdf at 420 dpi: 1.03 pt of gold straight through the
+# glyphs, on all twelve distributable covers. See
+# tests/test_r18_scale.py::test_the_cover_scale_lines_ink_never_touches_the_gold_frames_ink, which
+# rasterises the cover and compares INK to INK rather than baselines to path coordinates.
+#
+# Returned as markup rather than as coordinates so the test can render exactly these two elements and
+# nothing else, and so neither cover can grow its own private copy of the border.
+_COVER_GOLD = "#c8a24a"          # the one gold both covers draw every rule, roundel and mark in
+
+
+def _cover_frame():
+    """The cover's gold border: the 1.4-unit rule and the 0.6-unit hairline inside it. See above."""
+    return (f'<rect x="17" y="17" width="316" height="466" fill="none" '
+            f'stroke="{_COVER_GOLD}" stroke-width="1.4"/>\n'
+            f'  <rect x="21" y="21" width="308" height="458" fill="none" '
+            f'stroke="{_COVER_GOLD}" stroke-width="0.6" opacity="0.55"/>')
+
+
 def cover_panel():
     parts = config.BRAND.split()
     btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
@@ -804,7 +984,7 @@ def cover_panel():
     motif = "".join(
         f'<path d="M-20 {30+i*40} C 90 {30+i*40-26}, 200 {30+i*40+30}, 370 {30+i*40-14}" '
         f'fill="none" stroke="#c8a24a" stroke-width="1.1" opacity="0.06"/>' for i in range(13))
-    G = "#c8a24a"        # gold
+    G = _COVER_GOLD        # gold
     badge_text, badge_stroke, badge_fill, badge_size = (
         _cover_badge()[k] for k in ("badge_text", "badge_stroke", "badge_fill", "badge_size"))
     return f'''<div class="panel cover"><svg viewBox="0 0 350 500" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
@@ -814,8 +994,7 @@ def cover_panel():
   <rect x="0" y="0" width="350" height="500" fill="#0a3521"/>
   <rect x="0" y="0" width="350" height="500" fill="url(#cg)"/>
   {motif}
-  <rect x="17" y="17" width="316" height="466" fill="none" stroke="{G}" stroke-width="1.4"/>
-  <rect x="21" y="21" width="308" height="458" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.55"/>
+  {_cover_frame()}
   <circle cx="175" cy="110" r="26" fill="none" stroke="{G}" stroke-width="1.4"/>
   <circle cx="175" cy="110" r="21" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.6"/>
   <line x1="171" y1="98" x2="171" y2="124" stroke="{G}" stroke-width="1.6" stroke-linecap="round"/>
@@ -825,12 +1004,81 @@ def cover_panel():
   <line x1="118" y1="244" x2="232" y2="244" stroke="{G}" stroke-width="0.9"/>
   <rect x="171" y="240.5" width="7" height="7" fill="{G}" transform="rotate(45 175 244)"/>
   <text x="175" y="{cy0:.1f}" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="{fst:.1f}" fill="#f5eddd">{tspans}</text>
-  <text x="175" y="{addr_y:.1f}" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" letter-spacing="1" fill="#9fb4a3">{esc(ADDR).upper()}</text>
+  {_addr_line(addr_y)}
+  {_scale_size_line()}
   <rect x="70" y="426" width="210" height="18" rx="9" fill="none" stroke="{badge_stroke}" stroke-width="0.8"/>
   <text x="175" y="438" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="{badge_size}" letter-spacing="1.0" fill="{badge_fill}">{badge_text}</text>
   <text x="175" y="462" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="8" letter-spacing="3" fill="#7f9484">JUNIOR GOLF EDITION</text>
   <text x="175" y="474" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.2" letter-spacing="0.5" fill="#6f8676">&#169; 2026 Lucas Wu &#183; Lucas Green Book&#8482;</text>
 </svg></div>'''
+
+
+def _scale_size_line():
+    """Rule 4.3's own scale cap and this book's card size, IN WORDS, on the pocket cover.
+
+    Clarification 4.3a/1's FAQ closes with a recommendation this book did not follow: developers
+    should "indicate on the cover or within a book's legend the scale of green images as well as
+    the overall size of the book." The book already draws a physical 5-yd bar inside every green's
+    own viewBox -- genuinely better evidence, since it scales with a mis-scaled printer and a ruler
+    on it gives the true scale -- but that is not what an official checking a book at a tournament
+    reads; they read words.
+
+    THE LEGEND CARD HAS NO ROOM FOR IT. monarch-bay's guide card ships with 1.19 px of clearance in
+    its own 3.5x5in `overflow:hidden` box (tests/test_r17_print.py), and this project has clipped
+    that card's tail -- the licence, the warranty disclaimer and the contact address -- twice
+    already. Measured the same way (panel spliced into every shipped cover, laid out in
+    chrome-headless-shell under print media): the pocket cover has room. See
+    tests/test_r18_scale.py for the measurement this claim rests on.
+
+    IT PRINTS ABOVE THE BADGE, AND IT USED TO PRINT BELOW IT AT y="486", WHERE THE GOLD FRAME RAN
+    STRAIGHT THROUGH THE GLYPHS. The verification that cleared that position measured this line's
+    baseline against the frame's PATH coordinate and against the card's bottom edge -- "12.44 px of
+    clearance to the card's own edge", legal/06's own figure, and "1.72 px below the inner gold
+    frame ... a design choice, not a collision". The frame is a 1.4-unit STROKE centred on its path,
+    so it inks 482.3 to 483.7 while these capitals inked 481.3 to 486.2: the rule crossed them about
+    a third of the way down the letters, 1.03 pt of gold through every one, on all twelve
+    distributable covers. See _cover_frame() for the stroke arithmetic and tests/test_r18_scale.py::
+    test_the_cover_scale_lines_ink_never_touches_the_gold_frames_ink, which settles it from RASTERISED
+    INK instead -- the one kind of evidence that cannot mistake a path for its stroke.
+
+    y="414" puts it INSIDE the frame, immediately above the Rule 4.3 badge, which is also where it
+    belongs by subject: the scale and the size are the disclosure the badge's own Clarification asks
+    for. Rasterised at 420 dpi through chrome's print path, its ink clears the frame by 46.46 pt and
+    its nearest neighbour of any kind -- the badge's rounded rule below it -- by 8.23 pt, on every
+    distributable cover (poppy-ridge prints no such line at all). The rejected alternative is recorded
+    because it is the tempting one: moving it further DOWN, clear of the frame, leaves 16.3 units
+    between the rule's ink and a hard trim, so once the type is placed in there it sits inside 1/16 in
+    of the cut -- the trim tolerance itself. Below the frame there is room to print it and no room to
+    cut it.
+
+    Both figures are READ, not typed, so neither can drift from what the book actually is:
+    - the card size comes straight from `config.CARD_W_IN`/`CARD_H_IN` -- the per-course override a
+      future course.json could set, not the engine default -- so a course that ever prints a
+      different size states its OWN size, not a stale "3.5 x 5.0".
+    - the scale is Rule 4.3's own ceiling, `RULE_4_3_SCALE_CAP_IN_PER_5YD`, the same number
+      tools/check_scale.py gates every green against -- see that constant's own comment for why a
+      violation cannot go unnoticed.
+
+    Gated on DISTRIBUTABLE, the same flag `_cover_badge()` uses for the "DESIGNED TO CONFORM" claim
+    itself: a blank-green book (Poppy Ridge) prints no green image, so it has no scale to disclose.
+
+    DISTRIBUTABLE IS NOT WHAT KEEPS THIS OFF THE ENLARGED (COACH=1) EDITION -- that edition is
+    DELIBERATELY past the scale cap (tools/check_scale.py measures it up to 0.599 in : 5 yd, 1:301,
+    against the 0.375 in / 1:480 this line would claim) and every enlarged book in the corpus is
+    DISTRIBUTABLE=True, same as any pocket book. What actually keeps this claim off it is that this
+    function is called ONLY from `cover_panel()`, which `build_coach()` never calls -- it calls
+    `coach_cover_panel()` instead, a separate function that does not reference this one. Do not
+    "simplify" the two cover functions into one without re-reading this paragraph: doing so could
+    put Rule 4.3 words on the one edition engineered to break Rule 4.3. See
+    tests/test_r18_scale.py::test_the_conforming_scale_claim_never_appears_on_the_enlarged_non_conforming_edition,
+    which pins this with a mutation test.
+    """
+    if not DISTRIBUTABLE:
+        return ""
+    cap = round(180.0 / RULE_4_3_SCALE_CAP_IN_PER_5YD)   # 180 in = 5 yd; this cap's own ratio -> 1:480
+    return (f'<text x="175" y="414" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" '
+            f'font-size="6.0" letter-spacing="0.4" fill="#8a9d8f">SCALE 1:{cap} OR SMALLER '
+            f'&#183; CARD {config.CARD_W_IN:.1f} &#215; {config.CARD_H_IN:.1f} IN</text>')
 
 
 def _cover_badge():
@@ -1026,17 +1274,18 @@ def _no_tree_note():
     the bunker/water key.
 
     Enlarged only, deliberately, and this is the honest scope: the POCKET edition defines it inline on
-    the colour row, unconditionally, so 10 of the 12 pocket books carry six words for a mark they never
+    the colour row, unconditionally, so 11 of the 13 pocket books carry six words for a mark they never
     print. Moving that to a conditional row of its own was tried and overflowed monarch-bay's guide
     card -- the book with 1.19 px of clearance and the only book that prints the mark. Six wasted words
-    on ten cards is the cheaper error than a clipped licence line, so the pocket half stays inline.
+    on eleven cards is the cheaper error than a clipped licence line, so the pocket half stays inline.
     An earlier draft of this docstring claimed both editions were gated; they are not.
 
-    THE COUNT IS 10, NOT 11, AND IT WAS PUBLISHED WRONG TWICE HERE. Measured over the built corpus: 11
-    of the 12 pocket books carry the inline definition -- poppy-ridge's yardage guide card has no colour
-    row and carries none -- and exactly 1 of those 11 (monarch-bay) PRINTS the mark. A book that prints
-    it is not wasting the words on it, so the waste falls on ten books, and this paragraph named
-    monarch-bay as that one book in the same breath as counting it among the eleven. Both figures are
+    THE WASTE COUNT IS ONE BELOW THE CARRY COUNT, AND IT WAS PUBLISHED WRONG TWICE HERE. Measured over
+    the built corpus: 12
+    of the 13 pocket books carry the inline definition -- poppy-ridge's yardage guide card has no colour
+    row and carries none -- and exactly 1 of those 12 (monarch-bay) PRINTS the mark. A book that prints
+    it is not wasting the words on it, so the waste falls on eleven books, and this paragraph named
+    monarch-bay as that one book in the same breath as counting it among the twelve. Both figures are
     re-derived from the shipped books by
     test_the_wasted_words_note_counts_the_books_that_actually_waste_them.
 
@@ -1050,6 +1299,155 @@ def _no_tree_note():
     # line, so a two-line version overflows it. Same wording as the pocket edition's inline copy.
     return ('  <div class="legrow"><span><b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open '
             'ground.</span></div>\n')
+
+
+def _book_draws_not_water(*keys):
+    """True when any hole of THIS book drew a hazard in the not-water grey. Derived from what was rendered.
+
+    Mirrors _book_draws_trees: read off render_hole's own per-hole `info`, never off the tags, so the
+    legend can only ever promise ink the cards actually carry.
+
+    THE THREE CLASSES ARE ONE QUESTION HERE, because they are one INK and the legend row that names them is
+    one row. Called with no arguments it asks "does this book draw the grey at all", which is what gates
+    that row; called with a subset it answers for those classes, which is what the suite uses to check a
+    book names what it drew rather than what it has tags for.
+    """
+    keys = keys or ("penalty_areas", "wetlands", "dry_channels")
+    return any(LAYOUTS[h][1].get(k) for h in config.HOLE_NUMS if h in LAYOUTS for k in keys)
+
+
+def _grey_key():
+    """The fourth entry in the HOLE-map colour list, or "" -- one wording for both editions.
+
+    The list on that row -- "bunkers (tan), water (blue), trees" -- is an ENUMERATION of the map's ink,
+    and an enumeration that omits a colour the map uses is false, not merely short. It is also the row a
+    reader consults to decode a shape, so the class belongs in it and not only in the row below that
+    defines it. Conditional for _grey_note's reason: on the books that draw none it would be
+    words spent on a colour the reader will never see, on the card with the least room in the book.
+
+    IT NAMES THE COLOUR, in the same shape as its siblings, and the first version of this row did not.
+    It read ", penalty areas" -- the class named with nothing to identify it by, while "(tan)" and
+    "(blue)" sat beside it -- on the reasoning that the swatch on the next row shows the ink and a word
+    cannot go stale. That reasoning is fine for the SWATCH and wrong for the LIST: shown the rebuilt
+    cards, a reader who knows this course asked "what is the purple?" and had no way to get from the mark
+    to the meaning. A key entry a reader cannot enter from the map is not a key entry.
+
+    IT NAMES THE INK'S MEANING AND NOT ONE OF ITS MEMBERS, and that is what this clause had to change to.
+    It read ", penalty areas (grey)" while the grey drew exactly one class. The grey now also draws wetland
+    and channels that run dry (render_hole.holds_open_water is the split), so naming a member would tell a
+    callippe reader that his marsh is a Rule 17 penalty area -- a ruling nothing in a `natural=wetland` tag
+    records. ", not water (grey)" names the one thing all three members have in common, sits directly after
+    "water (blue)" so the contrast is the reader's way in, and is 18 characters against the 22 it replaces,
+    so the tightest card in the corpus gains room rather than paying for the widening. Measured in
+    chrome-headless-shell against the shipped stylesheet; see _grey_note for the per-book clearances.
+    """
+    return ', not water (grey)' if _book_draws_not_water() else ''
+
+
+def _grey_note():
+    """Name the not-water ink, in BOTH editions, ONLY in a book whose cards draw it.
+
+    A HAZARD CLASS WITH NO LEGEND ENTRY IS A HAZARD THE READER CANNOT INTERPRET, and this project has
+    now made that mistake in four directions. `golf=penalty_area` -- brush, a canyon floor,
+    waste, anything a Committee marks, which since 2019 is what the term covers -- first reached the
+    paper in the tree/scrub fill under a legend reading "bunkers (tan), water (blue), trees", so a
+    junior was told the hazard is TREES; it was then moved into the water blue and the footer W, so the
+    same junior was told there are ten waters on a hole that has none; and then it was given an ink of its
+    own that the legend named without naming its colour, which left a reader who knows the course asking
+    "what is the purple?". The fourth is the one this row was widened for and it is the worst of them,
+    because it shipped and a reader found it on the ground: `natural=wetland` was inked in the water blue
+    under the legend word "water", so callippe Preserve -- ONE `natural=water` polygon in its whole cache --
+    printed 39 W across 18 cards, and 2,309 of its 7,507 tree markers stood inside what the card called a
+    pond. The owner walked it and asked how a tree got into the water. It is a quiet grey now --
+    render_hole.PENALTY_FILL, whose value and the measured separation from every ink it touches are
+    recorded at that constant's own definition, not restated here -- and both the list above and the swatch
+    below name it.
+
+    ONE ROW FOR THREE CLASSES, because ONE INK MAY MEAN ONLY ONE THING IN A LEGEND. The grey draws
+    non-water penalty areas, wetland and channels that run dry (render_hole.holds_open_water is the split),
+    and this row states the single thing they have in common -- not water, and a ball in it is usually lost.
+    That is the invariant, and it is not "one ink, one tag": three tags sharing an ink is fine when the
+    legend's account of that ink is true of all three, and it is exactly what a reader needs, since the
+    club he chooses does not depend on which of the three it is. What broke before was the other half --
+    an ink whose legend word was true of some of its members and false of the rest.
+    tests/test_phase1_regressions.py grades both halves.
+
+    THE SWATCH IS THE RENDERER'S OWN TWO COLOURS, evaluated, never a copy -- the arrangement
+    _heat_swatches uses and for its reason: a key that merely agrees with the map today is a key that
+    can go stale. Retune the fill and this row follows it.
+
+    GATED ON WHAT THE BOOK DREW, like _faint_note and _no_fall_note, and here that gate is doing real
+    work rather than tidiness. This card is the tightest thing in the book: monarch-bay ships with 1.19
+    px of clearance to the bottom of a 3.5x5in `overflow:hidden` box whose last block is the licence,
+    the warranty disclaimer and the contact address, and a legend line costs 10.55 px. Six of the thirteen
+    books now draw the grey -- trump-national-los-angeles (34 penalty areas), callippe and merion (wetland),
+    bay-view, copper-valley and micke-grove (channels that run dry) -- and monarch-bay is not one of them,
+    so the tightest card in the corpus still pays nothing. The other seven books, and both enlarged
+    editions of them, stay byte-identical.
+
+    TWO LINES WAS THE OLD BUDGET AND ONE LINE IS THE NEW ONE, measured rather than preferred, because
+    widening the row to three classes also widened the set of books that have to carry it. Laid out in
+    chrome-headless-shell at `emulate_media(media="print")` against each shipped book's own stylesheet, as
+    the gap from the lowest inked text to the bottom of the `overflow:hidden` card box:
+
+        book                          without this row   with it
+        micke-grove-golf-links              +14.73         +1.19     <- the binding one
+        bay-view-golf-club                  +19.39         +5.84
+        copper-valley / merion / trump      +35.83        +22.28
+        callippe-preserve                   +49.38        +35.83
+        monarch-bay (draws no grey)          +1.19         +1.19     <- untouched, still the tightest
+
+    THREE THINGS CAME OUT OF THAT AND ALL THREE ARE IN THE CODE BELOW. First, _grey_key's clause costs
+    ZERO px on every book -- the HOLE-map row absorbs 18 characters without wrapping -- so the enumeration
+    entry is free and is kept. Second, the row's height was being set by its SWATCH COLUMN and not by its
+    text: at the sibling rows' `height="14"` the row cost 17.00 px and micke-grove came out at -2.27,
+    CLIPPING the licence block. The rect is still the same 20x9 as every other swatch on the card; only the
+    svg box's vertical padding is gone (`height="10"`), which drops the cost to 13.54 px -- one line of
+    type, the floor for any row at all -- and micke-grove to +1.19. Third, at that floor the sentence must
+    be ONE line: measured, it wraps somewhere between 69 and 74 characters of visible text, and every
+    two-line wording clips micke-grove by 9.36 and bay-view by 4.70 whatever it says.
+
+    SO +1.19 px IS THE MINIMUM CLEARANCE IN THE CORPUS AFTER THIS CHANGE, on micke-grove, which now ties
+    monarch-bay for tightest card in the book. That is stated as the cost it is: this card has no room for
+    another caveat, and the next one added to guide_panel() will clip a licence block unless something
+    leaves. tests/test_r17_print.py::test_the_print_in_colour_line_costs_the_guide_card_no_room is what
+    refuses it there instead of on paper.
+
+    WHAT THE WORDING HAS TO DO, in the order a reader needs it: say it is NOT water, because that is the
+    confusion the ink was invented to end; name all three members, so each can be recognised; and say what
+    it costs him. Two casualties of the one-line budget, both recorded rather than quietly dropped. "waste"
+    is gone -- "brush, canyon, waste, wetland, creek runs dry" is 76 characters and clips -- so trump's
+    brush and barranca floors are covered by "brush, canyon". And "relief costs one stroke" is gone, which
+    is NOT a space decision and would have gone anyway: it is true of a `golf=penalty_area`, a mapper
+    asserting a Rule 17 marking, and it is a claim this book cannot support for a marsh or a dry ditch,
+    where nothing in the data records that a Committee has marked anything. A relief figure that is right
+    on one of three members is worse than none. Rule 17 marks a penalty area red or yellow and the two
+    differ in the relief they allow; the stakes and lines on the course are the authority. The ink is a
+    quiet GREY rather than either of those two colours (see render_hole.PENALTY_FILL), so nothing about the
+    mark can be read as a ruling either.
+
+    "creek runs dry" IS THE FOOTER'S OWN PHRASE, not a synonym, and that is deliberate: the footer mark and
+    the legend entry are the two ends of one lookup, and a reader who cannot get from the mark to the key
+    has neither. See not_water_mark for why that phrase rather than "dry creek" -- `intermittent=yes` says
+    the channel is dry for PART of the year, and "dry creek" would claim more than that about the day the
+    reader is standing there.
+
+    "usually lost" IS THE HONEST STRENGTH. A ball in marsh or brush is normally unfindable and that is why
+    rule 2 requires the mark; "always lost" would be false, and "may be hard to find" would understate the
+    thing a junior is deciding against. It is the wording the penalty row already used and it survives the
+    widening unchanged, because it was never a claim about water.
+    """
+    if not _book_draws_not_water():
+        return ''
+    # `height="10"` and not the sibling rows' 14: the ROW's height is set by whichever of its swatch and
+    # its text is taller, and at 14 this row cost 17.00 px against micke-grove's 14.73 of headroom and
+    # clipped the licence block. The rect is the same 20x9 every other swatch on this card draws; what is
+    # gone is the svg box's vertical padding. See the measurement table above.
+    return ('  <div class="legrow"><svg width="28" height="10">'
+            f'<rect x="2" y="0.5" width="20" height="9" fill="{render_hole.PENALTY_FILL}" '
+            f'stroke="{render_hole.PENALTY_EDGE}" stroke-width="1"/></svg>\n'
+            '    <span><b>Not water</b>: brush, canyon, <b>wetland</b>, <b>creek runs dry</b>. '
+            'Ball usually <b>lost</b>.</span></div>\n')
 
 
 def _faint_note():
@@ -1135,6 +1533,35 @@ def _heat_swatches():
 
 
 def guide_panel():
+    """The pocket edition's legend card.
+
+    THE COLOUR ROW USED TO REASSURE A MONO PRINTER. It said "steeper is always darker, so it reads in
+    black and white too", which is true of the green's heat ramp -- HEAT_OPACITY over white is
+    monotone in slope -- and false of the HOLE map printed on the same card. render_hole fills a
+    fairway #cfe8b2 and a bunker #efe3b8; through Chrome's own grayscale filter those are greys 223 and
+    226, THREE levels of 255 apart, with nothing between them but the bunker's 0.8-unit #c9b477 edge at
+    grey 180. trump-national-los-angeles names 149 bunkers across its 18 footers and prints a `carry N`
+    per hole measured to where that sand starts. So the sentence sat in the row a reader consults while
+    choosing a printer and told him the wrong thing; the enlarged edition had carried "Print in colour
+    -- bunkers vanish in black & white" all along, and README claimed both books did.
+
+    THE WARNING REPLACED THE REASSURANCE RATHER THAN BEING ADDED UNDER IT, and that is a measurement.
+    This card is the tightest thing in the book: monarch-bay ships with 1.19 px of clearance to the
+    bottom of a 3.5x5in `overflow:hidden` box whose last block is the licence, the warranty disclaimer
+    and the contact address, and this project has clipped that block twice. Spliced into all twelve
+    shipped guide cards and laid out in chrome-headless-shell, a NEW legend row costs monarch-bay
+    12.36 px (it clips) and philadelphia 1.81 px (it clips); keeping the reassurance and scoping it to
+    the green costs monarch-bay 9.36 px (it clips); replacing it outright leaves every one of the twelve
+    at its existing slack to the hundredth of a pixel. Same wording as the enlarged edition, so the two
+    cards cannot drift and README's "both books" is true.
+
+    What is NOT lost: "steeper is always <b>darker</b>" stays, because the ordering IS a fact about the
+    ramp. It is the inference drawn from it -- that the card therefore works in mono -- that was false
+    beside a hole map.
+
+    See tests/test_r17_print.py, which measures the greyscale collapse off rendered cards and the
+    card's remaining headroom in a browser.
+    """
     return '''<div class="panel guide">
   <div class="gtitle">How to read a green</div>
   <div class="legrow"><svg width="28" height="14"><line x1="2" y1="7" x2="18" y2="7" stroke="#15271b" stroke-width="1.3"/><polygon points="18,7 14,4.5 14,9.5" fill="#15271b"/></svg>
@@ -1147,10 +1574,10 @@ def guide_panel():
     <span><b>Contours</b> join equal height (15&nbsp;cm each). Close = steep. Bar = 5&nbsp;yd.</span></div>
   <div class="legrow"><svg width="28" height="14">''' + _heat_swatches() + '''</svg>
     <span><b>Colour</b> = steepness: green flat &rarr; amber &rarr; red (&ge;5%);
-    steeper is always <b>darker</b>, so it reads in black and white too.
+    steeper is always <b>darker</b>. <b>Print in colour</b> &mdash; bunkers vanish in black &amp; white.
     <b>&ldquo;no tree data&rdquo;</b> = a survey gap, not open ground.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add up.</span></div>
-  <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue)''' + _grey_key() + ''', <b>trees</b>. <b>Left</b> = to green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add up.</span></div>
+''' + _grey_note() + '''  <div class="legrow"><span><b>GREEN</b> is turned so your <b>approach is at the bottom</b>; small <b>N</b> = true north. "feeds" = the low side putts run toward.</span></div>
 ''' + _faint_note() + _no_fall_note() + '''
   <div class="legrow"><span><b>green N ft above/below</b> = <b>measured</b> height vs the back tee.
     <b>Not</b> a yardage adjustment &mdash; club depends on your ball flight, so <b>you</b>
@@ -1262,19 +1689,25 @@ def tees_panel():
 def _scorecard_claim():
     """How the tees card may describe where its yardages came from -- per course, not one boast.
 
-    The card said "Yardages from the official scorecard." on every book. Only 4 of 11 courses record an
-    official or printed club scorecard; the other 7 record third-party aggregators -- BlueGolf, NCGA,
-    GolfLink, Wikipedia, Golfify. For those, "official" is a claim about provenance the record does not
+    The card said "Yardages from the official scorecard." on every book, including every book whose
+    record does not evidence one. For those, "official" is a claim about PROVENANCE the record cannot
     support, printed beside the very numbers it is vouching for.
+
+    TWO CLASSES OF RECORD, and the class is the whole question. One evidences the club's own card -- an
+    official or printed club scorecard -- and may say so. The other evidences published scorecard data
+    without evidencing the club's card behind it, and may only say that. No figure moves between them: a
+    scorecard number is a fact wherever it is read, and the book prints the same yardages either way.
+    What the weaker wording withdraws is one sentence about where they were read.
 
     The same book already says the honest version two cards away: the guide card credits "facts from the
     PUBLISHED scorecard". So this is not a hard question about what is true, only about which of two
     wordings a given course has earned. Derived from sources.scorecard, which is the field the provenance
     record is built from, so the card and legal/03 cannot disagree.
 
-    Aggregator data is not less honest -- bay-view's own source note records that a third-party record
-    was WRONG and was corrected against the club's card -- which is exactly why the distinction is worth
-    printing rather than papering over.
+    The weaker wording is not a verdict on any record's quality. bay-view is the case that makes the
+    distinction worth printing: its own source note records a per-hole figure that was WRONG and had to
+    be corrected from the club's own card. A reader told the numbers came from the club cannot weigh
+    them; a reader told they came from published scorecard data can.
     """
     src = str((config.COURSE.get("sources") or {}).get("scorecard") or "").lower()
     official = ("official" in src) or ("printed scorecard" in src)
@@ -1742,7 +2175,7 @@ def coach_cover_panel(coach_name):
     motif = "".join(
         f'<path d="M-20 {30+i*40} C 90 {30+i*40-26}, 200 {30+i*40+30}, 370 {30+i*40-14}" '
         f'fill="none" stroke="#c8a24a" stroke-width="1.1" opacity="0.06"/>' for i in range(13))
-    G = "#c8a24a"
+    G = _COVER_GOLD
     return f'''<div class="panel cover"><svg viewBox="0 0 350 500" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
   <defs><linearGradient id="cg" x1="0" y1="0" x2="0.35" y2="1">
     <stop offset="0" stop-color="#12492f"/><stop offset="0.55" stop-color="#0a3a24"/><stop offset="1" stop-color="#04170f"/>
@@ -1750,8 +2183,7 @@ def coach_cover_panel(coach_name):
   <rect x="0" y="0" width="350" height="500" fill="#0a3521"/>
   <rect x="0" y="0" width="350" height="500" fill="url(#cg)"/>
   {motif}
-  <rect x="17" y="17" width="316" height="466" fill="none" stroke="{G}" stroke-width="1.4"/>
-  <rect x="21" y="21" width="308" height="458" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.55"/>
+  {_cover_frame()}
   <text x="175" y="66" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10" letter-spacing="8" font-weight="700" fill="#d7b45c">ENLARGED</text>
   <circle cx="175" cy="120" r="26" fill="none" stroke="{G}" stroke-width="1.4"/>
   <circle cx="175" cy="120" r="21" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.6"/>
@@ -1762,7 +2194,7 @@ def coach_cover_panel(coach_name):
   <line x1="118" y1="252" x2="232" y2="252" stroke="{G}" stroke-width="0.9"/>
   <rect x="171" y="248.5" width="7" height="7" fill="{G}" transform="rotate(45 175 252)"/>
   <text x="175" y="{cy0:.1f}" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="{fst:.1f}" fill="#f5eddd">{tspans}</text>
-  <text x="175" y="{addr_y:.1f}" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="9" letter-spacing="1" fill="#9fb4a3">{esc(ADDR).upper()}</text>
+  {_addr_line(addr_y)}
   {recipient}
   <rect x="60" y="446" width="230" height="18" rx="9" fill="none" stroke="#b9973f" stroke-width="0.8"/>
   <text x="175" y="458" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.6" letter-spacing="1.0" fill="#dcc27f">ENLARGED PRACTICE EDITION</text>{share_mark}
@@ -1781,7 +2213,7 @@ def coach_map_card(hole):
       <span class="yalt">{row[FRONT_I]} {esc(FRONT_NAME)}</span></div>
   </div>
   <div class="cmap"><div class="minilab">HOLE &middot; tee &rarr; green</div>{lsvg}</div>
-  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_drew_trees(hole) or not _book_draws_trees()) else ' &middot; <b>no tree data</b>'}</span><span>course layout</span></div>
+  <div class="foot"><span>{i['bunkers']} bunkers &middot; {i['waters']} water{'' if (_drew_trees(hole) or not _book_draws_trees()) else ' &middot; <b>no tree data</b>'}</span>{not_water_mark(i)}<span>course layout</span></div>
   {playline}
 </div>'''
 
@@ -1816,10 +2248,10 @@ def coach_about_card():
   <div class="legrow"><span><b>Black numbers</b> = slope % there; over <b>10%</b> is bank or bunker face,
     not putting surface: coloured, not numbered. <b>Grey numbers</b> = yd from the <b>front edge</b>, down
     the middle. The <b>red ring</b> is the green's middle, <b>not the pin</b>.</span></div>
-  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue), <b>trees</b>. <b>Left</b> = to
+  <div class="legrow"><span><b>HOLE</b> map: bunkers (tan), water (blue)''' + _grey_key() + ''', <b>trees</b>. <b>Left</b> = to
     green (straight), <b>right</b> = from the tee (walked): on a par 4 or 5 they <b>need not</b> add
     up.</span></div>
-''' + _faint_note() + _no_fall_note() + _no_tree_note() + '''
+''' + _grey_note() + _faint_note() + _no_fall_note() + _no_tree_note() + '''
   <div class="legrow"><span>Printed <b>larger than tournament scale</b>: a <b>practice aid, NOT a
     conforming competition book under Rule&nbsp;4.3</b>. Use the pocket edition in competition.</span></div>
   <div class="legrow"><span><b>green N ft above/below</b> = measured height vs the back tee, <b>not</b> a

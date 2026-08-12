@@ -23,7 +23,7 @@ than one -- the smoothing AND the grid the surface was sampled from -- which is 
 cannot stand for all 198 greens. The smoothing is a Gaussian of sigma 3 PIXELS: 1.20 m on a 0.4 m LiDAR
 grid, 1.51 m on the six 0.5 m seamless greens. What it erases is set by its measured amplitude
 response, not by that sigma.
-On the 192 LiDAR greens the Gaussian IS the whole limit, because the point cloud is finer than the
+On the 210 LiDAR greens the Gaussian IS the whole limit, because the point cloud is finer than the
 pixel: it keeps 0.0002 at 1.5 m, 0.17 at 4 m, 0.32 at 5 m and 0.50 at 6.4 m, so the half-amplitude
 wavelength is 6.39 m. A 5 m hollow is drawn a third as deep as it is, and anything much under 6 m
 across is gone. This paragraph understated that as "about a metre and a half" for a long time --
@@ -58,15 +58,15 @@ def gauss(a, sig_px):
 
 # --- the SOURCE grid a surface was resampled from, measured from the array alone ---------------
 # Fraction of second differences that must land at the float32 floor before a surface is called a
-# resample of something coarser. Set from the corpus, not guessed: across the 198 built surfaces the
-# six seamless greens sit at 49.5-72.3% (measured per axis) and the 192 LiDAR ones at 0.2-19.8%,
+# resample of something coarser. Set from the corpus, not guessed: across the 216 built surfaces the
+# six seamless greens sit at 49.5-72.3% (measured per axis) and the 210 LiDAR ones at 0.2-19.8%,
 # because a LiDAR green is interpolated from a dense point cloud over a Delaunay triangulation and
 # has no rectangular lattice at all. So the gap the threshold sits in is 2.51x: 0.25 is 1.27x above the
 # worst LiDAR green (the-reserve 18, N-S) and 1.98x below the weakest seamless one (monarch-bay 10,
 # E-W).
 #
-# THAT UPPER FIGURE WAS PUBLISHED HERE AS 6.1% AND IT IS 19.8%. 11 LiDAR greens carry an axis above
-# 6.1%, and the gap was published as 8x. The margin is REAL -- 0 false positives over the 192 and 6 of
+# THAT UPPER FIGURE WAS PUBLISHED HERE AS 6.1% AND IT IS 19.8%. 14 LiDAR greens carry an axis above
+# 6.1%, and the gap was published as 8x. The margin is REAL -- 0 false positives over the 210 and 6 of
 # 6 true positives, re-measured every run -- but it is about three times thinner than this paragraph
 # claimed, and this paragraph is the only recorded derivation of the constant, so it is what anyone
 # retuning it would work from. Every figure in it is now re-derived from the arrays by
@@ -118,7 +118,7 @@ def _flat_fraction(d2, scale):
     docstring offered the second reading -- "nothing at all between 5e-7 and 1e-4 ... a gap two orders
     of magnitude wide" -- and 0.6% of the values lie in that band, with the tolerance this actually
     uses INSIDE it, 4.79e-6 on that green. The insensitivity is real, and it is what was worth writing
-    down: the corpus verdict is unchanged for every multiplier from 0.5 to 80.8 times eps -- 0 of 192
+    down: the corpus verdict is unchanged for every multiplier from 0.5 to 80.8 times eps -- 0 of 210
     LiDAR greens called resampled, 6 of 6 seamless found -- and first breaks at 80.8514, which is 10.11x
     the 8.0 used here, where copper-valley 4 becomes the first LiDAR green called resampled.
 
@@ -245,6 +245,32 @@ def point_in_poly(x, y, poly):
 # over its 6.0 bar when the truth is 1.25, and the guide card drew its three key swatches at full
 # strength -- so the reddest cell any map can draw printed nearer the 2.5% swatch than the 5% one.
 HEAT_OPACITY = 0.62
+
+# Ink for the 5-yd DEPTH LADDER's numbers -- the yards-from-the-front-edge figures a player reads to
+# judge depth. Full opacity, so it is the ink that reaches paper and not a composite: 5.33:1 on white.
+#
+# It was #8a8a8a INSIDE the dashed-line group at opacity 0.7, which composites to grey 172-173 --
+# measured 2.24:1 at 600 dpi against WCAG's 4.5:1 -- printed at 4.09 pt (callippe hole 9) to 8.90 pt,
+# making the ladder the faintest data on the card. #767676 is the 4.54:1 grey this project adopted for
+# .foot / .yalt / .playline, and those print at 7.5 pt; #6b6b6b is the grey it uses for .abtxt at
+# 5.15 pt, which is the size class the ladder is actually in, so that is the one taken here.
+#
+# DARKENING ALONE WOULD HAVE MADE THE WORST CASE WORSE, which is why the halo went on in the same
+# change rather than later. 1081 of the 1104 rung labels a luma-190 core detector could even FIND
+# pre-fix were under 4.5:1 against the collar they sit on, and 243 had a quarter or more of that collar
+# filled by the green's own 1.3-unit #20402a outline or a #15271b arrow -- a stroke over three times the
+# width of a digit's stem at this size. Over that outline the old label composites to grey 112 and reads
+# 2.37:1 against it; an opaque #6b6b6b digit on the same outline reads 2.16:1. Grey on dark green is not
+# a problem a darker grey fixes. The slope numbers have had a white halo all along; the ladder had none.
+#
+# ONE CONSEQUENCE OUTSIDE THIS FILE, recorded because it is not obvious from here: a stroked glyph makes
+# Chrome emit a SECOND, white Type3 font run for the ladder in the exported PDF (measured: 'Type3 (13 0
+# R)' at 0xffffff carrying {5,10,...,35} beside the slope labels' own Type3 run). Two tests in
+# tests/test_phase1_regressions.py select the ladder by its old ink -- the HTML `fill="#8a8a8a"` and the
+# PDF `sp["color"] == 0x8a8a8a` -- and a third discriminates slope labels by "the ladder rungs are drawn
+# with stroke='none' and land in a Type0 font". All three need re-pointing at the next rebuild; each
+# fails loudly rather than silently.
+RUNG_INK = "#6b6b6b"
 
 def heat_color(slope_pct):
     """Green -> amber -> red by steepness, with LIGHTNESS that falls monotonically.
@@ -426,10 +452,10 @@ def bank_run_yd(from_y, to_y, midx, cx, cy, theta, slope, my, step=0.01):
     hold. Two of the 21 affected greens have BOTH (copper-valley 6, bay-view 5).
 
     THIS DOES NOT MOVE THE DATUM, and that is measured rather than preferred. Re-basing depth on
-    S['putt'] -- the obvious fix -- moves all 198 printed depths by a median 2.74 yd and up to 9.64,
+    S['putt'] -- the obvious fix -- moves all 216 printed depths by a median 2.75 yd and up to 9.64,
     because `putt` is `erode(mask, 3) & (slope <= 10)` and the erosion trims 1.2 m of collar off BOTH
     ends of every green: a device for fitting a plane, not a statement about where the green stops.
-    Trimming just the leading steep run moves 12 depths, both ends 28. Either would put the printed
+    Trimming just the leading steep run moves 17 depths, both ends 35. Either would put the printed
     depth off the drawn OUTLINE, which runs through that same bank because it IS the polygon, and would
     cost the depth its independent check -- tests grade every printed depth against the true WGS84
     geodesic of its own chord to 1e-4 yd, and that only works while depth is a pure function of the
@@ -730,9 +756,10 @@ def green_summary(arr, mask, px_x, px_y, putt=None):
     # widened the band by one step: measured off the shipped books, the ambiguity is confined to
     # whether a 1.2% or 1.3% green carries "(faint)". 1.2% prints three marked (castlewood-valley 14,
     # copper-valley 17, valley-hi 14) against three unmarked (castlewood-valley 8, the-reserve 5,
-    # valley-hi 11), and 1.3% one marked (the-reserve 10) against two unmarked (micke-grove 1,
-    # monarch-bay 2) -- the-reserve 10 being a green that clears 1.2% of tilt and fails the 0.8 ft
-    # fall. Two of the 54 distinct percentages the books print, 9 of 198 greens; the reasoning below
+    # valley-hi 11), and 1.3% one marked (the-reserve 10) against three unmarked (micke-grove 1,
+    # monarch-bay 2, trump-national-los-angeles 17) -- the-reserve 10 being a green that clears 1.2% of
+    # tilt and fails the 0.8 ft
+    # fall. Two of the 54 distinct percentages the books print, 10 of 216 greens; the reasoning below
     # is unchanged.
     #
     # Do NOT "fix" that by comparing round(tilt_pct, 1) >= 1.2. It looks like consistency and is a
@@ -1119,17 +1146,30 @@ def render(hole, tournament=False):
         xs.sort()
         return [(xs[i], xs[i+1]) for i in range(0, len(xs)-1, 2)]
     step = 4.572/my                                       # 5 yards DOWN THE PLAY LINE, in pixels
-    glines=[]; k=1; yy=front_y-step
+    # The RUNG LINES and the RUNG NUMBERS are two groups, not one, and that split is the whole of the
+    # fix recorded at RUNG_INK. The numbers used to sit inside the dashed-line group, inheriting its
+    # fill="#8a8a8a" and its opacity="0.7" -- grey 172 composited, 2.24:1 on white paper against WCAG's
+    # 4.5 -- and inheriting its stroke, which is why they had to say stroke="none" and so could not
+    # carry the white halo the slope numbers get. The lines keep the old faint treatment: they are a
+    # 5-yard guide, and the printed depth ladder's DATA is the numbers.
+    glines=[]; glabels=[]; k=1; yy=front_y-step
     while yy>back_y:
         sps=xspans(yy)
         if sps:
             for a, b in sps:
                 glines.append(f'<line x1="{a:.1f}" y1="{yy:.1f}" x2="{b:.1f}" y2="{yy:.1f}"/>')
             # one label per rung, at the right-hand edge of the green -- not once per fragment
-            glines.append(f'<text x="{sps[-1][1]+1.5:.1f}" y="{yy+1.5:.1f}" font-size="3.4" '
-                          f'fill="#8a8a8a" stroke="none">{k*5}</text>')
+            glabels.append(f'<text x="{sps[-1][1]+1.5:.1f}" y="{yy+1.5:.1f}" '
+                           f'font-size="3.4">{k*5}</text>')
         yy-=step; k+=1
-    gridg=f'<g stroke="#9a9a9a" stroke-width="0.35" stroke-dasharray="2,2" opacity="0.7" fill="#8a8a8a">{"".join(glines)}</g>'
+    # paint-order + stroke on the GROUP, which every element inherits -- measured in the same
+    # chrome-headless-shell tools/export_pdf.py prints with, because an inherited paint-order is the one
+    # part of this that a browser could plausibly not implement. stroke-width 0.9 is the slope numbers'
+    # 1.2 scaled by 3.4/4.6, so both haloes are the same fraction of their glyph.
+    gridg=(f'<g stroke="#9a9a9a" stroke-width="0.35" stroke-dasharray="2,2" opacity="0.7">'
+           f'{"".join(glines)}</g>'
+           f'<g fill="{RUNG_INK}" paint-order="stroke" stroke="#fff" stroke-width="0.9" '
+           f'stroke-linejoin="round">{"".join(glabels)}</g>')
     # (front/center/back yardage tags removed by request -- declutter the green)
     fcb=""
     # pin ring the golfer marks on the day (pin moves daily -> not pre-printed).

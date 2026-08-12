@@ -1,22 +1,22 @@
 # Summary & Verdict
 
-**Reviewed:** 2026‑07‑13; scope refreshed 2026‑07‑29 to cover all 12 course folders. Whole
+**Reviewed:** 2026‑07‑13; scope refreshed 2026‑08‑10 to cover all 13 course folders. Whole
 project: generator code, every course folder, fetch scripts,
 every generated HTML/PDF, and embedded assets. An independent adversarial "opposing counsel"
 pass was run in addition to a direct audit.
 
 ## Verdict
 
-### ✅ All ELEVEN distributed courses — FOURTEEN books — are CLEAN
+### ✅ All TWELVE distributed courses — FIFTEEN books — are CLEAN
 Bay View · Callippe Preserve · Castlewood Hill · Castlewood Valley · Copper Valley ·
 Merion (East) · Micke Grove · Monarch Bay (Tony Lema) · Philadelphia CC (Spring Mill) ·
-The Reserve at Spanos Park · Valley Hi.
+The Reserve at Spanos Park · Trump National Los Angeles · Valley Hi.
 
-Eleven courses, **fourteen books to give away**: eleven pocket editions plus three enlarged
+Twelve courses, **fifteen books to give away**: twelve pocket editions plus three enlarged
 coach editions (Merion, Monarch Bay, Philadelphia CC). The heading counts both because they are
 different things — this line used to say "ELEVEN distributed books" above a list of eleven
 *courses*, so the two front-door documents disagreed on how many things the project hands out
-(`README.md` in this folder has always said fourteen).
+(`README.md` in this folder has always said so).
 
 **Poppy Ridge is NOT in that set.** It is built in yardage mode and
 `03_PROVENANCE_BY_COURSE.md` marks it **Personal**, which that file's own legend defines as

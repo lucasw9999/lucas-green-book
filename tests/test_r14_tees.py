@@ -149,18 +149,18 @@ def test_the_escape_hatch_demands_a_source_and_not_a_flag():
     THE DEFECT THIS TEST'S OWN NAME ASSERTED AND DID NOT GRADE. The guard shipped as
     `not str(t.get("slope_source") or "").strip()`, and `str(True)` is "True" -- four non-characters
     long, non-empty, and therefore a "source". Measured on the unfixed guard, every one of these
-    SILENCED it: True, 1, "x", "true", ["NCGA"], {"db": "NCGA"}, 3.14. The test asserted in its title
-    that a flag would not do and then graded only "", "   ", "\\n" and None -- the four values a bare
-    `or ""` already handled. So the hatch it was written to keep narrow was, in fact, exactly the bare
-    boolean its own docstring says is how `rating_is_womens` came to exist.
+    SILENCED it: True, 1, "x", "true", ["a publication"], {"db": "a publication"}, 3.14. The test
+    asserted in its title that a flag would not do and then graded only "", "   ", "\\n" and None -- the
+    four values a bare `or ""` already handled. So the hatch it was written to keep narrow was, in fact,
+    exactly the bare boolean its own docstring says is how `rating_is_womens` came to exist.
     """
     half = _predicate()
     sourced = {"name": "Red", "yards": 5286, "rating": None, "slope": 112,
-               "slope_source": "NCGA course-rating DB, men's Red 5286"}
+               "slope_source": "a publication's course-rating DB, men's Red 5286"}
     assert half([sourced]) == [], "a recorded men's slope source must let the number print"
     # A bare URL is one token and no prose, and is a perfectly good answer to "where did this come
     # from?" -- so whatever the bar is, it must not be "must read like a sentence".
-    assert half([dict(sourced, slope_source="https://ncga.org/course-rating?id=1234")]) == [], \
+    assert half([dict(sourced, slope_source="https://example.org/course-rating?id=1234")]) == [], \
         "a URL is a recorded source"
     refused = [
         # a half-finished edit
@@ -168,7 +168,7 @@ def test_the_escape_hatch_demands_a_source_and_not_a_flag():
         # ASSERTION IN PLACE OF EVIDENCE -- the shape this hatch exists to refuse
         True, 1, "true", "TRUE", "yes",
         # not a string at all: a container or a number cannot say where a number came from
-        ["NCGA"], {"db": "NCGA"}, 3.14, 0, False, [],
+        ["a publication"], {"db": "a publication"}, 3.14, 0, False, [],
         # a string, but too short to name a publication, a tee and a value
         "x", "?", "-", "n/a", "TBD", "ok", "unknown",
     ]
@@ -213,10 +213,10 @@ def test_no_course_record_prints_a_slope_whose_rating_was_withheld():
 
 
 def test_the_shipped_template_has_no_half_pair():
-    """examples/course.json is what a stranger copies, and its own _README already warns that
-    aggregators "list a WOMEN'S rating in a men's column" and says to "leave a value null rather than
-    guess". The template must not itself demonstrate the defect. Runs on a fresh clone: examples/ is
-    in git."""
+    """examples/course.json is what a stranger copies, and its own _README already warns that a second
+    copy of the card can "list a WOMEN'S rating in a men's column" and says to "leave a value null
+    rather than guess". The template must not itself demonstrate the defect. Runs on a fresh clone:
+    examples/ is in git."""
     p = os.path.join(ROOT, "examples", "course.json")
     if not os.path.exists(p):
         pytest.skip("no examples/course.json")
@@ -273,7 +273,7 @@ def test_the_engine_refuses_to_build_a_book_from_a_half_pair(tmp_path):
         assert rc == 0, f"withholding BOTH halves is the fix and must build:\n{out}"
         # (iii) so does a recorded men's slope source
         write([whole, {"name": "Red", "yards": 600, "rating": None, "slope": 112,
-                       "slope_source": "NCGA course-rating DB, men's Red 600"}])
+                       "slope_source": "a publication's course-rating DB, men's Red 600"}])
         rc, out = _import_config_for(slug)
         assert rc == 0, f"a recorded men's slope source must be allowed to print:\n{out}"
     finally:

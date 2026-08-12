@@ -474,9 +474,9 @@ def test_the_waterway_census_counts_exactly_the_watercourses_a_card_draws(tmp_pa
     up when `water` and `waterway` were one bucket, reappearing inside the survivor.
 
     Reproduced here at three ways: stream, stream, stream -> stream, stream, culverted stream. Both
-    censuses read `waterway 3` and the guard was silent. And it is not a hypothetical shape: 29 of the
-    corpus's 178 waterways are undrawn today (23 culverts, 4 tunnel=yes, 1 dam, 1 tunnel=covered), on
-    8 of 12 courses -- merion 8 of 20, bay-view 4 of 14, philadelphia 4 of 16.
+    censuses read `waterway 3` and the guard was silent. And it is not a hypothetical shape: 33 of the
+    corpus's 185 waterways are undrawn today (27 culverts, 4 tunnel=yes, 1 dam, 1 tunnel=covered), on
+    9 of 13 courses -- merion 8 of 20, bay-view 4 of 14, philadelphia 4 of 16.
 
     Under the project's second rule a lost watercourse is a hazard the golfer can reach that the book
     no longer shows, so the loss has to reach the HAZARD waiver, by name.
@@ -857,11 +857,19 @@ def test_fetch_trees_prose_names_only_functions_that_exist():
 # F-7  a tile-unit grouping was typed once and left to drift from the corpus
 # ---------------------------------------------------------------------------
 def test_the_ftus_tile_grouping_comment_is_derived_not_typed():
-    """GRID_SPAN_MAX_M's comment says how the corpus's 78 LAZ tiles split by header unit, and -- for
-    the US-survey-foot ones -- how many span each exact tile size. An audit found the ftUS grouping
+    """GRID_SPAN_MAX_M's comment says how the corpus's LAZ tiles split by header unit, and -- for
+    each unit -- how many span each exact tile size. An audit found the ftUS grouping
     loose: 41 is the count of ftUS tiles, but the old prose read as if every one of them spans
     2999.99 ftUS exactly, when a mapped delivery tiles its coverage area on a fixed grid and the
     tiles nearest the edge of that grid come out narrower in at least one axis.
+
+    The METRE deliveries do the same thing, and this test could not say so until a delivery on the
+    metre grid reached the edge of its own coverage area: CA_LosAngeles_B23 brought the corpus's
+    first short metre tile (514.7 x 389.7 m against that project's 1000 m grid). It was caught by
+    this test's `unclassified` guard rather than mis-bucketed, which is what that guard is for -- so
+    the bucket is WIDENED to name metre edge tiles, exactly as the ftUS side already does, rather
+    than the tile being excused. A short tile is the grid's edge in both units; nothing about it is
+    ftUS-specific, and the old shape only looked complete because no metre course had reached an edge.
 
     Re-derive every count here from the tiles' own headers -- header.mins/maxs and
     header.parse_crs(), never point data -- so the comment cannot drift from the corpus again.
@@ -875,7 +883,8 @@ def test_the_ftus_tile_grouping_comment_is_derived_not_typed():
         pytest.skip("per-course LAZ tiles are gitignored; nothing to measure")
 
     US_FT = 0.3048006096
-    full_2999 = full_2499 = edge = metre_1499 = metre_1000 = 0
+    full_2999 = full_2499 = edge = metre_1499 = metre_1000 = metre_edge = 0
+    metre_edge_spans = []
     unclassified = []
     for t in tiles:
         with laspy.open(t) as f:
@@ -902,6 +911,13 @@ def test_the_ftus_tile_grouping_comment_is_derived_not_typed():
                 metre_1499 += 1
             elif abs(span - 1000.0) < 0.02 or abs(span - 999.99) < 0.02:
                 metre_1000 += 1
+            elif span < 1000.0:
+                # Short in at least one axis against a 1000 m delivery grid -- the metre twin of the
+                # ftUS `edge` bucket above. Bounded BELOW the full tile size on purpose: a metre tile
+                # WIDER than the grid it claims is not an edge tile, it is a header this comment's own
+                # constant exists to refuse, and it must still reach `unclassified`.
+                metre_edge += 1
+                metre_edge_spans.append((round(dx, 1), round(dy, 1)))
             else:
                 unclassified.append((t, dx, dy, factor))
         else:
@@ -911,7 +927,7 @@ def test_the_ftus_tile_grouping_comment_is_derived_not_typed():
         "comment honestly: %r" % unclassified)
 
     ftus_total = full_2999 + full_2499 + edge
-    assert ftus_total + metre_1499 + metre_1000 == len(tiles)
+    assert ftus_total + metre_1499 + metre_1000 + metre_edge == len(tiles)
     widest_ftus_m = round(2999.99 * US_FT, 1)
 
     src = open(os.path.join(ROOT, "fetch_trees.py"), encoding="utf-8").read()
@@ -921,7 +937,8 @@ def test_the_ftus_tile_grouping_comment_is_derived_not_typed():
 
     m = re.search(
         r"Measured over all (\d+) tiles on disk: (\d+) carry US survey feet in their header "
-        r"\(([\d.]+) m at the widest\), (\d+) carry ([\d.]+) m, and (\d+) carry ([\d.]+) m\. "
+        r"\(([\d.]+) m at the widest\), (\d+) carry ([\d.]+) m, and (\d+) carry ([\d.]+) m, and "
+        r"(\d+) further metre tiles? (?:is|are) an edge tile \(([\d.]+) x ([\d.]+) m\)\. "
         r"Of the (\d+) ftUS tiles, (\d+) span exactly ([\d.]+) ftUS, (\d+) span exactly ([\d.]+) "
         r"ftUS, and the remaining (\d+) are edge tiles", flat)
     assert m, ("fetch_trees.py's GRID_SPAN_MAX_M comment no longer states the tile-unit grouping in "
@@ -929,10 +946,20 @@ def test_the_ftus_tile_grouping_comment_is_derived_not_typed():
                "regressed")
     g = m.groups()
     got = (int(g[0]), int(g[1]), float(g[2]), int(g[3]), float(g[4]), int(g[5]), float(g[6]),
-           int(g[7]), int(g[8]), float(g[9]), int(g[10]), float(g[11]), int(g[12]))
+           int(g[7]), float(g[8]), float(g[9]),
+           int(g[10]), int(g[11]), float(g[12]), int(g[13]), float(g[14]), int(g[15]))
     want = (len(tiles), ftus_total, widest_ftus_m, metre_1499, 1499.99, metre_1000, 1000.0,
+            metre_edge, metre_edge_spans[0][0] if metre_edge_spans else 0.0,
+            metre_edge_spans[0][1] if metre_edge_spans else 0.0,
             ftus_total, full_2999, 2999.99, full_2499, 2499.999, edge)
     assert got == want, (
         "fetch_trees.py's GRID_SPAN_MAX_M comment says (total, ftus, widest_m, m1499_n, m1499_val, "
-        "m1000_n, m1000_val, ftus_again, full2999, 2999.99, full2499, 2499.999, edge)=%s but the "
-        "corpus's own tile headers currently measure %s" % (got, want))
+        "m1000_n, m1000_val, medge_n, medge_dx, medge_dy, ftus_again, full2999, 2999.99, full2499, "
+        "2499.999, edge)=%s but the corpus's own tile headers currently measure %s" % (got, want))
+    # The metre edge bucket names ONE tile today, and its spans are published above. More than one
+    # would make a single "(dx x dy)" figure a claim about a set, so say so rather than quietly
+    # grading only the first.
+    assert metre_edge <= 1, (
+        "the corpus now holds %d metre edge tiles (%r); fetch_trees.py's comment publishes a single "
+        "pair of spans for that bucket, so it must be reworded to describe a set before this test "
+        "can grade it" % (metre_edge, metre_edge_spans))

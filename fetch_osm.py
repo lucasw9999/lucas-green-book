@@ -199,8 +199,8 @@ def census(elements):
     weir (a structure beside water sits exactly where the water is NOT), and not a culverted, covered
     or underground reach (merion 13 once printed "1W" whose only blue mark was a 14.7 m culvert). So
     the same swap survived inside the surviving bucket -- lose a real stream, gain a culvert, count
-    unmoved, guard silent. Not hypothetical: 29 of this corpus's 178 waterways are undrawn today (23
-    culverts, 4 tunnel=yes, 1 tunnel=covered, 1 dam) on 8 of 12 courses, merion 8 of 20 and bay-view 4
+    unmoved, guard silent. Not hypothetical: 33 of this corpus's 185 waterways are undrawn today (27
+    culverts, 4 tunnel=yes, 1 tunnel=covered, 1 dam) on 9 of 13 courses, merion 8 of 20 and bay-view 4
     of 14 among them.
 
     The undrawn ones are counted in `waterway_undrawn` rather than dropped. Two reasons: the fetch
@@ -210,16 +210,62 @@ def census(elements):
     is listed as volatile and not as a hazard for the same reason: it churns like the drawn lines do,
     and nothing is drawn or measured from it.
 
+    A KNOWN RESIDUAL, WRITTEN DOWN RATHER THAN LEFT TO BE REDISCOVERED: `waterway` is once again a step
+    wider than the drawn class, and this time the gap is not closable on tags. render_hole's `creeks`
+    now applies TWO GEOMETRIC exclusions after `is_visible_watercourse`, and both are properties of where
+    a line lies rather than of what it is tagged:
+
+      * runs_inside_a_penalty_area -- a `waterway` 0.90+ of whose length lies inside a non-water
+        `golf=penalty_area` is that area's drainage path. Fires on trump-national-los-angeles way
+        845375656 (0.974 inside penalty areas 1330719395/1330719396).
+      * runs_inside_drawn_water -- an NHD `ArtificialPath` or `Connector` 0.90+ of whose length lies
+        inside a mapped waterbody is a synthetic flowline NHD threads through that water to keep its
+        network connected, not a channel. Fires on copper-valley way 83565232 (0.9528 inside lake
+        775614086). See render_hole.is_synthetic_flowline for why the FType alone is NOT the rule: 2 of
+        this corpus's 15 synthetic lines lie inside no mapped waterbody, and there the synthetic line is
+        the only mark the water has.
+
+    So the swap this bucket was split twice to prevent is open again in a narrow form -- lose a real
+    stream, gain a way that one of those two rules will refuse, count unmoved, guard silent. It is
+    narrow: the gaining feature has to be an NHD synthetic line inside a mapped waterbody, or a channel
+    inside a staked penalty area, and 2 of the corpus's 185 waterways are in that state today.
+
+    WHAT CLOSING IT NEEDS, so the next person does not have to work it out: a THIRD bucket beside
+    `waterway`/`waterway_undrawn`, holding the lines those two rules refuse, in neither VOLATILE_KINDS
+    nor HAZARD_KINDS -- default-deny, zero tolerance, structural, and not a hazard kind, exactly the
+    treatment `out_of_bounds` gets and for its reason (nothing draws it, so no message should tell a
+    human that hazard ink left a card). The bucket cannot be computed from tags: both rules measure
+    containment, so `census` would have to take geometry. And the two-bucket identity
+    `waterway + waterway_undrawn == every way carrying the key` is asserted over every stored cache in
+    tests/test_r14_census.py, which a third bucket has to be reconciled with in the same change.
+
+    NOT done here because that test file is outside this change, and because the direction of the
+    residual is the tolerable one: what it can hide is a lost stream, which the NEXT re-fetch's own
+    `waterway` count would still have to account for, and not a wrong number on a card.
+
     `natural=wetland` gets the SAME TREATMENT ONE CLASS OVER, and until this round it had none: the
     query never asked for it, so this key was unreachable and `VOLATILE_KINDS` carried a dead entry for
-    it. The map now draws the wetland a card should draw (render_hole.is_drawn_wetland) in the same
-    filled blue as a pond and counts it in the same footer W, so the drawn ones are a HAZARD kind here,
-    exactly as `water` is -- callippe alone has 12 of them, one within 45 m of the played line on 16 of
-    its 18 holes, and nine of its cards printed "0W" over one. The ones the predicate refuses -- a
+    it. The map draws the wetland a card should draw (render_hole.is_drawn_wetland), so the drawn ones
+    are a HAZARD kind here, exactly as `water` is -- callippe alone has 12 of them, one within 45 m of
+    the played line on 16 of its 18 holes, and nine of its cards printed "0W" over one. It is drawn in
+    the NOT-WATER GREY and counted separately from the footer's W, which is a correction to what this
+    paragraph used to say ("in the same filled blue as a pond and counts it in the same footer W"):
+    marsh is not open water, callippe's whole cache holds ONE `natural=water` polygon while its shipped
+    book prints 39 W across 18 cards, and 2,309 of its tree markers stand inside ground the card had
+    painted as a pond. See render_hole.holds_open_water for the split. Being a hazard kind is unaffected
+    by that and is the only thing this bucket turns on -- a ball in marsh is lost either way, so losing
+    one is still a hazard loss and still aborts. The ones the predicate refuses -- a
     farmland-classification tile that merely carries the tag -- go in `wetland_undrawn`, which is
     volatile and not a hazard, because a mapper re-classifying a landcover polygon is an OSM
     improvement and nothing draws or measures it. Splitting them is what stops the swap this bucket's
     neighbour already had to be split for: lose a real marsh, gain a tile, count unmoved, guard silent.
+
+    `golf` BEFORE `natural`, which is why `penalty_area` has a bucket of its own at all and why the one
+    course that carries the tag counts 0 `scrub`. All 34 of trump-national-los-angeles' penalty areas
+    also carry `natural=scrub`, and that ordering is what a consumer needs: what the card draws them as
+    is decided by the HAZARD tag (see render_hole.is_land_penalty_area), so a guard bucketing them as
+    landcover would hand a drawn hazard the churn tolerance a scrub polygon gets. See HAZARD_KINDS below
+    for why one bucket covers both halves of the class.
     """
     c = Counter()
     for e in elements:
@@ -294,8 +340,28 @@ VOLATILE_KINDS = frozenset({
 # `wetland_undrawn` -- the farmland/landcover tiles that merely carry the tag -- is volatile and NOT a
 # hazard kind, for `waterway_undrawn`'s reason exactly: no card draws it, nothing measures from it, and
 # a mapper re-classifying one is an OSM improvement that must not read as a lost hazard.
-HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'water', 'waterway',
-                          'wetland'})
+#
+# `penalty_area` is here because BOTH halves of it are drawn hazard ink, and it is here for its own
+# reason rather than water_hazard's. It is NOT that tag renamed: the 2019 Rules of Golf replaced "water
+# hazard" and "lateral water hazard" with "penalty area" and WIDENED the term to any area a Committee
+# marks, so render_hole splits it -- the water ones take the blue and the footer W, the rest take an ink,
+# a legend entry and a footer mark of their own (render_hole.penalty_area_is_water,
+# is_land_penalty_area). Whichever half a feature is in, losing it removes drawn hazard ink from a card,
+# so the message a human reads has to say "hazard" and the waiver it prescribes has to be
+# ALLOW_HAZARD_SHRINK and not ALLOW_STRUCTURAL_SHRINK. It was STRUCTURAL before -- not in either set, so
+# it fell to the default-deny branch -- which is the right severity by the wrong route. The tolerance
+# does not move: both branches give a zero-tolerance, no-rarity-exemption comparison, and
+# 2% of trump-national-los-angeles' 34 is 0.
+#
+# ONE BUCKET FOR BOTH HALVES, unlike `waterway`/`waterway_undrawn` and `wetland`/`wetland_undrawn`, and
+# the difference is what those splits were for: there, one half was DRAWN and the other was not, so a
+# merged bucket let a reply lose a real marsh and gain a landcover tile without moving a number. Here
+# both halves reach the paper, so the bucket is not wider than the drawn class. The residual, stated
+# rather than hidden: a reply that re-tagged a brush penalty area as a pond, or the reverse, would move a
+# card's W without moving this count. That is a change in the GROUND rather than in the mapping, and no
+# course in this corpus has a water penalty area to lose -- all 34 are `natural=scrub`.
+HAZARD_KINDS = frozenset({'bunker', 'water_hazard', 'lateral_water_hazard', 'penalty_area', 'water',
+                          'waterway', 'wetland'})
 
 # 2%, floor 1. Chosen from what these counts actually are on this corpus (the-reserve 2,462 trees and
 # 1,530 buildings, micke-grove 532 trees, the-reserve 49 waterway ways, merion 8 wood) against what the
@@ -455,13 +521,21 @@ def _check_response(j, path, out):
         # closed, and do not let the baseline go a second time -- which is what HAZARD_KINDS is for.
         #
         # THAT EQUALITY IS DATED 2026-08-03 AND ONE COURSE HAS SINCE MOVED, deliberately and UPWARD.
-        # Adding `natural=wetland` to the query and to `waters` took callippe from 2 drawn water
-        # polygons to 31 across its 18 cards, on 14 of them, 9 of those from 0W -- the hand-mapped
-        # seasonal wetland the fetch had never asked for. So the invariant the evidence supports is
-        # "no drawn water class LOST ink", not "no count changed": callippe was never one of febbbba's
-        # four re-fetched courses, and an equality frozen over the whole corpus cannot tell a lost
-        # hazard from a found one. Its watercourse polylines are unchanged, and no other course's
+        # Adding `natural=wetland` to the query and to the area-hazard selector took callippe from 2
+        # drawn hazard polygons to 31 across its 18 cards, on 14 of them, 9 of those from 0W -- the
+        # hand-mapped seasonal wetland the fetch had never asked for. So the invariant the evidence
+        # supports is "no drawn water class LOST ink", not "no count changed": callippe was never one of
+        # febbbba's four re-fetched courses, and an equality frozen over the whole corpus cannot tell a
+        # lost hazard from a found one. Its watercourse polylines are unchanged, and no other course's
         # counts moved in either class.
+        #
+        # THOSE 29 ARE NO LONGER IN THE BLUE, and the figure above is left as the historical one it is
+        # rather than rewritten, because it is what the 2026-08-03 comparison measured. Marsh is not open
+        # water: it is drawn in the not-water grey now and counted separately from the footer's W (see
+        # render_hole.holds_open_water), so callippe's blue polygon count is back at the preserved book's
+        # 2 and 29 grey ones stand beside it. Nothing left the paper -- the same polygons are on the same
+        # 14 cards -- and the ink accounting for the move, per course and per class, is graded by
+        # tests/test_phase1_regressions.py::test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side.
         lost, churn, hazard = {}, {}, {}
         for k in oc:
             if nc[k] >= oc[k]:
@@ -713,6 +787,33 @@ def fetch(query, out, write=True):
     raise SystemExit(f"FAILED to fetch {out}")
 
 def main():
+    # `natural=coastline` IS DELIBERATELY NOT ASKED FOR, and this is the record of that decision rather
+    # than an oversight. Two courses in this corpus have sea beside them and both were measured, live
+    # against Overpass, from each hole's OSM centreline:
+    #
+    #     monarch-bay   San Francisco Bay   way 547215125   55.5 m from hole 17 (then 71.7 h16, 85.6 h18)
+    #     trump         the Pacific         ways 41645254 / 260968665   99.4 m from hole 17 (119.3 h18)
+    #
+    # Both are OUTSIDE the 45 m corridor render_hole selects water in, so no card omits the sea today and
+    # nothing shipped is wrong. That is what makes deferring this safe -- it is not what makes it right.
+    #
+    # THE REASON IT IS DEFERRED IS STRUCTURAL, and it holds at any distance: OSM does not map the sea as a
+    # polygon. `natural=coastline` is a set of LINES with an implied side -- land on the left, water on the
+    # right, by convention -- so turning it into something `waters` can fill means closing those lines
+    # against the fetch box and choosing which side to fill. Get the side wrong and the card paints the golf
+    # course blue, which is a worse statement than omitting the sea: a junior aiming at what the book shows
+    # as land is the failure mode rule 2 exists for, and this would invert it. Every other water class this
+    # query asks for arrives as a closed way or a relation ring and needs none of that.
+    #
+    # WHAT IT WOULD TAKE, so the next person does not restate the problem: polygonise the coastline against
+    # the fetch box with the side taken from the OSM convention and asserted rather than assumed (a test
+    # that the filled side contains no green, fairway or tee is cheap and would have caught an inversion);
+    # a census bucket of its own, default-deny like the rest; and a decision about whether the sea is
+    # `waters` or a class with its own legend entry, because "water (blue)" beside a 431-acre bay is a
+    # different statement from the same words beside a pond.
+    #
+    # REVISIT WHEN a coastline comes inside any hole's 45 m water corridor. 55.5 m is one re-drawn
+    # centreline away from that, so this is a near thing and not a remote one.
     geom = fetch(f'[out:json][timeout:120];(way["golf"="green"]({BB});way["golf"="hole"]({BB}););out geom tags;', "osm_geom.json")
     gr = [e for e in geom['elements'] if e.get('tags', {}).get('golf') == 'green']
     ho = [e for e in geom['elements'] if e.get('tags', {}).get('golf') == 'hole']

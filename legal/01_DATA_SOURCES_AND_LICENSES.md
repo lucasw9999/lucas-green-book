@@ -52,8 +52,14 @@ Every input used to build the books, its license, our obligation, and how we mee
 ## 3. Scorecards — par, yardage, handicap
 - **Status:** **facts.** Par, yardages per tee, and stroke‑index are not copyrightable
   (*Feist*, 1991 — facts and "sweat of the brow" are not protected).
-- **Sources (cross‑checked):** official course sites, BlueGolf/NCGA, USGA course‑rating DB,
-  GolfLink — used only to verify the numbers, not to copy any card's design/layout.
+- **What we take:** **facts from the published scorecard** — par, per‑hole yardage and stroke‑index,
+  read off published cards and transcribed as numbers. Nothing of a card's **design or layout** is
+  copied: no artwork, no colour scheme, no table shape, no logo. Where a course's own record says
+  which figures were reconciled and which are single‑source, `03_PROVENANCE_BY_COURSE.md` reproduces
+  it per course.
+- **Cross‑checks we do run:** against **our own open data** — per‑hole par is corroborated by
+  OpenStreetMap's `golf=hole` par tags, and each tee's per‑hole yardages must sum to the total the
+  card itself prints. Both are arithmetic on facts, not a second edition of anyone's card.
 
 ## 4. Esri World Imagery / Maxar — FORMERLY used on one personal file, REMOVED 2026‑07‑13
 - **License:** **restrictive.** Esri Master License Agreement; the imagery is Maxar's

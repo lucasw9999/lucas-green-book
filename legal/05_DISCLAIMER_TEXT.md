@@ -4,7 +4,7 @@
 is extracted from a built book in `courses/`, so it cannot drift from what is printed.
 Re-run after any wording change; `--check` fails if this file is stale.
 
-Covers **15** built books (12 pocket, 3 enlarged). Blocks differ per
+Covers **16** built books (13 pocket, 3 enlarged). Blocks differ per
 course where the data differs (a rebuilt
 course, a NAIP-traced green), so each variant is listed with the courses that print it.
 
@@ -18,7 +18,7 @@ long as this generator existed: 27 printed instances the record did not quote, w
 ran green over them on every merge because it only ever asked about one CSS class.
 
 ## A. Pocket edition "About & legal"
-### Variant A1 -- printed on 10 book(s): callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park, valley-hi-country-club
+### Variant A1 -- printed on 11 book(s): callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park, trump-national-los-angeles, valley-hi-country-club
 > A free, independent green book for junior golfers, not for sale. Hole & green shapes, and the
 > carry distances measured from them, are a Produced Work from OpenStreetMap data (©
 > OpenStreetMap contributors, ODbL 1.0, osm.org/copyright); slope, contours, arrows & elevation
@@ -104,7 +104,7 @@ ran green over them on every merge because it only ever asked about one CSS clas
 > Green Book™. This book: free to share, not for sale — CC BY-NC-ND 4.0.
 
 ## C. Pocket edition back cover -- copyright, trademark & licence
-### Variant C1 -- printed on 11 book(s): bay-view-golf-club, callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park, valley-hi-country-club
+### Variant C1 -- printed on 12 book(s): bay-view-golf-club, callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, the-reserve-at-spanos-park, trump-national-los-angeles, valley-hi-country-club
 > Lucas Green Book™ · © 2026 Lucas Wu. This book: free to share, not for sale — CC BY-NC-ND
 > 4.0.
 
@@ -119,7 +119,7 @@ ran green over them on every merge because it only ever asked about one CSS clas
 > CC BY-NC-ND 4.0.
 
 ## E. Front cover attribution
-### Variant E1 -- printed on 12 book(s): bay-view-golf-club, callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, poppy-ridge-golf-course, the-reserve-at-spanos-park, valley-hi-country-club
+### Variant E1 -- printed on 13 book(s): bay-view-golf-club, callippe-preserve-golf-course, castlewood-hill-course, castlewood-valley-course, copper-valley-golf-club, merion-golf-club, micke-grove-golf-links, monarch-bay-golf-club, philadelphia-country-club, poppy-ridge-golf-course, the-reserve-at-spanos-park, trump-national-los-angeles, valley-hi-country-club
 > © 2026 Lucas Wu · Lucas Green Book™
 
 ## Why this text covers the risks
