@@ -4,7 +4,7 @@
 # https://github.com/lucasw9999/lucas-green-book
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 """
-Two defects a Rule 4.3 review found in legal/06_RULE_4.3_CONFORMANCE.md and in what the book prints.
+Three defects a Rule 4.3 review found in legal/06_RULE_4.3_CONFORMANCE.md and in what the book prints.
 
 S-1 -- STALE COUNTS. legal/06 said "198 greens" and a worst-case scale of "0.3601" throughout. The
 corpus has grown to 216 greens across the 12 courses that print real greens (a 13th course was
@@ -33,8 +33,7 @@ THE LEGEND CARD HAS NO ROOM: tests/test_r17_print.py measures monarch-bay's guid
 clearance in its own 3.5x5in box, and this project has clipped that card's tail twice already
 splicing in far shorter additions than a whole new line. Measured the same way here (a candidate line
 spliced into every shipped cover, laid out in chrome-headless-shell under print media): the pocket
-cover has room -- 12.44 px of clearance on every course measured, against a card 480 px tall under
-print media -- so generate.py's `cover_panel()` now prints the claim there instead, gated on
+cover has room -- so generate.py's `cover_panel()` now prints the claim there instead, gated on
 DISTRIBUTABLE (the same flag `_cover_badge()` uses for "DESIGNED TO CONFORM" itself, so a blank-green
 book states no scale it does not print).
 
@@ -55,6 +54,23 @@ enlarged build, not merely unlikely under today's flags.
 `test_the_conforming_scale_claim_never_appears_on_the_enlarged_non_conforming_edition` pins this
 with a mutation: it splices `_scale_size_line()`'s own output into `coach_cover_panel()`'s real
 output, proving the check fails against that BEFORE trusting it to pass against the real function.
+
+S-3 -- AND THEN THE LINE S-2 ADDED WAS STRUCK THROUGH BY THE COVER'S OWN FRAME. It printed at
+y="486", below the Rule 4.3 badge and three units below the gold frame's outer rule at y=483, and
+that rule ran horizontally through the capitals of "SCALE 1:480 OR SMALLER . CARD 3.5 x 5.0 IN" on all
+twelve distributable covers -- 1.03 pt of gold through every letter, rasterised off a shipped
+greenbook.pdf at 420 dpi.
+
+WHAT PASSED WHILE IT DID, and the reason this file now measures ink: the clearances S-2 recorded were
+BASELINE-TO-PATH and baseline-to-card-edge -- "12.44 px of clearance to the card's own edge", "1.72 px
+below the inner gold frame ... a design choice, not a collision". A stroke is not its path. 1.4 units
+of gold centred on y=483 inks 482.3 to 483.7; the capitals inked 481.3 to 486.2 and so enclosed the
+whole rule while the arithmetic reported daylight. The line now prints at y="414", inside the frame
+and immediately ABOVE the badge, and
+`test_the_cover_scale_lines_ink_never_touches_the_gold_frames_ink` grades it by rasterising each cover
+through chrome's own print path and comparing INK MASKS -- the scale line's, the frame's, and every
+other element's -- with the y="486" geometry re-emitted as a mutation first, so the check is seen red
+against the real defect before it is trusted green against the fix.
 """
 import glob
 import html
@@ -728,9 +744,12 @@ def test_the_scale_size_line_costs_the_cover_no_room():
     this test cannot see clipped text -- proves the harness would notice an overflow before trusting
     its silence on the real content.
 
-    Measured across the corpus's distributable books at 12.44 px of clearance to the card's own
+    Measured across the corpus's distributable books at 23.96 px of clearance to the card's own
     bottom edge (480 px tall under print media): this asserts merely that the number stays positive,
-    not that it stays exactly 12.44, since a future redesign of the cover is expected to move it.
+    not that it stays exactly 23.96, since a future redesign of the cover is expected to move it. The
+    lowest inked line on the cover is the COPYRIGHT line, not the scale/size line this file is about
+    -- that one prints above the Rule 4.3 badge now, for the reason S-3 below records -- so this test
+    guards the bottom of the cover generally rather than the scale line in particular.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -833,13 +852,20 @@ def _measure_clearance(page, css, cfg, panel):
 @pytest.mark.slow          # lays every distributable cover AND legend card out in a browser, twice
 @needs_geom
 def test_legal_06_states_the_measured_cover_and_legend_clearance():
-    """The 'Scale & size, in words, on the cover' bullet quotes two MEASURED clearances -- 12.44 px
-    on the pocket cover (every distributable course), 1.19 px on monarch-bay's legend card -- as
-    evidence for why the line went on the cover and not the legend. Re-measured here, independently
-    of tests/test_r17_print.py's own figure for the legend card (a second opinion on the same claim,
-    not a re-statement of it, the way tests/test_r16_gates.py's worst-gated-reading check and this
-    file's own `_gated_green_scales` are independent of each other), in the same browser under the
-    same print media every other measurement in this file uses.
+    """The 'Scale & size, in words, on the cover' bullet quotes two MEASURED clearances -- 23.96 px
+    to the card's own edge on the pocket cover (every distributable course), 1.19 px on monarch-bay's
+    legend card -- as evidence for why the line went on the cover and not the legend. Re-measured here,
+    independently of tests/test_r17_print.py's own figure for the legend card (a second opinion on the
+    same claim, not a re-statement of it, the way tests/test_r16_gates.py's worst-gated-reading check
+    and this file's own `_gated_green_scales` are independent of each other), in the same browser under
+    the same print media every other measurement in this file uses.
+
+    THE COVER FIGURE IS THE LOWEST INKED LINE ON THE CARD, WHICHEVER LINE THAT IS -- today the
+    copyright line, since the scale/size line moved above the Rule 4.3 badge (S-3). It is the cover's
+    overflow margin, and it is deliberately NOT the scale line's own clearance to anything: a gap to
+    the card edge is what was measured when the frame was striking the scale line's glyphs through, and
+    the figures that grade THAT are in
+    test_the_cover_scale_lines_ink_never_touches_the_gold_frames_ink, off rasterised ink.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -996,3 +1022,339 @@ def test_legal_06_states_the_measured_enlarged_edition_figures():
     assert int(m.group(2)) == stats["median_ratio"], (
         f"legal/06 states the enlarged edition's median ratio as 1:{m.group(2)}; re-measured it is "
         f"1:{stats['median_ratio']}.")
+
+
+# ===========================================================================
+# S-3 -- the cover line is graded as INK, because a gap to a path is not a gap
+# ===========================================================================
+
+# The dpi the strike-through was first seen at, reading page 1 of a shipped greenbook.pdf. Kept as the
+# measurement dpi so any figure this file publishes can be re-checked by hand against that same raster.
+_INK_DPI = 420.0
+
+# Guillotine trim tolerance on a hand-cut pocket card, +-1/16 in. Ink nearer than that to the card's
+# own edge is ink that may not survive the cut -- which is why the fix went INSIDE the frame rather
+# than into the 16.3 units of card left between the frame's ink and the trim.
+_TRIM_SAFE_IN = 1.0 / 16.0
+
+# Every drawable child of the cover's <svg>, in document order. <defs> first because a <rect> inside it
+# would otherwise be picked up on its own.
+_SVG_CHILD = re.compile(r"<defs>.*?</defs>|<(rect|circle|line|path|text)\b[^>]*?(?:/>|>.*?</\1>)", re.S)
+
+
+def _pocket_covers():
+    """Every built pocket book in the corpus -- ALL THIRTEEN, which is one more than `CORPUS` holds.
+
+    `corpus_slugs()` answers "can this course render a hole map", so it drops poppy-ridge: that book is
+    built in yardage mode from the scorecard alone and has no osm_geom.json. It has a COVER like every
+    other book, drawn by the same `cover_panel()` and framed by the same `_cover_frame()`, and the
+    frame does not care whether the greens behind it are blank. A cover check that iterated CORPUS
+    would measure twelve of the thirteen covers and report it as the corpus.
+    """
+    return sorted(os.path.basename(os.path.dirname(p))
+                  for p in glob.glob(os.path.join(ROOT, "courses", "*", "greenbook.html"))
+                  if not os.path.basename(os.path.dirname(p)).startswith("_"))
+
+
+def _cover_layers(cover, skip):
+    """(wash, others) -- the cover's own markup split into the flat background and the ink on it.
+
+    `wash` is what every render in this test shares: <defs>, the two full-viewBox background rects and
+    the 6%-opacity motif curves. `others` is every inked element EXCEPT the ones named in `skip` (the
+    scale line and the frame, each measured on its own) -- so it is the roundel, the brand, the title,
+    the address, the badge, the edition line and the copyright line.
+
+    Splitting by RENDERING rather than by colour is what makes the masks below exact: an element's ink,
+    its antialiasing included, is precisely the pixels that changed when it was added to an identical
+    wash. Nothing is thresholded, so no faint edge pixel can be argued away.
+
+    The motif rides in the wash on both sides of every diff and cancels out of all of them. That is
+    deliberate and it is the one exclusion here: it is a 6%-opacity watermark that sweeps the whole
+    card, about 11 levels of 255 against the gradient, so counting it as ink would call every line on
+    the cover a collision and this test would say nothing. The 0.1 bound that recognises it sits far
+    from anything real -- the next-faintest thing the cover draws is the frame's hairline at 0.55.
+
+    EVERY CHILD IS ACCOUNTED FOR: the elements are struck out of the panel one at a time and what is
+    left must hold no drawable tag at all. An element quietly missed by the regex would be an element
+    missing from the `others` render, i.e. clearance this test reports that the page does not have.
+    """
+    els = [m.group(0) for m in _SVG_CHILD.finditer(cover)]
+    left = cover
+    for e in els:
+        left = left.replace(e, "", 1)
+    assert not re.search(r"<(defs|rect|circle|line|path|text)\b", left), (
+        f"_SVG_CHILD did not account for every drawable element of the cover; what it left behind "
+        f"still contains one: {left.strip()[:300]!r}")
+    vb = [float(v) for v in re.search(r'viewBox="([^"]+)"', cover).group(1).split()]
+    wash, others = [], []
+    for e in els:
+        faint = re.search(r'\bopacity="([0-9.]+)"', e)
+        if (e.startswith("<defs")
+                or re.match(rf'<rect x="0" y="0" width="{vb[2]:g}" height="{vb[3]:g}"', e)
+                or (faint and float(faint.group(1)) <= 0.1)):
+            wash.append(e)
+        elif not any(s and e in s for s in skip):
+            others.append(e)
+    for s in skip:
+        assert not s or s in cover, (
+            f"markup this test measures on its own is not in the cover it split: {s[:120]!r}")
+    assert len(wash) >= 3 and len(others) >= 8, (wash, others)
+    return wash, others
+
+
+def _cover_svg(cover, els):
+    """`els` alone, inside the cover panel's own <svg> and <div>, so the card box is unchanged."""
+    head = re.match(r'(<div class="panel cover"><svg[^>]*>)', cover)
+    assert head, "cover_panel() no longer opens with a single <div class=\"panel cover\"><svg ...>"
+    return head.group(1) + "".join(els) + "</svg></div>"
+
+
+def _card_raster(page, css, cfg, panel, fitz):
+    """`panel` printed by chrome to a ONE-CARD PDF page, rasterised at _INK_DPI as an HxWx3 array.
+
+    Through the PDF and not a screenshot, because the PDF is the artifact: the same browser, the same
+    print media and the same vector-to-raster step that produced the page the strike-through was read
+    off. The `@page` rule makes the page exactly the card, so row 0 of the raster is the card's top
+    trim and the last row is its bottom trim -- there is no sheet offset to locate or to get wrong.
+    """
+    import numpy as np
+    box = f"position:relative;width:{cfg.CARD_W_IN}in;height:{cfg.CARD_H_IN}in;overflow:hidden"
+    page.set_content(
+        "<!DOCTYPE html><html><head><meta charset='utf-8'><style>*{box-sizing:border-box}"
+        f"html,body{{margin:0;padding:0;background:#fff}}{css}"
+        f"@page{{size:{cfg.CARD_W_IN}in {cfg.CARD_H_IN}in;margin:0}}#w{{{box}}}</style></head>"
+        f"<body><div id='w'>{panel}</div></body></html>")
+    doc = fitz.open("pdf", page.pdf(prefer_css_page_size=True, print_background=True))
+    assert doc.page_count == 1, (
+        f"the cover printed to {doc.page_count} PDF pages; this measurement needs exactly one card "
+        f"per page or the raster's own edges are not the card's trim")
+    p = doc[0]
+    assert abs(p.rect.width - cfg.CARD_W_IN * 72) < 0.6 and \
+           abs(p.rect.height - cfg.CARD_H_IN * 72) < 0.6, (
+        f"the printed page is {p.rect.width:.1f}x{p.rect.height:.1f} pt, not the card's own "
+        f"{cfg.CARD_W_IN * 72:.0f}x{cfg.CARD_H_IN * 72:.0f} pt")
+    pix = p.get_pixmap(matrix=fitz.Matrix(_INK_DPI / 72.0, _INK_DPI / 72.0))
+    a = np.frombuffer(pix.samples, dtype=np.uint8)
+    return a.reshape(pix.height, pix.width, pix.n).astype(np.int16)[:, :, :3]
+
+
+def _ink(shot, wash):
+    """The pixels `shot` differs from the wash under it -- one element's rendered ink, exactly."""
+    import numpy as np
+    return np.abs(shot - wash).sum(2) > 0
+
+
+def _ink_gap_px(a, b):
+    """Least Euclidean pixel distance from any pixel of `a` to any pixel of `b`.
+
+    0.0 means they share a pixel; 1.0 means they are edge-adjacent, i.e. touching. Computed with one
+    exact distance transform rather than by dilating in a loop, so the number reported in a failure is
+    the real separation and not the step count of a search.
+    """
+    from scipy import ndimage
+    return float(ndimage.distance_transform_edt(~b)[a].min())
+
+
+def _pt(px):
+    return px * 72.0 / _INK_DPI
+
+
+def _el_name(el):
+    """A short human label for one cover element: its text if it has any, else its coordinates."""
+    tag = re.match(r"<(\w+)", el).group(1)
+    txt = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]*>", "", el))).strip()
+    if txt:
+        return f"<{tag}> {txt[:40]!r}"
+    at = " ".join(f"{k}={m.group(1)}" for k in ("x", "y", "cx", "cy", "x1", "y1", "d")
+                  for m in [re.search(k + r'="([^"]+)"', el)] if m)
+    return f"<{tag}> {at[:40]}"
+
+
+def _assert_ink_clear(mask, other_mask, subject, obstacle, where):
+    """`mask` must not share a pixel with `other_mask`, nor sit against one. Returns the gap in px."""
+    import numpy as np
+    shared = int((mask & other_mask).sum())
+    gap = _ink_gap_px(mask, other_mask)
+    if shared:
+        rows = np.where((mask & other_mask).any(1))[0]
+        raise AssertionError(
+            f"{where}: {subject} is STRUCK THROUGH by {obstacle} -- {shared} pixels at "
+            f"{_INK_DPI:.0f} dpi carry ink from both, across "
+            f"{_pt(rows.max() + 1 - rows.min()):.2f} pt "
+            f"({_pt(rows.min()):.2f}..{_pt(rows.max() + 1):.2f} pt from the card's top trim). A "
+            f"clearance computed from a baseline to a path coordinate cannot see this: the frame is "
+            f"a stroke and half of its width lies either side of its path.")
+    assert gap > 1.0, (
+        f"{where}: {subject} is touching {obstacle} -- {gap:.2f} px at "
+        f"{_INK_DPI:.0f} dpi ({_pt(gap):.3f} pt) between the two inks, which prints as one mark")
+    return gap
+
+
+@pytest.mark.slow          # prints all thirteen covers five times over and rasterises every print
+@pytest.mark.skipif(not _pocket_covers(), reason="courses/ is gitignored; no built cover to rasterise")
+def test_the_cover_scale_lines_ink_never_touches_the_gold_frames_ink():
+    """The cover's SCALE/CARD line was struck through by the frame, and a clearance test passed anyway.
+
+    THE DEFECT: `_scale_size_line()` printed at y="486", three units below the gold frame's outer
+    rule at y=483, and the rule ran horizontally through the capitals of "SCALE 1:480 OR SMALLER .
+    CARD 3.5 x 5.0 IN" on all twelve distributable covers. Legible, and plainly wrong, on page 1 of
+    every book -- the first thing anyone opening the PDF sees, and the very line Clarification 4.3a/1
+    asks a developer to put there.
+
+    WHY THE CHECK THAT CLEARED IT WAS NOT A CHECK. It measured the line's baseline against the frame's
+    PATH coordinate and against the card's bottom edge -- "12.44 px of clearance to the card's own
+    edge" (legal/06's own figure, graded above), "1.72 px below the inner gold frame ... a design
+    choice, not a collision". A stroke is not its path: 1.4 units of gold centred on y=483 inks 482.3
+    to 483.7, and these capitals inked 481.3 to 486.2, so the rule was enclosed by the glyphs while
+    the arithmetic reported daylight. NO COORDINATE TEST OF THAT SHAPE CAN CATCH THIS CLASS, which is
+    why this one asks the raster instead.
+
+    HOW: chrome prints each cover to a one-card PDF page and PyMuPDF rasterises it at 420 dpi, the dpi
+    the strike-through was found at. Three renders of the SAME card give three exact ink masks, each
+    the set of pixels that changed when one layer was added to an identical background wash --
+    the scale line alone, the gold frame alone, and every other inked element on the cover. Antialiased
+    edges are ink here, so the test errs toward calling a near miss a hit.
+
+    WHAT IT GATES, on all THIRTEEN pocket covers (see `_pocket_covers`, which is one more than
+    `CORPUS` holds):
+      * THE FRAME'S INK TOUCHES NOTHING AT ALL. Not the scale line, not the copyright line, not the
+        badge, not a two-line course name, not an address. "Don't block it -- just check all of them"
+        is the owner's rule after seeing the strike-through on a second cover, and this is that rule
+        stated as a measurement, on every cover including poppy-ridge's, which carries no scale line
+        of its own but the same frame around the same title, address and badge.
+      * the scale line's ink shares no pixel with the FRAME's ink, and does not sit against it;
+      * the scale line's ink shares no pixel with ANY other element's ink either -- the badge rule
+        8.23 pt below it is the nearest thing on the cover, and a frame-only check would not watch it;
+      * the scale line's ink keeps 1/16 in (the trim tolerance) from all four card edges, which is the
+        constraint that ruled out moving the line DOWN past the frame instead, where only 16.3 units
+        of card remain.
+
+    WHAT IT DELIBERATELY DOES NOT GATE: "no element's ink may touch another's" as a blanket rule.
+    Measured pairwise over every element of all thirteen covers, exactly two pairs overlap and both are
+    ONE ornament drawn as two elements -- the divider rule under GREEN BOOK with the gold diamond
+    centred on it, and the flagstick with its pennant. A blanket rule would have to carve those out by
+    name, and a check with two hand-written exceptions is a check that grows a third.
+
+    AND IT IS SHOWN FAILING FIRST. Before any of that is trusted, the line is re-emitted at the exact
+    y="486" that shipped and the frame check must raise on it -- on every cover, not once. A pixel test
+    that has never been red against the geometry it exists to reject is a pixel test that might be
+    measuring an empty mask.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
+    fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional (AGPL); no PDF raster to measure")
+    pytest.importorskip("scipy")
+    import numpy as np
+    exe = _shell()
+    covers = _pocket_covers()
+    rows, checked = [], []
+    with sync_playwright() as pw:
+        try:
+            b = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
+        except Exception:
+            pytest.skip("no browser available")
+        page = b.new_page()
+        page.emulate_media(media="print")
+        try:
+            for slug in covers:
+                cfg, generate, _dist = _engine(slug)
+                book = os.path.join(ROOT, "courses", slug, "greenbook.html")
+                with open(book, encoding="utf-8") as fh:
+                    css = re.search(r"<style>(.*?)</style>", fh.read(), re.S)
+                assert css, f"{slug}: the built book carries no <style> block to lay the cover out with"
+                css_text = css.group(1)
+                cover = generate.cover_panel()
+                line = generate._scale_size_line()      # "" on a non-distributable book
+                frame = generate._cover_frame()
+                assert frame in cover, (
+                    f"{slug}: cover_panel() no longer draws _cover_frame()'s own markup, so what this "
+                    f"test renders as 'the frame' is not what the book prints")
+                wash, others = _cover_layers(cover, skip=(line, frame))
+
+                # Defaults, not closure capture: this is inside a loop over the covers, and a late-bound
+                # `cover` would render whichever cover the loop finished on.
+                def shot(els, _css=css_text, _cfg=cfg, _cover=cover):
+                    return _card_raster(page, _css, _cfg, _cover_svg(_cover, els), fitz)
+
+                base = shot(wash)
+                fm = _ink(shot(wash + [frame]), base)
+                om = _ink(shot(wash + others), base)
+                assert fm.any() and om.any(), (
+                    f"{slug}: an ink mask came back empty (frame {int(fm.sum())} px, everything else "
+                    f"{int(om.sum())} px) -- this harness is not rendering what it thinks it is and "
+                    f"its silence would mean nothing")
+
+                # THE FRAME MUST BLOCK NOTHING, on every cover, scale line or no scale line. On a
+                # failure the culprits are named by re-rendering the elements one at a time -- "the
+                # frame blocks something" is not an answer anyone can act on.
+                try:
+                    _assert_ink_clear(om, fm, "something the cover prints", "the gold frame", slug)
+                except AssertionError as first:
+                    blocked = []
+                    for el in others:
+                        g = _ink_gap_px(_ink(shot(wash + [el]), base), fm)
+                        if g <= 1.0:
+                            blocked.append(f"{_el_name(el)} at {g:.2f} px")
+                    raise AssertionError(f"{first}\n  the frame is blocking: " + "; ".join(blocked)
+                                          ) from None
+
+                # THAT ARM GETS A MUTATION TOO: the frame translated 9 units up puts its bottom rule on
+                # the copyright line's baseline. Nothing here reads a literal out of _cover_frame()'s
+                # markup, so the mutation cannot rot into a no-op the way a string replace would.
+                lifted = _ink(shot(wash + [f'<g transform="translate(0,-9)">{frame}</g>']), base)
+                with pytest.raises(AssertionError, match="STRUCK THROUGH"):
+                    _assert_ink_clear(om, lifted, "something the cover prints",
+                                      "the gold frame (lifted 9 units onto the copyright line)", slug)
+                checked.append(slug)
+                if not line:
+                    continue                    # non-distributable: no scale claim to place or clear
+                lm = _ink(shot(wash + [line]), base)
+                assert lm.any(), f"{slug}: the scale line's ink mask came back empty"
+
+                # THE MUTATION: the geometry that shipped. Must be caught before the real one is cleared.
+                struck = _ink(shot(wash + [re.sub(r'y="[0-9.]+"', 'y="486"', line, count=1)]), base)
+                with pytest.raises(AssertionError, match="STRUCK THROUGH"):
+                    _assert_ink_clear(struck, fm, "the cover's SCALE/CARD line", "the gold frame",
+                                      f"{slug} (line put back at y=486)")
+
+                gap_frame = _assert_ink_clear(lm, fm, "the cover's SCALE/CARD line", "the gold frame",
+                                              slug)
+                gap_other = _assert_ink_clear(lm, om, "the cover's SCALE/CARD line",
+                                              "another inked element on the cover", slug)
+
+                r = np.where(lm.any(1))[0]; c = np.where(lm.any(0))[0]
+                edge = min(int(r.min()), int(c.min()),
+                           lm.shape[0] - 1 - int(r.max()), lm.shape[1] - 1 - int(c.max()))
+                assert edge >= _TRIM_SAFE_IN * _INK_DPI, (
+                    f"{slug}: the SCALE/CARD line's ink comes within {edge / _INK_DPI:.4f} in of the "
+                    f"card's trim, inside the {_TRIM_SAFE_IN:.4f} in a hand cut can wander -- a line "
+                    f"that clears the frame by being printed past it is a line that gets cut off")
+                rows.append((slug, gap_frame, gap_other, edge))
+        finally:
+            b.close()
+
+    assert checked == covers, (
+        f"only {len(checked)} of the {len(covers)} built pocket covers were measured ("
+        f"{sorted(set(covers) - set(checked))} were not) -- 'just check all of them' is the whole "
+        f"point of this test, and a cover nobody looked at is how this shipped in the first place")
+    assert len(rows) >= 1, "no distributable book with a built cover was measured"
+
+    # legal/06 publishes both clearances, and publishes them as ONE figure for every cover -- so a
+    # cover that drifts away from the others has to be noticed here rather than averaged over.
+    for label, i in (("frame", 1), ("badge rule", 2)):
+        vals = {round(r[i], 2) for r in rows}
+        assert len(vals) == 1, (
+            f"the line's clearance to the {label} is not the same on every cover measured: "
+            f"{sorted((r[0], round(r[i], 2)) for r in rows)} -- legal/06 states one figure for all of them")
+    text = _legal_06_text()
+    m = re.search(r"clears the gold frame by ([0-9.]+) pt and the badge's own rule[^.]*?"
+                  r"by ([0-9.]+) pt", text)
+    assert m, "legal/06 no longer states the cover line's measured ink clearances in the expected wording"
+    for label, published, measured in (("gold frame", m.group(1), _pt(rows[0][1])),
+                                       ("badge rule", m.group(2), _pt(rows[0][2]))):
+        assert round(float(published), 2) == round(measured, 2), (
+            f"legal/06 states the SCALE/CARD line's clearance to the {label} as {published} pt; "
+            f"re-rasterised at {_INK_DPI:.0f} dpi it is {measured:.2f} pt on all {len(rows)} "
+            f"distributable covers.")

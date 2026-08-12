@@ -100,8 +100,29 @@ G‑11/G‑12 is in force at your event. The books say to confirm before competi
   this project has clipped that card's tail twice already. Measured the same way (the panel spliced
   into every shipped cover and laid out in chrome‑headless‑shell under print media): the pocket
   cover has room, so `generate.py`'s `cover_panel()` now prints **"SCALE 1:480 OR SMALLER · CARD
-  3.5 × 5.0 IN"** beneath the Rule 4.3 badge, on every distributable book, with 12.44 px of
-  clearance to the card's own edge on every course measured. Neither figure is typed: the card size
+  3.5 × 5.0 IN"** immediately **above** the Rule 4.3 badge, inside the gold frame, on every
+  distributable book.
+  IT PRINTED BELOW THE BADGE UNTIL 2026‑08‑11, WHERE THE FRAME'S OWN OUTER RULE RAN THROUGH THE
+  LETTERS. The check that cleared that position measured this line's baseline against the frame's
+  PATH coordinate and against the card's edge — "12.44 px of clearance to the card's own edge", the
+  figure this bullet used to publish, and "1.72 px below the inner gold frame … a design choice, not
+  a collision". A stroke is not its path: 1.4 units of gold centred on y=483 ink 482.3–483.7 in card
+  units, the capitals inked 481.3–486.2, and so the rule crossed every letter about a third of the
+  way down — 1.03 pt of gold, on every distributable cover, read off page 1 of a shipped `greenbook.pdf` at
+  420 dpi. Re‑measured the one way that cannot mistake a path for its stroke, chrome printing each
+  cover to a one‑card page and PyMuPDF rasterising it at 420 dpi, with each element's ink taken as
+  the pixels it changed: the line **clears the gold frame by 46.46 pt and the badge's own rule, the
+  nearest inked thing to it on the cover, by 8.23 pt**, identically on every distributable
+  cover, and the cover's lowest line — the copyright — sits with 23.96 px of clearance to the
+  card's own edge under print media. The same ink measurement is then run over the FRAME against
+  everything else each cover prints — title, address, badge, edition line, copyright line — on every
+  built pocket cover, Poppy Ridge's included, and the frame's ink touches none of them.
+  `tests/test_r18_scale.py` grades all three figures and gates on
+  RENDERED OVERLAP rather than on a coordinate gap: the y="486" geometry is re‑emitted as a mutation
+  and the check must catch it before it is trusted on the real one. Dropping the line below the frame
+  instead was rejected on the same measurement — 16.3 units of card remain there between the rule's
+  ink and a hard trim, so the type would sit inside the 1/16 in a hand cut can wander.
+  Neither figure in the line is typed: the card size
   is read from `config.CARD_W_IN`/`CARD_H_IN`, and the scale is Rule 4.3's own ceiling
   (`RULE_4_3_SCALE_CAP_IN_PER_5YD` — the same number `tools/check_scale.py` gates every green
   against), so a card‑size or cap change cannot leave the printed claim behind without

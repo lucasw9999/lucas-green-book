@@ -942,6 +942,34 @@ def _addr_line(addr_y):
             f'letter-spacing="{ADDR_LETTER_SPACING:g}" fill="#9fb4a3">{esc(ADDR).upper()}</text>')
 
 
+# The cover's decorative double border, in card units of the 350x500 viewBox. The gold rule and the
+# hairline inside it, shared by BOTH covers for the reason _addr_line gives for being shared.
+#
+# THESE ARE STROKES, AND A STROKE HAS WIDTH -- which is the whole reason this is a named helper with a
+# paragraph attached. The outer rule's path runs along y=483, and 1.4 units of stroke centred on it
+# INKS 482.3 to 483.7; the hairline's path at y=479 inks 478.7 to 479.3. Any cover text placed by
+# comparing its baseline to 483 or 479 is being placed against a line that is not where the ink is.
+# That is exactly how the scale/size line came to be struck through: at y="486" its BASELINE sat 3.0
+# units below the path at 483, which reads as clearance, while its capitals rise 4.75 units above that
+# baseline and so inked 481.3 to 486.2 -- enclosing every one of the 1.4 units the rule actually
+# prints. Rasterised off the shipped greenbook.pdf at 420 dpi: 1.03 pt of gold straight through the
+# glyphs, on all twelve distributable covers. See
+# tests/test_r18_scale.py::test_the_cover_scale_lines_ink_never_touches_the_gold_frames_ink, which
+# rasterises the cover and compares INK to INK rather than baselines to path coordinates.
+#
+# Returned as markup rather than as coordinates so the test can render exactly these two elements and
+# nothing else, and so neither cover can grow its own private copy of the border.
+_COVER_GOLD = "#c8a24a"          # the one gold both covers draw every rule, roundel and mark in
+
+
+def _cover_frame():
+    """The cover's gold border: the 1.4-unit rule and the 0.6-unit hairline inside it. See above."""
+    return (f'<rect x="17" y="17" width="316" height="466" fill="none" '
+            f'stroke="{_COVER_GOLD}" stroke-width="1.4"/>\n'
+            f'  <rect x="21" y="21" width="308" height="458" fill="none" '
+            f'stroke="{_COVER_GOLD}" stroke-width="0.6" opacity="0.55"/>')
+
+
 def cover_panel():
     parts = config.BRAND.split()
     btop = esc(parts[0].upper()); bmain = esc(" ".join(parts[1:]).upper()) or "GREEN BOOK"
@@ -956,7 +984,7 @@ def cover_panel():
     motif = "".join(
         f'<path d="M-20 {30+i*40} C 90 {30+i*40-26}, 200 {30+i*40+30}, 370 {30+i*40-14}" '
         f'fill="none" stroke="#c8a24a" stroke-width="1.1" opacity="0.06"/>' for i in range(13))
-    G = "#c8a24a"        # gold
+    G = _COVER_GOLD        # gold
     badge_text, badge_stroke, badge_fill, badge_size = (
         _cover_badge()[k] for k in ("badge_text", "badge_stroke", "badge_fill", "badge_size"))
     return f'''<div class="panel cover"><svg viewBox="0 0 350 500" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
@@ -966,8 +994,7 @@ def cover_panel():
   <rect x="0" y="0" width="350" height="500" fill="#0a3521"/>
   <rect x="0" y="0" width="350" height="500" fill="url(#cg)"/>
   {motif}
-  <rect x="17" y="17" width="316" height="466" fill="none" stroke="{G}" stroke-width="1.4"/>
-  <rect x="21" y="21" width="308" height="458" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.55"/>
+  {_cover_frame()}
   <circle cx="175" cy="110" r="26" fill="none" stroke="{G}" stroke-width="1.4"/>
   <circle cx="175" cy="110" r="21" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.6"/>
   <line x1="171" y1="98" x2="171" y2="124" stroke="{G}" stroke-width="1.6" stroke-linecap="round"/>
@@ -978,11 +1005,11 @@ def cover_panel():
   <rect x="171" y="240.5" width="7" height="7" fill="{G}" transform="rotate(45 175 244)"/>
   <text x="175" y="{cy0:.1f}" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-style="italic" font-size="{fst:.1f}" fill="#f5eddd">{tspans}</text>
   {_addr_line(addr_y)}
+  {_scale_size_line()}
   <rect x="70" y="426" width="210" height="18" rx="9" fill="none" stroke="{badge_stroke}" stroke-width="0.8"/>
   <text x="175" y="438" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="{badge_size}" letter-spacing="1.0" fill="{badge_fill}">{badge_text}</text>
   <text x="175" y="462" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="8" letter-spacing="3" fill="#7f9484">JUNIOR GOLF EDITION</text>
   <text x="175" y="474" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="6.2" letter-spacing="0.5" fill="#6f8676">&#169; 2026 Lucas Wu &#183; Lucas Green Book&#8482;</text>
-  {_scale_size_line()}
 </svg></div>'''
 
 
@@ -1002,6 +1029,27 @@ def _scale_size_line():
     already. Measured the same way (panel spliced into every shipped cover, laid out in
     chrome-headless-shell under print media): the pocket cover has room. See
     tests/test_r18_scale.py for the measurement this claim rests on.
+
+    IT PRINTS ABOVE THE BADGE, AND IT USED TO PRINT BELOW IT AT y="486", WHERE THE GOLD FRAME RAN
+    STRAIGHT THROUGH THE GLYPHS. The verification that cleared that position measured this line's
+    baseline against the frame's PATH coordinate and against the card's bottom edge -- "12.44 px of
+    clearance to the card's own edge", legal/06's own figure, and "1.72 px below the inner gold
+    frame ... a design choice, not a collision". The frame is a 1.4-unit STROKE centred on its path,
+    so it inks 482.3 to 483.7 while these capitals inked 481.3 to 486.2: the rule crossed them about
+    a third of the way down the letters, 1.03 pt of gold through every one, on all twelve
+    distributable covers. See _cover_frame() for the stroke arithmetic and tests/test_r18_scale.py::
+    test_the_cover_scale_lines_ink_never_touches_the_gold_frames_ink, which settles it from RASTERISED
+    INK instead -- the one kind of evidence that cannot mistake a path for its stroke.
+
+    y="414" puts it INSIDE the frame, immediately above the Rule 4.3 badge, which is also where it
+    belongs by subject: the scale and the size are the disclosure the badge's own Clarification asks
+    for. Rasterised at 420 dpi through chrome's print path, its ink clears the frame by 46.46 pt and
+    its nearest neighbour of any kind -- the badge's rounded rule below it -- by 8.23 pt, on every
+    distributable cover (poppy-ridge prints no such line at all). The rejected alternative is recorded
+    because it is the tempting one: moving it further DOWN, clear of the frame, leaves 16.3 units
+    between the rule's ink and a hard trim, so once the type is placed in there it sits inside 1/16 in
+    of the cut -- the trim tolerance itself. Below the frame there is room to print it and no room to
+    cut it.
 
     Both figures are READ, not typed, so neither can drift from what the book actually is:
     - the card size comes straight from `config.CARD_W_IN`/`CARD_H_IN` -- the per-course override a
@@ -1028,7 +1076,7 @@ def _scale_size_line():
     if not DISTRIBUTABLE:
         return ""
     cap = round(180.0 / RULE_4_3_SCALE_CAP_IN_PER_5YD)   # 180 in = 5 yd; this cap's own ratio -> 1:480
-    return (f'<text x="175" y="486" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" '
+    return (f'<text x="175" y="414" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" '
             f'font-size="6.0" letter-spacing="0.4" fill="#8a9d8f">SCALE 1:{cap} OR SMALLER '
             f'&#183; CARD {config.CARD_W_IN:.1f} &#215; {config.CARD_H_IN:.1f} IN</text>')
 
@@ -2127,7 +2175,7 @@ def coach_cover_panel(coach_name):
     motif = "".join(
         f'<path d="M-20 {30+i*40} C 90 {30+i*40-26}, 200 {30+i*40+30}, 370 {30+i*40-14}" '
         f'fill="none" stroke="#c8a24a" stroke-width="1.1" opacity="0.06"/>' for i in range(13))
-    G = "#c8a24a"
+    G = _COVER_GOLD
     return f'''<div class="panel cover"><svg viewBox="0 0 350 500" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
   <defs><linearGradient id="cg" x1="0" y1="0" x2="0.35" y2="1">
     <stop offset="0" stop-color="#12492f"/><stop offset="0.55" stop-color="#0a3a24"/><stop offset="1" stop-color="#04170f"/>
@@ -2135,8 +2183,7 @@ def coach_cover_panel(coach_name):
   <rect x="0" y="0" width="350" height="500" fill="#0a3521"/>
   <rect x="0" y="0" width="350" height="500" fill="url(#cg)"/>
   {motif}
-  <rect x="17" y="17" width="316" height="466" fill="none" stroke="{G}" stroke-width="1.4"/>
-  <rect x="21" y="21" width="308" height="458" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.55"/>
+  {_cover_frame()}
   <text x="175" y="66" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="10" letter-spacing="8" font-weight="700" fill="#d7b45c">ENLARGED</text>
   <circle cx="175" cy="120" r="26" fill="none" stroke="{G}" stroke-width="1.4"/>
   <circle cx="175" cy="120" r="21" fill="none" stroke="{G}" stroke-width="0.6" opacity="0.6"/>
