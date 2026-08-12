@@ -37272,22 +37272,40 @@ WATER_INK_REMOVED_DELIBERATELY = {
 # recorded removals of marks that were false -- copper-valley's NHD `ArtificialPath` and merion's
 # `natural=water` ring with a house in it.
 #
-# WHAT THE REBUILD ALSO EXPOSED, and it is a gap in the BOOK-side rule rather than in this table: three of
-# those courses now sit below the preserved 2026-08-03 baseline on the blue class they no longer draw --
-# bay-view 16 -> 0, copper-valley 10 -> 0, micke-grove 4 -> 0 -- and BOOK_LOST_INK fires on all three.
-# Nothing left the paper; the marks are on the same cards in the grey, which WATER_INK_RECLASSIFIED records
-# and which the ENGINE-side chain below already credits. water_ink_book_findings does not: it walks a
-# removal record and no reclassification, so the book axis reads a conservation-preserving move as a loss.
-# That is left standing and reported rather than patched around, because the rule it needs is the engine
-# side's chain and changing a graded invariant is not a figure update.
+# WHAT THE REBUILD ALSO EXPOSED, and it was a gap in the BOOK-side rule rather than in this table: three of
+# those courses sit below the preserved 2026-08-03 baseline on the blue class they no longer draw --
+# bay-view 16 -> 0, copper-valley 10 -> 0, micke-grove 4 -> 0 -- and BOOK_LOST_INK fired on all three.
+#
+# NOTHING LEFT THE PAPER, and that was settled by counting the two BOOKS per card rather than by trusting
+# the engine's conservation proof. bay-view's 16 blue polylines and micke-grove's 4 are grey polylines on the
+# SAME cards in the built book, hole for hole -- bay-view 11/12/13/14/15/16/17 at 3/1/2/3/3/3/1 and
+# micke-grove 2/3/7/8 at 1 each -- and no card of either course changed how many line marks it carries at
+# all. copper-valley has exactly ONE changed card, hole 11 at 4 blue -> 3 grey, which is the single NHD
+# `ArtificialPath` appearance WATER_INK_REMOVED_DELIBERATELY already accounts for; that card keeps the lake's
+# blue fill. Every water polygon count on all three courses is untouched. So the book axis was reading a
+# conservation-preserving move as a loss, because water_ink_book_findings walked a removal record and no
+# reclassification while the ENGINE side below already walked both.
+#
+# THE BOOK SIDE NOW WALKS THE SAME CHAIN, in the same order, and carries ONE BAR THE ENGINE SIDE CANNOT:
+# the credit for a move is given only where the built book actually HOLDS the arrivals in the to-ink, and
+# withheld as BOOK_MOVED_INK_MISSING where it does not. The engine's conservation proof says render_hole
+# re-inks the mark; it says nothing about whether the file it was written to kept it, which is the one
+# question this axis exists to ask. Without that bar, a build that dropped all 16 of bay-view's channels
+# outright would have been credited on the from-class by the chain and excused on the to-class by an entry in
+# this table -- the two halves of one loss, each waived by a different record. See water_ink_book_findings.
 BOOK_PREDATES_THE_ENGINE = {}
 
 
-def water_ink_book_findings(before, now, built, has_removal, removal_now, allowance):
+def water_ink_book_findings(before, now, built, has_removal, removal_now, allowance, moves=()):
     """Findings for ONE (course, drawn class) on the BOOK side. Pure, so the rules can be graded directly.
 
     Three numbers: `before` from the preserved 2026-08-03 book, `now` from what the engine draws, `built`
     from courses/<slug>/greenbook.html. The engine axis is graded by the caller; this is the book's.
+
+    `moves` is the recorded RECLASSIFICATION chain for this class: one entry per WATER_INK_RECLASSIFIED
+    record whose FROM-class is this one, as (appearances moved, the TO-class's count in the PRESERVED book,
+    the TO-class's count in the BUILT book). Empty for every class with no move recorded, which is all but
+    three of them.
 
     `bk > eng` WAS PROPOSED AS THE INVARIANT AND IT IS NOT SOUND. The record means "this book is stale", and
     a stale book can legitimately hold FEWER marks than the engine as well as more -- if the engine has
@@ -37296,21 +37314,60 @@ def water_ink_book_findings(before, now, built, has_removal, removal_now, allowa
     would hold 2 against 31 and be perfectly honest. Both of today's entries happen to be book > engine,
     which is exactly the coincidence that would make the wrong rule look right.
 
-    So the two rules that ARE sound:
+    So the rules that ARE sound:
 
-      BOOK_LOST_INK. The book may not hold FEWER marks than the PRESERVED book unless a removal is recorded
-      whose engine-side figure it matches. This is the laundering that has to be impossible: ink lost
-      between render_hole and the written file, excused as "the book predates the engine". A stale book
-      cannot explain a deficit against the baseline -- staleness explains a difference from the engine NOW,
-      never from what was already on paper in 2026-08-03.
+      BOOK_LOST_INK. The book may not hold FEWER marks than the PRESERVED book unless the RECORDED CHAIN
+      lands on the figure it holds. The chain is the ENGINE side's, walked in the same order and for the same
+      reason a class can lose ink twice over: a REMOVAL takes marks off the paper (down to `removal_now`),
+      then a RECLASSIFICATION moves marks into another ink (less `moved`). copper-valley's blue polylines are
+      10 -> 9 by its removal and 9 -> 0 by its move, so 9 and 0 are both figures a record explains and 5 is
+      not. This is the laundering that has to be impossible: ink lost between render_hole and the written
+      file, excused as "the book predates the engine". A stale book cannot explain a deficit against the
+      baseline -- staleness explains a difference from the engine NOW, never from what was already on paper
+      in 2026-08-03.
+
+      THE LANDING IS AN EQUALITY, WHICH IS WHAT MAKES THE CHAIN AN ATTRIBUTION rather than a licence to be
+      short by about that much. A move recorded as 20 appearances where 16 moved leaves the chain at -4 and
+      fires; recorded as 12 it leaves it at 4 and fires. The engine-side arithmetic fires on the same two
+      mis-statements, which is the point of mirroring that chain instead of writing a second rule beside it.
+
+      BOOK_MOVED_INK_MISSING. The credit for a move is conditional on the built book HOLDING THE ARRIVALS:
+      the to-class must carry its own preserved figure PLUS the appearances that moved into it. The engine's
+      conservation check proves that render_hole re-inks the mark, and this axis exists precisely because a
+      file can lose what the renderer drew -- so a book-side deficit may not be waived on the engine's word.
+      The bar is anchored on the PRESERVED book and not on the engine deliberately: a to-class gap against
+      the engine is waivable by BOOK_PREDATES_THE_ENGINE, and that waiver plus a from-class chain credit is
+      how a whole class could otherwise leave the file with both halves of the loss separately excused. It
+      also refuses the netting shape BETWEEN the two classes -- a to-class holding 16 arrivals while 5 of its
+      own preserved marks went missing nets to "no deficit" against its own baseline and fails here.
+
+      WHAT NEITHER RULE CAN SEE, STATED SO IT IS NOT MISTAKEN FOR COVERAGE. Every figure here is a
+      COURSE-LEVEL TOTAL, so a card losing a mark while another card of the same course and class gains one
+      cancels and nothing on this axis moves. On the ENGINE side that shape is closed by the positive
+      per-card invariants (test_no_card_omits_a_watercourse_the_played_line_reaches and its area sibling,
+      per card and by identity). Those render through render_hole, so they do NOT cover the FILE: measured
+      by moving one grey polyline out of bay-view's hole 12 panel and into its hole 18 panel in a copy of
+      the built book held in memory, the total stays 16 and this test passes. A per-card book-versus-engine
+      identity is what would close it, and it does not exist yet. This axis notices that a course's totals
+      moved and refuses to let a move go unattributed; it is not a per-card guarantee about the file.
 
       ALLOWANCE_DIRECTION. An allowance whose book is SHORT of the engine is only possible when the engine
       has gained against the baseline. If the engine drew a mark then and draws it now, a book written in
       between cannot be missing it, and "stale" is not the explanation for why it is.
     """
     out = []
-    if built < before and not (has_removal and removal_now == built):
-        out.append(("BOOK_LOST_INK", before, now, built))
+    moved = sum(m[0] for m in moves)
+    after_removal = removal_now if has_removal else before
+    if built < before:
+        if has_removal and built == removal_now:
+            pass                      # the removal record's own figure, and it is proved behaviourally
+        elif moves and built == after_removal - moved:
+            # The chain accounts for the deficit ONLY IF the file shows where the ink went. Checked here and
+            # not left to the to-class's own grading, because that grading is waivable and this is not.
+            if any(to_built < to_before + m for m, to_before, to_built in moves):
+                out.append(("BOOK_MOVED_INK_MISSING", before, now, built))
+        else:
+            out.append(("BOOK_LOST_INK", before, now, built))
     if allowance is None:
         if built != now:
             out.append(("UNDECLARED_GAP", before, now, built))
@@ -37475,17 +37532,34 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
             # THE BOOK-SIDE AXIS, in water_ink_book_findings so the rules can be graded directly. The
             # engine says what the map draws; the book says what got written, and ink can be lost between
             # the two. See that function for why "the book must hold MORE than the engine" is NOT the
-            # invariant, and what the two sound ones are.
+            # invariant, and what the sound ones are.
+            #
+            # THE RECORDED CHAIN IS BUILT ONCE, here, and both axes walk it: the engine side below subtracts
+            # the same `moved` figures from the same records. Two copies of it drifted apart is how the book
+            # side came to credit a removal and not a reclassification in the first place.
+            moves = [(to, r) for (sl, frm, to), r in sorted(WATER_INK_RECLASSIFIED.items())
+                     if sl == slug and frm == what]
             said_stale = BOOK_PREDATES_THE_ENGINE.get((slug, what))
             rm = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
             for kind, bf, nw, bt in water_ink_book_findings(
                     before, now, built, rm is not None, rm[1] if rm else None,
-                    (said_stale[0], said_stale[1]) if said_stale else None):
+                    (said_stale[0], said_stale[1]) if said_stale else None,
+                    # THE ARRIVALS, MEASURED IN THE TWO BOOKS AND NOT IN THE ENGINE. This axis's question is
+                    # whether the FILE kept the mark, so the to-class figures come from the preserved book
+                    # and the built one -- asking render_hole would be asking the axis that already agrees.
+                    [(r[2], o.count(PAT[to]), book.count(PAT[to])) for to, r in moves]):
                 msg = (f"{slug} {what}: preserved book {bf}, engine {nw}, built book {bt}")
                 if kind == "ALLOWANCE_SETTLED":
                     book_settled.append(msg)
                 elif kind == "BOOK_LOST_INK":
                     book_lost.append(msg + " -- the BUILT book holds fewer marks than the PRESERVED one")
+                elif kind == "BOOK_MOVED_INK_MISSING":
+                    book_lost.append(
+                        msg + " -- the built book is at the figure the recorded reclassification chain "
+                              "predicts, but the ink is NOT in the class it is recorded as having moved "
+                              "to: that book is short of "
+                        + ", ".join(f"{to!r} {o.count(PAT[to])}+{r[2]} (holds {book.count(PAT[to])})"
+                                    for to, r in moves))
                 elif kind == "ALLOWANCE_DIRECTION":
                     book_gap.append(msg + " -- the allowance says the book is short of the engine while "
                                           "the engine has not gained against the baseline")
@@ -37497,12 +37571,11 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
                 # ink. copper-valley's blue polylines went 10 -> 9 by a removal and 9 -> 0 by a move, and
                 # requiring one record to explain both would have meant writing a figure that describes
                 # neither. The chain is walked in that order and the arithmetic has to land exactly on
-                # `now`; anything left over is an unexplained loss and is reported as one.
+                # `now`; anything left over is an unexplained loss and is reported as one. `moves` is the
+                # list built above, so the book axis and this one cannot disagree about what is recorded.
                 said = WATER_INK_REMOVED_DELIBERATELY.get((slug, what))
-                moves = [r for (sl, frm, _to), r in sorted(WATER_INK_RECLASSIFIED.items())
-                         if sl == slug and frm == what]
                 chain = said[1] if said else before
-                for r in moves:
+                for _to, r in moves:
                     chain -= r[2]
                 if said is None and not moves:
                     lost.append(f"{slug}: drawn {what} count {before} before the re-fetch, "
@@ -37514,8 +37587,8 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
                     mismatched.append(
                         f"{slug} {what}: the recorded chain accounts for {before} -> {chain} "
                         f"(removal to {said[1] if said else before}, then "
-                        f"{sum(r[2] for r in moves)} appearance(s) moved to another ink), but the engine "
-                        f"draws {now}{where}")
+                        f"{sum(r[2] for _to, r in moves)} appearance(s) moved to another ink), but the "
+                        f"engine draws {now}{where}")
             elif now > before:
                 said = WATER_INK_GAINED_DELIBERATELY.get((slug, what))
                 if said is None:
@@ -37680,12 +37753,14 @@ def test_the_pre_re_fetch_water_question_is_answered_from_the_printed_side():
     # ...and the same staleness rule for the removal record, which had none. A removal that has STOPPED
     # happening is a standing pre-authorisation to lose ink of that exact magnitude for any reason at all.
     assert not book_lost, (
-        "the BUILT book carries less water ink than the preserved 2026-08-03 book, and no removal record "
-        "accounts for it:\n  " + "\n  ".join(book_lost)
+        "the BUILT book carries less water ink than the preserved 2026-08-03 book, and the recorded chain "
+        "does not account for it:\n  " + "\n  ".join(book_lost)
         + "\n  This is ink lost between render_hole and the written file, and it CANNOT be excused as a "
           "stale book: staleness explains a difference from what the engine draws NOW, never a deficit "
-          "against what was already on paper. Either a removal record must name what went, with the way "
-          "ids and the predicate that refuses each, or a card has quietly stopped printing a hazard.")
+          "against what was already on paper. Either the chain must land on the figure the book holds -- a "
+          "removal in WATER_INK_REMOVED_DELIBERATELY naming the way ids and the predicate that refuses "
+          "each, then a move in WATER_INK_RECLASSIFIED whose ARRIVALS ARE IN THIS BOOK in the to-ink -- or "
+          "a card has quietly stopped printing a hazard.")
     assert not book_gap, (
         "the built book and the engine disagree about how much water ink a course carries, and nothing "
         "declares it:\n  " + "\n  ".join(book_gap)
@@ -41864,11 +41939,19 @@ def test_a_stale_book_cannot_launder_ink_that_went_missing_after_the_engine_drew
 
     `bk > eng` was proposed as the one-line fix and is NOT sound -- see water_ink_book_findings. A stale book
     can honestly hold FEWER marks than the engine when the engine has GAINED since the build. The rules that
-    hold are that the book may not be short of the PRESERVED book without a recorded removal, and that an
-    allowance claiming the book is short of the engine needs the engine to have gained against the baseline.
+    hold are that the book may not be short of the PRESERVED book without a recorded chain that lands on the
+    figure it holds, and that an allowance claiming the book is short of the engine needs the engine to have
+    gained against the baseline.
+
+    THE SECOND HALF grades the RECLASSIFICATION link of that chain, which the book side did not walk until
+    the corpus was rebuilt and three courses fell below the 2026-08-03 baseline on a blue class whose every
+    mark is still on the same cards in the grey. The credit is not free: a move counts on this axis only
+    where the built book HOLDS THE ARRIVALS, because "the engine re-inks it" is the other axis's answer and
+    this one is asking whether the file kept it.
     """
     def kinds(**kw):
-        args = dict(before=10, now=10, built=10, has_removal=False, removal_now=None, allowance=None)
+        args = dict(before=10, now=10, built=10, has_removal=False, removal_now=None, allowance=None,
+                    moves=())
         args.update(kw)
         return [k for k, *_ in water_ink_book_findings(**args)]
 
@@ -41912,6 +41995,58 @@ def test_a_stale_book_cannot_launder_ink_that_went_missing_after_the_engine_drew
     assert kinds(before=10, now=9, built=9, has_removal=True, removal_now=9) == []
     assert kinds(before=10, now=9, built=8, has_removal=True, removal_now=9) == \
         ["BOOK_LOST_INK", "UNDECLARED_GAP"], "a book below even the recorded removal figure is accepted"
+
+    # THE RECLASSIFICATION LINK OF THE CHAIN. Three courses came out of the rebuild below the 2026-08-03
+    # baseline on the blue polyline they no longer draw, with every one of those marks on the same cards in
+    # the not-water grey. The engine side walked removal-then-move already; this side walked the removal only,
+    # and so read a conservation-preserving move as a hazard leaving the paper.
+    #
+    # bay-view's real shape: 16 blue appearances, all 16 moved, and the built book holds 16 grey where the
+    # preserved book held none.
+    assert kinds(before=16, now=0, built=0, moves=((16, 0, 16),)) == [], (
+        "a class whose whole count MOVED to another ink, with the arrivals in the built book, is read as a "
+        "book-side loss -- that is the finding the rebuild produced on three courses where nothing left the "
+        "paper, and the reason this axis needed the engine side's chain")
+    # copper-valley's: the removal FIRST, then the move, and only the figures the chain lands on are accepted.
+    assert kinds(before=10, now=0, built=0, has_removal=True, removal_now=9, moves=((9, 0, 9),)) == [], \
+        "the removal-then-move chain does not clear copper-valley, whose blue went 10 -> 9 -> 0"
+    assert kinds(before=10, now=0, built=9, has_removal=True, removal_now=9,
+                 moves=((9, 0, 9),)) == ["UNDECLARED_GAP"], (
+        "a book sitting at the REMOVAL's figure with the move not yet built is behind the engine, which is "
+        "the finding; it is not a mark lost off the paper")
+    assert kinds(before=10, now=0, built=5, has_removal=True, removal_now=9,
+                 moves=((9, 0, 9),)) == ["BOOK_LOST_INK", "UNDECLARED_GAP"], (
+        "a figure NO link of the chain lands on is accepted. The chain has to ATTRIBUTE the count the book "
+        "holds, not merely bound how far it may fall")
+
+    # WHAT AN UNCONDITIONAL CREDIT WOULD LAUNDER, and the bar that refuses it. A build that dropped bay-view's
+    # 16 channels outright -- neither ink written -- leaves the from-class at exactly the figure the chain
+    # predicts. A move is only a move if the file holds the marks in the ink they moved to.
+    assert kinds(before=16, now=0, built=0, moves=((16, 0, 0),)) == ["BOOK_MOVED_INK_MISSING"], (
+        "a built book holding NEITHER the blue nor the grey is credited to the reclassification -- a whole "
+        "class off the paper, waved through by the record that says it was re-inked")
+    # ...and the netting shape ACROSS the two classes: the arrivals are there, five of the to-class's own
+    # preserved marks are not, and measured against its own baseline the to-class shows no deficit at all.
+    assert kinds(before=16, now=0, built=0, moves=((16, 5, 16),)) == ["BOOK_MOVED_INK_MISSING"], (
+        "a to-class holding the 16 arrivals while 5 of its own preserved marks went missing passes; the "
+        "arriving gain is netting out a loss on the other side of the same move")
+    assert kinds(before=16, now=0, built=0, moves=((16, 5, 21),)) == [], (
+        "the honest case is refused -- the to-class holds its own preserved 5 AND the 16 that moved in")
+    # A MOVE MIS-STATED IN EITHER DIRECTION fails, so this cannot become a licence to be short by about that
+    # much. The engine-side chain rejects the same two mis-statements, which is why it is mirrored.
+    assert kinds(before=16, now=0, built=0, moves=((20, 0, 20),)) == ["BOOK_LOST_INK"], \
+        "a move recorded LARGER than the deficit it explains is accepted"
+    assert kinds(before=16, now=0, built=0, moves=((12, 0, 12),)) == ["BOOK_LOST_INK"], \
+        "a move recorded SMALLER than the deficit it explains is accepted"
+    # NO RECORD AT ALL is the case the rule exists for, and a to-class that merely happens to have gained
+    # cannot supply the missing record.
+    assert kinds(before=16, now=0, built=0) == ["BOOK_LOST_INK"], \
+        "a class that fell to zero against the preserved book with nothing recorded is accepted"
+    # A BOOK WRITTEN BEFORE THE MOVE still holds the blue, so the arrivals are legitimately absent from it.
+    # The landing bar conditions a CREDIT and must not turn into a finding against a book not asking for one.
+    assert kinds(before=16, now=0, built=16, moves=((16, 0, 0),)) == ["UNDECLARED_GAP"], (
+        "a book that predates the move is reported as having lost the arrivals; the landing check only "
+        "gates the credit for a deficit, and this book has no deficit")
 
 
 # `intermittent=yes` is DELIBERATELY not a reason to refuse a watercourse -- the channel is still DRAWN --
