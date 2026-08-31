@@ -10,6 +10,9 @@ who wants to know we did not take anything of theirs, and a golfer who is simply
 It is a description, not a recipe. The reasoning is here; the parameters, thresholds and rendering
 logic are not.
 
+The engine is software I wrote with AI as a coding assistant. Every slope, contour and arrow is
+computed from the LiDAR by ordinary arithmetic — the same numbers every time.
+
 ---
 
 ## The problem
