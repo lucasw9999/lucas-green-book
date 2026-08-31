@@ -1,0 +1,47 @@
+# Rights &amp; licences — Lucas Green Book
+
+Copyright © 2026 Lucas Wu. **All rights reserved except as stated below.**
+
+**"Lucas Green Book"** and the flag emblem are **trademarks of Lucas Wu.** Nothing here grants any
+right to use the name or emblem to brand another (or a modified) product, or in any way that suggests
+endorsement or affiliation.
+
+## This repository
+
+The text in this repository — the README and the records in [`legal/`](legal/) — is © 2026 Lucas Wu
+and published so that anyone can verify where the books' data comes from. You are welcome to read,
+quote and link to it. It is not licensed for republication as your own.
+
+## The software
+
+The engine that builds the books is **not published here.** Two small modules are included for
+reference — `distribution.py` and `surface_io.py` — and they are published to be READ, not used:
+no licence to use, modify or redistribute them is granted.
+
+Earlier versions of that engine were previously published in this repository under the **PolyForm
+Noncommercial License 1.0.0**. That grant continues to apply to copies obtained while it was offered,
+on its own terms — it cannot be and is not withdrawn retroactively. **No new licence to the software
+is granted**, and the current engine is not offered under those or any other terms.
+
+## The books
+
+The terms for any individual book are **printed on that book**, which is authoritative for the copy
+you are holding. Books previously distributed under **CC BY-NC-ND 4.0** remain under that licence for
+those copies; that grant is irrevocable and is not affected by anything in this file.
+
+## The data (not owned by this project)
+
+The data the books are built from is not owned by this project, carries its own licences, and those
+licences bind this project too:
+
+- Hole &amp; green geometry: © **OpenStreetMap** contributors, under the **Open Database License
+  (ODbL) 1.0**. Every book carries the required Produced Work notice.
+- Elevation / slope / contours: **USGS 3DEP** — U.S. Government **public domain** (17 U.S.C. §105).
+- Aerial imagery, where used: **USDA NAIP** — U.S. Government **public domain**.
+- Par / yardage / handicap: **facts** from published scorecards.
+
+Where this project added geometry OpenStreetMap did not have, those additions are available under
+ODbL 1.0 **on request** — see [`legal/01_DATA_SOURCES_AND_LICENSES.md`](legal/01_DATA_SOURCES_AND_LICENSES.md).
+
+See [`legal/`](legal/) for the full source-by-source record, and honour these licences if you use the
+same sources.
