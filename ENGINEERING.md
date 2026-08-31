@@ -80,7 +80,7 @@ one date, which means a green can be built from a blend of passes. Harmless if t
 and if the ground changed between them, it is a surface spliced from two different greens. So passes
 are separated and compared: build the read twice, independently, and see whether they match. This
 doubles as the only real measure of how repeatable these surfaces are, which is the sort of thing you
-want to know before handing a book to a junior.
+want to know before handing a book to anyone who is going to trust it.
 
 **Knowing when to print nothing.** One course in this project was rebuilt after the last public
 survey. Its greens are physically different from anything in the data. The book for it prints
@@ -151,7 +151,9 @@ per-competition decision — confirm before playing in an event.
 
 ## Getting one, or getting yours removed
 
-Junior golfers can request a book at **[lucasgreenbook.org/request](https://lucasgreenbook.org/request)**.
+Junior players can request a book at no charge:
+**[lucasgreenbook.org/request](https://lucasgreenbook.org/request)**. For anyone else, or for a club,
+team or coach, get in touch.
 
 If you represent a course and would prefer not to be included, ask and it comes down — no reason
 needed: **[lucasgreenbook.org/removal](https://lucasgreenbook.org/removal)**

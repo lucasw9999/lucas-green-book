@@ -18,7 +18,7 @@ Why a whole module for two file writes
 Because "write the array, then write the sidecar" is two statements, and the gap between them is
 reachable: an interrupt during a long build, a full disk, an exception while encoding the sidecar.
 Land in that gap on a rebuild and the new array sits beside the previous run's extent. That is not a
-crash to debug later -- it is a wrong number on a card a junior carries onto a green, and every
+crash to debug later -- it is a wrong number on a card somebody carries onto a green, and every
 downstream consumer that re-derives scale from the same sidecar inherits the error rather than
 catching it.
 
