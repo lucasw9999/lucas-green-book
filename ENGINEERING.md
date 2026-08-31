@@ -151,9 +151,9 @@ per-competition decision — confirm before playing in an event.
 
 ## Getting one, or getting yours removed
 
-Junior players can request a book at no charge:
-**[lucasgreenbook.org/request](https://lucasgreenbook.org/request)**. For anyone else, or for a club,
-team or coach, get in touch.
+You can request a book for your course at
+**[lucasgreenbook.org/request](https://lucasgreenbook.org/request)**. For a club, a team or a coach
+that wants copies, get in touch.
 
 If you represent a course and would prefer not to be included, ask and it comes down — no reason
 needed: **[lucasgreenbook.org/removal](https://lucasgreenbook.org/removal)**
