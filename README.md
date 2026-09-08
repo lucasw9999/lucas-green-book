@@ -50,8 +50,7 @@ Every book is built from open data anyone can use:
 | Aerial tracing, where OSM lacks a green | **USDA NAIP** imagery | U.S. public domain |
 
 Slope, contours and break arrows are **computed by this project** from public‑domain elevation — never
-copied from anyone. Full detail, source by source, in [`legal/`](legal/); how it is actually done, in
-[`ENGINEERING.md`](ENGINEERING.md).
+copied from anyone. Full detail, course by course for all fifteen courses, in [`legal/03_PROVENANCE_BY_COURSE.md`](legal/03_PROVENANCE_BY_COURSE.md) and [`legal/`](legal/); technical case studies and methodology in [`ENGINEERING.md`](ENGINEERING.md).
 
 ## Independence
 **No commercial green‑reading product's data, imagery, artwork, layout, or trade dress is used,
@@ -66,8 +65,7 @@ identify the course.
 
 ## Accuracy &amp; the rules
 Green maps show general tilt and tiers, not exact break — always trust your own read. The books are
-**designed** to fall within Rule 4.3 limits, but conformance is a Committee‑level, per‑competition
-decision — confirm before playing in an event.
+**designed** to fall within Rule 4.3 limits (see our detailed analysis in [`legal/06_RULE_4.3_CONFORMANCE.md`](legal/06_RULE_4.3_CONFORMANCE.md)), but conformance is a Committee‑level, per‑competition decision — confirm before playing in an event.
 
 ## Rights
 - **"Lucas Green Book"** and the flag emblem are **trademarks of Lucas Wu.** No trademark rights are
