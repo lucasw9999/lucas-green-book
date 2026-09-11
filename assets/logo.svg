@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Lucas Green Book">
+  <circle cx="256.0" cy="256.0" r="235.95" fill="none" stroke="#866b39" stroke-width="11.13"/>
+  <circle cx="256.0" cy="256.0" r="213.74" fill="none" stroke="#866b39" stroke-width="11.13"/>
+  <rect x="215.93" y="107.86" width="15.58" height="278.36" rx="7.73" fill="#00412f"/>
+  <rect x="191.44" y="385.11" width="64.56" height="10.00" rx="2.42" fill="#00412f"/>
+  <path d="M235.98,113.53 L346.16,159.18 L238.20,215.93 Z" fill="#00412f"/>
+  <path d="M289.38,272.69 L309.42,272.69 L309.42,346.16 L342.80,346.16 L342.80,359.51 L289.38,359.51 Z" fill="#00412f"/>
+  <path d="M328.33,346.16 L342.80,338.35 L342.80,346.16 Z" fill="#00412f"/>
+</svg>
