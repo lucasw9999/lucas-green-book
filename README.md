@@ -4,9 +4,9 @@
 
 ### Yardage &amp; green‑reading books, built from open &amp; public‑domain data.
 
-[![Website](https://img.shields.io/badge/🌐_lucasgreenbook.org-2b6a2b?style=flat-square)](https://lucasgreenbook.org)
-[![Data](https://img.shields.io/badge/data-OpenStreetMap_+_USGS_3DEP-b8860b?style=flat-square)](#how-theyre-made)
-![Rule 4.3](https://img.shields.io/badge/designed_for-Rule_4.3-555?style=flat-square)
+[![Website](https://img.shields.io/badge/🌐_lucasgreenbook.org-00412f?style=flat-square)](https://lucasgreenbook.org)
+[![Data](https://img.shields.io/badge/data-OpenStreetMap_+_USGS_3DEP-866b39?style=flat-square)](#how-theyre-made)
+![Rule 4.3](https://img.shields.io/badge/designed_for-Rule_4.3-3a6b56?style=flat-square)
 
 **[🌐 lucasgreenbook.org](https://lucasgreenbook.org)**
 
