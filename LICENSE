@@ -14,9 +14,9 @@ quote and link to it. It is not licensed for republication as your own.
 
 ## The software
 
-The engine that builds the books is **not published here.** Two small modules are included for
-reference — `distribution.py` and `surface_io.py` — and they are published to be READ, not used:
-no licence to use, modify or redistribute them is granted.
+The engine that builds the books is **not published here.** Four modules are included as reference
+excerpts — `distribution.py`, `surface_io.py`, `fetch_lidar.py` and `fetch_lidar_alameda.py` — and
+they are published to be READ, not used: no licence to use, modify or redistribute them is granted.
 
 Earlier versions of that engine were previously published in this repository under the **PolyForm
 Noncommercial License 1.0.0**. That grant continues to apply to copies obtained while it was offered,
