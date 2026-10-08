@@ -18,11 +18,13 @@ A **green book** is the booklet tour players carry: a per‑hole map of the gree
 hole layout, and the yardages. **Lucas Green Book** makes them — palm‑size, printed, and built from
 public data.
 
-**This repository is the project's public record.** It documents every source each book is built
-from and the licence each source carries, and explains how the books are made.
+**This repository is the project's public provenance and progress record.** It describes our data
+sources, their licences, and the checks behind the books. The production engine and internal test
+suite remain private; this is not an open-source release of the current engine.
 
-📖 **[How a Lucas Green Book is made](ENGINEERING.md)** — the data chain, the parts that were hard,
-and how the numbers are kept honest.
+📖 **[How a Lucas Green Book is made](ENGINEERING.md)** — sources, verification and limitations.
+
+**[Project progress](PROGRESS.md)** — dated updates on completed work and verification.
 
 The engine itself is not published. Four modules are included as **excerpts, to be read** — see
 [`ENGINEERING.md`](ENGINEERING.md) for what they show and what is deliberately absent.
@@ -46,11 +48,14 @@ Every book is built from open data anyone can use:
 |---|---|---|
 | Hole &amp; green geometry | [OpenStreetMap](https://www.openstreetmap.org) contributors | ODbL 1.0 |
 | Slope / contours / arrows | **USGS 3DEP** LiDAR ground returns, with the 3DEP seamless mosaic where the point cloud has none | U.S. public domain |
-| Par / yardage / handicap | Facts from the published scorecard | facts (not copyrightable) |
+| Par / yardage / handicap / ratings | Facts from published scorecards and the USGA Course Rating and Slope Database | facts (not copyrightable) |
 | Aerial tracing, where OSM lacks a green | **USDA NAIP** imagery | U.S. public domain |
 
 Slope, contours and break arrows are **computed by this project** from public‑domain elevation — never
-copied from anyone. Full detail, course by course for all fifteen courses, in [`legal/03_PROVENANCE_BY_COURSE.md`](legal/03_PROVENANCE_BY_COURSE.md) and [`legal/`](legal/); technical case studies and methodology in [`ENGINEERING.md`](ENGINEERING.md).
+copied from anyone. Published course-provenance records are in
+[`legal/03_PROVENANCE_BY_COURSE.md`](legal/03_PROVENANCE_BY_COURSE.md), with source and licence
+information in [`legal/`](legal/). The course record covers the courses listed there; it is not a
+live inventory of current availability. Recent work is recorded in [`PROGRESS.md`](PROGRESS.md).
 
 ## Independence
 **No commercial green‑reading product's data, imagery, artwork, layout, or trade dress is used,
@@ -64,8 +69,10 @@ identify the course.
 **[lucasgreenbook.org/removal](https://lucasgreenbook.org/removal)**
 
 ## Accuracy &amp; the rules
-Green maps show general tilt and tiers, not exact break — always trust your own read. The books are
-**designed** to fall within Rule 4.3 limits (see our detailed analysis in [`legal/06_RULE_4.3_CONFORMANCE.md`](legal/06_RULE_4.3_CONFORMANCE.md)), but conformance is a Committee‑level, per‑competition decision — confirm before playing in an event.
+Green maps show general tilt and tiers, not exact break — always trust your own read. Pocket and
+pro editions are designed to fall within Rule 4.3 size and scale limits. Coach editions are practice
+aids, not conforming competition books. Check the notices in your specific edition and confirm
+with your Committee before playing in an event; tournament Local Rules may restrict their use.
 
 ## Rights
 - **"Lucas Green Book"** and the flag emblem are **trademarks of Lucas Wu.** No trademark rights are
